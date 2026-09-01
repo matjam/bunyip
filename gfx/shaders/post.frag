@@ -4,9 +4,10 @@
 // swapchain is sRGB, so the output stays linear here.
 layout(set = 0, binding = 0) uniform sampler2D scene;
 layout(set = 0, binding = 1) uniform sampler2D bloom;
+layout(set = 0, binding = 2) uniform sampler2D ao;
 layout(push_constant) uniform PC {
     vec4 a; // x exposure, y bloom strength, z vignette, w saturation
-    vec4 b; // x contrast, y gamma unused
+    vec4 b; // x contrast, y ambient occlusion strength
 } pc;
 
 layout(location = 0) in vec2 vUV;
@@ -18,7 +19,12 @@ vec3 aces(vec3 x) {
 }
 
 void main() {
+    if (pc.b.z > 0.5) { // debug view: occlusion only
+        outColor = vec4(vec3(texture(ao, vUV).r), 1.0);
+        return;
+    }
     vec3 c = texture(scene, vUV).rgb * pc.a.x;
+    c *= mix(1.0, pow(texture(ao, vUV).r, 4.0), pc.b.y); // shaped occlusion, blended by strength
     c += texture(bloom, vUV).rgb * pc.a.y;
     c = aces(c);
     float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));

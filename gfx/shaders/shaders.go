@@ -72,3 +72,13 @@ var (
 	//go:embed shadow_skin.vert.spv
 	ShadowSkinVert []byte
 )
+
+//go:generate glslangValidator -V -o ssao.frag.spv ssao.frag
+//go:generate glslangValidator -V -o aoblur.frag.spv aoblur.frag
+
+var (
+	//go:embed ssao.frag.spv
+	SSAOFrag []byte
+	//go:embed aoblur.frag.spv
+	AOBlurFrag []byte
+)

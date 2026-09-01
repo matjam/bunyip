@@ -32,7 +32,7 @@ func TestShadows(t *testing.T) {
 			// Camera looks straight down at the floor from y=12.
 			g.SetCamera(Camera{Position: lin.V3(0, 12, 0.01), Target: lin.V3(0, 0, 0)})
 			// The light slants so the cube's shadow falls beside it rather than under it.
-			g.SetLight(Light{Direction: lin.V3(0.6, -1, 0), Color: White, Ambient: Color{0.1, 0.1, 0.1, 1}, Shadows: shadows, ShadowRadius: 10})
+			g.SetLight(Light{Direction: lin.V3(0.6, -1, 0), Color: White, Ambient: Color{0.1, 0.1, 0.1, 1}, Shadows: shadows, ShadowDistance: 30})
 			floor := lin.Translate(lin.V3(0, -1, 0)).Mul(lin.Scale(lin.V3(20, 0.2, 20)))
 			g.DrawMesh(cube, Material{BaseColor: White, Roughness: 1}, floor)
 			g.DrawMesh(cube, Material{BaseColor: White, Roughness: 1}, lin.Translate(lin.V3(0, 2, 0)))

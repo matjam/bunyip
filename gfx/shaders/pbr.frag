@@ -10,23 +10,28 @@ layout(set = 0, binding = 3) uniform sampler2D emissiveTex;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
-    mat4 lightViewProj;
+    mat4 view;
+    mat4 lightViewProj[3]; // shadow cascades
     vec4 camPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 ambient;
-    vec4 params;
-    vec4 pointPos[8];
+    vec4 lightDir;     // direction the light travels
+    vec4 lightColor;   // rgb, w = shadow strength
+    vec4 sky;          // rgb ambient from above
+    vec4 ground;       // rgb ambient from below
+    vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count
+    vec4 splits;       // view-space distances where cascades end
+    vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
 } frame;
 
-layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
+layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap0;
+layout(set = 2, binding = 1) uniform sampler2DShadow shadowMap1;
+layout(set = 2, binding = 2) uniform sampler2DShadow shadowMap2;
 
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
-layout(location = 3) in vec4 vShadowPos;
+layout(location = 3) in float vViewDepth;
 layout(location = 4) flat in vec4 vBaseColor;
 layout(location = 5) flat in vec4 vMaterial;
 layout(location = 0) out vec4 outColor;
@@ -46,18 +51,27 @@ vec3 perturbNormal(vec3 n, vec3 pos, vec2 uv) {
     return normalize(tbn * nm);
 }
 
-float shadowFactor(vec3 n, vec3 l) {
-    if (frame.params.y < 0.5) return 1.0;
-    vec3 p = vShadowPos.xyz / vShadowPos.w;
-    vec2 uv = p.xy * 0.5 + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z > 1.0) return 1.0;
-    float bias = max(0.0015 * (1.0 - dot(n, l)), 0.0004);
-    float texel = 1.0 / frame.params.x;
+float sampleCascade(int c, vec3 uvz, vec2 texel) {
     float lit = 0.0;
     for (int y = -1; y <= 1; y++)
-        for (int x = -1; x <= 1; x++)
-            lit += texture(shadowMap, vec3(uv + vec2(x, y) * texel, p.z - bias));
+        for (int x = -1; x <= 1; x++) {
+            vec3 p = vec3(uvz.xy + vec2(x, y) * texel, uvz.z);
+            lit += c == 0 ? texture(shadowMap0, p) : (c == 1 ? texture(shadowMap1, p) : texture(shadowMap2, p));
+        }
     return lit / 9.0;
+}
+
+float shadowFactor(vec3 n, vec3 l) {
+    if (frame.params.y < 0.5) return 1.0;
+    int c = vViewDepth < frame.splits.x ? 0 : (vViewDepth < frame.splits.y ? 1 : 2);
+    if (vViewDepth > frame.splits.z) return 1.0;
+    vec4 sp = frame.lightViewProj[c] * vec4(vWorldPos, 1.0);
+    vec3 p = sp.xyz / sp.w;
+    vec2 uv = p.xy * 0.5 + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z > 1.0) return 1.0;
+    float bias = max(0.0015 * (1.0 - dot(n, l)), 0.0004) * (c == 0 ? 1.0 : 2.0);
+    float texel = 1.0 / frame.params.x;
+    return sampleCascade(c, vec3(uv, p.z - bias), vec2(texel));
 }
 
 float D_GGX(float NoH, float a2) {
@@ -105,7 +119,7 @@ void main() {
     float shadow = mix(1.0, shadowFactor(n, l), frame.lightColor.w);
     vec3 color = shade(n, v, l, frame.lightColor.rgb * shadow, albedo, metallic, roughness);
 
-    int count = int(frame.ambient.w);
+    int count = int(frame.params.z);
     for (int i = 0; i < count; i++) {
         vec3 d = frame.pointPos[i].xyz - vWorldPos;
         float dist = length(d);
@@ -115,13 +129,16 @@ void main() {
         color += shade(n, v, d / dist, frame.pointColor[i].rgb * att, albedo, metallic, roughness);
     }
 
-    // Ambient: diffuse plus a rough Fresnel-weighted specular so metals are not black.
+    // Hemisphere ambient: sky from above, ground from below, plus a
+    // Fresnel-weighted specular from the reflected direction's sky.
     float NoV = max(dot(n, v), 1e-4);
     vec3 f0 = mix(vec3(0.04), albedo, metallic);
     vec3 kS = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
-    vec3 ambientDiffuse = (1.0 - kS) * (1.0 - metallic) * albedo;
-    vec3 ambientSpec = kS * mix(albedo, vec3(1.0), 0.5) * (1.0 - roughness * 0.8);
-    color += frame.ambient.rgb * (ambientDiffuse + ambientSpec);
+    vec3 ambientDiffuse = (1.0 - kS) * (1.0 - metallic) * albedo * mix(frame.ground.rgb, frame.sky.rgb, n.y * 0.5 + 0.5);
+    vec3 r = reflect(-v, n);
+    vec3 env = mix(frame.ground.rgb, frame.sky.rgb, r.y * 0.5 + 0.5);
+    vec3 ambientSpec = kS * env * (1.0 - roughness * 0.8);
+    color += ambientDiffuse + ambientSpec;
 
     color += texture(emissiveTex, vUV).rgb * vMaterial.z;
     outColor = vec4(color, albedoSample.a);

@@ -6,6 +6,7 @@ import (
 	"github.com/matjam/bunyip/gfx/shaders"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
+	"github.com/matjam/bunyip/lin"
 )
 
 // PostSettings controls the post-processing applied to 3D scenes.
@@ -17,11 +18,18 @@ type PostSettings struct {
 	Saturation     float32 // default 1
 	Contrast       float32 // default 1
 	NoAntiAlias    bool    // skip the FXAA pass on the main frame
+	// AmbientOcclusion is the strength of screen-space ambient occlusion,
+	// 0 (off) to 1; default 0.6. It darkens creases and contact points.
+	AmbientOcclusion float32
+	// OcclusionRadius is the occlusion kernel size in world units; default 1.
+	OcclusionRadius float32
+	// ShowOcclusion displays the occlusion buffer instead of the scene, for tuning.
+	ShowOcclusion bool
 }
 
 // DefaultPost is the starting PostSettings.
 func DefaultPost() PostSettings {
-	return PostSettings{Exposure: 1, Bloom: 0.25, BloomThreshold: 1, Saturation: 1, Contrast: 1}
+	return PostSettings{Exposure: 1, Bloom: 0.25, BloomThreshold: 1, Saturation: 1, Contrast: 1, AmbientOcclusion: 0.6, OcclusionRadius: 1}
 }
 
 // SetPost replaces the post-processing settings.
@@ -38,8 +46,10 @@ type postPass struct {
 	bright    *render.Pipeline
 	blur      *render.Pipeline
 	fxaa      *render.Pipeline
+	ssao      *render.Pipeline
+	aoBlur    *render.Pipeline
 	singles   *render.DescriptorSets
-	pairs     *render.DescriptorSets
+	triples   *render.DescriptorSets
 	main      *sceneTargets
 }
 
@@ -51,18 +61,29 @@ type sceneTargets struct {
 	bloomA    *render.Target
 	bloomB    *render.Target
 	ldr       *render.Target
+	aoA       *render.Target
+	aoB       *render.Target
 	hdrSet    vk.VkDescriptorSet
+	depthSet  vk.VkDescriptorSet
 	bloomASet vk.VkDescriptorSet
 	bloomBSet vk.VkDescriptorSet
 	ldrSet    vk.VkDescriptorSet
-	finalSet  vk.VkDescriptorSet
-	blackSet  vk.VkDescriptorSet
+	aoASet    vk.VkDescriptorSet
+	finalSet  vk.VkDescriptorSet // scene, bloom, ao
+	noBloom   vk.VkDescriptorSet // scene, black, ao
 }
 
 type postPush struct {
 	a [4]float32
 	b [4]float32
 }
+
+// ssaoPush carries the projection both ways for depth reconstruction.
+type ssaoPush struct {
+	proj, invProj lin.Mat4
+}
+
+const aoFormat = vk.VK_FORMAT_R8_UNORM
 
 func (g *Graphics) initPost() error {
 	p := &g.post
@@ -72,7 +93,7 @@ func (g *Graphics) initPost() error {
 	if p.singles, err = dev.NewSamplerDescriptors(1, 64); err != nil {
 		return err
 	}
-	if p.pairs, err = dev.NewSamplerDescriptors(2, 32); err != nil {
+	if p.triples, err = dev.NewSamplerDescriptors(3, 32); err != nil {
 		return err
 	}
 	push := uint32(unsafe.Sizeof(postPush{}))
@@ -92,7 +113,18 @@ func (g *Graphics) initPost() error {
 	if p.composite, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.PostFrag,
 		ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
-		PushConstantSize: push, SetLayouts: []vk.VkDescriptorSetLayout{p.pairs.Layout},
+		PushConstantSize: push, SetLayouts: []vk.VkDescriptorSetLayout{p.triples.Layout},
+	}); err != nil {
+		return err
+	}
+	if p.ssao, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.PostVert, Frag: shaders.SSAOFrag, ColorFormat: aoFormat,
+		PushConstantSize: uint32(unsafe.Sizeof(ssaoPush{})), SetLayouts: single,
+	}); err != nil {
+		return err
+	}
+	if p.aoBlur, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.PostVert, Frag: shaders.AOBlurFrag, ColorFormat: aoFormat, PushConstantSize: push, SetLayouts: single,
 	}); err != nil {
 		return err
 	}
@@ -141,7 +173,23 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 	if t.ldr, err = dev.NewTarget(extent, g.r.Swapchain.Format, g.r.DepthFormat); err != nil {
 		return fail(err)
 	}
+	if t.aoA, err = dev.NewTargetSampled(half, aoFormat, vk.VK_FORMAT_UNDEFINED); err != nil {
+		return fail(err)
+	}
+	if t.aoB, err = dev.NewTargetSampled(half, aoFormat, vk.VK_FORMAT_UNDEFINED); err != nil {
+		return fail(err)
+	}
+	// The composite always binds the AO image; give it white until a pass runs.
+	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearColorForSampling(cb, t.aoB.Color) }); err != nil {
+		return fail(err)
+	}
 	if t.hdrSet, err = p.singles.Allocate(t.hdr.Color.View, g.linear); err != nil {
+		return fail(err)
+	}
+	if t.depthSet, err = p.singles.Allocate(t.hdr.Depth.View, g.nearest); err != nil {
+		return fail(err)
+	}
+	if t.aoASet, err = p.singles.Allocate(t.aoA.Color.View, g.linear); err != nil {
 		return fail(err)
 	}
 	if t.bloomASet, err = p.singles.Allocate(t.bloomA.Color.View, g.linear); err != nil {
@@ -153,13 +201,13 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 	if t.ldrSet, err = p.singles.Allocate(t.ldr.Color.View, g.linear); err != nil {
 		return fail(err)
 	}
-	if t.finalSet, err = p.pairs.AllocateMany([]render.SamplerBinding{
-		{View: t.hdr.Color.View, Sampler: g.linear}, {View: t.bloomA.Color.View, Sampler: g.linear},
+	if t.finalSet, err = p.triples.AllocateMany([]render.SamplerBinding{
+		{View: t.hdr.Color.View, Sampler: g.linear}, {View: t.bloomA.Color.View, Sampler: g.linear}, {View: t.aoB.Color.View, Sampler: g.linear},
 	}); err != nil {
 		return fail(err)
 	}
-	if t.blackSet, err = p.pairs.AllocateMany([]render.SamplerBinding{
-		{View: t.hdr.Color.View, Sampler: g.linear}, {View: g.meshes.black.img.View, Sampler: g.linear},
+	if t.noBloom, err = p.triples.AllocateMany([]render.SamplerBinding{
+		{View: t.hdr.Color.View, Sampler: g.linear}, {View: g.meshes.black.img.View, Sampler: g.linear}, {View: t.aoB.Color.View, Sampler: g.linear},
 	}); err != nil {
 		return fail(err)
 	}
@@ -168,17 +216,17 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 
 func (t *sceneTargets) destroy(g *Graphics) {
 	p := &g.post
-	for _, set := range []vk.VkDescriptorSet{t.hdrSet, t.bloomASet, t.bloomBSet, t.ldrSet} {
+	for _, set := range []vk.VkDescriptorSet{t.hdrSet, t.depthSet, t.bloomASet, t.bloomBSet, t.ldrSet, t.aoASet} {
 		if set != 0 {
 			p.singles.Free(set)
 		}
 	}
-	for _, set := range []vk.VkDescriptorSet{t.finalSet, t.blackSet} {
+	for _, set := range []vk.VkDescriptorSet{t.finalSet, t.noBloom} {
 		if set != 0 {
-			p.pairs.Free(set)
+			p.triples.Free(set)
 		}
 	}
-	for _, tg := range []*render.Target{t.hdr, t.bloomA, t.bloomB, t.ldr} {
+	for _, tg := range []*render.Target{t.hdr, t.bloomA, t.bloomB, t.ldr, t.aoA, t.aoB} {
 		if tg != nil {
 			tg.Destroy()
 		}
@@ -210,19 +258,46 @@ func (g *Graphics) renderBloom(cb vk.VkCommandBuffer, t *sceneTargets) {
 	render.EndTargetPass(cb, t.bloomA)
 }
 
+// renderAO computes half-resolution ambient occlusion from the scene depth
+// and blurs it into aoB.
+func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) {
+	p := &g.post
+	aspect := float32(t.extent.Width) / float32(t.extent.Height)
+	proj := q.camera.Projection(aspect)
+	push := ssaoPush{proj: proj, invProj: proj.Inverse()}
+	radius := p.settings.OcclusionRadius
+	if radius <= 0 {
+		radius = 1
+	}
+	push.proj[15] = radius // see ssao.frag
+	render.BeginTargetPass(cb, render.PassDesc{Target: t.aoA})
+	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Handle)
+	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Layout, 0, 1, &t.depthSet, 0, nil)
+	vk.VkCmdPushConstants(cb, p.ssao.Layout, meshStages, 0, uint32(unsafe.Sizeof(push)), unsafe.Pointer(&push))
+	vk.VkCmdDraw(cb, 3, 1, 0, 0)
+	render.EndTargetPass(cb, t.aoA)
+	render.BeginTargetPass(cb, render.PassDesc{Target: t.aoB})
+	fullscreen(cb, p.aoBlur, t.aoASet, postPush{a: [4]float32{1 / float32(t.aoA.Extent.Width), 1 / float32(t.aoA.Extent.Height), 0, 0}})
+	render.EndTargetPass(cb, t.aoB)
+}
+
 // composite writes the tone-mapped scene into the current pass.
-func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom bool) {
+func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom, ao bool) {
 	p := &g.post
 	s := p.settings
 	set := t.finalSet
 	strength := s.Bloom
 	if !bloom {
-		set = t.blackSet
+		set = t.noBloom
 		strength = 0
+	}
+	aoStrength := float32(0)
+	if ao {
+		aoStrength = s.AmbientOcclusion
 	}
 	fullscreen(cb, p.composite, set, postPush{
 		a: [4]float32{s.Exposure, strength, s.Vignette, s.Saturation},
-		b: [4]float32{s.Contrast, 0, 0, 0},
+		b: [4]float32{s.Contrast, aoStrength, boolFloat(s.ShowOcclusion), 0},
 	})
 }
 
@@ -235,7 +310,7 @@ func (p *postPass) destroy(g *Graphics) {
 	if p.main != nil {
 		p.main.destroy(g)
 	}
-	for _, pipe := range []*render.Pipeline{p.composite, p.bright, p.blur, p.fxaa} {
+	for _, pipe := range []*render.Pipeline{p.composite, p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur} {
 		if pipe != nil {
 			pipe.Destroy()
 		}
@@ -243,7 +318,7 @@ func (p *postPass) destroy(g *Graphics) {
 	if p.singles != nil {
 		p.singles.Destroy()
 	}
-	if p.pairs != nil {
-		p.pairs.Destroy()
+	if p.triples != nil {
+		p.triples.Destroy()
 	}
 }

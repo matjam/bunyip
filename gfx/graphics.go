@@ -169,6 +169,7 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	cb := fr.CB
 	has3D := len(q.draws) > 0
 	bloom := has3D && g.post.settings.Bloom > 0
+	ao := has3D && g.post.settings.AmbientOcclusion > 0
 	if has3D {
 		if err := g.renderScene(fr, q, t); err != nil {
 			return err
@@ -176,13 +177,16 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 		if bloom {
 			g.renderBloom(cb, t)
 		}
+		if ao {
+			g.renderAO(cb, q, t)
+		}
 	}
 	clear := q.clear.premultiplied()
 	aa := has3D && !g.post.settings.NoAntiAlias && target == nil
 	if aa {
 		// Composite into the LDR image, then resolve with FXAA on screen.
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
-		g.composite(cb, t, bloom)
+		g.composite(cb, t, bloom, ao)
 		render.EndTargetPass(cb, t.ldr)
 	}
 	extent := g.r.Swapchain.Extent
@@ -196,7 +200,7 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	case aa:
 		g.antiAlias(cb, t)
 	case has3D:
-		g.composite(cb, t, bloom)
+		g.composite(cb, t, bloom, ao)
 	}
 	if err := g.flushSprites(fr, q, extent); err != nil {
 		return err

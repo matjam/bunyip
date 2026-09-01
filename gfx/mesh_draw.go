@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"math"
 	"slices"
 	"unsafe"
 
@@ -13,6 +14,7 @@ import (
 const (
 	hdrFormat      = vk.VK_FORMAT_R16G16B16A16_SFLOAT
 	shadowMapSize  = 2048
+	shadowCascades = 3
 	maxPointLights = 8
 )
 
@@ -26,7 +28,7 @@ type meshPass struct {
 	skinShadow    *render.Pipeline
 	jointLayout   *render.StorageSets
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
-	shadow        *render.Target
+	shadow        [shadowCascades]*render.Target
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
@@ -53,12 +55,15 @@ type pointLight struct {
 // frameUniforms mirrors the Frame block in pbr.vert (std140).
 type frameUniforms struct {
 	viewProj      lin.Mat4
-	lightViewProj lin.Mat4
+	view          lin.Mat4
+	lightViewProj [shadowCascades]lin.Mat4
 	camPos        lin.Vec4
 	lightDir      lin.Vec4
 	lightColor    lin.Vec4
-	ambient       lin.Vec4
+	sky           lin.Vec4
+	ground        lin.Vec4
 	params        lin.Vec4
+	splits        lin.Vec4
 	pointPos      [maxPointLights]lin.Vec4
 	pointColor    [maxPointLights]lin.Vec4
 }
@@ -82,16 +87,21 @@ func (g *Graphics) initMeshPass() error {
 	if mp.shadowSamp, err = dev.NewShadowSampler(); err != nil {
 		return err
 	}
-	if mp.shadowDesc, err = dev.NewImmutableSamplerDescriptors(1, 4, mp.shadowSamp); err != nil {
+	if mp.shadowDesc, err = dev.NewImmutableSamplerDescriptors(shadowCascades, 4, mp.shadowSamp); err != nil {
 		return err
 	}
-	if mp.shadow, err = dev.NewTarget(vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}, vk.VK_FORMAT_UNDEFINED, g.r.DepthFormat); err != nil {
-		return err
+	shadowBindings := make([]render.SamplerBinding, shadowCascades)
+	for c := range mp.shadow {
+		if mp.shadow[c], err = dev.NewTarget(vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}, vk.VK_FORMAT_UNDEFINED, g.r.DepthFormat); err != nil {
+			return err
+		}
+		depth := mp.shadow[c].Depth
+		if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, depth) }); err != nil {
+			return err
+		}
+		shadowBindings[c] = render.SamplerBinding{View: depth.View, Sampler: mp.shadowSamp}
 	}
-	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, mp.shadow.Depth) }); err != nil {
-		return err
-	}
-	if mp.shadowSet, err = mp.shadowDesc.Allocate(mp.shadow.Depth.View, mp.shadowSamp); err != nil {
+	if mp.shadowSet, err = mp.shadowDesc.AllocateMany(shadowBindings); err != nil {
 		return err
 	}
 	if mp.flatNormal, err = g.newTexture(1, 1, []byte{128, 128, 255, 255}, TextureOptions{Data: true}); err != nil {
@@ -104,7 +114,7 @@ func (g *Graphics) initMeshPass() error {
 	common := render.PipelineDesc{
 		Vert: shaders.PBRVert, Frag: shaders.PBRFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
-		Bindings: bindings, Attributes: attrs,
+		Bindings: bindings, Attributes: attrs[:9], // static meshes have no joint base
 		CullMode: vk.VK_CULL_MODE_BACK_BIT, DepthTest: true, DepthWrite: true,
 		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout},
 	}
@@ -122,7 +132,8 @@ func (g *Graphics) initMeshPass() error {
 		Bindings: bindings, Attributes: attrs[:7], // the depth pass reads no material attributes
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
 		DepthBias: 1.5, DepthSlopeBias: 2.0,
-		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout},
+		PushConstantSize: 4, // cascade index
+		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout},
 	}
 	if mp.shadowPipe, err = dev.NewPipeline(shadow); err != nil {
 		return err
@@ -232,20 +243,75 @@ func (g *Graphics) forgetTexture(t *Texture) {
 	}
 }
 
-// lightMatrix fits an orthographic shadow frustum around the camera target.
-func (q *drawQueue) lightMatrix() lin.Mat4 {
-	r := q.light.ShadowRadius
-	if r <= 0 {
-		r = 25
+// cascades fits one orthographic light frustum to each slice of the
+// camera frustum out to the shadow distance, returning the matrices and
+// the view-space depth where each cascade ends.
+func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4) {
+	var mats [shadowCascades]lin.Mat4
+	var splits lin.Vec4
+	far := q.light.ShadowDistance
+	if far <= 0 {
+		far = q.light.ShadowRadius
 	}
+	if far <= 0 {
+		far = 60
+	}
+	up, _, near, _ := q.camera.defaults()
+	_ = up
 	dir := q.light.Direction.Norm()
-	center := q.camera.Target
-	eye := center.Sub(dir.Mul(r * 2))
-	up := lin.V3(0, 1, 0)
+	lightUp := lin.V3(0, 1, 0)
 	if abs32(dir.Y) > 0.95 {
-		up = lin.V3(0, 0, 1)
+		lightUp = lin.V3(0, 0, 1)
 	}
-	return lin.Ortho(-r, r, -r, r, 0.1, r*4).Mul(lin.LookAt(eye, center, up))
+	invVP := q.camera.Projection(aspect).Mul(q.camera.viewMatrix()).Inverse()
+	// Practical split scheme, weighted towards logarithmic.
+	ends := [shadowCascades]float32{}
+	for i := range ends {
+		f := float32(i+1) / shadowCascades
+		logSplit := near * float32(math.Pow(float64(far/near), float64(f)))
+		linSplit := near + (far-near)*f
+		ends[i] = 0.7*logSplit + 0.3*linSplit
+	}
+	splits = lin.V4(ends[0], ends[1], ends[2], 0)
+	prev := near
+	proj := q.camera.Projection(aspect)
+	for i := range mats {
+		// Slice corners in world space: unproject the 8 corners at the
+		// slice's near and far depths.
+		var corners [8]lin.Vec3
+		k := 0
+		for _, z := range [2]float32{prev, ends[i]} {
+			clipZ := proj.MulVec4(lin.V4(0, 0, -z, 1))
+			ndcZ := clipZ.Z / clipZ.W
+			for _, x := range [2]float32{-1, 1} {
+				for _, y := range [2]float32{-1, 1} {
+					p := invVP.MulVec4(lin.V4(x, y, ndcZ, 1))
+					corners[k] = p.Vec3().Mul(1 / p.W)
+					k++
+				}
+			}
+		}
+		var centre lin.Vec3
+		for _, c := range corners {
+			centre = centre.Add(c)
+		}
+		centre = centre.Mul(1.0 / 8)
+		radius := float32(0)
+		for _, c := range corners {
+			radius = max(radius, c.Sub(centre).Len())
+		}
+		// Snap the centre to shadow-map texels so edges do not swim.
+		texel := radius * 2 / shadowMapSize
+		view := lin.LookAt(centre.Sub(dir.Mul(radius*2)), centre, lightUp)
+		c := view.MulPoint(centre)
+		c.X = float32(math.Floor(float64(c.X/texel))) * texel
+		c.Y = float32(math.Floor(float64(c.Y/texel))) * texel
+		centre = view.Inverse().MulPoint(c)
+		view = lin.LookAt(centre.Sub(dir.Mul(radius*2)), centre, lightUp)
+		mats[i] = lin.Ortho(-radius, radius, -radius, radius, 0.1, radius*4).Mul(view)
+		prev = ends[i]
+	}
+	return mats, splits
 }
 
 func abs32(v float32) float32 {
@@ -265,14 +331,25 @@ func (q *drawQueue) writeUniforms(slot int, aspect float32) error {
 	if strength == 0 {
 		strength = 1
 	}
+	sky, ground := l.Sky, l.Ground
+	if sky == (Color{}) {
+		sky = l.Ambient
+	}
+	if ground == (Color{}) {
+		ground = l.Ambient
+	}
+	mats, splits := q.cascades(aspect)
 	u := frameUniforms{
 		viewProj:      q.camera.ViewProj(aspect),
-		lightViewProj: q.lightMatrix(),
+		view:          q.camera.viewMatrix(),
+		lightViewProj: mats,
 		camPos:        q.camera.Position.Vec4(1),
 		lightDir:      l.Direction.Norm().Vec4(0),
 		lightColor:    lin.V4(l.Color.R, l.Color.G, l.Color.B, strength),
-		ambient:       lin.V4(l.Ambient.R, l.Ambient.G, l.Ambient.B, float32(len(q.points))),
-		params:        lin.V4(shadowMapSize, boolFloat(l.Shadows), 0, 0),
+		sky:           lin.V4(sky.R, sky.G, sky.B, 1),
+		ground:        lin.V4(ground.R, ground.G, ground.B, 1),
+		params:        lin.V4(shadowMapSize, boolFloat(l.Shadows), float32(len(q.points)), 0),
+		splits:        splits,
 	}
 	for i, p := range q.points {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
@@ -375,7 +452,7 @@ func orOne(metallic float32, hasTexture bool) float32 {
 // first is the index of draws[0] in the instance stream. Skinned draws use
 // the skinned variant of pipe and are never merged, since each has its own
 // joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, pipe, skinPipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool) {
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, pipe, skinPipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool, cascade *int32) {
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &offset)
 	var bound *render.Pipeline
@@ -395,6 +472,9 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			bound = p
 			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
 			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+			if cascade != nil {
+				vk.VkCmdPushConstants(cb, p.Layout, meshStages, 0, 4, unsafe.Pointer(cascade))
+			}
 			if withMaterials {
 				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 2, 1, &g.meshes.shadowSet, 0, nil)
 			}
@@ -426,14 +506,17 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		return err
 	}
 	if q.light.Shadows {
-		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow, ClearDepth: 1})
-		g.drawRuns(cb, fr, q, mp.shadowPipe, mp.skinShadow, opaque, 0, false)
-		render.EndTargetPass(cb, mp.shadow)
+		for c := range mp.shadow {
+			render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow[c], ClearDepth: 1})
+			cascade := int32(c)
+			g.drawRuns(cb, fr, q, mp.shadowPipe, mp.skinShadow, opaque, 0, false, &cascade)
+			render.EndTargetPass(cb, mp.shadow[c])
+		}
 	}
 	c := q.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
-	g.drawRuns(cb, fr, q, mp.pbrPipe, mp.skinPipe, opaque, 0, true)
-	g.drawRuns(cb, fr, q, mp.blendPipe, mp.skinBlendPipe, blended, uint32(len(opaque)), true)
+	g.drawRuns(cb, fr, q, mp.pbrPipe, mp.skinPipe, opaque, 0, true, nil)
+	g.drawRuns(cb, fr, q, mp.blendPipe, mp.skinBlendPipe, blended, uint32(len(opaque)), true, nil)
 	render.EndTargetPass(cb, t.hdr)
 	return nil
 }
@@ -451,8 +534,10 @@ func (mp *meshPass) destroy(g *Graphics) {
 	if mp.black != nil {
 		mp.black.Destroy()
 	}
-	if mp.shadow != nil {
-		mp.shadow.Destroy()
+	for _, t := range mp.shadow {
+		if t != nil {
+			t.Destroy()
+		}
 	}
 	if mp.shadowSamp != 0 {
 		vk.VkDestroySampler(dev, mp.shadowSamp, nil)

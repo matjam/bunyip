@@ -17,19 +17,24 @@ layout(std430, set = 3, binding = 0) readonly buffer Joints { mat4 joints[]; };
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
-    mat4 lightViewProj;
+    mat4 view;
+    mat4 lightViewProj[3]; // shadow cascades
     vec4 camPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 ambient;
-    vec4 params;
-    vec4 pointPos[8];
+    vec4 lightDir;     // direction the light travels
+    vec4 lightColor;   // rgb, w = shadow strength
+    vec4 sky;          // rgb ambient from above
+    vec4 ground;       // rgb ambient from below
+    vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count
+    vec4 splits;       // view-space distances where cascades end
+    vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
 } frame;
+
+layout(push_constant) uniform PC { int cascade; } pc;
 
 void main() {
     uint base = uint(iExtra.x);
     mat4 skin = iWeights.x * joints[base + iJoints.x] + iWeights.y * joints[base + iJoints.y]
               + iWeights.z * joints[base + iJoints.z] + iWeights.w * joints[base + iJoints.w];
-    gl_Position = frame.lightViewProj * mat4(iModel0, iModel1, iModel2, iModel3) * skin * vec4(iPos, 1.0);
+    gl_Position = frame.lightViewProj[pc.cascade] * mat4(iModel0, iModel1, iModel2, iModel3) * skin * vec4(iPos, 1.0);
 }

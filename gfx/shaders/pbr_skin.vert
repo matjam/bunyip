@@ -6,12 +6,15 @@ layout(location = 2) in vec2 iUV;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
-    mat4 lightViewProj;
+    mat4 view;
+    mat4 lightViewProj[3]; // shadow cascades
     vec4 camPos;
     vec4 lightDir;     // direction the light travels
     vec4 lightColor;   // rgb, w = shadow strength
-    vec4 ambient;      // rgb, w = point light count
-    vec4 params;       // x = shadow map size, y = shadows enabled
+    vec4 sky;          // rgb ambient from above
+    vec4 ground;       // rgb ambient from below
+    vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count
+    vec4 splits;       // view-space distances where cascades end
     vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
 } frame;
@@ -32,7 +35,7 @@ layout(std430, set = 3, binding = 0) readonly buffer Joints { mat4 joints[]; };
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
-layout(location = 3) out vec4 vShadowPos;
+layout(location = 3) out float vViewDepth;
 layout(location = 4) flat out vec4 vBaseColor;
 layout(location = 5) flat out vec4 vMaterial;
 
@@ -46,7 +49,7 @@ void main() {
     vWorldPos = world.xyz;
     vNormal = normalize(mat3(model) * iNormal);
     vUV = iUV;
-    vShadowPos = frame.lightViewProj * world;
+    vViewDepth = -(frame.view * world).z;
     vBaseColor = iBaseColor;
     vMaterial = iMaterial;
 }

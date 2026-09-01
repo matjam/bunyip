@@ -141,10 +141,13 @@ func (c Camera) viewMatrix() lin.Mat4 {
 type Light struct {
 	Direction lin.Vec3 // direction the light travels
 	Color     Color
-	Ambient   Color
+	Ambient   Color // used for both sky and ground when they are zero
+	Sky       Color // ambient light arriving from above
+	Ground    Color // ambient light arriving from below
 
-	Shadows        bool    // render a shadow map for the directional light
-	ShadowRadius   float32 // half-size of the shadowed area around the camera target; default 25
+	Shadows        bool    // render cascaded shadow maps for the directional light
+	ShadowDistance float32 // how far from the camera shadows reach; default 60
+	ShadowRadius   float32 // deprecated alias of ShadowDistance
 	ShadowStrength float32 // 0..1 how dark shadows are; zero means 1
 }
 
