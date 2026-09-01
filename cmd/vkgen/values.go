@@ -52,19 +52,16 @@ func constExpr(value, ctype string) (expr string, n int64, err error) {
 	s = strings.TrimSuffix(s, ")")
 	if strings.HasPrefix(s, "~") {
 		body := strings.TrimRight(s[1:], "ULul")
-		cast := "uint32"
-		if ctype == "uint64_t" {
-			cast = "uint64"
-		}
 		i, err := strconv.ParseInt(body, 0, 64)
 		if err != nil {
 			return "", 0, fmt.Errorf("value %q: %w", value, err)
 		}
 		var width int64 = 1<<32 - 1
-		if cast == "uint64" {
+		if ctype == "uint64_t" {
 			width = -1
 		}
-		return fmt.Sprintf("^%s(%s)", cast, body), width ^ i, nil
+		// Emit an untyped literal so the constant converts to VkDeviceSize and friends.
+		return fmt.Sprintf("0x%X", uint64(width^i)), width ^ i, nil
 	}
 	if ctype == "float" {
 		return strings.TrimRight(s, "Ff"), 0, nil
