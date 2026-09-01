@@ -129,6 +129,28 @@ func (d *Device) NewSampler(linear bool) (vk.VkSampler, error) {
 	return s, err
 }
 
+// NewShadowSampler makes a comparison sampler for shadow maps: linear
+// filtering of the comparison result gives free 2x2 percentage-closer
+// filtering, and clamp-to-border white keeps everything outside the map lit.
+func (d *Device) NewShadowSampler() (vk.VkSampler, error) {
+	info := vk.VkSamplerCreateInfo{
+		SType:         vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		MagFilter:     vk.VK_FILTER_LINEAR,
+		MinFilter:     vk.VK_FILTER_LINEAR,
+		MipmapMode:    vk.VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		AddressModeU:  vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		AddressModeV:  vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		AddressModeW:  vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		CompareEnable: vk.VK_TRUE,
+		CompareOp:     vk.VK_COMPARE_OP_LESS_OR_EQUAL,
+		BorderColor:   vk.VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+		MaxLod:        1,
+	}
+	var s vk.VkSampler
+	err := vk.Check("vkCreateSampler", vk.VkCreateSampler(d.Handle, &info, nil, &s))
+	return s, err
+}
+
 // bytesOf views any fixed-size value as bytes, for uploads.
 func bytesOf[T any](v *T) []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(v)), unsafe.Sizeof(*v))

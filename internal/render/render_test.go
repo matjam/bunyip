@@ -28,13 +28,14 @@ func TestClearHeadless(t *testing.T) {
 	// sRGB surface: a linear clear of 0.5 encodes to about 188.
 	var img *pngImage
 	for range 3 { // a few frames so the ring wraps once
-		fr, ok, err := r.BeginFrame([4]float32{1, 0.5, 0, 1})
+		fr, ok, err := r.BeginFrame()
 		if err != nil {
 			t.Fatalf("BeginFrame: %v", err)
 		}
 		if !ok {
 			continue
 		}
+		r.BeginSwapchainPass(fr, [4]float32{1, 0.5, 0, 1})
 		got, err := r.EndFrame(fr, true)
 		if err != nil {
 			t.Fatalf("EndFrame: %v", err)

@@ -22,6 +22,10 @@ type PipelineDesc struct {
 	DepthWrite       bool
 	PushConstantSize uint32 // bytes visible to all stages, 0 for none
 	SetLayouts       []vk.VkDescriptorSetLayout
+	NoColor          bool    // depth-only pass (shadow maps)
+	DepthBias        float32 // constant depth bias, for shadow passes
+	DepthSlopeBias   float32
+	FrontFace        vk.VkFrontFace // zero means counter-clockwise
 }
 
 // Pipeline is a graphics pipeline and its layout.
@@ -97,8 +101,13 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		SType:       vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		PolygonMode: vk.VK_POLYGON_MODE_FILL,
 		CullMode:    desc.CullMode,
-		FrontFace:   vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		FrontFace:   desc.FrontFace,
 		LineWidth:   1,
+	}
+	if desc.DepthBias != 0 || desc.DepthSlopeBias != 0 {
+		raster.DepthBiasEnable = vk.VK_TRUE
+		raster.DepthBiasConstantFactor = desc.DepthBias
+		raster.DepthBiasSlopeFactor = desc.DepthSlopeBias
 	}
 	multisample := vk.VkPipelineMultisampleStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, RasterizationSamples: vk.VK_SAMPLE_COUNT_1_BIT}
 	depth := vk.VkPipelineDepthStencilStateCreateInfo{
@@ -120,6 +129,10 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		blendAttachment.AlphaBlendOp = vk.VK_BLEND_OP_ADD
 	}
 	blend := vk.VkPipelineColorBlendStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, AttachmentCount: 1, PAttachments: &blendAttachment}
+	if desc.NoColor {
+		blend.AttachmentCount = 0
+		blend.PAttachments = nil
+	}
 	dynamicStates := []vk.VkDynamicState{vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR}
 	dynamic := vk.VkPipelineDynamicStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, DynamicStateCount: 2, PDynamicStates: &dynamicStates[0]}
 	rendering := vk.VkPipelineRenderingCreateInfo{
@@ -127,6 +140,10 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		ColorAttachmentCount:    1,
 		PColorAttachmentFormats: &desc.ColorFormat,
 		DepthAttachmentFormat:   desc.DepthFormat,
+	}
+	if desc.NoColor {
+		rendering.ColorAttachmentCount = 0
+		rendering.PColorAttachmentFormats = nil
 	}
 	info := vk.VkGraphicsPipelineCreateInfo{
 		SType:               vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,

@@ -25,6 +25,7 @@ type Graphics struct {
 	white       *Texture
 	frame       *render.Frame
 	proj        lin.Mat4
+	clear       Color
 	viewW       float32
 	viewH       float32
 }
@@ -91,8 +92,8 @@ func (g *Graphics) View() (float32, float32) { return g.viewW, g.viewH }
 // Begin starts a frame cleared to clear. ok is false when the swapchain
 // was rebuilt and the frame should be skipped.
 func (g *Graphics) Begin(clear Color) (ok bool, err error) {
-	c := clear.premultiplied()
-	g.frame, ok, err = g.R.BeginFrame(c)
+	g.clear = clear
+	g.frame, ok, err = g.R.BeginFrame()
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -133,6 +134,7 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 	}
 	fr := g.frame
 	g.frame = nil
+	g.R.BeginSwapchainPass(fr, g.clear.premultiplied())
 	if err := g.flushMeshes(fr); err != nil {
 		return nil, err
 	}
@@ -150,7 +152,6 @@ func (g *Graphics) flushSprites(fr *render.Frame) error {
 		return err
 	}
 	cb := fr.CB
-	render.SetViewport(cb, fr.Extent)
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 0, 1, &g.sprites.buffers[fr.Slot].Handle, &offset)
 	var bound *render.Pipeline

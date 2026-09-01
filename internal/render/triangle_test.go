@@ -27,11 +27,11 @@ func TestTriangleHeadless(t *testing.T) {
 	}
 	defer p.Destroy()
 
-	fr, ok, err := r.BeginFrame([4]float32{0, 0, 0, 1})
+	fr, ok, err := r.BeginFrame()
 	if err != nil || !ok {
 		t.Fatalf("BeginFrame: ok=%v err=%v", ok, err)
 	}
-	SetViewport(fr.CB, fr.Extent)
+	r.BeginSwapchainPass(fr, [4]float32{0, 0, 0, 1})
 	vk.VkCmdBindPipeline(fr.CB, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
 	vk.VkCmdDraw(fr.CB, 3, 1, 0, 0)
 	img, err := r.EndFrame(fr, true)

@@ -85,7 +85,6 @@ func (g *Graphics) flushMeshes(fr *render.Frame) error {
 		return err
 	}
 	cb := fr.CB
-	render.SetViewport(cb, fr.Extent)
 	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.pipe.Handle)
 	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.pipe.Layout, 1, 1, &mp.uniforms.Sets[fr.Slot], 0, nil)
 	var offset vk.VkDeviceSize

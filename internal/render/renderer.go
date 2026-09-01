@@ -23,6 +23,8 @@ type Renderer struct {
 	extent    vk.VkExtent2D // requested size, used when the surface defers to us
 	resize    bool
 	inFrame   bool
+	inPass    bool
+	onResize  func(vk.VkExtent2D) error
 	readback  *Buffer
 	depth     *Image
 	// DepthFormat is the format of the depth attachment every frame carries;
@@ -103,11 +105,11 @@ func (r *Renderer) Resize(width, height int) {
 	r.resize = true
 }
 
-// BeginFrame waits for the frame slot, acquires a swapchain image, starts
-// the command buffer and opens a render pass that clears to clear. It
-// returns ok=false, with no error, when the swapchain had to be rebuilt and
-// the caller should simply try again next loop.
-func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
+// BeginFrame waits for the frame slot, acquires a swapchain image and
+// starts the command buffer. It returns ok=false, with no error, when the
+// swapchain had to be rebuilt and the caller should try again next loop.
+// The caller then records any offscreen passes and calls BeginSwapchainPass.
+func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	if r.inFrame {
 		return nil, false, fmt.Errorf("render: BeginFrame called twice")
 	}
@@ -118,6 +120,11 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 		}
 		if err := r.createDepth(); err != nil {
 			return nil, false, err
+		}
+		if r.onResize != nil {
+			if err := r.onResize(r.Swapchain.Extent); err != nil {
+				return nil, false, err
+			}
 		}
 	}
 	d := r.Device
@@ -143,7 +150,20 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 	if err := vk.Check("vkBeginCommandBuffer", vk.VkBeginCommandBuffer(f.cb, &begin)); err != nil {
 		return nil, false, err
 	}
-	img := r.Swapchain.Images[index]
+	r.inFrame = true
+	r.inPass = false
+	return &Frame{CB: f.cb, ImageIndex: index, Slot: r.current, Extent: r.Swapchain.Extent}, true, nil
+}
+
+// OnResize registers a callback run after the swapchain is rebuilt, for
+// offscreen targets that must match its size.
+func (r *Renderer) OnResize(fn func(extent vk.VkExtent2D) error) { r.onResize = fn }
+
+// BeginSwapchainPass opens the final pass into the acquired swapchain image,
+// with the frame's depth attachment, cleared to clear.
+func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
+	f := &r.frames[r.current]
+	img := r.Swapchain.Images[fr.ImageIndex]
 	imageBarrier(f.cb, img, vk.VK_IMAGE_ASPECT_COLOR_BIT,
 		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
@@ -167,7 +187,7 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 	}
 	color := vk.VkRenderingAttachmentInfo{
 		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		ImageView:   r.Swapchain.Views[index],
+		ImageView:   r.Swapchain.Views[fr.ImageIndex],
 		ImageLayout: vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
 		StoreOp:     vk.VK_ATTACHMENT_STORE_OP_STORE,
@@ -182,8 +202,8 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 		PDepthAttachment:     &depthAttachment,
 	}
 	vk.VkCmdBeginRendering(f.cb, &rendering)
-	r.inFrame = true
-	return &Frame{CB: f.cb, ImageIndex: index, Slot: r.current, Extent: r.Swapchain.Extent}, true, nil
+	SetViewport(f.cb, r.Swapchain.Extent)
+	r.inPass = true
 }
 
 // EndFrame closes the render pass, submits and presents. With capture set it
@@ -197,6 +217,10 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 	d := r.Device
 	f := &r.frames[r.current]
 	img := r.Swapchain.Images[fr.ImageIndex]
+	if !r.inPass {
+		r.BeginSwapchainPass(fr, [4]float32{0, 0, 0, 1})
+	}
+	r.inPass = false
 	vk.VkCmdEndRendering(f.cb)
 	var readback *Buffer
 	if capture {

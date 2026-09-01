@@ -76,13 +76,14 @@ func run(seconds float64, shot string, validate bool) error {
 		}
 		s := t.Seconds()
 		clear := [4]float32{float32(0.5 + 0.5*math.Sin(s)), float32(0.5 + 0.5*math.Sin(s+2)), float32(0.5 + 0.5*math.Sin(s+4)), 1}
-		fr, ok, err := r.BeginFrame(clear)
+		fr, ok, err := r.BeginFrame()
 		if err != nil {
 			return err
 		}
 		if !ok {
 			continue
 		}
+		r.BeginSwapchainPass(fr, clear)
 		capture := shot != "" && t >= shotAt
 		img, err := r.EndFrame(fr, capture)
 		if err != nil {
