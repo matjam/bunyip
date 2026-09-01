@@ -7,8 +7,9 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
-// framesInFlight is how many frames the CPU may record ahead of the GPU.
-const framesInFlight = 2
+// FramesInFlight is how many frames the CPU may record ahead of the GPU.
+// Per-frame resources such as instance buffers need one copy each.
+const FramesInFlight = 2
 
 // Renderer ties an instance, device and swapchain together with a ring of
 // in-flight frames. A frame is BeginFrame, record, EndFrame.
@@ -17,7 +18,7 @@ type Renderer struct {
 	Device    *Device
 	Swapchain *Swapchain
 	surface   vk.VkSurfaceKHR
-	frames    [framesInFlight]frame
+	frames    [FramesInFlight]frame
 	current   int
 	extent    vk.VkExtent2D // requested size, used when the surface defers to us
 	resize    bool
@@ -35,6 +36,7 @@ type frame struct {
 type Frame struct {
 	CB         vk.VkCommandBuffer
 	ImageIndex uint32
+	Slot       int // which of the FramesInFlight per-frame resources to use
 	Extent     vk.VkExtent2D
 }
 
@@ -69,7 +71,7 @@ func NewRenderer(cfg Config, surfaceExts []string, makeSurface SurfaceFunc, exte
 }
 
 func (r *Renderer) initFrames() error {
-	cbs, err := r.Device.allocateCommandBuffers(framesInFlight)
+	cbs, err := r.Device.allocateCommandBuffers(FramesInFlight)
 	if err != nil {
 		return err
 	}
@@ -154,7 +156,7 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 	}
 	vk.VkCmdBeginRendering(f.cb, &rendering)
 	r.inFrame = true
-	return &Frame{CB: f.cb, ImageIndex: index, Extent: r.Swapchain.Extent}, true, nil
+	return &Frame{CB: f.cb, ImageIndex: index, Slot: r.current, Extent: r.Swapchain.Extent}, true, nil
 }
 
 // EndFrame closes the render pass, submits and presents. With capture set it
@@ -219,7 +221,7 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 			return nil, err
 		}
 	}
-	r.current = (r.current + 1) % framesInFlight
+	r.current = (r.current + 1) % FramesInFlight
 	if !capture {
 		return nil, nil
 	}
