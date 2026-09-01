@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"slices"
 	"unsafe"
 
 	"github.com/matjam/bunyip/internal/render"
@@ -35,35 +36,83 @@ const spriteInstanceSize = 64
 
 type spriteDraw struct {
 	tex          *Texture
+	proj         lin.Mat4
 	first, count uint32
 }
 
+// spriteItem is a queued sprite with its sort keys, resolved into the
+// instance stream at flush time.
+type spriteItem struct {
+	inst  spriteInstance
+	tex   *Texture
+	proj  *lin.Mat4
+	layer int32
+	seq   int32
+}
+
 // spriteBatch collects sprites for a frame and issues one draw per run of
-// the same texture.
+// the same texture and projection, in layer order.
 type spriteBatch struct {
+	items     []spriteItem
 	instances []spriteInstance
 	draws     []spriteDraw
 	buffers   [render.FramesInFlight]*render.Buffer
 	capacity  int
+	projs     []lin.Mat4 // projections referenced by items this frame
+	sorted    bool
 }
 
 const initialSpriteCapacity = 4096
 
-func (b *spriteBatch) add(tex *Texture, s Sprite) {
-	if n := len(b.draws); n > 0 && b.draws[n-1].tex == tex {
-		b.draws[n-1].count++
-	} else {
-		b.draws = append(b.draws, spriteDraw{tex: tex, first: uint32(len(b.instances)), count: 1})
+func (b *spriteBatch) add(tex *Texture, s Sprite, proj lin.Mat4, layer int32) {
+	// Keep a stable pointer to the projection in use; most frames use one or two.
+	var pp *lin.Mat4
+	for i := range b.projs {
+		if b.projs[i] == proj {
+			pp = &b.projs[i]
+			break
+		}
 	}
-	b.instances = append(b.instances, spriteInstance{
-		pos: s.Pos, size: s.Size, uv0: s.UV0, uv1: s.UV1,
-		color: s.Color.premultiplied(), rotation: s.Rotation, origin: s.Origin,
+	if pp == nil {
+		b.projs = append(b.projs, proj)
+		pp = &b.projs[len(b.projs)-1]
+	}
+	b.items = append(b.items, spriteItem{
+		inst: spriteInstance{
+			pos: s.Pos, size: s.Size, uv0: s.UV0, uv1: s.UV1,
+			color: s.Color.premultiplied(), rotation: s.Rotation, origin: s.Origin,
+		},
+		tex: tex, proj: pp, layer: layer, seq: int32(len(b.items)),
 	})
+	if layer != 0 {
+		b.sorted = false
+	}
 }
 
 func (b *spriteBatch) reset() {
+	b.items = b.items[:0]
 	b.instances = b.instances[:0]
 	b.draws = b.draws[:0]
+	b.projs = b.projs[:0]
+	b.sorted = true
+}
+
+// build orders items by layer (stable) and groups them into draw runs.
+func (b *spriteBatch) build() {
+	if !b.sorted {
+		slices.SortStableFunc(b.items, func(x, y spriteItem) int { return int(x.layer - y.layer) })
+		b.sorted = true
+	}
+	b.instances = b.instances[:0]
+	b.draws = b.draws[:0]
+	for _, it := range b.items {
+		if n := len(b.draws); n > 0 && b.draws[n-1].tex == it.tex && b.draws[n-1].proj == *it.proj {
+			b.draws[n-1].count++
+		} else {
+			b.draws = append(b.draws, spriteDraw{tex: it.tex, proj: *it.proj, first: uint32(len(b.instances)), count: 1})
+		}
+		b.instances = append(b.instances, it.inst)
+	}
 }
 
 // upload copies this frame's instances into the slot's buffer, growing every

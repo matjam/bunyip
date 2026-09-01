@@ -125,7 +125,8 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.Color == (Color{}) {
 		s.Color = White
 	}
-	g.cur.sprites.add(tex, s)
+	q := g.cur
+	q.sprites.add(tex, s, q.spriteProj, q.layer)
 }
 
 // FillRect queues a solid rectangle.
@@ -204,9 +205,10 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 }
 
 func (g *Graphics) flushSprites(fr *render.Frame, q *drawQueue, extent vk.VkExtent2D) error {
-	if len(q.sprites.instances) == 0 {
+	if len(q.sprites.items) == 0 {
 		return nil
 	}
+	q.sprites.build()
 	if err := q.sprites.upload(g.R.Device, fr.Slot); err != nil {
 		return err
 	}
@@ -215,6 +217,7 @@ func (g *Graphics) flushSprites(fr *render.Frame, q *drawQueue, extent vk.VkExte
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 0, 1, &q.sprites.buffers[fr.Slot].Handle, &offset)
 	var bound *render.Pipeline
+	var boundProj lin.Mat4
 	for _, d := range q.sprites.draws {
 		pipe := g.spritePipe
 		if d.tex.sdf {
@@ -223,8 +226,12 @@ func (g *Graphics) flushSprites(fr *render.Frame, q *drawQueue, extent vk.VkExte
 		if pipe != bound {
 			bound = pipe
 			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+			boundProj = lin.Mat4{}
+		}
+		if d.proj != boundProj {
+			boundProj = d.proj
 			vk.VkCmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-				0, uint32(unsafe.Sizeof(q.proj)), unsafe.Pointer(&q.proj))
+				0, uint32(unsafe.Sizeof(d.proj)), unsafe.Pointer(&d.proj))
 		}
 		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &d.tex.set, 0, nil)
 		vk.VkCmdDraw(cb, 6, d.count, 0, d.first)

@@ -1,0 +1,131 @@
+package gfx
+
+import "github.com/matjam/bunyip/lin"
+
+// Sheet cuts a texture into a grid of equal frames, numbered row-major
+// from the top-left, for tilesets and sprite sheets.
+type Sheet struct {
+	Texture       *Texture
+	FrameW        int
+	FrameH        int
+	Columns, Rows int
+	Margin        int // pixels around the whole grid
+	Spacing       int // pixels between frames
+}
+
+// NewSheet describes a grid of frameW x frameH cells over the texture.
+func NewSheet(tex *Texture, frameW, frameH int) *Sheet {
+	s := &Sheet{Texture: tex, FrameW: frameW, FrameH: frameH}
+	s.Columns = max(tex.Width/frameW, 1)
+	s.Rows = max(tex.Height/frameH, 1)
+	return s
+}
+
+// Count is the number of frames.
+func (s *Sheet) Count() int { return s.Columns * s.Rows }
+
+// UV returns the texture rectangle of a frame in 0..1.
+func (s *Sheet) UV(frame int) (uv0, uv1 lin.Vec2) {
+	if s.Columns == 0 {
+		return lin.V2(0, 0), lin.V2(1, 1)
+	}
+	col, row := frame%s.Columns, frame/s.Columns
+	x := s.Margin + col*(s.FrameW+s.Spacing)
+	y := s.Margin + row*(s.FrameH+s.Spacing)
+	w, h := float32(s.Texture.Width), float32(s.Texture.Height)
+	return lin.V2(float32(x)/w, float32(y)/h), lin.V2(float32(x+s.FrameW)/w, float32(y+s.FrameH)/h)
+}
+
+// DrawFrame draws one frame of a sheet with the sprite's placement; the
+// sprite's UV fields are filled in and a zero Size means the frame size.
+func (g *Graphics) DrawFrame(sheet *Sheet, frame int, s Sprite) {
+	s.UV0, s.UV1 = sheet.UV(frame)
+	if s.Size == (lin.Vec2{}) {
+		s.Size = lin.V2(float32(sheet.FrameW), float32(sheet.FrameH))
+	}
+	g.Draw(sheet.Texture, s)
+}
+
+// Tilemap is a grid of frame indices into a sheet; -1 is empty.
+type Tilemap struct {
+	Sheet         *Sheet
+	Width, Height int     // in tiles
+	Tiles         []int   // row-major, len Width*Height
+	TileW, TileH  float32 // drawn size of one tile; zero means the frame size
+}
+
+// NewTilemap makes an empty map of the given size.
+func NewTilemap(sheet *Sheet, width, height int) *Tilemap {
+	t := &Tilemap{Sheet: sheet, Width: width, Height: height, Tiles: make([]int, width*height)}
+	for i := range t.Tiles {
+		t.Tiles[i] = -1
+	}
+	return t
+}
+
+// Set places a frame at a cell; out-of-range cells are ignored.
+func (t *Tilemap) Set(x, y, frame int) {
+	if x >= 0 && y >= 0 && x < t.Width && y < t.Height {
+		t.Tiles[y*t.Width+x] = frame
+	}
+}
+
+// Get returns the frame at a cell, or -1.
+func (t *Tilemap) Get(x, y int) int {
+	if x < 0 || y < 0 || x >= t.Width || y >= t.Height {
+		return -1
+	}
+	return t.Tiles[y*t.Width+x]
+}
+
+// DrawTilemap draws the map with its top-left at (x, y), skipping tiles
+// outside the active 2D camera's view.
+func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
+	tw, th := t.TileW, t.TileH
+	if tw == 0 {
+		tw = float32(t.Sheet.FrameW)
+	}
+	if th == 0 {
+		th = float32(t.Sheet.FrameH)
+	}
+	x0, y0, x1, y1 := 0, 0, t.Width, t.Height
+	if cam, ok := g.Camera2D(); ok {
+		minX, minY, maxX, maxY := cam.VisibleRect(g.cur.viewW, g.cur.viewH)
+		x0 = max(0, int((minX-x)/tw)-1)
+		y0 = max(0, int((minY-y)/th)-1)
+		x1 = min(t.Width, int((maxX-x)/tw)+2)
+		y1 = min(t.Height, int((maxY-y)/th)+2)
+	}
+	for ty := y0; ty < y1; ty++ {
+		for tx := x0; tx < x1; tx++ {
+			frame := t.Tiles[ty*t.Width+tx]
+			if frame < 0 {
+				continue
+			}
+			g.DrawFrame(t.Sheet, frame, Sprite{Pos: lin.V2(x+float32(tx)*tw, y+float32(ty)*th), Size: lin.V2(tw, th), Color: tint})
+		}
+	}
+}
+
+// DrawNineSlice draws a texture stretched to w x h while keeping its
+// corners at their pixel size: borders are the pixel widths of the
+// unstretched left, top, right and bottom edges.
+func (g *Graphics) DrawNineSlice(tex *Texture, x, y, w, h float32, left, top, right, bottom float32, tint Color) {
+	tw, th := float32(tex.Width), float32(tex.Height)
+	xs := [4]float32{0, left, w - right, w}
+	ys := [4]float32{0, top, h - bottom, h}
+	us := [4]float32{0, left / tw, 1 - right/tw, 1}
+	vs := [4]float32{0, top / th, 1 - bottom/th, 1}
+	for row := range 3 {
+		for col := range 3 {
+			sw, sh := xs[col+1]-xs[col], ys[row+1]-ys[row]
+			if sw <= 0 || sh <= 0 {
+				continue
+			}
+			g.Draw(tex, Sprite{
+				Pos: lin.V2(x+xs[col], y+ys[row]), Size: lin.V2(sw, sh),
+				UV0: lin.V2(us[col], vs[row]), UV1: lin.V2(us[col+1], vs[row+1]), Color: tint,
+			})
+		}
+	}
+}
