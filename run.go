@@ -1,6 +1,7 @@
 package bunyip
 
 import (
+	"errors"
 	"fmt"
 	"image/png"
 	"log/slog"
@@ -22,6 +23,20 @@ const audioRate = 48000
 // Run opens the window, drives game until it quits or the window closes,
 // and tears everything down. It must be called from the main goroutine.
 func Run(cfg Config, game Game) error {
+	for {
+		err := runOnce(cfg, game)
+		if !errors.Is(err, render.ErrDeviceLost) {
+			return err
+		}
+		if _, ok := game.(Recoverer); !ok {
+			return err
+		}
+		cfg.Log.Warn("bunyip: GPU device lost; rebuilding", "err", err)
+		cfg.recovering = true
+	}
+}
+
+func runOnce(cfg Config, game Game) error {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
@@ -67,7 +82,11 @@ func Run(cfg Config, game Game) error {
 	}
 	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win}}
 	l.applySize(win)
-	if init, ok := game.(Initer); ok {
+	if cfg.recovering {
+		if err := game.(Recoverer).Recover(l.ctx); err != nil {
+			return err
+		}
+	} else if init, ok := game.(Initer); ok {
 		if err := init.Init(l.ctx); err != nil {
 			return err
 		}

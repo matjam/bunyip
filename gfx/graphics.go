@@ -22,15 +22,13 @@ type Graphics struct {
 	linearRep   vk.VkSampler
 	spritePipe  *render.Pipeline
 	sdfPipe     *render.Pipeline
-	sprites     spriteBatch
 	meshes      meshPass
 	post        postPass
 	white       *Texture
 	frame       *render.Frame
-	proj        lin.Mat4
-	clear       Color
-	viewW       float32
-	viewH       float32
+	main        *drawQueue // the screen
+	cur         *drawQueue // where Draw* calls land
+	subFrames   []subFrame
 }
 
 // New builds the drawing context over a renderer.
@@ -87,30 +85,31 @@ func New(r *render.Renderer) (*Graphics, error) {
 		return nil, err
 	}
 	ext := r.Swapchain.Extent
-	g.SetView(float32(ext.Width), float32(ext.Height))
+	if g.main, err = g.newQueue(float32(ext.Width), float32(ext.Height)); err != nil {
+		return nil, err
+	}
+	g.cur = g.main
 	return g, nil
 }
 
 // SetView sets the 2D coordinate space: (0,0) top-left to (width,height)
 // bottom-right, whatever the framebuffer's pixel size.
-func (g *Graphics) SetView(width, height float32) {
-	g.viewW, g.viewH = width, height
-	g.proj = lin.Ortho2D(width, height)
-}
+func (g *Graphics) SetView(width, height float32) { g.main.setView(width, height) }
 
 // View returns the current 2D coordinate space size.
-func (g *Graphics) View() (float32, float32) { return g.viewW, g.viewH }
+func (g *Graphics) View() (float32, float32) { return g.main.viewW, g.main.viewH }
 
 // Begin starts a frame cleared to clear. ok is false when the swapchain
 // was rebuilt and the frame should be skipped.
 func (g *Graphics) Begin(clear Color) (ok bool, err error) {
-	g.clear = clear
 	g.frame, ok, err = g.R.BeginFrame()
 	if err != nil || !ok {
 		return ok, err
 	}
-	g.sprites.reset()
-	g.meshes.reset()
+	g.main.reset()
+	g.main.clear = clear
+	g.cur = g.main
+	g.subFrames = g.subFrames[:0]
 	return true, nil
 }
 
@@ -126,7 +125,7 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.Color == (Color{}) {
 		s.Color = White
 	}
-	g.sprites.add(tex, s)
+	g.cur.sprites.add(tex, s)
 }
 
 // FillRect queues a solid rectangle.
@@ -146,37 +145,77 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 	}
 	fr := g.frame
 	g.frame = nil
-	if len(g.meshes.draws) > 0 {
-		if err := g.renderScene(fr); err != nil {
+	g.cur = g.main
+	cb := fr.CB
+	for _, sf := range g.subFrames {
+		if err := g.renderQueue(fr, sf.queue, sf.rt.scene, sf.rt.target); err != nil {
 			return nil, err
 		}
-		bloom := g.post.settings.Bloom > 0
-		if bloom {
-			g.renderBloom(fr)
-		}
-		g.R.BeginSwapchainPass(fr, g.clear.premultiplied())
-		g.composite(fr, bloom)
-	} else {
-		g.R.BeginSwapchainPass(fr, g.clear.premultiplied())
 	}
-	if err := g.flushSprites(fr); err != nil {
+	if err := g.renderQueue(fr, g.main, g.post.main, nil); err != nil {
 		return nil, err
 	}
+	_ = cb
 	return g.R.EndFrame(fr, capture)
 }
 
-func (g *Graphics) flushSprites(fr *render.Frame) error {
-	if len(g.sprites.instances) == 0 {
+// renderQueue draws one queue: the 3D scene through the post chain, then
+// sprites, into target (a render texture) or the swapchain when nil.
+func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, target *render.Target) error {
+	cb := fr.CB
+	has3D := len(q.draws) > 0
+	bloom := has3D && g.post.settings.Bloom > 0
+	if has3D {
+		if err := g.renderScene(fr, q, t); err != nil {
+			return err
+		}
+		if bloom {
+			g.renderBloom(cb, t)
+		}
+	}
+	clear := q.clear.premultiplied()
+	aa := has3D && !g.post.settings.NoAntiAlias && target == nil
+	if aa {
+		// Composite into the LDR image, then resolve with FXAA on screen.
+		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
+		g.composite(cb, t, bloom)
+		render.EndTargetPass(cb, t.ldr)
+	}
+	extent := g.R.Swapchain.Extent
+	if target != nil {
+		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
+		extent = target.Extent
+	} else {
+		g.R.BeginSwapchainPass(fr, clear)
+	}
+	switch {
+	case aa:
+		g.antiAlias(cb, t)
+	case has3D:
+		g.composite(cb, t, bloom)
+	}
+	if err := g.flushSprites(fr, q, extent); err != nil {
+		return err
+	}
+	if target != nil {
+		render.EndTargetPass(cb, target)
+	}
+	return nil
+}
+
+func (g *Graphics) flushSprites(fr *render.Frame, q *drawQueue, extent vk.VkExtent2D) error {
+	if len(q.sprites.instances) == 0 {
 		return nil
 	}
-	if err := g.sprites.upload(g.R.Device, fr.Slot); err != nil {
+	if err := q.sprites.upload(g.R.Device, fr.Slot); err != nil {
 		return err
 	}
 	cb := fr.CB
+	render.SetViewport(cb, extent)
 	var offset vk.VkDeviceSize
-	vk.VkCmdBindVertexBuffers(cb, 0, 1, &g.sprites.buffers[fr.Slot].Handle, &offset)
+	vk.VkCmdBindVertexBuffers(cb, 0, 1, &q.sprites.buffers[fr.Slot].Handle, &offset)
 	var bound *render.Pipeline
-	for _, d := range g.sprites.draws {
+	for _, d := range q.sprites.draws {
 		pipe := g.spritePipe
 		if d.tex.sdf {
 			pipe = g.sdfPipe
@@ -185,7 +224,7 @@ func (g *Graphics) flushSprites(fr *render.Frame) error {
 			bound = pipe
 			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 			vk.VkCmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-				0, uint32(unsafe.Sizeof(g.proj)), unsafe.Pointer(&g.proj))
+				0, uint32(unsafe.Sizeof(q.proj)), unsafe.Pointer(&q.proj))
 		}
 		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &d.tex.set, 0, nil)
 		vk.VkCmdDraw(cb, 6, d.count, 0, d.first)
@@ -197,7 +236,9 @@ func (g *Graphics) flushSprites(fr *render.Frame) error {
 // must be destroyed first or are leaked with the device.
 func (g *Graphics) Destroy() {
 	_ = g.R.Device.WaitIdle()
-	g.sprites.destroy()
+	if g.main != nil {
+		g.main.destroy()
+	}
 	g.post.destroy(g)
 	g.meshes.destroy(g)
 	if g.white != nil {

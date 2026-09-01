@@ -91,10 +91,10 @@ func (g *Graphics) NewFont(ttf []byte, size float32, opts FontOptions) (*Font, e
 
 // pixelScale is framebuffer pixels per view unit along X.
 func (g *Graphics) pixelScale() float32 {
-	if g.viewW <= 0 {
+	if g.main.viewW <= 0 {
 		return 1
 	}
-	return float32(g.R.Swapchain.Extent.Width) / g.viewW
+	return float32(g.R.Swapchain.Extent.Width) / g.main.viewW
 }
 
 func fixedToFloat(v fixed.Int26_6) float32 { return float32(v) / 64 }

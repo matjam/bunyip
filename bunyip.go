@@ -34,6 +34,8 @@ type Config struct {
 	Validation bool // enable Vulkan validation when installed
 	NoAudio    bool // skip opening the audio device
 	Log        *slog.Logger
+
+	recovering bool // set by Run when rebuilding after a device loss
 }
 
 // Game is what Run drives. Update advances the simulation and Draw queues
@@ -53,6 +55,15 @@ type Initer interface {
 // Shutdowner is implemented by games that free resources on exit.
 type Shutdowner interface {
 	Shutdown(ctx *Context)
+}
+
+// Recoverer is implemented by games that can survive a lost GPU device.
+// When the driver reports a device loss, Run rebuilds the graphics stack
+// and calls Recover with the new context; every texture, mesh, font and
+// render texture the game created is gone and must be created again.
+// Games without Recover get the error from Run instead.
+type Recoverer interface {
+	Recover(ctx *Context) error
 }
 
 // Context is everything a game touches during a callback.

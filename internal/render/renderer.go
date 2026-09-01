@@ -1,11 +1,16 @@
 package render
 
 import (
+	"errors"
 	"fmt"
 	"image"
 
 	"github.com/matjam/bunyip/internal/vk"
 )
+
+// ErrDeviceLost reports that the GPU was reset; the renderer and every
+// resource created from it must be rebuilt.
+var ErrDeviceLost = errors.New("render: device lost")
 
 // FramesInFlight is how many frames the CPU may record ahead of the GPU.
 // Per-frame resources such as instance buffers need one copy each.
@@ -130,7 +135,7 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	d := r.Device
 	f := &r.frames[r.current]
 	if err := vk.Check("vkWaitForFences", vk.VkWaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
-		return nil, false, err
+		return nil, false, deviceLostOr(err)
 	}
 	var index uint32
 	res := vk.VkAcquireNextImageKHR(d.Handle, r.Swapchain.Handle, ^uint64(0), f.imageAvailable, 0, &index)
@@ -253,7 +258,7 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 		PSignalSemaphoreInfos:    &signal,
 	}
 	if err := vk.Check("vkQueueSubmit2", vk.VkQueueSubmit2(d.Queue, 1, &submit, f.fence)); err != nil {
-		return nil, err
+		return nil, deviceLostOr(err)
 	}
 	present := vk.VkPresentInfoKHR{
 		SType:              vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -269,7 +274,7 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 		r.resize = true
 	default:
 		if err := vk.Check("vkQueuePresentKHR", res); err != nil {
-			return nil, err
+			return nil, deviceLostOr(err)
 		}
 	}
 	r.current = (r.current + 1) % FramesInFlight
@@ -309,4 +314,14 @@ func (r *Renderer) Destroy() {
 		vk.VkDestroySurfaceKHR(r.Instance.Handle, r.surface, nil)
 	}
 	r.Instance.Destroy()
+}
+
+// deviceLostOr maps a VK_ERROR_DEVICE_LOST result onto ErrDeviceLost,
+// keeping the original error as the cause.
+func deviceLostOr(err error) error {
+	var ve *vk.Error
+	if errors.As(err, &ve) && ve.Result == vk.VK_ERROR_DEVICE_LOST {
+		return fmt.Errorf("%w: %w", ErrDeviceLost, err)
+	}
+	return err
 }

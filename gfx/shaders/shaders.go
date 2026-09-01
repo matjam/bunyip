@@ -57,3 +57,8 @@ var (
 
 //go:embed shadow.frag.spv
 var ShadowFrag []byte
+
+//go:generate glslangValidator -V -o fxaa.frag.spv fxaa.frag
+
+//go:embed fxaa.frag.spv
+var FXAAFrag []byte

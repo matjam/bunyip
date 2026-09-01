@@ -50,7 +50,7 @@ func TestInstancingAndBlend(t *testing.T) {
 	if corner.R < 100 || corner.R != corner.G {
 		t.Errorf("corner %v: expected a lit white cube from the instanced grid", corner)
 	}
-	if n := len(g.meshes.draws); n != 50 {
+	if n := len(g.main.draws); n != 50 {
 		t.Errorf("queued %d draws, want 50", n)
 	}
 }

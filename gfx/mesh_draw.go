@@ -18,25 +18,26 @@ const (
 
 // meshPass owns the 3D pipelines, targets and per-frame uniforms.
 type meshPass struct {
-	pbrPipe    *render.Pipeline
-	blendPipe  *render.Pipeline
-	shadowPipe *render.Pipeline
-	uniforms   *render.UniformSets
-	shadow     *render.Target
-	shadowSet  vk.VkDescriptorSet
-	shadowDesc *render.DescriptorSets
-	shadowSamp vk.VkSampler
-	materials  *render.DescriptorSets
-	matSets    map[[4]*Texture]vk.VkDescriptorSet
-	flatNormal *Texture
-	black      *Texture
-	instances  instanceStream
+	pbrPipe       *render.Pipeline
+	blendPipe     *render.Pipeline
+	shadowPipe    *render.Pipeline
+	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
+	shadow        *render.Target
+	shadowSet     vk.VkDescriptorSet
+	shadowDesc    *render.DescriptorSets
+	shadowSamp    vk.VkSampler
+	materials     *render.DescriptorSets
+	matSets       map[[4]*Texture]vk.VkDescriptorSet
+	flatNormal    *Texture
+	black         *Texture
+}
 
-	draws  []meshDraw
-	camera Camera
-	light  Light
-	hasCam bool
-	points []pointLight
+const meshStages = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT
+
+var frameUniformsSize = vk.VkDeviceSize(unsafe.Sizeof(frameUniforms{}))
+
+func defaultLight() Light {
+	return Light{Direction: lin.V3(-0.5, -1, -0.3), Color: Color{1, 1, 1, 1}, Ambient: Color{0.15, 0.15, 0.18, 1}}
 }
 
 type pointLight struct {
@@ -63,10 +64,11 @@ func (g *Graphics) initMeshPass() error {
 	mp.matSets = map[[4]*Texture]vk.VkDescriptorSet{}
 	dev := g.R.Device
 	var err error
-	if mp.uniforms, err = dev.NewUniformSets(vk.VkDeviceSize(unsafe.Sizeof(frameUniforms{})),
-		vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT); err != nil {
+	layout, err := dev.NewUniformSets(frameUniformsSize, meshStages)
+	if err != nil {
 		return err
 	}
+	mp.uniformLayout = layout
 	if mp.materials, err = dev.NewSamplerDescriptors(4, 1024); err != nil {
 		return err
 	}
@@ -97,7 +99,7 @@ func (g *Graphics) initMeshPass() error {
 		ColorFormat: hdrFormat, DepthFormat: g.R.DepthFormat,
 		Bindings: bindings, Attributes: attrs,
 		CullMode: vk.VK_CULL_MODE_BACK_BIT, DepthTest: true, DepthWrite: true,
-		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniforms.Layout, mp.shadowDesc.Layout},
+		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout},
 	}
 	if mp.pbrPipe, err = dev.NewPipeline(common); err != nil {
 		return err
@@ -113,13 +115,9 @@ func (g *Graphics) initMeshPass() error {
 		Bindings: bindings, Attributes: attrs[:7], // the depth pass reads no material attributes
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
 		DepthBias: 1.5, DepthSlopeBias: 2.0,
-		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniforms.Layout},
+		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout},
 	})
-	if err != nil {
-		return err
-	}
-	mp.light = Light{Direction: lin.V3(-0.5, -1, -0.3), Color: Color{1, 1, 1, 1}, Ambient: Color{0.15, 0.15, 0.18, 1}}
-	return nil
+	return err
 }
 
 // meshVertexLayout is the per-vertex binding 0 and per-instance binding 1.
@@ -143,15 +141,15 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 }
 
 // SetCamera sets the camera for this frame's meshes.
-func (g *Graphics) SetCamera(c Camera) { g.meshes.camera, g.meshes.hasCam = c, true }
+func (g *Graphics) SetCamera(c Camera) { g.cur.camera, g.cur.hasCam = c, true }
 
 // SetLight sets the directional light, ambient term and shadow settings.
-func (g *Graphics) SetLight(l Light) { g.meshes.light = l }
+func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 
 // AddPointLight adds a point light for this frame (at most 8 are used).
 func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
-	if len(g.meshes.points) < maxPointLights {
-		g.meshes.points = append(g.meshes.points, pointLight{pos, c, rng})
+	if len(g.cur.points) < maxPointLights {
+		g.cur.points = append(g.cur.points, pointLight{pos, c, rng})
 	}
 }
 
@@ -165,7 +163,7 @@ func (g *Graphics) DrawMesh(m *Mesh, mat Material, model lin.Mat4) {
 	if mat.Roughness == 0 {
 		mat.Roughness = 0.6
 	}
-	g.meshes.draws = append(g.meshes.draws, meshDraw{mesh: m, mat: mat, model: model})
+	g.cur.draws = append(g.cur.draws, meshDraw{mesh: m, mat: mat, model: model})
 }
 
 // materialSet returns the descriptor set for a material's textures.
@@ -205,13 +203,13 @@ func (g *Graphics) forgetTexture(t *Texture) {
 }
 
 // lightMatrix fits an orthographic shadow frustum around the camera target.
-func (mp *meshPass) lightMatrix() lin.Mat4 {
-	r := mp.light.ShadowRadius
+func (q *drawQueue) lightMatrix() lin.Mat4 {
+	r := q.light.ShadowRadius
 	if r <= 0 {
 		r = 25
 	}
-	dir := mp.light.Direction.Norm()
-	center := mp.camera.Target
+	dir := q.light.Direction.Norm()
+	center := q.camera.Target
 	eye := center.Sub(dir.Mul(r * 2))
 	up := lin.V3(0, 1, 0)
 	if abs32(dir.Y) > 0.95 {
@@ -227,30 +225,30 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// writeUniforms fills the frame block for the slot.
-func (mp *meshPass) writeUniforms(slot int, aspect float32) error {
-	if !mp.hasCam {
-		mp.camera = Camera{Position: lin.V3(0, 0, 5)}
+// writeUniforms fills the queue's frame block for the slot.
+func (q *drawQueue) writeUniforms(slot int, aspect float32) error {
+	if !q.hasCam {
+		q.camera = Camera{Position: lin.V3(0, 0, 5)}
 	}
-	l := mp.light
+	l := q.light
 	strength := l.ShadowStrength
 	if strength == 0 {
 		strength = 1
 	}
 	u := frameUniforms{
-		viewProj:      mp.camera.ViewProj(aspect),
-		lightViewProj: mp.lightMatrix(),
-		camPos:        mp.camera.Position.Vec4(1),
+		viewProj:      q.camera.ViewProj(aspect),
+		lightViewProj: q.lightMatrix(),
+		camPos:        q.camera.Position.Vec4(1),
 		lightDir:      l.Direction.Norm().Vec4(0),
 		lightColor:    lin.V4(l.Color.R, l.Color.G, l.Color.B, strength),
-		ambient:       lin.V4(l.Ambient.R, l.Ambient.G, l.Ambient.B, float32(len(mp.points))),
+		ambient:       lin.V4(l.Ambient.R, l.Ambient.G, l.Ambient.B, float32(len(q.points))),
 		params:        lin.V4(shadowMapSize, boolFloat(l.Shadows), 0, 0),
 	}
-	for i, p := range mp.points {
+	for i, p := range q.points {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
 		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 1)
 	}
-	return mp.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u)))
+	return q.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u)))
 }
 
 func boolFloat(b bool) float32 {
@@ -262,18 +260,17 @@ func boolFloat(b bool) float32 {
 
 // prepareDraws resolves material sets, sorts opaque draws for instancing and
 // blended draws back to front, and uploads the instance stream.
-func (g *Graphics) prepareDraws(slot int) (opaque, blended []meshDraw, err error) {
-	mp := &g.meshes
-	view := mp.camera.viewMatrix()
-	for i := range mp.draws {
-		d := &mp.draws[i]
+func (g *Graphics) prepareDraws(q *drawQueue, slot int) (opaque, blended []meshDraw, err error) {
+	view := q.camera.viewMatrix()
+	for i := range q.draws {
+		d := &q.draws[i]
 		if d.set, err = g.materialSet(d.mat); err != nil {
 			return nil, nil, err
 		}
 		pos := d.model.MulPoint(d.mesh.Min.Add(d.mesh.Max).Mul(0.5))
 		d.depth = -view.MulPoint(pos).Z
 	}
-	slices.SortStableFunc(mp.draws, func(a, b meshDraw) int {
+	slices.SortStableFunc(q.draws, func(a, b meshDraw) int {
 		switch {
 		case a.mat.Blend != b.mat.Blend:
 			if a.mat.Blend {
@@ -301,26 +298,26 @@ func (g *Graphics) prepareDraws(slot int) (opaque, blended []meshDraw, err error
 		}
 		return 0
 	})
-	mp.instances.reset()
-	for _, d := range mp.draws {
+	q.inst.reset()
+	for _, d := range q.draws {
 		m := d.mat
-		mp.instances.add(meshInstance{
+		q.inst.add(meshInstance{
 			model:     d.model,
 			baseColor: [4]float32{m.BaseColor.R, m.BaseColor.G, m.BaseColor.B, m.BaseColor.A},
 			material:  [4]float32{orOne(m.Metallic, m.MetalRoughTexture != nil), m.Roughness, m.Emissive, boolFloat(m.NormalTexture != nil)},
 		})
 	}
-	if err := mp.instances.upload(g.R.Device, slot); err != nil {
+	if err := q.inst.upload(g.R.Device, slot); err != nil {
 		return nil, nil, err
 	}
-	split := len(mp.draws)
-	for i, d := range mp.draws {
+	split := len(q.draws)
+	for i, d := range q.draws {
 		if d.mat.Blend {
 			split = i
 			break
 		}
 	}
-	return mp.draws[:split], mp.draws[split:], nil
+	return q.draws[:split], q.draws[split:], nil
 }
 
 // orOne returns the metallic factor; with a metal-rough texture and a zero
@@ -334,10 +331,9 @@ func orOne(metallic float32, hasTexture bool) float32 {
 
 // drawRuns records draws as instanced runs of identical mesh and material.
 // first is the index of draws[0] in the instance stream.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, pipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool) {
-	mp := &g.meshes
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, q *drawQueue, pipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool) {
 	var offset vk.VkDeviceSize
-	vk.VkCmdBindVertexBuffers(cb, 1, 1, &mp.instances.buffers[mp.instances.slot].Handle, &offset)
+	vk.VkCmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &offset)
 	for i := 0; i < len(draws); {
 		run := 1
 		for i+run < len(draws) && draws[i+run].mesh == draws[i].mesh && draws[i+run].set == draws[i].set {
@@ -354,27 +350,28 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, pipe *render.Pipeline, draws 
 	}
 }
 
-// renderScene runs the shadow and lit passes into the HDR target.
-func (g *Graphics) renderScene(fr *render.Frame) error {
+// renderScene runs the shadow and lit passes of a queue into the targets'
+// HDR image.
+func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) error {
 	mp := &g.meshes
 	cb := fr.CB
-	aspect := float32(fr.Extent.Width) / float32(fr.Extent.Height)
-	if err := mp.writeUniforms(fr.Slot, aspect); err != nil {
+	aspect := float32(t.extent.Width) / float32(t.extent.Height)
+	if err := q.writeUniforms(fr.Slot, aspect); err != nil {
 		return err
 	}
-	opaque, blended, err := g.prepareDraws(fr.Slot)
+	opaque, blended, err := g.prepareDraws(q, fr.Slot)
 	if err != nil {
 		return err
 	}
-	if mp.light.Shadows {
+	if q.light.Shadows {
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow, ClearDepth: 1})
 		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.shadowPipe.Handle)
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.shadowPipe.Layout, 1, 1, &mp.uniforms.Sets[fr.Slot], 0, nil)
-		g.drawRuns(cb, mp.shadowPipe, opaque, 0, false)
+		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.shadowPipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+		g.drawRuns(cb, q, mp.shadowPipe, opaque, 0, false)
 		render.EndTargetPass(cb, mp.shadow)
 	}
-	c := g.clear.premultiplied()
-	render.BeginTargetPass(cb, render.PassDesc{Target: g.post.hdr, ClearColor: c, ClearDepth: 1})
+	c := q.clear.premultiplied()
+	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
 	for _, pass := range []struct {
 		pipe  *render.Pipeline
 		draws []meshDraw
@@ -384,23 +381,16 @@ func (g *Graphics) renderScene(fr *render.Frame) error {
 			continue
 		}
 		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Handle)
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 1, 1, &mp.uniforms.Sets[fr.Slot], 0, nil)
+		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
 		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 2, 1, &mp.shadowSet, 0, nil)
-		g.drawRuns(cb, pass.pipe, pass.draws, pass.first, true)
+		g.drawRuns(cb, q, pass.pipe, pass.draws, pass.first, true)
 	}
-	render.EndTargetPass(cb, g.post.hdr)
+	render.EndTargetPass(cb, t.hdr)
 	return nil
-}
-
-func (mp *meshPass) reset() {
-	mp.draws = mp.draws[:0]
-	mp.points = mp.points[:0]
-	mp.hasCam = false
 }
 
 func (mp *meshPass) destroy(g *Graphics) {
 	dev := g.R.Device.Handle
-	mp.instances.destroy()
 	for _, p := range []*render.Pipeline{mp.pbrPipe, mp.blendPipe, mp.shadowPipe} {
 		if p != nil {
 			p.Destroy()
@@ -424,7 +414,7 @@ func (mp *meshPass) destroy(g *Graphics) {
 	if mp.materials != nil {
 		mp.materials.Destroy()
 	}
-	if mp.uniforms != nil {
-		mp.uniforms.Destroy()
+	if mp.uniformLayout != nil {
+		mp.uniformLayout.Destroy()
 	}
 }

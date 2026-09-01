@@ -25,6 +25,8 @@ type Mesh struct {
 	IndexCount uint32
 	Min, Max   lin.Vec3 // axis-aligned bounds in mesh space
 	vbuf, ibuf *render.Buffer
+	verts      []Vertex // kept for picking
+	indices    []uint32
 }
 
 // NewMesh uploads vertices and triangle indices.
@@ -37,7 +39,7 @@ func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
 			return nil, fmt.Errorf("gfx: index %d out of range for %d vertices", i, len(verts))
 		}
 	}
-	m := &Mesh{IndexCount: uint32(len(indices)), Min: verts[0].Pos, Max: verts[0].Pos}
+	m := &Mesh{IndexCount: uint32(len(indices)), Min: verts[0].Pos, Max: verts[0].Pos, verts: verts, indices: indices}
 	for _, v := range verts[1:] {
 		m.Min = lin.V3(min(m.Min.X, v.Pos.X), min(m.Min.Y, v.Pos.Y), min(m.Min.Z, v.Pos.Z))
 		m.Max = lin.V3(max(m.Max.X, v.Pos.X), max(m.Max.Y, v.Pos.Y), max(m.Max.Z, v.Pos.Z))

@@ -15,11 +15,22 @@ type Target struct {
 // NewTarget creates a colour (and depth) target of the given formats; pass
 // VK_FORMAT_UNDEFINED to omit either image.
 func (d *Device) NewTarget(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkFormat) (*Target, error) {
+	return d.newTarget(extent, colorFormat, depthFormat, 0)
+}
+
+// NewTargetSampled is NewTarget with a colour image that can also be
+// cleared by transfer, for render textures that may be sampled before
+// their first pass.
+func (d *Device) NewTargetSampled(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkFormat) (*Target, error) {
+	return d.newTarget(extent, colorFormat, depthFormat, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+}
+
+func (d *Device) newTarget(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkFormat, extra vk.VkImageUsageFlags) (*Target, error) {
 	t := &Target{Extent: extent, dev: d}
 	var err error
 	if colorFormat != vk.VK_FORMAT_UNDEFINED {
 		t.Color, err = d.NewImage(extent, colorFormat,
-			vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|vk.VK_IMAGE_USAGE_SAMPLED_BIT, vk.VK_IMAGE_ASPECT_COLOR_BIT)
+			vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|vk.VK_IMAGE_USAGE_SAMPLED_BIT|extra, vk.VK_IMAGE_ASPECT_COLOR_BIT)
 		if err != nil {
 			return nil, err
 		}
@@ -139,6 +150,22 @@ func ClearDepthForSampling(cb vk.VkCommandBuffer, depth *Image) {
 	rng := vk.VkImageSubresourceRange{AspectMask: vk.VK_IMAGE_ASPECT_DEPTH_BIT, LevelCount: 1, LayerCount: 1}
 	vk.VkCmdClearDepthStencilImage(cb, depth.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &rng)
 	imageBarrier(cb, depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+		vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+}
+
+// ClearColorForSampling clears a colour image to black and leaves it in
+// shader-read-only layout, so it can be sampled before its first pass.
+func ClearColorForSampling(cb vk.VkCommandBuffer, img *Image) {
+	imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
+	var value vk.VkClearColorValue
+	rng := vk.VkImageSubresourceRange{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LevelCount: 1, LayerCount: 1}
+	vk.VkCmdClearColorImage(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &rng)
+	imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
 		vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)

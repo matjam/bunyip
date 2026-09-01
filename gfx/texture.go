@@ -17,6 +17,7 @@ type Texture struct {
 	sdf           bool // drawn through the distance-field pipeline
 	nearest       bool
 	repeat        bool
+	external      bool // image owned elsewhere (render textures)
 	g             *Graphics
 }
 
@@ -76,6 +77,8 @@ func (t *Texture) Destroy() {
 	_ = t.g.R.Device.WaitIdle()
 	t.g.forgetTexture(t)
 	t.g.descriptors.Free(t.set)
-	t.img.Destroy()
+	if !t.external {
+		t.img.Destroy()
+	}
 	t.img = nil
 }
