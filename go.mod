@@ -9,6 +9,7 @@ require (
 )
 
 require (
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

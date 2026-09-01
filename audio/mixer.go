@@ -11,10 +11,11 @@ import (
 
 // Mixer sums playing voices into the output stream.
 type Mixer struct {
-	mu     sync.Mutex
-	rate   int
-	voices []*Voice
-	master float32
+	mu      sync.Mutex
+	rate    int
+	voices  []*Voice
+	master  float32
+	scratch []float32
 }
 
 // NewMixer makes a mixer for the given output sample rate.
@@ -73,9 +74,18 @@ func (m *Mixer) Mix(out []float32) {
 	clear(out)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.scratch) < len(out) {
+		m.scratch = make([]float32, len(out))
+	}
 	live := m.voices[:0]
 	for _, v := range m.voices {
-		if v.mix(out, m.master) {
+		var keep bool
+		if v.stream != nil {
+			keep = v.mixStream(out, m.master, m.scratch)
+		} else {
+			keep = v.mix(out, m.master)
+		}
+		if keep {
 			live = append(live, v)
 		} else {
 			v.done = true
@@ -92,13 +102,14 @@ func (m *Mixer) Mix(out []float32) {
 
 // Voice is one playing sound.
 type Voice struct {
-	snd  *Sound
-	pos  int // frames
-	vol  float32
-	pan  float32
-	loop bool
-	done bool
-	stop bool
+	snd    *Sound
+	stream Stream
+	pos    int // frames
+	vol    float32
+	pan    float32
+	loop   bool
+	done   bool
+	stop   bool
 }
 
 // Stop ends the voice.
