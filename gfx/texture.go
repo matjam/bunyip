@@ -14,6 +14,7 @@ type Texture struct {
 	Width, Height int
 	img           *render.Image
 	set           vk.VkDescriptorSet
+	sdf           bool // drawn through the distance-field pipeline
 	g             *Graphics
 }
 

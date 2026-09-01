@@ -24,6 +24,7 @@ type gallery struct {
 	tone    *audio.Sound
 
 	font     *gfx.Font
+	big      *gfx.Font
 	ui       *ui.Context
 	dark     bool
 	check    bool
@@ -38,6 +39,9 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 16, gfx.FontOptions{}); err != nil {
 		return err
 	}
+	if g.big, err = ctx.Gfx.NewSDFFont(goregular.TTF, 32, gfx.FontOptions{AtlasSize: 1024}); err != nil {
+		return err
+	}
 	g.dark, g.volume, g.check = true, 0.65, true
 	g.ui = ui.New(ctx.Gfx, ui.DarkTheme(g.font))
 	if g.tone, err = ctx.Audio.NewSound(audio.Sine(440, 0.35, ctx.Audio.Rate())); err != nil {
@@ -49,7 +53,7 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *gallery) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
+func (g *gallery) Shutdown(ctx *bunyip.Context) { g.font.Destroy(); g.big.Destroy() }
 
 func (g *gallery) Update(ctx *bunyip.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) && !g.ui.WantsKeyboard() || (g.seconds > 0 && ctx.Time >= g.seconds) {
@@ -69,6 +73,10 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 		y := ctx.Height/2 + 150*float32(math.Sin(float64(t*0.6+float32(i)*1.3)))
 		ctx.Gfx.FillRect(x-30, y-30, 60, 60, gfx.RGBA(uint8(80+i*12), 90, uint8(200-i*10), 120))
 	}
+	// Scalable text: one SDF atlas, drawn at three sizes and a slant.
+	ctx.Gfx.DrawTextSized(g.big, "Bunyip", 380, 40, 72+8*float32(math.Sin(float64(t))), -0.08, gfx.RGB(255, 220, 120))
+	ctx.Gfx.DrawTextSized(g.big, "scalable text from one atlas", 384, 130, 22, 0, gfx.RGB(200, 200, 215))
+	ctx.Gfx.DrawTextSized(g.big, "tiny", 384, 160, 11, 0, gfx.RGB(150, 150, 170))
 	u := g.ui
 	u.Begin(ctx.Input)
 	u.Panel("Bunyip UI gallery", ui.Rect{X: 24, Y: 24, W: 320, H: 380})

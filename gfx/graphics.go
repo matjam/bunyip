@@ -19,6 +19,7 @@ type Graphics struct {
 	nearest     vk.VkSampler
 	linear      vk.VkSampler
 	spritePipe  *render.Pipeline
+	sdfPipe     *render.Pipeline
 	sprites     spriteBatch
 	meshes      meshPass
 	white       *Texture
@@ -44,6 +45,18 @@ func New(r *render.Renderer) (*Graphics, error) {
 	bindings, attrs := spriteVertexLayout()
 	g.spritePipe, err = r.Device.NewPipeline(render.PipelineDesc{
 		Vert: shaders.SpriteVert, Frag: shaders.SpriteFrag,
+		ColorFormat: r.Swapchain.Format,
+		DepthFormat: r.DepthFormat,
+		Bindings:    bindings, Attributes: attrs,
+		Blend:            true,
+		PushConstantSize: uint32(unsafe.Sizeof(lin.Mat4{})),
+		SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout},
+	})
+	if err != nil {
+		return nil, err
+	}
+	g.sdfPipe, err = r.Device.NewPipeline(render.PipelineDesc{
+		Vert: shaders.SpriteVert, Frag: shaders.SDFFrag,
 		ColorFormat: r.Swapchain.Format,
 		DepthFormat: r.DepthFormat,
 		Bindings:    bindings, Attributes: attrs,
@@ -138,13 +151,21 @@ func (g *Graphics) flushSprites(fr *render.Frame) error {
 	}
 	cb := fr.CB
 	render.SetViewport(cb, fr.Extent)
-	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, g.spritePipe.Handle)
-	vk.VkCmdPushConstants(cb, g.spritePipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-		0, uint32(unsafe.Sizeof(g.proj)), unsafe.Pointer(&g.proj))
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 0, 1, &g.sprites.buffers[fr.Slot].Handle, &offset)
+	var bound *render.Pipeline
 	for _, d := range g.sprites.draws {
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, g.spritePipe.Layout, 0, 1, &d.tex.set, 0, nil)
+		pipe := g.spritePipe
+		if d.tex.sdf {
+			pipe = g.sdfPipe
+		}
+		if pipe != bound {
+			bound = pipe
+			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+			vk.VkCmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, uint32(unsafe.Sizeof(g.proj)), unsafe.Pointer(&g.proj))
+		}
+		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &d.tex.set, 0, nil)
 		vk.VkCmdDraw(cb, 6, d.count, 0, d.first)
 	}
 	return nil
@@ -161,6 +182,9 @@ func (g *Graphics) Destroy() {
 	}
 	if g.spritePipe != nil {
 		g.spritePipe.Destroy()
+	}
+	if g.sdfPipe != nil {
+		g.sdfPipe.Destroy()
 	}
 	dev := g.R.Device.Handle
 	vk.VkDestroySampler(dev, g.nearest, nil)

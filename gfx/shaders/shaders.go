@@ -22,3 +22,8 @@ var (
 	//go:embed mesh.frag.spv
 	MeshFrag []byte
 )
+
+//go:generate glslangValidator -V -o sdf.frag.spv sdf.frag
+
+//go:embed sdf.frag.spv
+var SDFFrag []byte

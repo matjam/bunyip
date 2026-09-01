@@ -26,6 +26,7 @@ type Font struct {
 	packer     shelfPacker
 	pix        *image.RGBA
 	dirty      bool
+	sdf        bool
 	g          *Graphics
 }
 
@@ -104,6 +105,10 @@ func (f *Font) add(r rune) {
 	if _, ok := f.glyphs[r]; ok {
 		return
 	}
+	if f.sdf {
+		f.addSDF(r)
+		return
+	}
 	bounds, advance, ok := f.face.GlyphBounds(r)
 	if !ok {
 		bounds, advance, _ = f.face.GlyphBounds(0xFFFD)
@@ -155,6 +160,7 @@ func (f *Font) flush() error {
 	if err != nil {
 		return err
 	}
+	tex.sdf = f.sdf
 	f.atlas = tex
 	f.dirty = false
 	return nil
