@@ -151,10 +151,13 @@ func NewPlayer(m *Module, rate int) *Player {
 		mix = 48
 	}
 	p.gain = 2.0 / 3 * float32(mix) / 128
-	if m.Format == FormatIT {
+	switch m.Format {
+	case FormatIT:
 		// Impulse Tracker's mixing volume sits four times lower on the same
 		// scale; matched against libopenmpt renders.
 		p.gain /= 4
+	case FormatS3M:
+		p.gain *= 0.8 // likewise matched: ScreamTracker mixes about 2 dB lower
 	}
 	p.setTempo(p.tempo)
 	p.filterL.setCutoff(3200, 0.7, rate)
