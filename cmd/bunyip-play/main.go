@@ -18,18 +18,19 @@ import (
 func main() {
 	seconds := flag.Float64("seconds", 0, "stop after this many seconds (0: play to the end)")
 	volume := flag.Float64("volume", 0.8, "playback volume")
+	dump := flag.String("dump", "", "also write what is sent to the device to this WAV file")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: bunyip-play [-seconds N] file")
 		os.Exit(2)
 	}
-	if err := run(flag.Arg(0), *seconds, float32(*volume)); err != nil {
+	if err := run(flag.Arg(0), *seconds, float32(*volume), *dump); err != nil {
 		fmt.Fprintln(os.Stderr, "bunyip-play:", err)
 		os.Exit(1)
 	}
 }
 
-func run(path string, seconds float64, volume float32) error {
+func run(path string, seconds float64, volume float32, dump string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -59,7 +60,20 @@ func run(path string, seconds float64, volume float32) error {
 		fmt.Printf("%s: %d channels at %d Hz, %.1f s\n", filepath.Base(path), pcm.Channels, pcm.Rate, float64(snd.Frames())/rate)
 		voice = mixer.Play(snd, audio.PlayOptions{Volume: volume})
 	}
-	dev, err := audioout.Open(rate, mixer.Mix)
+	render := mixer.Mix
+	var tee *wavWriter
+	if dump != "" {
+		var err error
+		if tee, err = newWAVWriter(dump, rate); err != nil {
+			return err
+		}
+		defer tee.Close()
+		render = func(out []float32) {
+			mixer.Mix(out)
+			tee.Write(out)
+		}
+	}
+	dev, err := audioout.Open(rate, render)
 	if err != nil {
 		return err
 	}
