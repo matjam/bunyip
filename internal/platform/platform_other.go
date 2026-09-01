@@ -1,0 +1,27 @@
+//go:build !darwin
+
+package platform
+
+import (
+	"errors"
+
+	"github.com/matjam/bunyip/internal/vk"
+)
+
+// ErrUnsupported is returned on platforms without a window layer yet.
+var ErrUnsupported = errors.New("platform: no window layer for this operating system yet")
+
+type App struct{}
+
+type Window struct{}
+
+func NewApp() (*App, error)                                            { return nil, ErrUnsupported }
+func (a *App) Poll(wait bool) []Event                                  { return nil }
+func (a *App) NewWindow(cfg Config) (*Window, error)                   { return nil, ErrUnsupported }
+func (w *Window) Size() (int, int)                                     { return 0, 0 }
+func (w *Window) PixelSize() (int, int)                                { return 0, 0 }
+func (w *Window) Scale() float64                                       { return 1 }
+func (w *Window) Closed() bool                                         { return true }
+func (w *Window) Close()                                               {}
+func RequiredInstanceExtensions() []string                             { return nil }
+func (w *Window) CreateSurface(vk.VkInstance) (vk.VkSurfaceKHR, error) { return 0, ErrUnsupported }
