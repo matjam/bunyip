@@ -124,6 +124,7 @@ var (
 	VkCreateFence                                    func(device VkDevice, pCreateInfo *VkFenceCreateInfo, pAllocator *VkAllocationCallbacks, pFence *VkFence) VkResult
 	VkCreateFramebuffer                              func(device VkDevice, pCreateInfo *VkFramebufferCreateInfo, pAllocator *VkAllocationCallbacks, pFramebuffer *VkFramebuffer) VkResult
 	VkCreateGraphicsPipelines                        func(device VkDevice, pipelineCache VkPipelineCache, createInfoCount uint32, pCreateInfos *VkGraphicsPipelineCreateInfo, pAllocator *VkAllocationCallbacks, pPipelines *VkPipeline) VkResult
+	VkCreateHeadlessSurfaceEXT                       func(instance VkInstance, pCreateInfo *VkHeadlessSurfaceCreateInfoEXT, pAllocator *VkAllocationCallbacks, pSurface *VkSurfaceKHR) VkResult
 	VkCreateImage                                    func(device VkDevice, pCreateInfo *VkImageCreateInfo, pAllocator *VkAllocationCallbacks, pImage *VkImage) VkResult
 	VkCreateImageView                                func(device VkDevice, pCreateInfo *VkImageViewCreateInfo, pAllocator *VkAllocationCallbacks, pView *VkImageView) VkResult
 	VkCreateInstance                                 func(pCreateInfo *VkInstanceCreateInfo, pAllocator *VkAllocationCallbacks, pInstance *VkInstance) VkResult

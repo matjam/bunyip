@@ -14,6 +14,7 @@ func bindGlobalCommands(resolve func(string) uintptr) {
 func bindInstanceCommands(resolve func(string) uintptr) {
 	bind(&VkCreateDebugUtilsMessengerEXT, resolve("vkCreateDebugUtilsMessengerEXT"))
 	bind(&VkCreateDevice, resolve("vkCreateDevice"))
+	bind(&VkCreateHeadlessSurfaceEXT, resolve("vkCreateHeadlessSurfaceEXT"))
 	bind(&VkCreateMetalSurfaceEXT, resolve("vkCreateMetalSurfaceEXT"))
 	bind(&VkCreateWaylandSurfaceKHR, resolve("vkCreateWaylandSurfaceKHR"))
 	bind(&VkCreateWin32SurfaceKHR, resolve("vkCreateWin32SurfaceKHR"))

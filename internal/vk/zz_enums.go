@@ -44,6 +44,7 @@ type VkFenceImportFlags uint32
 type VkFormatFeatureFlags uint32
 type VkFormatFeatureFlags2 uint64
 type VkFramebufferCreateFlags uint32
+type VkHeadlessSurfaceCreateFlagsEXT uint32
 type VkImageAspectFlags uint32
 type VkImageCreateFlags uint32
 type VkImageUsageFlags uint32
@@ -1817,6 +1818,7 @@ const (
 	VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT                                       VkStructureType = 1000128002
 	VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT                     VkStructureType = 1000128003
 	VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT                       VkStructureType = 1000128004
+	VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT                            VkStructureType = 1000256000
 	VK_STRUCTURE_TYPE_RENDERING_INFO_KHR                                                          = VK_STRUCTURE_TYPE_RENDERING_INFO
 	VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR                                               = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO
 	VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR                                          = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO

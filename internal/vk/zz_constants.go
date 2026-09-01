@@ -66,6 +66,8 @@ const (
 	VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME                        = "VK_KHR_portability_subset"
 	VK_EXT_DEBUG_UTILS_SPEC_VERSION                                 = 2
 	VK_EXT_DEBUG_UTILS_EXTENSION_NAME                               = "VK_EXT_debug_utils"
+	VK_EXT_HEADLESS_SURFACE_SPEC_VERSION                            = 1
+	VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME                          = "VK_EXT_headless_surface"
 	VK_KHR_DYNAMIC_RENDERING_SPEC_VERSION                           = 1
 	VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME                         = "VK_KHR_dynamic_rendering"
 	VK_KHR_SYNCHRONIZATION_2_SPEC_VERSION                           = 1

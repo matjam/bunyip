@@ -991,6 +991,13 @@ type VkGraphicsPipelineCreateInfo struct {
 	BasePipelineIndex   int32
 }
 
+type VkHeadlessSurfaceCreateInfoEXT struct {
+	_     structs.HostLayout
+	SType VkStructureType
+	PNext unsafe.Pointer
+	Flags VkHeadlessSurfaceCreateFlagsEXT
+}
+
 type VkImageBlit struct {
 	_              structs.HostLayout
 	SrcSubresource VkImageSubresourceLayers
