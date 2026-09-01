@@ -182,42 +182,45 @@ func TestSongEnds(t *testing.T) {
 	}
 }
 
-// TestRealSong plays a real module from the user's Downloads when present,
+// TestRealSongs plays real modules from the user's Downloads when present,
 // which exercises the loaders and every effect a real tune uses.
-func TestRealSong(t *testing.T) {
+func TestRealSongs(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, "Downloads", "2nd_pm.s3m")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Skipf("no test song: %v", err)
-	}
-	m, err := Load(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("%q: %d channels, %d samples, %d patterns, %d orders, speed %d tempo %d",
-		m.Title, m.Channels, len(m.Samples), len(m.Patterns), len(m.Orders), m.Speed, m.Tempo)
-	p := NewPlayer(m, 48000)
-	out := make([]float32, 4800*2)
-	var peak float32
-	nonSilent := 0
-	for range 300 { // 30 seconds
-		n := p.Read(out)
-		if n == 0 {
-			break
-		}
-		for _, s := range out[:n*2] {
-			if s > peak {
-				peak = s
+	for _, name := range []string{"2nd_pm.s3m", "space_debris.mod"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(home, "Downloads", name))
+			if err != nil {
+				t.Skipf("no test song: %v", err)
 			}
-			if s > 0.01 || s < -0.01 {
-				nonSilent++
+			m, err := Load(data)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}
-	order, row := p.Position()
-	t.Logf("peak %.3f, non-silent samples %d, position %d/%d", peak, nonSilent, order, row)
-	if peak < 0.05 || nonSilent < 48000 {
-		t.Errorf("song is nearly silent: peak %.3f", peak)
+			t.Logf("%q: %d channels, %d samples, %d patterns, %d orders, speed %d tempo %d",
+				m.Title, m.Channels, len(m.Samples), len(m.Patterns), len(m.Orders), m.Speed, m.Tempo)
+			p := NewPlayer(m, 48000)
+			out := make([]float32, 4800*2)
+			var peak float32
+			nonSilent := 0
+			for range 300 { // 30 seconds
+				n := p.Read(out)
+				if n == 0 {
+					break
+				}
+				for _, s := range out[:n*2] {
+					if s > peak {
+						peak = s
+					}
+					if s > 0.01 || s < -0.01 {
+						nonSilent++
+					}
+				}
+			}
+			order, row := p.Position()
+			t.Logf("peak %.3f, non-silent samples %d, position %d/%d", peak, nonSilent, order, row)
+			if peak < 0.05 || nonSilent < 48000 {
+				t.Errorf("song is nearly silent: peak %.3f", peak)
+			}
+		})
 	}
 }
