@@ -40,7 +40,8 @@ func (a *App) handleEvent(ev objc.ID) bool {
 		return true
 	case nsEventTypeMouseMoved, nsEventTypeLeftMouseDragged, nsEventTypeRightMouseDragged, nsEventTypeOtherMouseDragged:
 		x, y := a.mousePos(w, ev)
-		a.push(Event{Kind: EventMouseMove, Window: w, X: x, Y: y, Mods: a.mods})
+		a.push(Event{Kind: EventMouseMove, Window: w, X: x, Y: y, Mods: a.mods,
+			DX: objc.Send[float64](ev, c.sel.deltaX), DY: objc.Send[float64](ev, c.sel.deltaY)})
 	case nsEventTypeLeftMouseDown, nsEventTypeRightMouseDown, nsEventTypeOtherMouseDown:
 		a.pushMouseButton(w, ev, EventMouseDown)
 	case nsEventTypeLeftMouseUp, nsEventTypeRightMouseUp, nsEventTypeOtherMouseUp:

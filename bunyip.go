@@ -81,7 +81,29 @@ type Context struct {
 	quit   bool
 	redraw bool
 	shot   string
+	win    windowControl
 }
+
+// windowControl is what the context needs from the platform window.
+type windowControl interface {
+	Fullscreen() bool
+	SetFullscreen(bool)
+	SetCursorCaptured(bool)
+	CursorCaptured() bool
+}
+
+// SetFullscreen enters or leaves full-screen mode.
+func (c *Context) SetFullscreen(on bool) { c.win.SetFullscreen(on) }
+
+// Fullscreen reports whether the window is full screen.
+func (c *Context) Fullscreen() bool { return c.win.Fullscreen() }
+
+// SetCursorCaptured hides the cursor and delivers relative motion only,
+// through Input.MouseDelta.
+func (c *Context) SetCursorCaptured(on bool) { c.win.SetCursorCaptured(on) }
+
+// CursorCaptured reports the capture state.
+func (c *Context) CursorCaptured() bool { return c.win.CursorCaptured() }
 
 // Quit ends the loop after the current callback.
 func (c *Context) Quit() { c.quit = true }

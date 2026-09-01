@@ -11,6 +11,8 @@
 // main OS thread in init, because window systems require it.
 package platform
 
+import "github.com/matjam/bunyip/input"
+
 // Config describes a window to open.
 type Config struct {
 	Title     string
@@ -37,6 +39,14 @@ const (
 	EventMouseEnter           // the pointer entered the content area
 	EventMouseLeave           // the pointer left the content area
 )
+
+// GamepadState is one controller's inputs as read this poll.
+type GamepadState struct {
+	Connected bool
+	Name      string
+	Buttons   [input.GamepadButtonCount]bool
+	Axes      [input.GamepadAxisCount]float32
+}
 
 // Event is one thing that happened to a window. Only the fields relevant to
 // Kind are set.

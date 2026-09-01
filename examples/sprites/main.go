@@ -25,14 +25,22 @@ type ball struct {
 }
 
 type game struct {
-	seconds   float64
-	shot      string
-	tex       *gfx.Texture
-	balls     []ball
-	shotTaken bool
+	seconds    float64
+	shot       string
+	fullscreen bool
+	capture    bool
+	tex        *gfx.Texture
+	balls      []ball
+	shotTaken  bool
 }
 
 func (g *game) Init(ctx *bunyip.Context) error {
+	if g.fullscreen {
+		ctx.SetFullscreen(true)
+	}
+	if g.capture {
+		ctx.SetCursorCaptured(true)
+	}
 	var err error
 	if g.tex, err = ctx.Gfx.NewTexture(discImage(48), gfx.TextureOptions{Linear: true}); err != nil {
 		return err
@@ -54,6 +62,18 @@ func (g *game) Shutdown(ctx *bunyip.Context) { g.tex.Destroy() }
 func (g *game) Update(ctx *bunyip.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
+	}
+	if ctx.Input.KeyPressed(input.KeyF) {
+		ctx.SetFullscreen(!ctx.Fullscreen())
+	}
+	if ctx.Input.KeyPressed(input.KeyC) {
+		ctx.SetCursorCaptured(!ctx.CursorCaptured())
+	}
+	if dx, dy := ctx.Input.MouseDelta(); ctx.CursorCaptured() && (dx != 0 || dy != 0) {
+		ctx.Log.Info("sprites: captured mouse", "dx", dx, "dy", dy)
+	}
+	if pad := ctx.Input.Gamepad(0); pad.Connected && (pad.Pressed(input.ButtonA) || pad.Axis(input.AxisLeftX) != 0) {
+		ctx.Log.Info("sprites: gamepad", "name", pad.Name, "leftX", pad.Axis(input.AxisLeftX), "a", pad.Down(input.ButtonA))
 	}
 	if g.shot != "" && !g.shotTaken && (g.seconds == 0 || ctx.Time >= g.seconds/2) {
 		ctx.Screenshot(g.shot)
@@ -114,9 +134,11 @@ func discImage(size int) image.Image {
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
+	fullscreen := flag.Bool("fullscreen", false, "start full screen (F toggles)")
+	capture := flag.Bool("capture", false, "start with the cursor captured (C toggles)")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot})
+		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sprites:", err)
 		os.Exit(1)

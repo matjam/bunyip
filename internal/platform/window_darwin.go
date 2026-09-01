@@ -19,6 +19,7 @@ type Window struct {
 	pixelH   int
 	scale    float64
 	closed   bool
+	captured bool
 }
 
 // NewWindow opens a window and shows it.
@@ -37,6 +38,7 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	win.Send(c.sel.setTitle, c.nsString(cfg.Title))
 	win.Send(c.sel.setRestorable, false)
 	win.Send(c.sel.setAcceptsMouseMovedEvents, true)
+	win.Send(c.sel.setCollectionBehavior, uint64(nsWindowCollectionBehaviorFullScreenPrimary))
 
 	w.view = objc.ID(c.NSView).Send(c.sel.alloc).Send(c.sel.initWithFrame, rect)
 	w.layer = objc.ID(c.CAMetalLayer).Send(c.sel.layer)
@@ -88,12 +90,47 @@ func (w *Window) Close() {
 		return
 	}
 	w.closed = true
+	w.SetCursorCaptured(false)
 	c := w.app.c
 	delete(w.app.windows, w.nsWindow)
 	w.nsWindow.Send(c.sel.setDelegate, objc.ID(0))
 	w.nsWindow.Send(c.sel.close)
 	w.delegate.Send(c.sel.release)
 }
+
+// Fullscreen reports whether the window occupies a full-screen space.
+func (w *Window) Fullscreen() bool {
+	return objc.Send[uint64](w.nsWindow, w.app.c.sel.styleMask)&nsWindowStyleMaskFullScreen != 0
+}
+
+// SetFullscreen enters or leaves macOS full-screen mode. The change is
+// animated by the system; a resize event follows when it completes.
+func (w *Window) SetFullscreen(on bool) {
+	if w.Fullscreen() != on {
+		w.nsWindow.Send(w.app.c.sel.toggleFullScreen, objc.ID(0))
+	}
+}
+
+// SetCursorCaptured hides the cursor and stops it moving, so that mouse
+// events carry only relative motion; games use it for first-person looks.
+func (w *Window) SetCursorCaptured(on bool) {
+	if w.captured == on {
+		return
+	}
+	w.captured = on
+	c := w.app.c
+	if on {
+		objc.ID(c.NSCursor).Send(c.sel.hide)
+	} else {
+		objc.ID(c.NSCursor).Send(c.sel.unhide)
+	}
+	if c.associateCursor != nil {
+		c.associateCursor(!on)
+	}
+}
+
+// CursorCaptured reports the capture state.
+func (w *Window) CursorCaptured() bool { return w.captured }
 
 // MetalLayer is the CAMetalLayer the Vulkan surface is created over.
 func (w *Window) MetalLayer() objc.ID { return w.layer }

@@ -53,6 +53,9 @@ const (
 	nsEventTypeOtherMouseDragged = 27
 	nsEventMaskAny               = ^uint64(0)
 
+	nsWindowStyleMaskFullScreen                 = 1 << 14
+	nsWindowCollectionBehaviorFullScreenPrimary = 1 << 7
+
 	nsEventModifierFlagCapsLock = 1 << 16
 	nsEventModifierFlagShift    = 1 << 17
 	nsEventModifierFlagControl  = 1 << 18
@@ -72,9 +75,17 @@ type cocoa struct {
 		setAcceptsMouseMovedEvents, setRestorable, close, contentView, backingScaleFactor, frame, bounds,
 		initWithFrame, setWantsLayer, setLayer, layer, setContentsScale, setDrawableSize,
 		eventType, keyCode, modifierFlags, isARepeat, characters, locationInWindow, buttonNumber,
-		scrollingDeltaX, scrollingDeltaY, hasPreciseScrollingDeltas, window, object objc.SEL
+		scrollingDeltaX, scrollingDeltaY, hasPreciseScrollingDeltas, window, object,
+		deltaX, deltaY, toggleFullScreen, styleMask, setCollectionBehavior, hide, unhide,
+		controllers, count, objectAtIndex, extendedGamepad, vendorName, value, isPressed,
+		leftThumbstick, rightThumbstick, xAxis, yAxis, dpad, up, down, left, right,
+		buttonA, buttonB, buttonX, buttonY, leftShoulder, rightShoulder, leftTrigger, rightTrigger,
+		leftThumbstickButton, rightThumbstickButton, buttonMenu, buttonOptions, buttonHome objc.SEL
 	}
 	defaultRunLoopMode objc.ID
+	NSCursor           objc.Class
+	GCController       objc.Class // zero when GameController.framework is unavailable
+	associateCursor    func(connected bool) int32
 }
 
 // loadCocoa opens AppKit and QuartzCore and resolves everything the window
@@ -109,6 +120,16 @@ func loadCocoa() (*cocoa, error) {
 	}
 	// The symbol is the address of an NSString* global; read the pointer it holds.
 	c.defaultRunLoopMode = **(**objc.ID)(unsafe.Pointer(&modeSym))
+	c.NSCursor = objc.GetClass("NSCursor")
+	// Optional pieces: a missing framework leaves the feature off, not the app dead.
+	if _, err := purego.Dlopen("/System/Library/Frameworks/GameController.framework/GameController", purego.RTLD_NOW|purego.RTLD_GLOBAL); err == nil {
+		c.GCController = objc.GetClass("GCController")
+	}
+	if cg, err := purego.Dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", purego.RTLD_NOW|purego.RTLD_GLOBAL); err == nil {
+		if sym, err := purego.Dlsym(cg, "CGAssociateMouseAndMouseCursorPosition"); err == nil {
+			purego.RegisterFunc(&c.associateCursor, sym)
+		}
+	}
 	s := &c.sel
 	for name, dst := range map[string]*objc.SEL{
 		"sharedApplication": &s.sharedApplication, "setActivationPolicy:": &s.setActivationPolicy,
@@ -128,6 +149,17 @@ func loadCocoa() (*cocoa, error) {
 		"characters": &s.characters, "locationInWindow": &s.locationInWindow, "buttonNumber": &s.buttonNumber,
 		"scrollingDeltaX": &s.scrollingDeltaX, "scrollingDeltaY": &s.scrollingDeltaY,
 		"hasPreciseScrollingDeltas": &s.hasPreciseScrollingDeltas, "window": &s.window, "object": &s.object,
+		"deltaX": &s.deltaX, "deltaY": &s.deltaY, "toggleFullScreen:": &s.toggleFullScreen, "styleMask": &s.styleMask,
+		"setCollectionBehavior:": &s.setCollectionBehavior, "hide": &s.hide, "unhide": &s.unhide,
+		"controllers": &s.controllers, "count": &s.count, "objectAtIndex:": &s.objectAtIndex,
+		"extendedGamepad": &s.extendedGamepad, "vendorName": &s.vendorName, "value": &s.value, "isPressed": &s.isPressed,
+		"leftThumbstick": &s.leftThumbstick, "rightThumbstick": &s.rightThumbstick, "xAxis": &s.xAxis, "yAxis": &s.yAxis,
+		"dpad": &s.dpad, "up": &s.up, "down": &s.down, "left": &s.left, "right": &s.right,
+		"buttonA": &s.buttonA, "buttonB": &s.buttonB, "buttonX": &s.buttonX, "buttonY": &s.buttonY,
+		"leftShoulder": &s.leftShoulder, "rightShoulder": &s.rightShoulder, "leftTrigger": &s.leftTrigger,
+		"rightTrigger": &s.rightTrigger, "leftThumbstickButton": &s.leftThumbstickButton,
+		"rightThumbstickButton": &s.rightThumbstickButton, "buttonMenu": &s.buttonMenu,
+		"buttonOptions": &s.buttonOptions, "buttonHome": &s.buttonHome,
 	} {
 		*dst = objc.RegisterName(name)
 	}

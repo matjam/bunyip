@@ -14,7 +14,9 @@ type State struct {
 	buttonsPressed   [MouseButtonCount]bool
 	buttonsReleased  [MouseButtonCount]bool
 	scrollX, scrollY float64
+	mouseDX, mouseDY float64
 	chars            []rune
+	gamepads         [MaxGamepads]Gamepad
 }
 
 // EndUpdate clears the per-update transients (pressed, released, scroll,
@@ -25,7 +27,12 @@ func (s *State) EndUpdate() {
 	s.buttonsPressed = [MouseButtonCount]bool{}
 	s.buttonsReleased = [MouseButtonCount]bool{}
 	s.scrollX, s.scrollY = 0, 0
+	s.mouseDX, s.mouseDY = 0, 0
 	s.chars = s.chars[:0]
+	for i := range s.gamepads {
+		s.gamepads[i].pressed = [GamepadButtonCount]bool{}
+		s.gamepads[i].released = [GamepadButtonCount]bool{}
+	}
 }
 
 // KeyDown reports whether the key is held.

@@ -65,7 +65,7 @@ func Run(cfg Config, game Game) error {
 			defer dev.Close()
 		}
 	}
-	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32)}}
+	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win}}
 	l.applySize(win)
 	if init, ok := game.(Initer); ok {
 		if err := init.Init(l.ctx); err != nil {
@@ -105,6 +105,9 @@ func (l *loop) run() error {
 		l.handleEvents(l.app.Poll(wait))
 		if l.ctx.quit || l.win.Closed() {
 			break
+		}
+		for i, g := range l.app.Gamepads() {
+			l.ctx.Input.FeedGamepad(i, g.Connected, g.Name, g.Buttons, g.Axes)
 		}
 		now := time.Now()
 		l.ctx.Time = now.Sub(start).Seconds()
@@ -190,7 +193,10 @@ func (l *loop) handleEvents(events []platform.Event) {
 		case platform.EventChar:
 			in.FeedChar(e.Rune)
 		case platform.EventMouseMove:
-			in.FeedMouseMove(e.X, e.Y)
+			in.FeedMouseDelta(e.DX, e.DY)
+			if !l.win.CursorCaptured() {
+				in.FeedMouseMove(e.X, e.Y)
+			}
 		case platform.EventMouseDown:
 			in.FeedMouseButton(e.Button, true, e.X, e.Y)
 		case platform.EventMouseUp:
