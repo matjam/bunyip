@@ -24,6 +24,10 @@ type Renderer struct {
 	resize    bool
 	inFrame   bool
 	readback  *Buffer
+	depth     *Image
+	// DepthFormat is the format of the depth attachment every frame carries;
+	// pipelines must declare it.
+	DepthFormat vk.VkFormat
 }
 
 type frame struct {
@@ -60,6 +64,10 @@ func NewRenderer(cfg Config, surfaceExts []string, makeSurface SurfaceFunc, exte
 		return nil, err
 	}
 	if r.Swapchain, err = r.Device.NewSwapchain(r.surface, extent, vsync); err != nil {
+		r.Destroy()
+		return nil, err
+	}
+	if err := r.createDepth(); err != nil {
 		r.Destroy()
 		return nil, err
 	}
@@ -108,6 +116,9 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 		if err := r.Swapchain.Recreate(r.extent); err != nil {
 			return nil, false, err
 		}
+		if err := r.createDepth(); err != nil {
+			return nil, false, err
+		}
 	}
 	d := r.Device
 	f := &r.frames[r.current]
@@ -137,8 +148,23 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
 		vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
+	imageBarrier(f.cb, r.depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, 0,
+		vk.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
 	var clearValue vk.VkClearValue
 	*clearValue.Color().Float32() = clear
+	var depthClear vk.VkClearValue
+	*depthClear.DepthStencil() = vk.VkClearDepthStencilValue{Depth: 1}
+	depthAttachment := vk.VkRenderingAttachmentInfo{
+		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		ImageView:   r.depth.View,
+		ImageLayout: vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+		StoreOp:     vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		ClearValue:  depthClear,
+	}
 	color := vk.VkRenderingAttachmentInfo{
 		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		ImageView:   r.Swapchain.Views[index],
@@ -153,6 +179,7 @@ func (r *Renderer) BeginFrame(clear [4]float32) (*Frame, bool, error) {
 		LayerCount:           1,
 		ColorAttachmentCount: 1,
 		PColorAttachments:    &color,
+		PDepthAttachment:     &depthAttachment,
 	}
 	vk.VkCmdBeginRendering(f.cb, &rendering)
 	r.inFrame = true
@@ -237,6 +264,9 @@ func (r *Renderer) Destroy() {
 		_ = r.Device.WaitIdle()
 		if r.readback != nil {
 			r.readback.Destroy()
+		}
+		if r.depth != nil {
+			r.depth.Destroy()
 		}
 		for _, f := range r.frames {
 			if f.fence != 0 {

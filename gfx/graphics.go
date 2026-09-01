@@ -20,6 +20,7 @@ type Graphics struct {
 	linear      vk.VkSampler
 	spritePipe  *render.Pipeline
 	sprites     spriteBatch
+	meshes      meshPass
 	white       *Texture
 	frame       *render.Frame
 	proj        lin.Mat4
@@ -44,6 +45,7 @@ func New(r *render.Renderer) (*Graphics, error) {
 	g.spritePipe, err = r.Device.NewPipeline(render.PipelineDesc{
 		Vert: shaders.SpriteVert, Frag: shaders.SpriteFrag,
 		ColorFormat: r.Swapchain.Format,
+		DepthFormat: r.DepthFormat,
 		Bindings:    bindings, Attributes: attrs,
 		Blend:            true,
 		PushConstantSize: uint32(unsafe.Sizeof(lin.Mat4{})),
@@ -53,6 +55,9 @@ func New(r *render.Renderer) (*Graphics, error) {
 		return nil, err
 	}
 	if g.white, err = g.newTexture(1, 1, []byte{255, 255, 255, 255}, TextureOptions{}); err != nil {
+		return nil, err
+	}
+	if err := g.initMeshPass(); err != nil {
 		return nil, err
 	}
 	ext := r.Swapchain.Extent
@@ -79,6 +84,7 @@ func (g *Graphics) Begin(clear Color) (ok bool, err error) {
 		return ok, err
 	}
 	g.sprites.reset()
+	g.meshes.reset()
 	return true, nil
 }
 
@@ -114,6 +120,9 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 	}
 	fr := g.frame
 	g.frame = nil
+	if err := g.flushMeshes(fr); err != nil {
+		return nil, err
+	}
 	if err := g.flushSprites(fr); err != nil {
 		return nil, err
 	}
@@ -146,6 +155,7 @@ func (g *Graphics) flushSprites(fr *render.Frame) error {
 func (g *Graphics) Destroy() {
 	_ = g.R.Device.WaitIdle()
 	g.sprites.destroy()
+	g.meshes.destroy()
 	if g.white != nil {
 		g.white.Destroy()
 	}

@@ -49,6 +49,9 @@ func (d *Device) NewBuffer(size vk.VkDeviceSize, usage vk.VkBufferUsageFlags, pr
 	return b, nil
 }
 
+// Dev returns the owning device.
+func (b *Buffer) Dev() *Device { return b.dev }
+
 // Write copies data into a mapped buffer at offset.
 func (b *Buffer) Write(offset int, data []byte) error {
 	if b.Mapped == nil {
@@ -95,4 +98,31 @@ func (d *Device) allocate(req vk.VkMemoryRequirements, props vk.VkMemoryProperty
 	var mem vk.VkDeviceMemory
 	err = vk.Check("vkAllocateMemory", vk.VkAllocateMemory(d.Handle, &info, nil, &mem))
 	return mem, err
+}
+
+// NewDeviceLocalBuffer uploads data into device-local memory through a
+// staging buffer, for vertex and index data that never changes.
+func (d *Device) NewDeviceLocalBuffer(data []byte, usage vk.VkBufferUsageFlags) (*Buffer, error) {
+	staging, err := d.NewBuffer(vk.VkDeviceSize(len(data)), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if err != nil {
+		return nil, err
+	}
+	defer staging.Destroy()
+	if err := staging.Write(0, data); err != nil {
+		return nil, err
+	}
+	buf, err := d.NewBuffer(vk.VkDeviceSize(len(data)), usage|vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+	if err != nil {
+		return nil, err
+	}
+	err = d.OneShot(func(cb vk.VkCommandBuffer) {
+		region := vk.VkBufferCopy{Size: vk.VkDeviceSize(len(data))}
+		vk.VkCmdCopyBuffer(cb, staging.Handle, buf.Handle, 1, &region)
+	})
+	if err != nil {
+		buf.Destroy()
+		return nil, err
+	}
+	return buf, nil
 }

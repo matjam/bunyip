@@ -21,7 +21,7 @@ func TestTriangleHeadless(t *testing.T) {
 		t.Fatalf("NewRenderer: %v", err)
 	}
 	defer r.Destroy()
-	p, err := r.Device.NewPipeline(PipelineDesc{Vert: shaders.TriangleVert, Frag: shaders.TriangleFrag, ColorFormat: r.Swapchain.Format})
+	p, err := r.Device.NewPipeline(PipelineDesc{Vert: shaders.TriangleVert, Frag: shaders.TriangleFrag, ColorFormat: r.Swapchain.Format, DepthFormat: r.DepthFormat})
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)
 	}

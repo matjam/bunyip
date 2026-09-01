@@ -12,3 +12,13 @@ var (
 	//go:embed sprite.frag.spv
 	SpriteFrag []byte
 )
+
+//go:generate glslangValidator -V -o mesh.vert.spv mesh.vert
+//go:generate glslangValidator -V -o mesh.frag.spv mesh.frag
+
+var (
+	//go:embed mesh.vert.spv
+	MeshVert []byte
+	//go:embed mesh.frag.spv
+	MeshFrag []byte
+)
