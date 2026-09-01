@@ -70,7 +70,7 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
 | `go run ./examples/gallery [-beep]` | every UI widget, theme switch, audio beep |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
-| `go run ./cmd/bunyip-play song.s3m` | plays a WAV, Ogg, MP3, MOD or S3M file |
+| `go run ./cmd/bunyip-play song.s3m` | plays a WAV, Ogg, MP3, MOD or S3M file; `-dump out.wav` records what the device received |
 
 ## Requirements
 
