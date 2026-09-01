@@ -5,28 +5,86 @@ anything else that wants 2D sprites and 3D models on the same screen.
 
 - Vulkan rendering through a generated, cgo-free binding (MoltenVK on macOS).
 - Native window, input and audio layers per platform; no SDL, no GLFW.
-- `CGO_ENABLED=0` everywhere. Native libraries are opened at runtime.
-- Immediate-mode, themeable UI.
+- `CGO_ENABLED=0` everywhere. Native libraries are opened at runtime with purego.
+- Immediate-mode, themeable UI. Font atlas text. glTF 2.0 models.
+- Two loop modes: fixed-timestep real time, or turn-based where the process
+  sleeps in the OS until input arrives.
 
-macOS is the first target; Linux and Windows follow.
+macOS is the first target; Linux and Windows follow behind the same
+`internal/platform` and `internal/audioout` interfaces.
 
-## Layout
+## Packages
 
-| Path | What |
+| Package | What |
 |---|---|
-| `internal/vk` | Generated Vulkan binding plus hand-written loader |
-| `cmd/vkgen` | Generator; run `go generate ./internal/vk` after updating `third_party/vulkan/vk.xml` |
-| `cmd/bunyip-info` | Reports the graphics stack without opening a window |
+| `bunyip` | `Run`, `Config`, `Game`, `Context`: the loop and everything a game touches |
+| `gfx` | textures, sprites, text, meshes, materials, camera, light, models |
+| `ui` | immediate-mode widgets with a `Theme` |
+| `audio` | mixer, voices, WAV and Ogg Vorbis decoding, tone synthesis |
+| `input` | key codes, modifiers, mouse buttons, per-update `State` |
+| `gltf` | glTF 2.0 loader (no GPU dependency) |
+| `lin` | vectors, matrices, quaternions |
+| `internal/vk` | generated Vulkan binding plus hand-written loader |
+| `internal/render` | Vulkan backend: device, swapchain, frames in flight, pipelines, uploads, readback |
+| `internal/platform` | per-OS window, events, surface creation |
+| `internal/audioout` | per-OS audio output |
+
+## A game
+
+```go
+type game struct{ tex *gfx.Texture }
+
+func (g *game) Init(ctx *bunyip.Context) error {
+	var err error
+	g.tex, err = ctx.Gfx.NewTexture(img, gfx.TextureOptions{})
+	return err
+}
+
+func (g *game) Update(ctx *bunyip.Context) error {
+	if ctx.Input.KeyPressed(input.KeyEscape) {
+		ctx.Quit()
+	}
+	return nil
+}
+
+func (g *game) Draw(ctx *bunyip.Context) error {
+	ctx.Gfx.DrawTexture(g.tex, 100, 100)
+	return nil
+}
+
+func main() {
+	bunyip.Run(bunyip.Config{Title: "Hello", Width: 1280, Height: 720}, &game{})
+}
+```
+
+## Examples
+
+Every example takes `-seconds N` and `-shot file.png`, so a run is
+self-verifying without anyone watching the screen.
+
+| Command | Shows |
+|---|---|
+| `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites |
+| `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
+| `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
+| `go run ./examples/gallery [-beep]` | every UI widget, theme switch, audio beep |
+| `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 
 ## Requirements
 
-macOS: the Vulkan loader and MoltenVK from Homebrew (`brew install vulkan-loader molten-vk`),
-or the LunarG Vulkan SDK. Set `BUNYIP_VULKAN_LIBRARY` to point at a specific library.
+macOS: the Vulkan loader and MoltenVK (`brew install vulkan-loader molten-vk`),
+or the LunarG Vulkan SDK. Optional: `brew install vulkan-validationlayers`
+for validation in tests and examples. Set `BUNYIP_VULKAN_LIBRARY` to point at
+a specific library.
 
 ## Developing
 
 ```
-go generate ./internal/vk
-go test ./...
-go run ./cmd/bunyip-info
+go generate ./internal/vk        # after updating third_party/vulkan/vk.xml
+go generate ./gfx/shaders ./internal/render/shaders   # needs glslangValidator
+go test ./...                    # headless GPU tests skip without a driver
+go vet ./...
 ```
+
+Renderer tests run on a headless surface, read the swapchain back and check
+pixels, so correctness never depends on a person looking at a window.
