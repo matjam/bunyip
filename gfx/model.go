@@ -12,6 +12,10 @@ type Model struct {
 	Min, Max lin.Vec3
 	meshes   []*Mesh
 	textures []*Texture
+	nodes    []gltf.Node
+	skins    []gltf.Skin
+	clips    []gltf.Animation
+	order    []int // node indices, parents before children
 }
 
 // ModelPart is one primitive placed by one node.
@@ -19,12 +23,15 @@ type ModelPart struct {
 	Mesh     *Mesh
 	Material Material
 	World    lin.Mat4
+	node     int
+	skin     int
 }
 
 // LoadModel uploads a parsed glTF document.
 func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
-	m := &Model{}
+	m := &Model{nodes: doc.Nodes, skins: doc.Skins, clips: doc.Animations}
 	m.Min, m.Max = doc.Bounds()
+	m.order = topoOrder(doc.Nodes)
 	for i, img := range doc.Images {
 		tex, err := g.NewTexture(img, TextureOptions{Linear: true, Data: doc.IsDataImage(i)})
 		if err != nil {
@@ -40,12 +47,21 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 			k := key{inst.Mesh, pi}
 			mesh, ok := uploaded[k]
 			if !ok {
-				verts := make([]Vertex, len(p.Positions))
-				for i := range verts {
-					verts[i] = Vertex{Pos: p.Positions[i], Normal: p.Normals[i], UV: p.UVs[i]}
-				}
 				var err error
-				if mesh, err = g.NewMesh(verts, p.Indices); err != nil {
+				if p.Skinned() && inst.Skin >= 0 {
+					verts := make([]SkinVertex, len(p.Positions))
+					for i := range verts {
+						verts[i] = SkinVertex{Pos: p.Positions[i], Normal: p.Normals[i], UV: p.UVs[i], Joints: p.Joints[i], Weights: p.Weights[i]}
+					}
+					mesh, err = g.NewSkinnedMesh(verts, p.Indices)
+				} else {
+					verts := make([]Vertex, len(p.Positions))
+					for i := range verts {
+						verts[i] = Vertex{Pos: p.Positions[i], Normal: p.Normals[i], UV: p.UVs[i]}
+					}
+					mesh, err = g.NewMesh(verts, p.Indices)
+				}
+				if err != nil {
 					m.Destroy()
 					return nil, err
 				}
@@ -66,7 +82,7 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 					mat.Metallic = 0 // dielectric by factor alone
 				}
 			}
-			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Material: mat, World: inst.World})
+			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})
 		}
 	}
 	return m, nil
@@ -77,6 +93,27 @@ func (m *Model) texture(i int) *Texture {
 		return nil
 	}
 	return m.textures[i]
+}
+
+// topoOrder lists nodes so that every parent precedes its children.
+func topoOrder(nodes []gltf.Node) []int {
+	order := make([]int, 0, len(nodes))
+	var visit func(int, int)
+	visit = func(i, depth int) {
+		if i < 0 || i >= len(nodes) || depth > 64 {
+			return
+		}
+		order = append(order, i)
+		for _, c := range nodes[i].Children {
+			visit(c, depth+1)
+		}
+	}
+	for i, n := range nodes {
+		if n.Parent < 0 {
+			visit(i, 0)
+		}
+	}
+	return order
 }
 
 // DrawModel queues every part of the model under a world transform.

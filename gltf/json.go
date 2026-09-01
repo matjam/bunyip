@@ -14,6 +14,31 @@ type jsonDoc struct {
 	Nodes       []jsonNode       `json:"nodes"`
 	Scenes      []jsonScene      `json:"scenes"`
 	Scene       *int             `json:"scene"`
+	Skins       []jsonSkin       `json:"skins"`
+	Animations  []jsonAnimation  `json:"animations"`
+}
+
+type jsonSkin struct {
+	Name                string `json:"name"`
+	InverseBindMatrices *int   `json:"inverseBindMatrices"`
+	Joints              []int  `json:"joints"`
+	Skeleton            *int   `json:"skeleton"`
+}
+
+type jsonAnimation struct {
+	Name     string `json:"name"`
+	Channels []struct {
+		Sampler int `json:"sampler"`
+		Target  struct {
+			Node *int   `json:"node"`
+			Path string `json:"path"`
+		} `json:"target"`
+	} `json:"channels"`
+	Samplers []struct {
+		Input         int    `json:"input"`
+		Output        int    `json:"output"`
+		Interpolation string `json:"interpolation"`
+	} `json:"samplers"`
 }
 
 type jsonBuffer struct {
@@ -85,6 +110,7 @@ type jsonPrimitive struct {
 type jsonNode struct {
 	Name        string    `json:"name"`
 	Mesh        *int      `json:"mesh"`
+	Skin        *int      `json:"skin"`
 	Children    []int     `json:"children"`
 	Matrix      []float32 `json:"matrix"`
 	Translation []float32 `json:"translation"`

@@ -21,6 +21,10 @@ type meshPass struct {
 	pbrPipe       *render.Pipeline
 	blendPipe     *render.Pipeline
 	shadowPipe    *render.Pipeline
+	skinPipe      *render.Pipeline
+	skinBlendPipe *render.Pipeline
+	skinShadow    *render.Pipeline
+	jointLayout   *render.StorageSets
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
 	shadow        *render.Target
 	shadowSet     vk.VkDescriptorSet
@@ -69,6 +73,9 @@ func (g *Graphics) initMeshPass() error {
 		return err
 	}
 	mp.uniformLayout = layout
+	if mp.jointLayout, err = dev.NewStorageSets(64, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
+		return err
+	}
 	if mp.materials, err = dev.NewSamplerDescriptors(4, 1024); err != nil {
 		return err
 	}
@@ -109,14 +116,36 @@ func (g *Graphics) initMeshPass() error {
 	if mp.blendPipe, err = dev.NewPipeline(blend); err != nil {
 		return err
 	}
-	mp.shadowPipe, err = dev.NewPipeline(render.PipelineDesc{
+	shadow := render.PipelineDesc{
 		Vert: shaders.ShadowVert, Frag: shaders.ShadowFrag,
 		NoColor: true, DepthFormat: g.r.DepthFormat,
 		Bindings: bindings, Attributes: attrs[:7], // the depth pass reads no material attributes
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
 		DepthBias: 1.5, DepthSlopeBias: 2.0,
 		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout},
-	})
+	}
+	if mp.shadowPipe, err = dev.NewPipeline(shadow); err != nil {
+		return err
+	}
+	// Skinned variants read joints and weights from binding 0 and joint
+	// matrices from a storage buffer in set 3.
+	sbind, sattrs := skinVertexLayout()
+	skinSets := []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout}
+	skin := common
+	skin.Vert, skin.Bindings, skin.Attributes, skin.SetLayouts = shaders.PBRSkinVert, sbind, sattrs, skinSets
+	if mp.skinPipe, err = dev.NewPipeline(skin); err != nil {
+		return err
+	}
+	skinBlend := blend
+	skinBlend.Vert, skinBlend.Bindings, skinBlend.Attributes, skinBlend.SetLayouts = shaders.PBRSkinVert, sbind, sattrs, skinSets
+	if mp.skinBlendPipe, err = dev.NewPipeline(skinBlend); err != nil {
+		return err
+	}
+	skinShadow := shadow
+	skinShadow.Vert, skinShadow.Bindings = shaders.ShadowSkinVert, sbind
+	skinShadow.Attributes = append(append([]vk.VkVertexInputAttributeDescription{}, sattrs[:7]...), sattrs[9:]...)
+	skinShadow.SetLayouts = skinSets
+	mp.skinShadow, err = dev.NewPipeline(skinShadow)
 	return err
 }
 
@@ -136,6 +165,7 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 		{Location: 6, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 48},
 		{Location: 7, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 64},
 		{Location: 8, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 80},
+		{Location: 9, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 96},
 	}
 	return bindings, attrs
 }
@@ -285,6 +315,11 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int) (opaque, blended []meshD
 				return 1
 			}
 			return 0
+		case a.skinned != b.skinned:
+			if a.skinned {
+				return 1
+			}
+			return -1
 		case a.set != b.set:
 			if a.set < b.set {
 				return -1
@@ -305,10 +340,17 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int) (opaque, blended []meshD
 			model:     d.model,
 			baseColor: [4]float32{m.BaseColor.R, m.BaseColor.G, m.BaseColor.B, m.BaseColor.A},
 			material:  [4]float32{orOne(m.Metallic, m.MetalRoughTexture != nil), m.Roughness, m.Emissive, boolFloat(m.NormalTexture != nil)},
+			extra:     [4]float32{float32(d.jointBase), 0, 0, 0},
 		})
 	}
 	if err := q.inst.upload(g.r.Device, slot); err != nil {
 		return nil, nil, err
+	}
+	if len(q.joints) > 0 {
+		data := unsafe.Slice((*byte)(unsafe.Pointer(&q.joints[0])), len(q.joints)*64)
+		if err := q.jointBuf.Write(slot, data); err != nil {
+			return nil, nil, err
+		}
 	}
 	split := len(q.draws)
 	for i, d := range q.draws {
@@ -330,18 +372,38 @@ func orOne(metallic float32, hasTexture bool) float32 {
 }
 
 // drawRuns records draws as instanced runs of identical mesh and material.
-// first is the index of draws[0] in the instance stream.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, q *drawQueue, pipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool) {
+// first is the index of draws[0] in the instance stream. Skinned draws use
+// the skinned variant of pipe and are never merged, since each has its own
+// joint matrices.
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, pipe, skinPipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool) {
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &offset)
+	var bound *render.Pipeline
 	for i := 0; i < len(draws); {
-		run := 1
-		for i+run < len(draws) && draws[i+run].mesh == draws[i].mesh && draws[i+run].set == draws[i].set {
-			run++
-		}
 		d := draws[i]
+		run := 1
+		if !d.skinned {
+			for i+run < len(draws) && !draws[i+run].skinned && draws[i+run].mesh == d.mesh && draws[i+run].set == d.set {
+				run++
+			}
+		}
+		p := pipe
+		if d.skinned {
+			p = skinPipe
+		}
+		if p != bound {
+			bound = p
+			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
+			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+			if withMaterials {
+				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 2, 1, &g.meshes.shadowSet, 0, nil)
+			}
+			if d.skinned {
+				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 3, 1, &q.jointBuf.Sets[fr.Slot], 0, nil)
+			}
+		}
 		if withMaterials {
-			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &d.set, 0, nil)
+			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &d.set, 0, nil)
 		}
 		vk.VkCmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &offset)
 		vk.VkCmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
@@ -365,33 +427,20 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	}
 	if q.light.Shadows {
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow, ClearDepth: 1})
-		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.shadowPipe.Handle)
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.shadowPipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
-		g.drawRuns(cb, q, mp.shadowPipe, opaque, 0, false)
+		g.drawRuns(cb, fr, q, mp.shadowPipe, mp.skinShadow, opaque, 0, false)
 		render.EndTargetPass(cb, mp.shadow)
 	}
 	c := q.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
-	for _, pass := range []struct {
-		pipe  *render.Pipeline
-		draws []meshDraw
-		first uint32
-	}{{mp.pbrPipe, opaque, 0}, {mp.blendPipe, blended, uint32(len(opaque))}} {
-		if len(pass.draws) == 0 {
-			continue
-		}
-		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Handle)
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 2, 1, &mp.shadowSet, 0, nil)
-		g.drawRuns(cb, q, pass.pipe, pass.draws, pass.first, true)
-	}
+	g.drawRuns(cb, fr, q, mp.pbrPipe, mp.skinPipe, opaque, 0, true)
+	g.drawRuns(cb, fr, q, mp.blendPipe, mp.skinBlendPipe, blended, uint32(len(opaque)), true)
 	render.EndTargetPass(cb, t.hdr)
 	return nil
 }
 
 func (mp *meshPass) destroy(g *Graphics) {
 	dev := g.r.Device.Handle
-	for _, p := range []*render.Pipeline{mp.pbrPipe, mp.blendPipe, mp.shadowPipe} {
+	for _, p := range []*render.Pipeline{mp.pbrPipe, mp.blendPipe, mp.shadowPipe, mp.skinPipe, mp.skinBlendPipe, mp.skinShadow} {
 		if p != nil {
 			p.Destroy()
 		}
@@ -416,5 +465,8 @@ func (mp *meshPass) destroy(g *Graphics) {
 	}
 	if mp.uniformLayout != nil {
 		mp.uniformLayout.Destroy()
+	}
+	if mp.jointLayout != nil {
+		mp.jointLayout.Destroy()
 	}
 }

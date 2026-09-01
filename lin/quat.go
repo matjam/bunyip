@@ -67,3 +67,25 @@ func (q Quat) Slerp(p Quat, t float32) Quat {
 func TRS(t Vec3, r Quat, s Vec3) Mat4 {
 	return Translate(t).Mul(r.Mat4()).Mul(Scale(s))
 }
+
+// QuatFromMat4 extracts the rotation of an orthonormal matrix.
+func QuatFromMat4(m Mat4) Quat {
+	m00, m11, m22 := m[0], m[5], m[10]
+	trace := m00 + m11 + m22
+	var q Quat
+	switch {
+	case trace > 0:
+		s := float32(math.Sqrt(float64(trace+1))) * 2
+		q = Quat{(m[6] - m[9]) / s, (m[8] - m[2]) / s, (m[1] - m[4]) / s, 0.25 * s}
+	case m00 > m11 && m00 > m22:
+		s := float32(math.Sqrt(float64(1+m00-m11-m22))) * 2
+		q = Quat{0.25 * s, (m[4] + m[1]) / s, (m[8] + m[2]) / s, (m[6] - m[9]) / s}
+	case m11 > m22:
+		s := float32(math.Sqrt(float64(1+m11-m00-m22))) * 2
+		q = Quat{(m[4] + m[1]) / s, 0.25 * s, (m[9] + m[6]) / s, (m[8] - m[2]) / s}
+	default:
+		s := float32(math.Sqrt(float64(1+m22-m00-m11))) * 2
+		q = Quat{(m[8] + m[2]) / s, (m[9] + m[6]) / s, 0.25 * s, (m[1] - m[4]) / s}
+	}
+	return q.Norm()
+}

@@ -43,6 +43,7 @@ func (a Vec3) Lerp(b Vec3, t float32) Vec3 { return a.Add(b.Sub(a).Mul(t)) }
 func (a Vec3) Vec4(w float32) Vec4         { return Vec4{a.X, a.Y, a.Z, w} }
 
 func (a Vec4) Add(b Vec4) Vec4    { return Vec4{a.X + b.X, a.Y + b.Y, a.Z + b.Z, a.W + b.W} }
+func (a Vec4) Sub(b Vec4) Vec4    { return Vec4{a.X - b.X, a.Y - b.Y, a.Z - b.Z, a.W - b.W} }
 func (a Vec4) Mul(s float32) Vec4 { return Vec4{a.X * s, a.Y * s, a.Z * s, a.W * s} }
 func (a Vec4) Dot(b Vec4) float32 { return a.X*b.X + a.Y*b.Y + a.Z*b.Z + a.W*b.W }
 func (a Vec4) Vec3() Vec3         { return Vec3{a.X, a.Y, a.Z} }

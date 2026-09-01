@@ -107,8 +107,155 @@ func (l *loader) build() (*Document, error) {
 		}
 		doc.Meshes = append(doc.Meshes, mesh)
 	}
+	doc.Nodes = l.nodes()
+	if doc.Skins, err = l.skins(); err != nil {
+		return nil, err
+	}
+	if doc.Animations, err = l.animations(); err != nil {
+		return nil, err
+	}
 	doc.Instances = l.instances()
 	return doc, nil
+}
+
+// nodes converts the hierarchy with parent links.
+func (l *loader) nodes() []Node {
+	out := make([]Node, len(l.j.Nodes))
+	for i, n := range l.j.Nodes {
+		node := Node{Name: n.Name, Parent: -1, Children: n.Children, Mesh: -1, Skin: -1,
+			Rotation: lin.QuatIdentity(), Scale: lin.V3(1, 1, 1)}
+		if len(n.Matrix) == 16 {
+			// Decompose a matrix node into TRS so it can be animated uniformly.
+			var m lin.Mat4
+			copy(m[:], n.Matrix)
+			node.Translation, node.Rotation, node.Scale = decompose(m)
+		} else {
+			if len(n.Translation) == 3 {
+				node.Translation = lin.V3(n.Translation[0], n.Translation[1], n.Translation[2])
+			}
+			if len(n.Rotation) == 4 {
+				node.Rotation = lin.Quat{X: n.Rotation[0], Y: n.Rotation[1], Z: n.Rotation[2], W: n.Rotation[3]}
+			}
+			if len(n.Scale) == 3 {
+				node.Scale = lin.V3(n.Scale[0], n.Scale[1], n.Scale[2])
+			}
+		}
+		if n.Mesh != nil {
+			node.Mesh = *n.Mesh
+		}
+		if n.Skin != nil {
+			node.Skin = *n.Skin
+		}
+		out[i] = node
+	}
+	for i, n := range out {
+		for _, c := range n.Children {
+			if c >= 0 && c < len(out) {
+				out[c].Parent = i
+			}
+		}
+	}
+	return out
+}
+
+func (l *loader) skins() ([]Skin, error) {
+	var skins []Skin
+	for i, s := range l.j.Skins {
+		skin := Skin{Name: s.Name, Joints: s.Joints}
+		if s.InverseBindMatrices != nil {
+			vals, n, err := l.floats(*s.InverseBindMatrices)
+			if err != nil || n != 16 {
+				return nil, fmt.Errorf("skin %d: inverse bind matrices: %v", i, err)
+			}
+			for j := 0; j+16 <= len(vals) && j/16 < len(s.Joints); j += 16 {
+				var m lin.Mat4
+				copy(m[:], vals[j:j+16])
+				skin.InverseBind = append(skin.InverseBind, m)
+			}
+		}
+		for len(skin.InverseBind) < len(skin.Joints) {
+			skin.InverseBind = append(skin.InverseBind, lin.Identity())
+		}
+		skins = append(skins, skin)
+	}
+	return skins, nil
+}
+
+func (l *loader) animations() ([]Animation, error) {
+	var anims []Animation
+	for ai, a := range l.j.Animations {
+		anim := Animation{Name: a.Name}
+		for _, ch := range a.Channels {
+			if ch.Target.Node == nil || ch.Sampler < 0 || ch.Sampler >= len(a.Samplers) {
+				continue
+			}
+			sm := a.Samplers[ch.Sampler]
+			times, n, err := l.floats(sm.Input)
+			if err != nil || n != 1 {
+				return nil, fmt.Errorf("animation %d: input: %v", ai, err)
+			}
+			vals, width, err := l.floats(sm.Output)
+			if err != nil {
+				return nil, fmt.Errorf("animation %d: output: %v", ai, err)
+			}
+			c := Channel{Node: *ch.Target.Node, Step: sm.Interpolation == "STEP"}
+			switch ch.Target.Path {
+			case "translation":
+				c.Path = PathTranslation
+			case "rotation":
+				c.Path = PathRotation
+			case "scale":
+				c.Path = PathScale
+			default:
+				continue // weights (morph targets) are not supported
+			}
+			stride := width
+			offset := 0
+			if sm.Interpolation == "CUBICSPLINE" {
+				stride, offset = width*3, width // keep the middle value of each triple
+			}
+			for i := range times {
+				base := i*stride + offset
+				if base+width > len(vals) {
+					break
+				}
+				var v lin.Vec4
+				v.X, v.Y, v.Z = vals[base], vals[base+1], vals[base+2]
+				if width == 4 {
+					v.W = vals[base+3]
+				}
+				c.Values = append(c.Values, v)
+			}
+			c.Times = times[:len(c.Values)]
+			if len(c.Times) > 0 {
+				anim.Duration = max(anim.Duration, c.Times[len(c.Times)-1])
+			}
+			anim.Channels = append(anim.Channels, c)
+		}
+		anims = append(anims, anim)
+	}
+	return anims, nil
+}
+
+// decompose splits a TRS matrix into its parts (no shear support).
+func decompose(m lin.Mat4) (t lin.Vec3, r lin.Quat, s lin.Vec3) {
+	t = lin.V3(m[12], m[13], m[14])
+	s = lin.V3(lin.V3(m[0], m[1], m[2]).Len(), lin.V3(m[4], m[5], m[6]).Len(), lin.V3(m[8], m[9], m[10]).Len())
+	var rot lin.Mat4
+	copy(rot[:], m[:])
+	for i := range 3 {
+		if s.X != 0 {
+			rot[i] /= s.X
+		}
+		if s.Y != 0 {
+			rot[4+i] /= s.Y
+		}
+		if s.Z != 0 {
+			rot[8+i] /= s.Z
+		}
+	}
+	r = lin.QuatFromMat4(rot)
+	return
 }
 
 func (l *loader) loadBuffers() error {
@@ -247,7 +394,11 @@ func (l *loader) instances() []Instance {
 		node := l.j.Nodes[n]
 		world := parent.Mul(nodeLocal(node))
 		if node.Mesh != nil && *node.Mesh >= 0 && *node.Mesh < len(l.j.Meshes) {
-			out = append(out, Instance{Name: node.Name, Mesh: *node.Mesh, World: world})
+			inst := Instance{Name: node.Name, Mesh: *node.Mesh, Node: n, Skin: -1, World: world}
+			if node.Skin != nil {
+				inst.Skin = *node.Skin
+			}
+			out = append(out, inst)
 		}
 		for _, c := range node.Children {
 			walk(c, world, depth+1)

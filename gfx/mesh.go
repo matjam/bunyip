@@ -27,10 +27,20 @@ type Mesh struct {
 	vbuf, ibuf *render.Buffer
 	verts      []Vertex // kept for picking
 	indices    []uint32
+	skinned    bool
 }
 
 // NewMesh uploads vertices and triangle indices.
 func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
+	if len(verts) == 0 {
+		return nil, fmt.Errorf("gfx: mesh needs vertices")
+	}
+	return g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&verts[0])), len(verts)*vertexSize))
+}
+
+// newMesh uploads the GPU vertex bytes (plain or skinned layout) and keeps
+// the plain vertices for picking and bounds.
+func (g *Graphics) newMesh(verts []Vertex, indices []uint32, vdata []byte) (*Mesh, error) {
 	if len(verts) == 0 || len(indices) == 0 || len(indices)%3 != 0 {
 		return nil, fmt.Errorf("gfx: mesh needs vertices and a whole number of triangles (got %d vertices, %d indices)", len(verts), len(indices))
 	}
@@ -45,7 +55,6 @@ func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
 		m.Max = lin.V3(max(m.Max.X, v.Pos.X), max(m.Max.Y, v.Pos.Y), max(m.Max.Z, v.Pos.Z))
 	}
 	var err error
-	vdata := unsafe.Slice((*byte)(unsafe.Pointer(&verts[0])), len(verts)*vertexSize)
 	if m.vbuf, err = g.r.Device.NewDeviceLocalBuffer(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
 		return nil, err
 	}
@@ -140,11 +149,13 @@ type Light struct {
 }
 
 type meshDraw struct {
-	mesh  *Mesh
-	mat   Material
-	model lin.Mat4
-	set   vk.VkDescriptorSet
-	depth float32 // view-space distance for transparency sorting
+	mesh      *Mesh
+	mat       Material
+	model     lin.Mat4
+	set       vk.VkDescriptorSet
+	depth     float32 // view-space distance for transparency sorting
+	skinned   bool
+	jointBase int // first joint matrix in the queue's joint list
 }
 
 // meshInstance is the per-instance vertex stream: see pbr.vert.
@@ -152,6 +163,7 @@ type meshInstance struct {
 	model     lin.Mat4
 	baseColor [4]float32
 	material  [4]float32
+	extra     [4]float32 // x: joint base index
 }
 
-const meshInstanceSize = 96
+const meshInstanceSize = 112

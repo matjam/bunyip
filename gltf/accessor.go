@@ -183,6 +183,22 @@ func (l *loader) primitive(p jsonPrimitive) (Primitive, error) {
 	} else {
 		prim.Normals = smoothNormals(prim.Positions, prim.Indices)
 	}
+	if jIdx, ok := p.Attributes["JOINTS_0"]; ok {
+		if wIdx, ok := p.Attributes["WEIGHTS_0"]; ok {
+			joints, jn, err := l.floats(jIdx)
+			weights, wn, err2 := l.floats(wIdx)
+			if err == nil && err2 == nil && jn == 4 && wn == 4 && len(joints) == count*4 && len(weights) == count*4 {
+				prim.Joints = make([][4]uint8, count)
+				prim.Weights = make([][4]float32, count)
+				for i := range count {
+					for k := range 4 {
+						prim.Joints[i][k] = uint8(joints[i*4+k])
+						prim.Weights[i][k] = weights[i*4+k]
+					}
+				}
+			}
+		}
+	}
 	if p.Material != nil && *p.Material >= 0 && *p.Material < len(l.j.Materials) {
 		prim.Material = *p.Material
 	}

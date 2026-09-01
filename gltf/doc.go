@@ -12,10 +12,60 @@ import (
 
 // Document is a decoded model.
 type Document struct {
-	Meshes    []Mesh
-	Materials []Material
-	Images    []image.Image
-	Instances []Instance // every mesh placement in the default scene, flattened
+	Meshes     []Mesh
+	Materials  []Material
+	Images     []image.Image
+	Instances  []Instance // every mesh placement in the default scene, flattened
+	Nodes      []Node     // the node hierarchy, for animation
+	Skins      []Skin
+	Animations []Animation
+}
+
+// Node is one node of the hierarchy with its rest-pose local transform.
+type Node struct {
+	Name        string
+	Parent      int // -1 for a root
+	Children    []int
+	Translation lin.Vec3
+	Rotation    lin.Quat
+	Scale       lin.Vec3
+	Mesh        int // -1 none
+	Skin        int // -1 none
+}
+
+// Local returns the node's rest-pose local matrix.
+func (n Node) Local() lin.Mat4 { return lin.TRS(n.Translation, n.Rotation, n.Scale) }
+
+// Skin binds joints (node indices) with their inverse bind matrices.
+type Skin struct {
+	Name        string
+	Joints      []int
+	InverseBind []lin.Mat4
+}
+
+// Animation is a named clip of node channels.
+type Animation struct {
+	Name     string
+	Duration float32
+	Channels []Channel
+}
+
+// ChannelPath says which node property a channel animates.
+type ChannelPath uint8
+
+const (
+	PathTranslation ChannelPath = iota
+	PathRotation
+	PathScale
+)
+
+// Channel is one animated node property with keyframes.
+type Channel struct {
+	Node   int
+	Path   ChannelPath
+	Times  []float32
+	Values []lin.Vec4 // xyz for translation and scale, xyzw for rotation
+	Step   bool       // STEP interpolation; otherwise linear (cubic falls back to linear)
 }
 
 // Mesh is one glTF mesh: a set of primitives drawn together.
@@ -30,8 +80,13 @@ type Primitive struct {
 	Normals   []lin.Vec3 // computed from the triangles when the file has none
 	UVs       []lin.Vec2 // zero-filled when the file has none
 	Indices   []uint32
-	Material  int // index into Document.Materials, or -1
+	Material  int        // index into Document.Materials, or -1
+	Joints    [][4]uint8 // per vertex, when skinned
+	Weights   [][4]float32
 }
+
+// Skinned reports whether the primitive carries joint weights.
+func (p *Primitive) Skinned() bool { return len(p.Joints) == len(p.Positions) && len(p.Positions) > 0 }
 
 // Material is the metallic-roughness material.
 type Material struct {
@@ -63,6 +118,8 @@ func (d *Document) IsDataImage(i int) bool {
 type Instance struct {
 	Name  string
 	Mesh  int
+	Node  int // node index, for animation
+	Skin  int // -1 when not skinned
 	World lin.Mat4
 }
 

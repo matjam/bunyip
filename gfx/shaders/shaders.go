@@ -62,3 +62,13 @@ var ShadowFrag []byte
 
 //go:embed fxaa.frag.spv
 var FXAAFrag []byte
+
+//go:generate glslangValidator -V -o pbr_skin.vert.spv pbr_skin.vert
+//go:generate glslangValidator -V -o shadow_skin.vert.spv shadow_skin.vert
+
+var (
+	//go:embed pbr_skin.vert.spv
+	PBRSkinVert []byte
+	//go:embed shadow_skin.vert.spv
+	ShadowSkinVert []byte
+)

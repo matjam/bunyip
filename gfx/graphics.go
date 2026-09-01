@@ -14,7 +14,7 @@ import (
 // Graphics is the drawing context for one window. Begin opens a frame,
 // the Draw* calls queue work, and End submits it.
 type Graphics struct {
-	r *render.Renderer
+	r           *render.Renderer
 	descriptors *render.DescriptorSets
 	nearest     vk.VkSampler
 	linear      vk.VkSampler

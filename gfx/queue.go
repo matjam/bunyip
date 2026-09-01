@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"github.com/matjam/bunyip/internal/render"
+	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -16,6 +17,8 @@ type drawQueue struct {
 	points     []pointLight
 	uniforms   *render.UniformSets
 	inst       instanceStream
+	joints     []lin.Mat4 // joint matrices for skinned draws this frame
+	jointBuf   *render.StorageSets
 	clear      Color
 	viewW      float32
 	viewH      float32
@@ -30,6 +33,7 @@ func (q *drawQueue) reset() {
 	q.sprites.reset()
 	q.draws = q.draws[:0]
 	q.points = q.points[:0]
+	q.joints = q.joints[:0]
 	q.hasCam = false
 	q.hasCam2D = false
 	q.spriteProj = q.proj
@@ -43,12 +47,20 @@ func (q *drawQueue) destroy() {
 		q.uniforms.Destroy()
 		q.uniforms = nil
 	}
+	if q.jointBuf != nil {
+		q.jointBuf.Destroy()
+		q.jointBuf = nil
+	}
 }
 
 func (g *Graphics) newQueue(w, h float32) (*drawQueue, error) {
 	q := &drawQueue{light: defaultLight()}
 	var err error
 	if q.uniforms, err = g.r.Device.NewUniformSets(frameUniformsSize, meshStages); err != nil {
+		return nil, err
+	}
+	if q.jointBuf, err = g.r.Device.NewStorageSets(64*128, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
+		q.destroy()
 		return nil, err
 	}
 	q.setView(w, h)
