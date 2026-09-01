@@ -25,8 +25,8 @@ type ModelPart struct {
 func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 	m := &Model{}
 	m.Min, m.Max = doc.Bounds()
-	for _, img := range doc.Images {
-		tex, err := g.NewTexture(img, TextureOptions{Linear: true})
+	for i, img := range doc.Images {
+		tex, err := g.NewTexture(img, TextureOptions{Linear: true, Data: doc.IsDataImage(i)})
 		if err != nil {
 			m.Destroy()
 			return nil, err
@@ -52,18 +52,31 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				uploaded[k] = mesh
 				m.meshes = append(m.meshes, mesh)
 			}
-			mat := Material{BaseColor: White}
+			mat := Material{BaseColor: White, Roughness: 0.6}
 			if p.Material >= 0 {
 				src := doc.Materials[p.Material]
 				mat.BaseColor = Color{src.BaseColor[0], src.BaseColor[1], src.BaseColor[2], src.BaseColor[3]}
-				if src.Image >= 0 && src.Image < len(m.textures) {
-					mat.Texture = m.textures[src.Image]
+				mat.Metallic, mat.Roughness = src.Metallic, max(src.Roughness, 0.04)
+				mat.Texture = m.texture(src.Image)
+				mat.MetalRoughTexture = m.texture(src.MetalRoughImage)
+				mat.NormalTexture = m.texture(src.NormalImage)
+				mat.EmissiveTexture = m.texture(src.EmissiveImage)
+				mat.Emissive = max(src.Emissive[0], src.Emissive[1], src.Emissive[2])
+				if mat.MetalRoughTexture == nil && mat.Metallic == 0 {
+					mat.Metallic = 0 // dielectric by factor alone
 				}
 			}
 			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Material: mat, World: inst.World})
 		}
 	}
 	return m, nil
+}
+
+func (m *Model) texture(i int) *Texture {
+	if i < 0 || i >= len(m.textures) {
+		return nil
+	}
+	return m.textures[i]
 }
 
 // DrawModel queues every part of the model under a world transform.

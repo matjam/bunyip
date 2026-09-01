@@ -192,26 +192,48 @@ func (l *loader) loadImages() ([]image.Image, error) {
 func (l *loader) materials() []Material {
 	mats := make([]Material, 0, len(l.j.Materials))
 	for _, m := range l.j.Materials {
-		mat := Material{Name: m.Name, BaseColor: [4]float32{1, 1, 1, 1}, Image: -1}
+		mat := Material{Name: m.Name, BaseColor: [4]float32{1, 1, 1, 1}, Image: -1, Metallic: 1, Roughness: 1,
+			MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1}
 		if m.PBR != nil {
 			if len(m.PBR.BaseColorFactor) == 4 {
 				copy(mat.BaseColor[:], m.PBR.BaseColorFactor)
 			}
-			if t := m.PBR.BaseColorTexture; t != nil && t.Index >= 0 && t.Index < len(l.j.Textures) {
-				tex := l.j.Textures[t.Index]
-				if tex.Source != nil && *tex.Source >= 0 && *tex.Source < len(l.j.Images) {
-					mat.Image = *tex.Source
-				}
-				if tex.Sampler != nil && *tex.Sampler >= 0 && *tex.Sampler < len(l.j.Samplers) {
-					mat.Linear = l.j.Samplers[*tex.Sampler].MagFilter != 9728 // NEAREST
-				} else {
-					mat.Linear = true
-				}
+			if m.PBR.MetallicFactor != nil {
+				mat.Metallic = *m.PBR.MetallicFactor
 			}
+			if m.PBR.RoughnessFactor != nil {
+				mat.Roughness = *m.PBR.RoughnessFactor
+			}
+			mat.Image, mat.Linear = l.imageOf(m.PBR.BaseColorTexture)
+			mat.MetalRoughImage, _ = l.imageOf(m.PBR.MetallicRoughnessTexture)
+		}
+		mat.NormalImage, _ = l.imageOf(m.NormalTexture)
+		mat.EmissiveImage, _ = l.imageOf(m.EmissiveTexture)
+		if len(m.EmissiveFactor) == 3 {
+			copy(mat.Emissive[:], m.EmissiveFactor)
+		} else if mat.EmissiveImage >= 0 {
+			mat.Emissive = [3]float32{1, 1, 1}
 		}
 		mats = append(mats, mat)
 	}
 	return mats
+}
+
+// imageOf resolves a texture reference to an image index and filtering.
+func (l *loader) imageOf(ref *jsonTextureRef) (image int, linear bool) {
+	if ref == nil || ref.Index < 0 || ref.Index >= len(l.j.Textures) {
+		return -1, false
+	}
+	tex := l.j.Textures[ref.Index]
+	image = -1
+	if tex.Source != nil && *tex.Source >= 0 && *tex.Source < len(l.j.Images) {
+		image = *tex.Source
+	}
+	linear = true
+	if tex.Sampler != nil && *tex.Sampler >= 0 && *tex.Sampler < len(l.j.Samplers) {
+		linear = l.j.Samplers[*tex.Sampler].MagFilter != 9728 // NEAREST
+	}
+	return image, linear
 }
 
 // instances walks the default scene and flattens node transforms.

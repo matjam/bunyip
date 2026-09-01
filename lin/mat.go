@@ -81,7 +81,7 @@ func Ortho(left, right, bottom, top, near, far float32) Mat4 {
 	var m Mat4
 	m[0] = 2 / (right - left)
 	m[5] = 2 / (top - bottom)
-	m[10] = 1 / (far - near)
+	m[10] = -1 / (far - near) // right-handed view: points in front have negative z
 	m[12] = -(right + left) / (right - left)
 	m[13] = -(top + bottom) / (top - bottom)
 	m[14] = -near / (far - near)

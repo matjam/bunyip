@@ -111,7 +111,9 @@ func (v *viewer) Draw(ctx *bunyip.Context) error {
 		v.distance*float32(math.Sin(float64(v.pitch))),
 		v.distance*float32(math.Cos(float64(v.pitch))*math.Cos(float64(v.yaw)))))
 	g.SetCamera(gfx.Camera{Position: eye, Target: v.center})
-	g.SetLight(gfx.Light{Direction: lin.V3(-0.4, -1, -0.6), Color: gfx.Color{R: 1, G: 0.97, B: 0.9, A: 1}, Ambient: gfx.Color{R: 0.18, G: 0.2, B: 0.25, A: 1}})
+	g.SetLight(gfx.Light{Direction: lin.V3(-0.4, -1, -0.6), Color: gfx.Color{R: 2.2, G: 2.1, B: 1.9, A: 1},
+		Ambient: gfx.Color{R: 0.18, G: 0.2, B: 0.25, A: 1}, Shadows: true, ShadowRadius: 12})
+	g.AddPointLight(lin.V3(4*float32(math.Sin(float64(ctx.Time))), 1.5, 4*float32(math.Cos(float64(ctx.Time)))), gfx.Color{R: 4, G: 1.5, B: 0.5, A: 1}, 8)
 	if v.model != nil {
 		g.DrawModel(v.model, lin.Identity())
 	} else {
@@ -124,14 +126,17 @@ func (v *viewer) Draw(ctx *bunyip.Context) error {
 }
 
 func (v *viewer) drawScene(g *gfx.Graphics, t float32) {
-	g.DrawMesh(v.cube, gfx.Material{Texture: v.checker}, lin.Translate(lin.V3(0, -1, 0)).Mul(lin.Scale(lin.V3(10, 0.2, 10))))
-	g.DrawMesh(v.sphere, gfx.Material{BaseColor: gfx.RGB(220, 60, 60)}, lin.Translate(lin.V3(0, 0.6, 0)).Mul(lin.Scale(lin.V3(1.5, 1.5, 1.5))))
+	g.DrawMesh(v.cube, gfx.Material{Texture: v.checker, Roughness: 0.8}, lin.Translate(lin.V3(0, -1, 0)).Mul(lin.Scale(lin.V3(10, 0.2, 10))))
+	// A polished metal sphere, a rough dielectric one, and an emissive cube that blooms.
+	g.DrawMesh(v.sphere, gfx.Material{BaseColor: gfx.RGB(230, 200, 120), Metallic: 1, Roughness: 0.15}, lin.Translate(lin.V3(0, 0.6, 0)).Mul(lin.Scale(lin.V3(1.5, 1.5, 1.5))))
+	g.DrawMesh(v.sphere, gfx.Material{BaseColor: gfx.RGB(220, 60, 60), Roughness: 0.7}, lin.Translate(lin.V3(-3, 0, 2)).Mul(lin.Scale(lin.V3(0.9, 0.9, 0.9))))
+	g.DrawMesh(v.cube, gfx.Material{BaseColor: gfx.RGB(120, 200, 255), Emissive: 3}, lin.Translate(lin.V3(3, 0, 2)).Mul(lin.Scale(lin.V3(0.8, 0.8, 0.8))))
 	for i := range 6 {
 		a := float32(i)*math.Pi/3 + t*0.5
-		pos := lin.V3(3.5*float32(math.Cos(float64(a))), 0, 3.5*float32(math.Sin(float64(a))))
+		pos := lin.V3(3.5*float32(math.Cos(float64(a))), 0.5+0.5*float32(math.Sin(float64(t+float32(i)))), 3.5*float32(math.Sin(float64(a))))
 		rot := lin.AxisAngle(lin.V3(0, 1, 0), a).Mul(lin.AxisAngle(lin.V3(1, 0, 0), t))
 		shade := uint8(90 + 25*i)
-		g.DrawMesh(v.cube, gfx.Material{BaseColor: gfx.RGB(shade, 255-shade, 200)}, lin.TRS(pos, rot, lin.V3(1, 1, 1)))
+		g.DrawMesh(v.cube, gfx.Material{BaseColor: gfx.RGB(shade, 255-shade, 200), Metallic: float32(i) / 5, Roughness: 0.3 + 0.1*float32(i)}, lin.TRS(pos, rot, lin.V3(0.7, 0.7, 0.7)))
 	}
 }
 

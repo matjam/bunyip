@@ -19,6 +19,16 @@ func (d *Device) NewTextureDescriptors(capacity uint32) (*DescriptorSets, error)
 // NewSamplerDescriptors creates a layout with bindings combined image
 // samplers and a pool for capacity sets.
 func (d *Device) NewSamplerDescriptors(bindings int, capacity uint32) (*DescriptorSets, error) {
+	return d.newSamplerDescriptors(bindings, capacity, 0)
+}
+
+// NewImmutableSamplerDescriptors is NewSamplerDescriptors with the sampler
+// baked into the layout, which MoltenVK requires for comparison samplers.
+func (d *Device) NewImmutableSamplerDescriptors(bindings int, capacity uint32, sampler vk.VkSampler) (*DescriptorSets, error) {
+	return d.newSamplerDescriptors(bindings, capacity, sampler)
+}
+
+func (d *Device) newSamplerDescriptors(bindings int, capacity uint32, immutable vk.VkSampler) (*DescriptorSets, error) {
 	ds := &DescriptorSets{dev: d, Bindings: bindings}
 	layoutBindings := make([]vk.VkDescriptorSetLayoutBinding, bindings)
 	for i := range layoutBindings {
@@ -27,6 +37,9 @@ func (d *Device) NewSamplerDescriptors(bindings int, capacity uint32) (*Descript
 			DescriptorType:  vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			DescriptorCount: 1,
 			StageFlags:      vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+		}
+		if immutable != 0 {
+			layoutBindings[i].PImmutableSamplers = &immutable
 		}
 	}
 	layoutInfo := vk.VkDescriptorSetLayoutCreateInfo{SType: vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, BindingCount: uint32(bindings), PBindings: &layoutBindings[0]}

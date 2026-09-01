@@ -52,3 +52,8 @@ var (
 	//go:embed blur.frag.spv
 	BlurFrag []byte
 )
+
+//go:generate glslangValidator -V -o shadow.frag.spv shadow.frag
+
+//go:embed shadow.frag.spv
+var ShadowFrag []byte

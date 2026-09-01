@@ -61,6 +61,9 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		return nil, err
 	}
 	defer vk.VkDestroyShaderModule(d.Handle, frag, nil)
+	if desc.FrontFace == 0 {
+		desc.FrontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE
+	}
 
 	p := &Pipeline{dev: d}
 	entry, keep := vk.CString("main")

@@ -33,12 +33,30 @@ type Primitive struct {
 	Material  int // index into Document.Materials, or -1
 }
 
-// Material is the subset of the PBR material the renderer uses.
+// Material is the metallic-roughness material.
 type Material struct {
 	Name      string
 	BaseColor [4]float32 // linear RGBA factor
-	Image     int        // index into Document.Images, or -1
+	Image     int        // albedo image index into Document.Images, or -1
 	Linear    bool       // sampler asks for linear filtering
+
+	Metallic        float32 // factor; default 1
+	Roughness       float32 // factor; default 1
+	MetalRoughImage int     // G roughness, B metallic; -1 none
+	NormalImage     int     // -1 none
+	EmissiveImage   int     // -1 none
+	Emissive        [3]float32
+}
+
+// IsDataImage reports whether an image holds non-colour data (metallic-
+// roughness or normals) and must not be decoded as sRGB.
+func (d *Document) IsDataImage(i int) bool {
+	for _, m := range d.Materials {
+		if m.MetalRoughImage == i || m.NormalImage == i {
+			return true
+		}
+	}
+	return false
 }
 
 // Instance places a mesh in the world.

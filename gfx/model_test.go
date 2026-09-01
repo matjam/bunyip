@@ -49,7 +49,8 @@ func TestLoadModel(t *testing.T) {
 			continue
 		}
 		g.SetCamera(Camera{Position: lin.V3(0, 0, 2)})
-		g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: White, Ambient: Color{0.2, 0.2, 0.2, 1}})
+		// Physically based diffuse is albedo/pi, so light the quad with pi worth of radiance.
+		g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: Color{3.2, 3.2, 3.2, 1}, Ambient: Color{0.2, 0.2, 0.2, 1}})
 		g.DrawModel(model, lin.Identity())
 		img, err := g.End(true)
 		if err != nil {

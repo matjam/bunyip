@@ -52,14 +52,22 @@ type jsonSampler struct {
 	MagFilter int `json:"magFilter"`
 }
 
+type jsonTextureRef struct {
+	Index int `json:"index"`
+}
+
 type jsonMaterial struct {
 	Name string `json:"name"`
 	PBR  *struct {
-		BaseColorFactor  []float32 `json:"baseColorFactor"`
-		BaseColorTexture *struct {
-			Index int `json:"index"`
-		} `json:"baseColorTexture"`
+		BaseColorFactor          []float32       `json:"baseColorFactor"`
+		BaseColorTexture         *jsonTextureRef `json:"baseColorTexture"`
+		MetallicFactor           *float32        `json:"metallicFactor"`
+		RoughnessFactor          *float32        `json:"roughnessFactor"`
+		MetallicRoughnessTexture *jsonTextureRef `json:"metallicRoughnessTexture"`
 	} `json:"pbrMetallicRoughness"`
+	NormalTexture   *jsonTextureRef `json:"normalTexture"`
+	EmissiveTexture *jsonTextureRef `json:"emissiveTexture"`
+	EmissiveFactor  []float32       `json:"emissiveFactor"`
 }
 
 type jsonMesh struct {

@@ -63,11 +63,19 @@ func (m *Mesh) Destroy() {
 	}
 }
 
-// Material is how a mesh is shaded: an albedo texture (nil for plain
-// white) tinted by BaseColor.
+// Material is how a mesh is shaded, in the metallic-roughness model. Every
+// texture is optional: nil albedo is white, nil metal-rough is the factors
+// alone, nil normal map is the geometric normal, nil emissive is black.
 type Material struct {
-	Texture   *Texture
-	BaseColor Color
+	Texture   *Texture // albedo, sRGB
+	BaseColor Color    // multiplies the albedo; zero means white
+	Metallic  float32  // 0 dielectric .. 1 metal; with a texture, a factor (0 means 1)
+	Roughness float32  // 0.04 .. 1; zero means 0.6
+
+	MetalRoughTexture *Texture // glTF layout: G roughness, B metallic; data, not colour
+	NormalTexture     *Texture // tangent-space normal map; data, not colour
+	EmissiveTexture   *Texture // sRGB, scaled by Emissive
+	Emissive          float32
 }
 
 // Camera is a perspective camera looking from Position at Target.
@@ -98,26 +106,15 @@ func (c Camera) ViewProj(aspect float32) lin.Mat4 {
 	return lin.Perspective(fov, aspect, near, far).Mul(lin.LookAt(c.Position, c.Target, up))
 }
 
-// Light is one directional light plus ambient.
+// Light is the directional light plus ambient, with optional shadows.
 type Light struct {
 	Direction lin.Vec3 // direction the light travels
 	Color     Color
 	Ambient   Color
-}
 
-// frameUniforms mirrors the Frame block in mesh.vert (std140).
-type frameUniforms struct {
-	viewProj   lin.Mat4
-	camPos     lin.Vec4
-	lightDir   lin.Vec4
-	lightColor lin.Vec4
-	ambient    lin.Vec4
-}
-
-// meshPush mirrors the PC block in mesh.vert.
-type meshPush struct {
-	model     lin.Mat4
-	baseColor [4]float32
+	Shadows        bool    // render a shadow map for the directional light
+	ShadowRadius   float32 // half-size of the shadowed area around the camera target; default 25
+	ShadowStrength float32 // 0..1 how dark shadows are; zero means 1
 }
 
 type meshDraw struct {

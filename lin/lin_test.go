@@ -47,6 +47,17 @@ func TestOrthoTopLeft(t *testing.T) {
 	}
 }
 
+func TestOrthoDepth(t *testing.T) {
+	// A right-handed view looks down -Z: the near plane maps to 0, far to 1.
+	m := Ortho(-1, 1, -1, 1, 2, 10)
+	if z := m.MulPoint(V3(0, 0, -2)).Z; math.Abs(float64(z)) > 1e-5 {
+		t.Errorf("near plane -> %v, want 0", z)
+	}
+	if z := m.MulPoint(V3(0, 0, -10)).Z; math.Abs(float64(z-1)) > 1e-5 {
+		t.Errorf("far plane -> %v, want 1", z)
+	}
+}
+
 func TestPerspectiveDepth(t *testing.T) {
 	p := Perspective(Radians(60), 4.0/3, 0.1, 100)
 	nearPt := p.MulVec4(V4(0, 0, -0.1, 1))

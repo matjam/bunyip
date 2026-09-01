@@ -22,6 +22,7 @@ type Graphics struct {
 	sdfPipe     *render.Pipeline
 	sprites     spriteBatch
 	meshes      meshPass
+	post        postPass
 	white       *Texture
 	frame       *render.Frame
 	proj        lin.Mat4
@@ -72,6 +73,9 @@ func New(r *render.Renderer) (*Graphics, error) {
 		return nil, err
 	}
 	if err := g.initMeshPass(); err != nil {
+		return nil, err
+	}
+	if err := g.initPost(); err != nil {
 		return nil, err
 	}
 	ext := r.Swapchain.Extent
@@ -134,9 +138,18 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 	}
 	fr := g.frame
 	g.frame = nil
-	g.R.BeginSwapchainPass(fr, g.clear.premultiplied())
-	if err := g.flushMeshes(fr); err != nil {
-		return nil, err
+	if len(g.meshes.draws) > 0 {
+		if err := g.renderScene(fr); err != nil {
+			return nil, err
+		}
+		bloom := g.post.settings.Bloom > 0
+		if bloom {
+			g.renderBloom(fr)
+		}
+		g.R.BeginSwapchainPass(fr, g.clear.premultiplied())
+		g.composite(fr, bloom)
+	} else {
+		g.R.BeginSwapchainPass(fr, g.clear.premultiplied())
 	}
 	if err := g.flushSprites(fr); err != nil {
 		return nil, err
@@ -177,7 +190,8 @@ func (g *Graphics) flushSprites(fr *render.Frame) error {
 func (g *Graphics) Destroy() {
 	_ = g.R.Device.WaitIdle()
 	g.sprites.destroy()
-	g.meshes.destroy()
+	g.post.destroy(g)
+	g.meshes.destroy(g)
 	if g.white != nil {
 		g.white.Destroy()
 	}

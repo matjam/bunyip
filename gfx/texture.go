@@ -15,6 +15,7 @@ type Texture struct {
 	img           *render.Image
 	set           vk.VkDescriptorSet
 	sdf           bool // drawn through the distance-field pipeline
+	nearest       bool
 	g             *Graphics
 }
 
@@ -60,7 +61,7 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		img.Destroy()
 		return nil, err
 	}
-	return &Texture{Width: w, Height: h, img: img, set: set, g: g}, nil
+	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, g: g}, nil
 }
 
 // Destroy frees the texture. It must not be in use by a frame in flight.
@@ -69,6 +70,7 @@ func (t *Texture) Destroy() {
 		return
 	}
 	_ = t.g.R.Device.WaitIdle()
+	t.g.forgetTexture(t)
 	t.g.descriptors.Free(t.set)
 	t.img.Destroy()
 	t.img = nil

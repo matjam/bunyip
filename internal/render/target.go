@@ -26,7 +26,7 @@ func (d *Device) NewTarget(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkF
 	}
 	if depthFormat != vk.VK_FORMAT_UNDEFINED {
 		t.Depth, err = d.NewImage(extent, depthFormat,
-			vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|vk.VK_IMAGE_USAGE_SAMPLED_BIT, vk.VK_IMAGE_ASPECT_DEPTH_BIT)
+			vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|vk.VK_IMAGE_USAGE_SAMPLED_BIT|vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT, vk.VK_IMAGE_ASPECT_DEPTH_BIT)
 		if err != nil {
 			t.Destroy()
 			return nil, err
@@ -125,4 +125,21 @@ func EndTargetPass(cb vk.VkCommandBuffer, t *Target) {
 			vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 	}
+}
+
+// ClearDepthForSampling clears a depth image to 1 (nothing occluded) and
+// leaves it in shader-read-only layout, for shadow maps that are bound
+// before any shadow pass has run.
+func ClearDepthForSampling(cb vk.VkCommandBuffer, depth *Image) {
+	imageBarrier(cb, depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
+	value := vk.VkClearDepthStencilValue{Depth: 1}
+	rng := vk.VkImageSubresourceRange{AspectMask: vk.VK_IMAGE_ASPECT_DEPTH_BIT, LevelCount: 1, LayerCount: 1}
+	vk.VkCmdClearDepthStencilImage(cb, depth.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &rng)
+	imageBarrier(cb, depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+		vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 }
