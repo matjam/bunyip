@@ -18,7 +18,7 @@ func LoadS3M(data []byte) (*Module, error) {
 	ffi := le.Uint16(data[42:]) // 1 signed samples, 2 unsigned
 	m := &Module{
 		Title:        strings.TrimRight(string(data[:28]), "\x00 "),
-		GlobalVolume: min(int(data[48]), 64),
+		GlobalVolume: min(int(data[48]), 64) * 2,
 		Speed:        int(data[49]),
 		Tempo:        int(data[50]),
 		Format:       FormatS3M,
@@ -30,6 +30,7 @@ func LoadS3M(data []byte) (*Module, error) {
 		m.Tempo = 125
 	}
 	stereo := data[51]&0x80 != 0
+	m.MixVolume = int(data[51] & 0x7F)
 	defaultPan := data[53] == 252
 	off := 96 + ordNum + insNum*2 + patNum*2
 	if off > len(data) {
@@ -99,10 +100,10 @@ func LoadS3M(data []byte) (*Module, error) {
 
 func loadS3MInstrument(data []byte, p int, ffi uint16) (Sample, error) {
 	if p == 0 || p+80 > len(data) {
-		return Sample{Volume: 64, C4Speed: 8363}, nil // empty slot
+		return Sample{Volume: 64, GlobalVolume: 64, C4Speed: 8363}, nil // empty slot
 	}
 	h := data[p : p+80]
-	s := Sample{Name: strings.TrimRight(string(h[48:76]), "\x00 "), Volume: min(int(h[28]), 64)}
+	s := Sample{Name: strings.TrimRight(string(h[48:76]), "\x00 "), Volume: min(int(h[28]), 64), GlobalVolume: 64}
 	le := binary.LittleEndian
 	s.C4Speed = int(le.Uint32(h[32:]))
 	if h[0] != 1 { // not a sample instrument
@@ -143,6 +144,7 @@ func loadS3MInstrument(data []byte, p int, ffi uint16) (Sample, error) {
 	if flags&1 != 0 && loopEnd > loopBegin {
 		s.LoopStart = min(loopBegin, length)
 		s.LoopEnd = min(loopEnd, length)
+		s.Loop = LoopForward
 	}
 	return s, nil
 }
@@ -152,7 +154,7 @@ func loadS3MPattern(data []byte, p int, channels int, slotToChannel map[int]int)
 	for r := range pat.Rows {
 		cells := make([]Cell, channels)
 		for c := range cells {
-			cells[c] = Cell{Note: -1, Volume: -1}
+			cells[c] = Cell{Note: NoteNone}
 		}
 		pat.Rows[r] = cells
 	}
@@ -172,8 +174,7 @@ func loadS3MPattern(data []byte, p int, channels int, slotToChannel map[int]int)
 			row++
 			continue
 		}
-		var cell Cell
-		cell.Note, cell.Volume = -1, -1
+		cell := Cell{Note: NoteNone}
 		if b&0x20 != 0 {
 			if off+2 > end {
 				break
@@ -193,7 +194,7 @@ func loadS3MPattern(data []byte, p int, channels int, slotToChannel map[int]int)
 			if off+1 > end {
 				break
 			}
-			cell.Volume = min(int(data[off]), 64)
+			cell.VolCmd, cell.VolParam = volSet, min(int(data[off]), 64)
 			off++
 		}
 		if b&0x80 != 0 {

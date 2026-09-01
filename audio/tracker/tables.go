@@ -19,12 +19,14 @@ func waveform(kind int, pos int) int {
 	pos &= 63
 	switch kind & 3 {
 	case 1: // ramp down
-		return 255 - (pos&63)*8
+		return 255 - pos*8
 	case 2: // square
 		if pos < 32 {
 			return 255
 		}
 		return -255
+	case 3: // random
+		return int(pos*37%511) - 255
 	}
 	v := sineTable[pos&31]
 	if pos >= 32 {
@@ -33,11 +35,15 @@ func waveform(kind int, pos int) int {
 	return v
 }
 
-// modPeriod is the Amiga period for a note index (octave*12+semi, with
-// octave 1 being ProTracker's lowest) at the given finetune.
-func modPeriod(note int, finetune int) float64 {
+// modPeriod is the Amiga period for a ProTracker note index (octave*12+semi,
+// octave 1 lowest) with finetune in semitones.
+func modPeriod(note int, finetune float32) float64 {
 	octave, semi := note/12, note%12
-	p := ptPeriods[semi] * math.Pow(2, -float64(finetune)/96)
+	if semi < 0 {
+		semi += 12
+		octave--
+	}
+	p := ptPeriods[semi] * math.Pow(2, -float64(finetune)/12)
 	switch {
 	case octave >= 1:
 		p /= float64(int(1) << (octave - 1))
@@ -67,13 +73,30 @@ func s3mPeriod(note int, c4speed int) float64 {
 	return 8363 * 16 * float64(st3Periods[semi]>>octave) / float64(c4speed)
 }
 
+// XM and IT express pitch as semitones s where s = 48 plays the sample at
+// its reference rate. Linear mode stores 64 period units per semitone;
+// Amiga mode uses ScreamTracker-scale periods.
+const (
+	linearBase    = 7680 // period of semitone 0
+	linearPerSemi = 64
+	linearRef     = 4608 // period at the 8363 Hz reference
+)
+
+func linearPeriod(semis float64) float64 { return linearBase - semis*linearPerSemi }
+
+func amigaPeriodXM(semis float64) float64 { return 1712 * math.Pow(2, (48-semis)/12) }
+
 // frequency converts a period to a sample rate for the format.
-func frequency(f Format, period float64) float64 {
+func frequency(f Format, linear bool, period float64) float64 {
 	if period <= 0 {
 		return 0
 	}
-	if f == FormatMOD {
+	switch {
+	case f == FormatMOD:
 		return 7093789.2 / (period * 2)
+	case linear:
+		return 8363 * math.Pow(2, (linearRef-period)/768)
+	default:
+		return 14317456 / period
 	}
-	return 14317456 / period
 }

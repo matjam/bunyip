@@ -33,7 +33,7 @@ func LoadMOD(data []byte) (*Module, error) {
 		Speed:        6,
 		Tempo:        125,
 		Format:       FormatMOD,
-		GlobalVolume: 64,
+		GlobalVolume: 128,
 	}
 	type header struct{ length, loopStart, loopLen int }
 	headers := make([]header, 31)
@@ -50,10 +50,11 @@ func LoadMOD(data []byte) (*Module, error) {
 			loopLen:   int(binary.BigEndian.Uint16(h[28:])) * 2,
 		}
 		m.Samples = append(m.Samples, Sample{
-			Name:     strings.TrimRight(string(h[:22]), "\x00 "),
-			Volume:   min(int(h[25]), 64),
-			Finetune: ft,
-			C4Speed:  8363,
+			Name:         strings.TrimRight(string(h[:22]), "\x00 "),
+			Volume:       min(int(h[25]), 64),
+			GlobalVolume: 64,
+			Finetune:     float32(ft) / 8,
+			C4Speed:      8363,
 		})
 		off += 30
 	}
@@ -92,6 +93,7 @@ func LoadMOD(data []byte) (*Module, error) {
 		if h.loopLen > 2 {
 			s.LoopStart = min(h.loopStart, len(s.Data))
 			s.LoopEnd = min(h.loopStart+h.loopLen, len(s.Data))
+			s.Loop = LoopForward
 		}
 		off = end
 	}
@@ -114,7 +116,7 @@ func decodeMODPattern(data []byte, channels int) Pattern {
 		for c := range channels {
 			b := data[(row*channels+c)*4:]
 			period := int(b[0]&0x0F)<<8 | int(b[1])
-			cell := Cell{Note: -1, Volume: -1, Instrument: int(b[0]&0xF0) | int(b[2]>>4)}
+			cell := Cell{Note: NoteNone, Instrument: int(b[0]&0xF0) | int(b[2]>>4)}
 			if period > 0 {
 				cell.Note = modNoteFromPeriod(period)
 			}

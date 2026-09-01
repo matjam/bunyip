@@ -186,7 +186,7 @@ func TestSongEnds(t *testing.T) {
 // which exercises the loaders and every effect a real tune uses.
 func TestRealSongs(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	for _, name := range []string{"2nd_pm.s3m", "space_debris.mod"} {
+	for _, name := range []string{"2nd_pm.s3m", "space_debris.mod", "unreeeal_superhero_3.xm", "bz_pif.it"} {
 		t.Run(name, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(home, "Downloads", name))
 			if err != nil {
