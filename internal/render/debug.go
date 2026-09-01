@@ -42,7 +42,7 @@ func onDebugMessage(severity vk.VkDebugUtilsMessageSeverityFlagsEXT, _ vk.VkDebu
 	switch {
 	case severity&vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT != 0:
 		debugLog.Error("vulkan: "+msg, "id", id)
-	case severity&vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT != 0:
+	case severity&vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT != 0 && id != "Loader Message":
 		debugLog.Warn("vulkan: "+msg, "id", id)
 	default:
 		// Loader and driver chatter (INFO and VERBOSE) only shows at debug level.

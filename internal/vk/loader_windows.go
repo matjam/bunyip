@@ -14,3 +14,6 @@ func openLibrary(path string) (uintptr, error) {
 func lookupSymbol(handle uintptr, name string) (uintptr, error) {
 	return syscall.GetProcAddress(syscall.Handle(handle), name)
 }
+
+// PrepareLayers is a no-op: the loader finds layer libraries itself here.
+func PrepareLayers() {}

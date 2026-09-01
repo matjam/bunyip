@@ -3,6 +3,7 @@ package vk
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/ebitengine/purego"
 )
@@ -35,4 +36,53 @@ func openLibrary(path string) (uintptr, error) {
 
 func lookupSymbol(handle uintptr, name string) (uintptr, error) {
 	return purego.Dlsym(handle, name)
+}
+
+// PrepareLayers makes Homebrew's layer manifests loadable. They name their
+// library by bare file name, which dyld cannot resolve from a process that
+// has no DYLD_LIBRARY_PATH, so each manifest is rewritten with an absolute
+// library_path into a cache directory that VK_ADD_LAYER_PATH points at.
+// Errors are ignored: layers are a development aid, never a requirement.
+func PrepareLayers() {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(cache, "bunyip", "vulkan-layers")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	var wrote bool
+	for _, manifestDir := range []string{"/opt/homebrew/share/vulkan/explicit_layer.d", "/usr/local/share/vulkan/explicit_layer.d"} {
+		manifests, _ := filepath.Glob(filepath.Join(manifestDir, "*.json"))
+		for _, m := range manifests {
+			if rewriteManifest(m, filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(manifestDir))), "lib"), dir) {
+				wrote = true
+			}
+		}
+	}
+	if wrote {
+		os.Setenv("VK_ADD_LAYER_PATH", dir)
+	}
+}
+
+var reLibraryPath = regexp.MustCompile(`"library_path"\s*:\s*"([^"/]+)"`)
+
+// rewriteManifest copies manifest into dir with library_path made absolute
+// against libDir, when the library exists there.
+func rewriteManifest(manifest, libDir, dir string) bool {
+	data, err := os.ReadFile(manifest)
+	if err != nil {
+		return false
+	}
+	m := reLibraryPath.FindSubmatch(data)
+	if m == nil {
+		return false
+	}
+	lib := filepath.Join(libDir, string(m[1]))
+	if _, err := os.Stat(lib); err != nil {
+		return false
+	}
+	out := reLibraryPath.ReplaceAll(data, []byte(`"library_path": "`+lib+`"`))
+	return os.WriteFile(filepath.Join(dir, filepath.Base(manifest)), out, 0o644) == nil
 }

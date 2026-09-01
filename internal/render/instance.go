@@ -39,6 +39,9 @@ func NewInstance(cfg Config, surfaceExts []string) (*Instance, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	if cfg.Validation {
+		vk.PrepareLayers()
+	}
 	available, err := enumerateInstanceExtensions()
 	if err != nil {
 		return nil, err
