@@ -17,9 +17,12 @@ type Texture struct {
 	g             *Graphics
 }
 
-// TextureOptions selects sampling.
+// TextureOptions selects sampling and colour handling.
 type TextureOptions struct {
 	Linear bool // bilinear filtering; the default is nearest, for pixel art
+	// Data marks pixels that are not sRGB colour (masks, glyph coverage,
+	// lookup tables); they are sampled without gamma decoding.
+	Data bool
 }
 
 // NewTexture uploads an image. Pixels are converted to premultiplied RGBA
@@ -39,7 +42,11 @@ func (g *Graphics) NewTexture(src image.Image, opts TextureOptions) (*Texture, e
 
 func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Texture, error) {
 	extent := vk.VkExtent2D{Width: uint32(w), Height: uint32(h)}
-	img, err := g.R.Device.NewTextureImage(extent, vk.VK_FORMAT_R8G8B8A8_SRGB, pix)
+	format := vk.VkFormat(vk.VK_FORMAT_R8G8B8A8_SRGB)
+	if opts.Data {
+		format = vk.VK_FORMAT_R8G8B8A8_UNORM
+	}
+	img, err := g.R.Device.NewTextureImage(extent, format, pix)
 	if err != nil {
 		return nil, err
 	}
