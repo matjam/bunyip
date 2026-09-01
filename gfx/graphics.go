@@ -18,6 +18,8 @@ type Graphics struct {
 	descriptors *render.DescriptorSets
 	nearest     vk.VkSampler
 	linear      vk.VkSampler
+	nearestRep  vk.VkSampler
+	linearRep   vk.VkSampler
 	spritePipe  *render.Pipeline
 	sdfPipe     *render.Pipeline
 	sprites     spriteBatch
@@ -42,6 +44,12 @@ func New(r *render.Renderer) (*Graphics, error) {
 		return nil, err
 	}
 	if g.linear, err = r.Device.NewSampler(true); err != nil {
+		return nil, err
+	}
+	if g.nearestRep, err = r.Device.NewSamplerRepeat(false, true); err != nil {
+		return nil, err
+	}
+	if g.linearRep, err = r.Device.NewSamplerRepeat(true, true); err != nil {
 		return nil, err
 	}
 	bindings, attrs := spriteVertexLayout()
@@ -204,5 +212,20 @@ func (g *Graphics) Destroy() {
 	dev := g.R.Device.Handle
 	vk.VkDestroySampler(dev, g.nearest, nil)
 	vk.VkDestroySampler(dev, g.linear, nil)
+	vk.VkDestroySampler(dev, g.nearestRep, nil)
+	vk.VkDestroySampler(dev, g.linearRep, nil)
 	g.descriptors.Destroy()
+}
+
+// sampler picks the shared sampler for a filtering and edge choice.
+func (g *Graphics) sampler(linear, repeat bool) vk.VkSampler {
+	switch {
+	case linear && repeat:
+		return g.linearRep
+	case linear:
+		return g.linear
+	case repeat:
+		return g.nearestRep
+	}
+	return g.nearest
 }

@@ -3,13 +3,17 @@ package render
 import "github.com/matjam/bunyip/internal/vk"
 
 func (d *Device) newImageView(img vk.VkImage, format vk.VkFormat, aspect vk.VkImageAspectFlags) (vk.VkImageView, error) {
+	return d.newImageViewMips(img, format, aspect, 1)
+}
+
+func (d *Device) newImageViewMips(img vk.VkImage, format vk.VkFormat, aspect vk.VkImageAspectFlags, mips uint32) (vk.VkImageView, error) {
 	info := vk.VkImageViewCreateInfo{
 		SType:    vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		Image:    img,
 		ViewType: vk.VK_IMAGE_VIEW_TYPE_2D,
 		Format:   format,
 		SubresourceRange: vk.VkImageSubresourceRange{
-			AspectMask: aspect, LevelCount: 1, LayerCount: 1,
+			AspectMask: aspect, LevelCount: mips, LayerCount: 1,
 		},
 	}
 	var view vk.VkImageView
@@ -34,9 +38,17 @@ func (d *Device) newFence(signaled bool) (vk.VkFence, error) {
 	return fence, err
 }
 
-// imageBarrier records a full-subresource layout transition with
+// imageBarrier records a layout transition of the first mip level with
 // synchronization2 stage and access masks.
 func imageBarrier(cb vk.VkCommandBuffer, img vk.VkImage, aspect vk.VkImageAspectFlags,
+	oldLayout, newLayout vk.VkImageLayout,
+	srcStage vk.VkPipelineStageFlags2, srcAccess vk.VkAccessFlags2,
+	dstStage vk.VkPipelineStageFlags2, dstAccess vk.VkAccessFlags2) {
+	imageBarrierLevels(cb, img, aspect, 0, 1, oldLayout, newLayout, srcStage, srcAccess, dstStage, dstAccess)
+}
+
+// imageBarrierLevels is imageBarrier over a range of mip levels.
+func imageBarrierLevels(cb vk.VkCommandBuffer, img vk.VkImage, aspect vk.VkImageAspectFlags, baseLevel, levels uint32,
 	oldLayout, newLayout vk.VkImageLayout,
 	srcStage vk.VkPipelineStageFlags2, srcAccess vk.VkAccessFlags2,
 	dstStage vk.VkPipelineStageFlags2, dstAccess vk.VkAccessFlags2) {
@@ -51,7 +63,7 @@ func imageBarrier(cb vk.VkCommandBuffer, img vk.VkImage, aspect vk.VkImageAspect
 		SrcQueueFamilyIndex: vk.VK_QUEUE_FAMILY_IGNORED,
 		DstQueueFamilyIndex: vk.VK_QUEUE_FAMILY_IGNORED,
 		Image:               img,
-		SubresourceRange:    vk.VkImageSubresourceRange{AspectMask: aspect, LevelCount: 1, LayerCount: 1},
+		SubresourceRange:    vk.VkImageSubresourceRange{AspectMask: aspect, BaseMipLevel: baseLevel, LevelCount: levels, LayerCount: 1},
 	}
 	dep := vk.VkDependencyInfo{
 		SType:                   vk.VK_STRUCTURE_TYPE_DEPENDENCY_INFO,

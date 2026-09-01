@@ -7,13 +7,13 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
-// Buffer is a VkBuffer with its own dedicated allocation. Host-visible
-// buffers stay mapped for their whole life.
+// Buffer is a VkBuffer bound to allocator memory. Host-visible buffers are
+// mapped for their whole life.
 type Buffer struct {
 	Handle vk.VkBuffer
-	Memory vk.VkDeviceMemory
 	Size   vk.VkDeviceSize
 	Mapped unsafe.Pointer // nil unless host-visible
+	mem    allocation
 	dev    *Device
 }
 
@@ -32,20 +32,15 @@ func (d *Device) NewBuffer(size vk.VkDeviceSize, usage vk.VkBufferUsageFlags, pr
 	var req vk.VkMemoryRequirements
 	vk.VkGetBufferMemoryRequirements(d.Handle, b.Handle, &req)
 	var err error
-	if b.Memory, err = d.allocate(req, props); err != nil {
+	if b.mem, err = d.alloc.allocate(req, props, true); err != nil {
 		b.Destroy()
 		return nil, err
 	}
-	if err := vk.Check("vkBindBufferMemory", vk.VkBindBufferMemory(d.Handle, b.Handle, b.Memory, 0)); err != nil {
+	if err := vk.Check("vkBindBufferMemory", vk.VkBindBufferMemory(d.Handle, b.Handle, b.mem.Memory, b.mem.Offset)); err != nil {
 		b.Destroy()
 		return nil, err
 	}
-	if props&vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0 {
-		if err := vk.Check("vkMapMemory", vk.VkMapMemory(d.Handle, b.Memory, 0, vk.VK_WHOLE_SIZE, 0, &b.Mapped)); err != nil {
-			b.Destroy()
-			return nil, err
-		}
-	}
+	b.Mapped = b.mem.Mapped
 	return b, nil
 }
 
@@ -77,27 +72,9 @@ func (b *Buffer) Destroy() {
 		vk.VkDestroyBuffer(b.dev.Handle, b.Handle, nil)
 		b.Handle = 0
 	}
-	if b.Memory != 0 {
-		vk.VkFreeMemory(b.dev.Handle, b.Memory, nil)
-		b.Memory = 0
-	}
-}
-
-// allocate makes one dedicated allocation. A sub-allocating allocator can
-// replace this later without changing callers.
-func (d *Device) allocate(req vk.VkMemoryRequirements, props vk.VkMemoryPropertyFlags) (vk.VkDeviceMemory, error) {
-	typeIndex, err := d.gpu.memoryType(req.MemoryTypeBits, props)
-	if err != nil {
-		return 0, err
-	}
-	info := vk.VkMemoryAllocateInfo{
-		SType:           vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		AllocationSize:  req.Size,
-		MemoryTypeIndex: typeIndex,
-	}
-	var mem vk.VkDeviceMemory
-	err = vk.Check("vkAllocateMemory", vk.VkAllocateMemory(d.Handle, &info, nil, &mem))
-	return mem, err
+	b.dev.alloc.free(b.mem)
+	b.mem = allocation{}
+	b.Mapped = nil
 }
 
 // NewDeviceLocalBuffer uploads data into device-local memory through a

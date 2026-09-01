@@ -20,6 +20,8 @@ type Device struct {
 	gpu         *gpu
 	pool        vk.VkCommandPool
 	portability bool
+	alloc       allocator
+	anisotropy  float32 // max anisotropy the device allows, 1 when unsupported
 }
 
 // NewDevice picks a GPU able to present to surface and creates the logical
@@ -29,7 +31,8 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Device{QueueFamily: g.queueFamily, Name: g.name, log: inst.log, gpu: g}
+	d := &Device{QueueFamily: g.queueFamily, Name: g.name, log: inst.log, gpu: g, anisotropy: 1}
+	d.alloc.dev = d
 	exts := []string{vk.VK_KHR_SWAPCHAIN_EXTENSION_NAME}
 	if slices.Contains(g.extensions, vk.VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) {
 		exts = append(exts, vk.VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) // required when advertised
@@ -49,6 +52,10 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 		Synchronization2: vk.VK_TRUE,
 	}
 	features := vk.VkPhysicalDeviceFeatures2{SType: vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, PNext: unsafe.Pointer(&v13)}
+	if g.features.SamplerAnisotropy != 0 {
+		features.Features.SamplerAnisotropy = vk.VK_TRUE
+		d.anisotropy = min(g.props.Limits.MaxSamplerAnisotropy, 8)
+	}
 	info := vk.VkDeviceCreateInfo{
 		SType:                   vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		PNext:                   unsafe.Pointer(&features),
@@ -89,6 +96,7 @@ func (d *Device) Destroy() {
 		return
 	}
 	_ = d.WaitIdle()
+	d.alloc.destroy()
 	vk.VkDestroyCommandPool(d.Handle, d.pool, nil)
 	vk.VkDestroyDevice(d.Handle, nil)
 	d.Handle = 0

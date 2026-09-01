@@ -25,6 +25,11 @@ type TextureOptions struct {
 	// Data marks pixels that are not sRGB colour (masks, glyph coverage,
 	// lookup tables); they are sampled without gamma decoding.
 	Data bool
+	// NoMipmaps keeps a single level; linear textures get a full mip chain
+	// by default so distant surfaces do not shimmer.
+	NoMipmaps bool
+	// Repeat tiles the texture instead of clamping at the edges.
+	Repeat bool
 }
 
 // NewTexture uploads an image. Pixels are converted to premultiplied RGBA
@@ -48,14 +53,12 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 	if opts.Data {
 		format = vk.VK_FORMAT_R8G8B8A8_UNORM
 	}
-	img, err := g.R.Device.NewTextureImage(extent, format, pix)
+	mips := opts.Linear && !opts.NoMipmaps && w > 1 && h > 1
+	img, err := g.R.Device.NewTextureImage(extent, format, pix, mips)
 	if err != nil {
 		return nil, err
 	}
-	sampler := g.nearest
-	if opts.Linear {
-		sampler = g.linear
-	}
+	sampler := g.sampler(opts.Linear, opts.Repeat)
 	set, err := g.descriptors.Allocate(img.View, sampler)
 	if err != nil {
 		img.Destroy()

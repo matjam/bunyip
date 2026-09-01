@@ -12,6 +12,7 @@ import (
 type gpu struct {
 	handle      vk.VkPhysicalDevice
 	props       vk.VkPhysicalDeviceProperties
+	features    vk.VkPhysicalDeviceFeatures
 	memProps    vk.VkPhysicalDeviceMemoryProperties
 	queueFamily uint32
 	extensions  []string
@@ -64,6 +65,7 @@ func inspectGPU(h vk.VkPhysicalDevice, surface vk.VkSurfaceKHR) (*gpu, error) {
 	v13.SType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
 	f2 := vk.VkPhysicalDeviceFeatures2{SType: vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, PNext: unsafe.Pointer(&v13)}
 	vk.VkGetPhysicalDeviceFeatures2(h, &f2)
+	g.features = f2.Features
 	if v13.DynamicRendering == 0 || v13.Synchronization2 == 0 {
 		return nil, nil
 	}
