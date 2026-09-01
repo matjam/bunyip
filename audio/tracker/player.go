@@ -129,6 +129,7 @@ func NewPlayer(m *Module, rate int) *Player {
 	for i := range p.chans {
 		ch := &p.chans[i]
 		ch.pan = m.Pan[i]
+		ch.voice.pan = m.Pan[i]
 		ch.chanVol = 64
 		if m.ChannelVol != nil {
 			ch.chanVol = m.ChannelVol[i]

@@ -6,7 +6,9 @@ anything else that wants 2D sprites and 3D models on the same screen.
 - Vulkan rendering through a generated, cgo-free binding (MoltenVK on macOS).
 - Native window, input and audio layers per platform; no SDL, no GLFW.
 - `CGO_ENABLED=0` everywhere. Native libraries are opened at runtime with purego.
-- Immediate-mode, themeable UI. Font atlas text. glTF 2.0 models.
+- Physically based rendering with shadow maps, bloom and tone mapping; sprites and scalable SDF text on top.
+- Immediate-mode, themeable UI. glTF 2.0 models. Fullscreen, cursor capture, gamepads.
+- Audio mixer with WAV, Ogg Vorbis, MP3, and a tracker player for MOD, S3M, XM and IT.
 - Two loop modes: fixed-timestep real time, or turn-based where the process
   sleeps in the OS until input arrives.
 
@@ -21,7 +23,7 @@ macOS is the first target; Linux and Windows follow behind the same
 | `gfx` | textures, sprites, text, meshes, materials, camera, light, models |
 | `ui` | immediate-mode widgets with a `Theme` |
 | `audio` | mixer, voices, streams; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
-| `audio/tracker` | ProTracker MOD and ScreamTracker S3M loader and player |
+| `audio/tracker` | MOD, S3M, XM and IT loader and player |
 | `input` | key codes, modifiers, mouse buttons, per-update `State` |
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
 | `lin` | vectors, matrices, quaternions |
@@ -70,7 +72,7 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
 | `go run ./examples/gallery [-beep]` | every UI widget, theme switch, audio beep |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
-| `go run ./cmd/bunyip-play song.s3m` | plays a WAV, Ogg, MP3, MOD or S3M file; `-dump out.wav` records what the device received |
+| `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |
 
 ## Requirements
 

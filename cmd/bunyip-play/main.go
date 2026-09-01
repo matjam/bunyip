@@ -40,7 +40,7 @@ func run(path string, seconds float64, volume float32, dump string) error {
 	var voice *audio.Voice
 	var player *tracker.Player
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mod", ".s3m":
+	case ".mod", ".s3m", ".xm", ".it":
 		m, err := tracker.Load(data)
 		if err != nil {
 			return err
