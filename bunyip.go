@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
@@ -31,6 +32,7 @@ type Config struct {
 	FixedStep time.Duration // real-time update interval; default 1/60 s
 
 	Validation bool // enable Vulkan validation when installed
+	NoAudio    bool // skip opening the audio device
 	Log        *slog.Logger
 }
 
@@ -58,6 +60,9 @@ type Context struct {
 	Gfx   *gfx.Graphics
 	Input *input.State
 	Log   *slog.Logger
+
+	// Audio always exists; without an output device it mixes into silence.
+	Audio *audio.Mixer
 
 	// Clear is the frame's background colour; set it whenever you like.
 	Clear gfx.Color

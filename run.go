@@ -7,12 +7,17 @@ import (
 	"os"
 	"time"
 
+	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/internal/audioout"
 	"github.com/matjam/bunyip/internal/platform"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 )
+
+// audioRate is the mixer and device sample rate.
+const audioRate = 48000
 
 // Run opens the window, drives game until it quits or the window closes,
 // and tears everything down. It must be called from the main goroutine.
@@ -51,7 +56,16 @@ func Run(cfg Config, game Game) error {
 	}
 	defer g.Destroy()
 
-	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Clear: gfx.RGB(24, 24, 32)}}
+	mixer := audio.NewMixer(audioRate)
+	if !cfg.NoAudio {
+		dev, err := audioout.Open(audioRate, mixer.Mix)
+		if err != nil {
+			cfg.Log.Warn("bunyip: audio output unavailable, continuing silent", "err", err)
+		} else {
+			defer dev.Close()
+		}
+	}
+	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32)}}
 	l.applySize(win)
 	if init, ok := game.(Initer); ok {
 		if err := init.Init(l.ctx); err != nil {

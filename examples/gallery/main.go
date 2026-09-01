@@ -11,6 +11,7 @@ import (
 	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/ui"
@@ -19,6 +20,8 @@ import (
 type gallery struct {
 	seconds float64
 	shot    string
+	beep    bool
+	tone    *audio.Sound
 
 	font     *gfx.Font
 	ui       *ui.Context
@@ -37,6 +40,12 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	}
 	g.dark, g.volume, g.check = true, 0.65, true
 	g.ui = ui.New(ctx.Gfx, ui.DarkTheme(g.font))
+	if g.tone, err = ctx.Audio.NewSound(audio.Sine(440, 0.35, ctx.Audio.Rate())); err != nil {
+		return err
+	}
+	if g.beep {
+		ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: 0.4})
+	}
 	return nil
 }
 
@@ -76,6 +85,9 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 	if u.Button(fmt.Sprintf("Clicked %d times", g.clicks)) {
 		g.clicks++
 	}
+	if u.Button("Beep") {
+		ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: g.volume, Pan: 0})
+	}
 	u.Checkbox("Show hints", &g.check)
 	u.Space(10)
 	u.Slider("Volume", &g.volume, 0, 1)
@@ -92,9 +104,10 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
+	beep := flag.Bool("beep", false, "play a tone at start")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true},
-		&gallery{seconds: *seconds, shot: *shot})
+		&gallery{seconds: *seconds, shot: *shot, beep: *beep})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)
 		os.Exit(1)
