@@ -35,11 +35,31 @@ type Context struct {
 	panels     []*panel
 	frameRects []Rect // every panel opened this frame, for WantsMouse
 	seq        map[widgetID]int
+
+	scroll      map[widgetID]*scrollState
+	open        widgetID // the dropdown showing its list
+	deferred    []func() // overlays drawn at End, above everything
+	lastRect    Rect     // the previous widget, for tooltips
+	lastID      widgetID
+	hoverID     widgetID
+	hoverFrames int
+	clipDepth   int
+
+	// Keyboard and gamepad navigation: focusables are collected each
+	// frame in submission order; navFocus is the highlighted one.
+	focusables []focusable
+	navFocus   widgetID
+	activate   bool // the focused widget was activated this frame
+}
+
+type focusable struct {
+	id   widgetID
+	rect Rect
 }
 
 // New makes a context drawing with g under theme.
 func New(g *gfx.Graphics, theme Theme) *Context {
-	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}}
+	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}, scroll: map[widgetID]*scrollState{}}
 }
 
 // Begin starts a frame's interface from the current input.
@@ -55,16 +75,23 @@ func (c *Context) Begin(in *input.State) {
 	clear(c.seq)
 	c.panels = c.panels[:0]
 	c.frameRects = c.frameRects[:0]
+	c.deferred = c.deferred[:0]
 	if c.pressed {
 		c.focus = 0 // clicking anywhere else drops keyboard focus
 	}
+	c.navigate()
+	c.focusables = c.focusables[:0]
 }
 
 // End finishes the frame. Call after the last widget.
 func (c *Context) End() {
+	for _, d := range c.deferred {
+		d()
+	}
 	if c.released {
 		c.active = 0
 	}
+	c.activate = false
 }
 
 // WantsMouse reports whether the pointer is over a panel, so the game can
@@ -100,9 +127,22 @@ func (c *Context) id(label string) widgetID {
 }
 
 // interact runs the hot/active state machine for a rectangle and reports
-// whether it was clicked (pressed and released inside).
+// whether it was clicked (pressed and released inside, or activated by
+// keyboard or gamepad while focused). It also registers the widget for
+// navigation and tooltips.
 func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
+	c.lastRect, c.lastID = r, id
+	c.focusables = append(c.focusables, focusable{id: id, rect: r})
+	if c.navFocus == id {
+		c.border(Rect{X: r.X - 2, Y: r.Y - 2, W: r.W + 4, H: r.H + 4}, c.Theme.Accent)
+		if c.activate {
+			clicked = true
+		}
+	}
 	over := r.contains(c.mouseX, c.mouseY)
+	if c.open != 0 && c.open != id {
+		over = false // an open dropdown list owns the pointer
+	}
 	if over {
 		c.nextHot = id
 	}
@@ -113,6 +153,7 @@ func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
 	held = c.active == id && c.down
 	if c.active == id && c.released && over {
 		clicked = true
+		c.navFocus = id
 	}
 	return hover, held, clicked
 }

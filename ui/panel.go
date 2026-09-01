@@ -12,7 +12,10 @@ type panel struct {
 type row struct {
 	x, y, h float32
 	count   int
-	width   float32 // per-item width
+	width   float32   // per-item width for equal rows
+	weights []float32 // per-item weights for Columns; nil for equal rows
+	total   float32
+	inner   float32
 }
 
 func (c *Context) currentPanel() *panel {
@@ -61,8 +64,13 @@ func (c *Context) next(h float32) Rect {
 	}
 	h = max(h, c.Theme.RowHeight)
 	if r := p.row; r != nil {
-		rect := Rect{X: r.x, Y: r.y, W: r.width, H: h}
-		r.x += r.width + c.Theme.Spacing
+		w := r.width
+		if r.weights != nil {
+			i := len(r.weights) - r.count
+			w = r.inner * r.weights[i] / r.total
+		}
+		rect := Rect{X: r.x, Y: r.y, W: w, H: h}
+		r.x += w + c.Theme.Spacing
 		r.h = max(r.h, h)
 		r.count--
 		if r.count == 0 {
