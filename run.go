@@ -109,7 +109,7 @@ func (l *loop) applySize(w *platform.Window) {
 	pw, ph := w.PixelSize()
 	width, height := w.Size()
 	l.ctx.Width, l.ctx.Height, l.ctx.Scale = float32(width), float32(height), float32(w.Scale())
-	l.ctx.Gfx.R.Resize(pw, ph)
+	l.ctx.Gfx.Resize(pw, ph)
 	l.ctx.Gfx.SetView(float32(width), float32(height))
 }
 

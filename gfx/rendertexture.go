@@ -27,7 +27,7 @@ func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
 	extent := vk.VkExtent2D{Width: uint32(width), Height: uint32(height)}
 	rt := &RenderTexture{Width: width, Height: height, g: g}
 	var err error
-	if rt.target, err = g.R.Device.NewTargetSampled(extent, g.R.Swapchain.Format, g.R.DepthFormat); err != nil {
+	if rt.target, err = g.r.Device.NewTargetSampled(extent, g.r.Swapchain.Format, g.r.DepthFormat); err != nil {
 		return nil, err
 	}
 	if rt.scene, err = g.newSceneTargets(extent); err != nil {
@@ -44,7 +44,7 @@ func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
 		return nil, err
 	}
 	rt.tex = &Texture{Width: width, Height: height, img: rt.target.Color, set: set, g: g, external: true}
-	if err := g.R.Device.OneShot(func(cb vk.VkCommandBuffer) { render.ClearColorForSampling(cb, rt.target.Color) }); err != nil {
+	if err := g.r.Device.OneShot(func(cb vk.VkCommandBuffer) { render.ClearColorForSampling(cb, rt.target.Color) }); err != nil {
 		rt.Destroy()
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (rt *RenderTexture) SetView(width, height float32) { rt.queue.setView(width
 // Destroy frees the surface. It must not be in use by a frame in flight.
 func (rt *RenderTexture) Destroy() {
 	g := rt.g
-	_ = g.R.Device.WaitIdle()
+	_ = g.r.Device.WaitIdle()
 	if rt.tex != nil {
 		g.forgetTexture(rt.tex)
 		g.descriptors.Free(rt.tex.set)

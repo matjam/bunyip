@@ -48,7 +48,7 @@ func (q *drawQueue) destroy() {
 func (g *Graphics) newQueue(w, h float32) (*drawQueue, error) {
 	q := &drawQueue{light: defaultLight()}
 	var err error
-	if q.uniforms, err = g.R.Device.NewUniformSets(frameUniformsSize, meshStages); err != nil {
+	if q.uniforms, err = g.r.Device.NewUniformSets(frameUniformsSize, meshStages); err != nil {
 		return nil, err
 	}
 	q.setView(w, h)

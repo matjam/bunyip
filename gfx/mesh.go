@@ -46,11 +46,11 @@ func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
 	}
 	var err error
 	vdata := unsafe.Slice((*byte)(unsafe.Pointer(&verts[0])), len(verts)*vertexSize)
-	if m.vbuf, err = g.R.Device.NewDeviceLocalBuffer(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
+	if m.vbuf, err = g.r.Device.NewDeviceLocalBuffer(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
 		return nil, err
 	}
 	idata := unsafe.Slice((*byte)(unsafe.Pointer(&indices[0])), len(indices)*4)
-	if m.ibuf, err = g.R.Device.NewDeviceLocalBuffer(idata, vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT); err != nil {
+	if m.ibuf, err = g.r.Device.NewDeviceLocalBuffer(idata, vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT); err != nil {
 		m.vbuf.Destroy()
 		return nil, err
 	}

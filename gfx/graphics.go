@@ -14,7 +14,7 @@ import (
 // Graphics is the drawing context for one window. Begin opens a frame,
 // the Draw* calls queue work, and End submits it.
 type Graphics struct {
-	R           *render.Renderer
+	r *render.Renderer
 	descriptors *render.DescriptorSets
 	nearest     vk.VkSampler
 	linear      vk.VkSampler
@@ -33,7 +33,7 @@ type Graphics struct {
 
 // New builds the drawing context over a renderer.
 func New(r *render.Renderer) (*Graphics, error) {
-	g := &Graphics{R: r}
+	g := &Graphics{r: r}
 	var err error
 	if g.descriptors, err = r.Device.NewTextureDescriptors(1024); err != nil {
 		return nil, err
@@ -92,6 +92,9 @@ func New(r *render.Renderer) (*Graphics, error) {
 	return g, nil
 }
 
+// Resize tells the renderer the framebuffer changed size, in pixels.
+func (g *Graphics) Resize(width, height int) { g.r.Resize(width, height) }
+
 // SetView sets the 2D coordinate space: (0,0) top-left to (width,height)
 // bottom-right, whatever the framebuffer's pixel size.
 func (g *Graphics) SetView(width, height float32) { g.main.setView(width, height) }
@@ -102,7 +105,7 @@ func (g *Graphics) View() (float32, float32) { return g.main.viewW, g.main.viewH
 // Begin starts a frame cleared to clear. ok is false when the swapchain
 // was rebuilt and the frame should be skipped.
 func (g *Graphics) Begin(clear Color) (ok bool, err error) {
-	g.frame, ok, err = g.R.BeginFrame()
+	g.frame, ok, err = g.r.BeginFrame()
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -157,7 +160,7 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 		return nil, err
 	}
 	_ = cb
-	return g.R.EndFrame(fr, capture)
+	return g.r.EndFrame(fr, capture)
 }
 
 // renderQueue draws one queue: the 3D scene through the post chain, then
@@ -182,12 +185,12 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 		g.composite(cb, t, bloom)
 		render.EndTargetPass(cb, t.ldr)
 	}
-	extent := g.R.Swapchain.Extent
+	extent := g.r.Swapchain.Extent
 	if target != nil {
 		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
 		extent = target.Extent
 	} else {
-		g.R.BeginSwapchainPass(fr, clear)
+		g.r.BeginSwapchainPass(fr, clear)
 	}
 	switch {
 	case aa:
@@ -209,7 +212,7 @@ func (g *Graphics) flushSprites(fr *render.Frame, q *drawQueue, extent vk.VkExte
 		return nil
 	}
 	q.sprites.build()
-	if err := q.sprites.upload(g.R.Device, fr.Slot); err != nil {
+	if err := q.sprites.upload(g.r.Device, fr.Slot); err != nil {
 		return err
 	}
 	cb := fr.CB
@@ -242,7 +245,7 @@ func (g *Graphics) flushSprites(fr *render.Frame, q *drawQueue, extent vk.VkExte
 // Destroy releases everything the context created. Textures made from it
 // must be destroyed first or are leaked with the device.
 func (g *Graphics) Destroy() {
-	_ = g.R.Device.WaitIdle()
+	_ = g.r.Device.WaitIdle()
 	if g.main != nil {
 		g.main.destroy()
 	}
@@ -257,7 +260,7 @@ func (g *Graphics) Destroy() {
 	if g.sdfPipe != nil {
 		g.sdfPipe.Destroy()
 	}
-	dev := g.R.Device.Handle
+	dev := g.r.Device.Handle
 	vk.VkDestroySampler(dev, g.nearest, nil)
 	vk.VkDestroySampler(dev, g.linear, nil)
 	vk.VkDestroySampler(dev, g.nearestRep, nil)

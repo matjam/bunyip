@@ -67,7 +67,7 @@ type postPush struct {
 func (g *Graphics) initPost() error {
 	p := &g.post
 	p.settings = DefaultPost()
-	dev := g.R.Device
+	dev := g.r.Device
 	var err error
 	if p.singles, err = dev.NewSamplerDescriptors(1, 64); err != nil {
 		return err
@@ -91,23 +91,23 @@ func (g *Graphics) initPost() error {
 	// frame's depth attachment present, on screen and in render textures.
 	if p.composite, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.PostFrag,
-		ColorFormat: g.R.Swapchain.Format, DepthFormat: g.R.DepthFormat,
+		ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push, SetLayouts: []vk.VkDescriptorSetLayout{p.pairs.Layout},
 	}); err != nil {
 		return err
 	}
 	if p.fxaa, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.FXAAFrag,
-		ColorFormat: g.R.Swapchain.Format, DepthFormat: g.R.DepthFormat,
+		ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push, SetLayouts: single,
 	}); err != nil {
 		return err
 	}
-	if p.main, err = g.newSceneTargets(g.R.Swapchain.Extent); err != nil {
+	if p.main, err = g.newSceneTargets(g.r.Swapchain.Extent); err != nil {
 		return err
 	}
-	g.R.OnResize(func(extent vk.VkExtent2D) error {
-		if err := g.R.Device.WaitIdle(); err != nil {
+	g.r.OnResize(func(extent vk.VkExtent2D) error {
+		if err := g.r.Device.WaitIdle(); err != nil {
 			return err
 		}
 		p.main.destroy(g)
@@ -121,14 +121,14 @@ func (g *Graphics) initPost() error {
 // newSceneTargets builds the images and descriptor sets for one extent.
 func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) {
 	p := &g.post
-	dev := g.R.Device
+	dev := g.r.Device
 	t := &sceneTargets{extent: extent}
 	var err error
 	fail := func(err error) (*sceneTargets, error) {
 		t.destroy(g)
 		return nil, err
 	}
-	if t.hdr, err = dev.NewTarget(extent, hdrFormat, g.R.DepthFormat); err != nil {
+	if t.hdr, err = dev.NewTarget(extent, hdrFormat, g.r.DepthFormat); err != nil {
 		return fail(err)
 	}
 	half := vk.VkExtent2D{Width: max(extent.Width/2, 1), Height: max(extent.Height/2, 1)}
@@ -138,7 +138,7 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 	if t.bloomB, err = dev.NewTarget(half, hdrFormat, vk.VK_FORMAT_UNDEFINED); err != nil {
 		return fail(err)
 	}
-	if t.ldr, err = dev.NewTarget(extent, g.R.Swapchain.Format, g.R.DepthFormat); err != nil {
+	if t.ldr, err = dev.NewTarget(extent, g.r.Swapchain.Format, g.r.DepthFormat); err != nil {
 		return fail(err)
 	}
 	if t.hdrSet, err = p.singles.Allocate(t.hdr.Color.View, g.linear); err != nil {

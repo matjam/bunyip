@@ -56,7 +56,7 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		format = vk.VK_FORMAT_R8G8B8A8_UNORM
 	}
 	mips := opts.Linear && !opts.NoMipmaps && w > 1 && h > 1
-	img, err := g.R.Device.NewTextureImage(extent, format, pix, mips)
+	img, err := g.r.Device.NewTextureImage(extent, format, pix, mips)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (t *Texture) Destroy() {
 	if t.img == nil {
 		return
 	}
-	_ = t.g.R.Device.WaitIdle()
+	_ = t.g.r.Device.WaitIdle()
 	t.g.forgetTexture(t)
 	t.g.descriptors.Free(t.set)
 	if !t.external {

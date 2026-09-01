@@ -62,7 +62,7 @@ type frameUniforms struct {
 func (g *Graphics) initMeshPass() error {
 	mp := &g.meshes
 	mp.matSets = map[[4]*Texture]vk.VkDescriptorSet{}
-	dev := g.R.Device
+	dev := g.r.Device
 	var err error
 	layout, err := dev.NewUniformSets(frameUniformsSize, meshStages)
 	if err != nil {
@@ -78,7 +78,7 @@ func (g *Graphics) initMeshPass() error {
 	if mp.shadowDesc, err = dev.NewImmutableSamplerDescriptors(1, 4, mp.shadowSamp); err != nil {
 		return err
 	}
-	if mp.shadow, err = dev.NewTarget(vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}, vk.VK_FORMAT_UNDEFINED, g.R.DepthFormat); err != nil {
+	if mp.shadow, err = dev.NewTarget(vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}, vk.VK_FORMAT_UNDEFINED, g.r.DepthFormat); err != nil {
 		return err
 	}
 	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, mp.shadow.Depth) }); err != nil {
@@ -96,7 +96,7 @@ func (g *Graphics) initMeshPass() error {
 	bindings, attrs := meshVertexLayout()
 	common := render.PipelineDesc{
 		Vert: shaders.PBRVert, Frag: shaders.PBRFrag,
-		ColorFormat: hdrFormat, DepthFormat: g.R.DepthFormat,
+		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		Bindings: bindings, Attributes: attrs,
 		CullMode: vk.VK_CULL_MODE_BACK_BIT, DepthTest: true, DepthWrite: true,
 		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout},
@@ -111,7 +111,7 @@ func (g *Graphics) initMeshPass() error {
 	}
 	mp.shadowPipe, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.ShadowVert, Frag: shaders.ShadowFrag,
-		NoColor: true, DepthFormat: g.R.DepthFormat,
+		NoColor: true, DepthFormat: g.r.DepthFormat,
 		Bindings: bindings, Attributes: attrs[:7], // the depth pass reads no material attributes
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
 		DepthBias: 1.5, DepthSlopeBias: 2.0,
@@ -307,7 +307,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int) (opaque, blended []meshD
 			material:  [4]float32{orOne(m.Metallic, m.MetalRoughTexture != nil), m.Roughness, m.Emissive, boolFloat(m.NormalTexture != nil)},
 		})
 	}
-	if err := q.inst.upload(g.R.Device, slot); err != nil {
+	if err := q.inst.upload(g.r.Device, slot); err != nil {
 		return nil, nil, err
 	}
 	split := len(q.draws)
@@ -390,7 +390,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 }
 
 func (mp *meshPass) destroy(g *Graphics) {
-	dev := g.R.Device.Handle
+	dev := g.r.Device.Handle
 	for _, p := range []*render.Pipeline{mp.pbrPipe, mp.blendPipe, mp.shadowPipe} {
 		if p != nil {
 			p.Destroy()
