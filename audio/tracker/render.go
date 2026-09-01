@@ -100,6 +100,7 @@ func (p *Player) renderVoice(out []float32, frames int, v *voice, ch *channel, p
 	// both sides, hard left is double on one side and silent on the other.
 	left, right := vol*(1-pan), vol*(1+pan)
 	// Filter setup once per tick span.
+	cubic := p.Cubic
 	useFilter := v.filterOn && v.cutoff < 127
 	if useFilter {
 		cutoff := v.cutoff
@@ -162,7 +163,21 @@ func (p *Player) renderVoice(out []float32, frames int, v *voice, ch *channel, p
 		if next >= end || next < 0 {
 			next = idx
 		}
-		sample := data[idx]*(1-frac) + data[next]*frac
+		var sample float32
+		if cubic {
+			// Four-point Hermite through the neighbours on either side,
+			// clamped at the sample's edges.
+			prev, after := idx-dir, next+dir
+			if prev < 0 || prev >= end {
+				prev = idx
+			}
+			if after < 0 || after >= end {
+				after = next
+			}
+			sample = hermite(data[prev], data[idx], data[next], data[after], frac)
+		} else {
+			sample = data[idx]*(1-frac) + data[next]*frac
+		}
 		if useFilter {
 			sample = v.filter.process(sample)
 		}
@@ -171,6 +186,15 @@ func (p *Player) renderVoice(out []float32, frames int, v *voice, ch *channel, p
 		pos += step * float64(dir)
 	}
 	v.pos, v.dir = pos, dir
+}
+
+// hermite interpolates between y1 and y2 at t, using y0 and y3 for slope.
+func hermite(y0, y1, y2, y3, t float32) float32 {
+	c0 := y1
+	c1 := 0.5 * (y2 - y0)
+	c2 := y0 - 2.5*y1 + 2*y2 - 0.5*y3
+	c3 := 0.5*(y3-y0) + 1.5*(y1-y2)
+	return ((c3*t+c2)*t+c1)*t + c0
 }
 
 func sqrt32(v float32) float32 { return float32(math.Sqrt(float64(v))) }

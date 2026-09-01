@@ -10,6 +10,11 @@ type Player struct {
 	// AmigaFilter enables the ProTracker LED low-pass filter (E00/E01).
 	// Off by default: most players and listeners expect the unfiltered mix.
 	AmigaFilter bool
+	// Cubic switches sample interpolation from linear to four-point
+	// Hermite, which rounds off the aliasing that makes chip samples sound
+	// harsher than in other players. Off by default to match the classic
+	// sound.
+	Cubic bool
 
 	mod   *Module
 	rate  int

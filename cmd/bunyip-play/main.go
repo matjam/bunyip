@@ -48,6 +48,20 @@ func run(path string, seconds float64, volume float32, dump string) error {
 		fmt.Printf("%q: %d channels, %d samples, %d patterns, %d positions\n", m.Title, m.Channels, len(m.Samples), len(m.Patterns), len(m.Orders))
 		player = tracker.NewPlayer(m, rate)
 		voice = mixer.PlayStream(player, audio.PlayOptions{Volume: volume})
+	case ".ogg", ".mp3":
+		// Music streams from the file rather than being decoded up front.
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		music, err := mixer.OpenMusic(f, false)
+		if err != nil {
+			return err
+		}
+		defer music.Close()
+		fmt.Printf("%s: streaming, %.1f s buffered\n", filepath.Base(path), music.Buffered())
+		voice = mixer.PlayStream(music, audio.PlayOptions{Volume: volume})
 	default:
 		pcm, err := audio.Decode(data)
 		if err != nil {

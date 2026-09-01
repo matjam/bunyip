@@ -10,6 +10,9 @@ import (
 )
 
 // DecodeMP3 reads an MP3 stream entirely into memory as stereo PCM.
+//
+// Encode game audio at 44.1 or 48 kHz: the decoder reproduces MPEG-2
+// low-sample-rate files (22.05 kHz and below) with an uneven level.
 func DecodeMP3(r io.Reader) (PCM, error) {
 	dec, err := mp3.NewDecoder(r)
 	if err != nil {
