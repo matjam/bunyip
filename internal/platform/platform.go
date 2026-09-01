@@ -32,6 +32,7 @@ const (
 	EventKeyDown              // Key, Mods, Repeat
 	EventKeyUp                // Key, Mods
 	EventChar                 // Rune: a character of text input
+	EventCompose              // Text: the input method's in-progress composition, empty when it ends
 	EventMouseMove            // X, Y in points from the top-left of the content area
 	EventMouseDown            // Button, X, Y, Mods
 	EventMouseUp              // Button, X, Y, Mods
@@ -57,6 +58,7 @@ type Event struct {
 	Mods    Mods
 	Repeat  bool
 	Rune    rune
+	Text    string
 	Button  MouseButton
 	X, Y    float64
 	DX, DY  float64
@@ -71,7 +73,7 @@ type Event struct {
 
 var eventNames = [...]string{
 	EventNone: "None", EventClose: "Close", EventResize: "Resize", EventFocus: "Focus",
-	EventKeyDown: "KeyDown", EventKeyUp: "KeyUp", EventChar: "Char", EventMouseMove: "MouseMove",
+	EventKeyDown: "KeyDown", EventKeyUp: "KeyUp", EventChar: "Char", EventCompose: "Compose", EventMouseMove: "MouseMove",
 	EventMouseDown: "MouseDown", EventMouseUp: "MouseUp", EventScroll: "Scroll",
 	EventMouseEnter: "MouseEnter", EventMouseLeave: "MouseLeave",
 }

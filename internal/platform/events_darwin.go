@@ -1,8 +1,6 @@
 package platform
 
 import (
-	"unicode"
-
 	"github.com/matjam/bunyip/input"
 
 	"github.com/ebitengine/purego/objc"
@@ -33,8 +31,7 @@ func (a *App) handleEvent(ev objc.ID) bool {
 	kind := objc.Send[uint](ev, c.sel.eventType)
 	switch kind {
 	case nsEventTypeKeyDown, nsEventTypeKeyUp:
-		a.handleKey(w, ev, kind == nsEventTypeKeyDown)
-		return false
+		return a.handleKey(w, ev, kind == nsEventTypeKeyDown)
 	case nsEventTypeFlagsChanged:
 		a.handleFlagsChanged(w, ev)
 		return true
@@ -59,14 +56,18 @@ func (a *App) handleEvent(ev objc.ID) bool {
 	return true
 }
 
-func (a *App) handleKey(w *Window, ev objc.ID, down bool) {
+// handleKey pushes the key event and reports whether AppKit should still
+// see it. Plain key presses go on to the content view, whose
+// NSTextInputClient methods turn them into text through the active input
+// method (see textinput_darwin.go); shortcuts and releases stop here.
+func (a *App) handleKey(w *Window, ev objc.ID, down bool) bool {
 	c := a.c
 	code := objc.Send[uint16](ev, c.sel.keyCode)
 	a.mods = modsFromFlags(objc.Send[uint](ev, c.sel.modifierFlags))
 	key := keyFromCode(code)
 	if !down {
 		a.push(Event{Kind: EventKeyUp, Window: w, Key: key, Mods: a.mods})
-		return
+		return false
 	}
 	repeat := objc.Send[bool](ev, c.sel.isARepeat)
 	a.push(Event{Kind: EventKeyDown, Window: w, Key: key, Mods: a.mods, Repeat: repeat})
@@ -74,21 +75,9 @@ func (a *App) handleKey(w *Window, ev objc.ID, down bool) {
 		if key == input.KeyQ {
 			a.push(Event{Kind: EventClose, Window: w}) // Cmd+Q with no menu bar
 		}
-		return
+		return false
 	}
-	if a.mods&input.ModControl != 0 {
-		return
-	}
-	chars := objc.Send[string](ev.Send(c.sel.characters), c.sel.UTF8String)
-	for _, r := range chars {
-		if r >= 0xF700 && r <= 0xF8FF { // AppKit's private-use range for function keys
-			continue
-		}
-		if unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r' {
-			continue
-		}
-		a.push(Event{Kind: EventChar, Window: w, Rune: r, Mods: a.mods})
-	}
+	return a.mods&input.ModControl == 0
 }
 
 // handleFlagsChanged reports modifier keys as key events. The key code says

@@ -26,8 +26,9 @@ func (w *Window) Close()                                               {}
 func RequiredInstanceExtensions() []string                             { return nil }
 func (w *Window) CreateSurface(vk.VkInstance) (vk.VkSurfaceKHR, error) { return 0, ErrUnsupported }
 
-func (w *Window) Fullscreen() bool       { return false }
-func (w *Window) SetFullscreen(bool)     {}
-func (w *Window) SetCursorCaptured(bool) {}
-func (w *Window) CursorCaptured() bool   { return false }
-func (a *App) Gamepads() []GamepadState  { return nil }
+func (w *Window) Fullscreen() bool                             { return false }
+func (w *Window) SetFullscreen(bool)                           {}
+func (w *Window) SetCursorCaptured(bool)                       {}
+func (w *Window) SetTextInputRect(x, y, width, height float64) {}
+func (w *Window) CursorCaptured() bool                         { return false }
+func (a *App) Gamepads() []GamepadState                        { return nil }

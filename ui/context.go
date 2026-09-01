@@ -36,6 +36,11 @@ type Context struct {
 	frameRects []Rect // every panel opened this frame, for WantsMouse
 	seq        map[widgetID]int
 
+	// OnTextInputRect, when set, is told where the focused text field is
+	// so the platform can place input-method candidate windows. Wire it to
+	// bunyip.Context.SetTextInputRect.
+	OnTextInputRect func(x, y, w, h float32)
+
 	scroll      map[widgetID]*scrollState
 	open        widgetID // the dropdown showing its list
 	deferred    []func() // overlays drawn at End, above everything

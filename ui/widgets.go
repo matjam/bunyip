@@ -112,10 +112,17 @@ func (c *Context) TextField(label string, value *string) bool {
 	}
 	c.border(r, border)
 	shown := *value
+	composing := ""
 	if c.focus == id {
-		shown += "_"
+		composing = c.in.Composition()
+		if composing == "" {
+			shown += "_"
+		}
+		if c.OnTextInputRect != nil {
+			c.OnTextInputRect(r.X, r.Y, r.W, r.H)
+		}
 	}
-	if shown == "" {
+	if shown == "" && composing == "" {
 		shown = label
 	}
 	_, h := c.Theme.Font.Measure(shown)
@@ -124,6 +131,15 @@ func (c *Context) TextField(label string, value *string) bool {
 		col = c.Theme.TextDim
 	}
 	c.text(shown, r.X+c.Theme.Padding, r.Y+(r.H-h)/2, col)
+	if composing != "" {
+		// The input method's uncommitted text sits after the value with an
+		// underline, the way native fields show a word mid-conversion.
+		w, _ := c.Theme.Font.Measure(shown)
+		x := r.X + c.Theme.Padding + w
+		cw, ch := c.Theme.Font.Measure(composing)
+		c.text(composing, x, r.Y+(r.H-h)/2, c.Theme.Accent)
+		c.fill(Rect{X: x, Y: r.Y + (r.H-h)/2 + ch, W: cw, H: 1}, c.Theme.Accent)
+	}
 	return changed
 }
 

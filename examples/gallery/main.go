@@ -45,6 +45,7 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	}
 	g.dark, g.volume, g.check = true, 0.65, true
 	g.ui = ui.New(ctx.Gfx, ui.DarkTheme(g.font))
+	g.ui.OnTextInputRect = ctx.SetTextInputRect
 	if g.tone, err = ctx.Audio.NewSound(audio.Sine(440, 0.35, ctx.Audio.Rate())); err != nil {
 		return err
 	}

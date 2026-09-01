@@ -101,6 +101,15 @@ type windowControl interface {
 	SetFullscreen(bool)
 	SetCursorCaptured(bool)
 	CursorCaptured() bool
+	SetTextInputRect(x, y, w, h float64)
+}
+
+// SetTextInputRect tells the operating system's input method where text
+// is being entered, in view units from the top-left, so that candidate
+// windows for languages such as Japanese open beside the field. Text
+// fields in the ui package call it for you.
+func (c *Context) SetTextInputRect(x, y, w, h float32) {
+	c.win.SetTextInputRect(float64(x), float64(y), float64(w), float64(h))
 }
 
 // SetFullscreen enters or leaves full-screen mode.

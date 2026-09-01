@@ -16,6 +16,7 @@ type State struct {
 	scrollX, scrollY float64
 	mouseDX, mouseDY float64
 	chars            []rune
+	composition      string
 	gamepads         [MaxGamepads]Gamepad
 }
 
@@ -61,6 +62,11 @@ func (s *State) Scroll() (dx, dy float64) { return s.scrollX, s.scrollY }
 // Chars returns the text typed since the last update, in order.
 func (s *State) Chars() []rune { return s.chars }
 
+// Composition returns the input method's uncommitted text, such as the
+// syllables of a Japanese word still being converted. Text fields show it
+// after the committed text; it is empty when nothing is being composed.
+func (s *State) Composition() string { return s.composition }
+
 // Feed methods, called by the engine as events arrive.
 
 func (s *State) FeedKey(k Key, down, repeat bool, mods Mods) {
@@ -80,6 +86,8 @@ func (s *State) FeedKey(k Key, down, repeat bool, mods Mods) {
 }
 
 func (s *State) FeedChar(r rune) { s.chars = append(s.chars, r) }
+
+func (s *State) FeedComposition(text string) { s.composition = text }
 
 func (s *State) FeedMouseMove(x, y float64) { s.mouseX, s.mouseY = x, y }
 

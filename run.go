@@ -211,6 +211,8 @@ func (l *loop) handleEvents(events []platform.Event) {
 			in.FeedKey(e.Key, false, false, e.Mods)
 		case platform.EventChar:
 			in.FeedChar(e.Rune)
+		case platform.EventCompose:
+			in.FeedComposition(e.Text)
 		case platform.EventMouseMove:
 			in.FeedMouseDelta(e.DX, e.DY)
 			if !l.win.CursorCaptured() {

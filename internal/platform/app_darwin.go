@@ -17,6 +17,8 @@ type App struct {
 	c        *cocoa
 	nsApp    objc.ID
 	delegate objc.Class
+	view     objc.Class // BunyipView: NSView plus NSTextInputClient
+	tsel     textSel
 	windows  map[objc.ID]*Window
 	pending  []Event
 	mods     Mods
@@ -32,6 +34,9 @@ func NewApp() (*App, error) {
 	a.nsApp = objc.ID(c.NSApplication).Send(c.sel.sharedApplication)
 	a.nsApp.Send(c.sel.setActivationPolicy, nsApplicationActivationPolicyRegular)
 	if a.delegate, err = a.registerDelegateClass(); err != nil {
+		return nil, err
+	}
+	if a.view, err = a.registerViewClass(); err != nil {
 		return nil, err
 	}
 	a.nsApp.Send(c.sel.finishLaunching)

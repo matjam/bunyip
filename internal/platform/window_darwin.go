@@ -20,6 +20,9 @@ type Window struct {
 	scale    float64
 	closed   bool
 	captured bool
+
+	marked    string   // the input method's uncommitted text
+	inputRect textRect // where the game is taking text
 }
 
 // NewWindow opens a window and shows it.
@@ -40,11 +43,12 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	win.Send(c.sel.setAcceptsMouseMovedEvents, true)
 	win.Send(c.sel.setCollectionBehavior, uint64(nsWindowCollectionBehaviorFullScreenPrimary))
 
-	w.view = objc.ID(c.NSView).Send(c.sel.alloc).Send(c.sel.initWithFrame, rect)
+	w.view = objc.ID(a.view).Send(c.sel.alloc).Send(c.sel.initWithFrame, rect)
 	w.layer = objc.ID(c.CAMetalLayer).Send(c.sel.layer)
 	w.view.Send(c.sel.setLayer, w.layer)
 	w.view.Send(c.sel.setWantsLayer, true)
 	win.Send(c.sel.setContentView, w.view)
+	win.Send(a.tsel.makeFirstResponder, w.view) // key presses go to the view's text-input methods
 
 	w.delegate = objc.ID(a.delegate).Send(c.sel.new)
 	win.Send(c.sel.setDelegate, w.delegate)
