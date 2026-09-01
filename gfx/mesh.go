@@ -9,6 +9,8 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
+var _ = vk.VK_TRUE
+
 // Vertex is the mesh vertex layout: position, normal and one UV set.
 type Vertex struct {
 	Pos    lin.Vec3
@@ -76,6 +78,9 @@ type Material struct {
 	NormalTexture     *Texture // tangent-space normal map; data, not colour
 	EmissiveTexture   *Texture // sRGB, scaled by Emissive
 	Emissive          float32
+
+	Blend       bool // alpha-blended, drawn after opaque geometry back to front
+	DoubleSided bool // no back-face culling
 }
 
 // Camera is a perspective camera looking from Position at Target.
@@ -88,9 +93,8 @@ type Camera struct {
 	Far      float32  // zero means 1000
 }
 
-// ViewProj returns the combined matrix for the given aspect ratio.
-func (c Camera) ViewProj(aspect float32) lin.Mat4 {
-	up, fov, near, far := c.Up, c.FovY, c.Near, c.Far
+func (c Camera) defaults() (up lin.Vec3, fov, near, far float32) {
+	up, fov, near, far = c.Up, c.FovY, c.Near, c.Far
 	if up == (lin.Vec3{}) {
 		up = lin.V3(0, 1, 0)
 	}
@@ -103,7 +107,23 @@ func (c Camera) ViewProj(aspect float32) lin.Mat4 {
 	if far == 0 {
 		far = 1000
 	}
-	return lin.Perspective(fov, aspect, near, far).Mul(lin.LookAt(c.Position, c.Target, up))
+	return
+}
+
+// ViewProj returns the combined matrix for the given aspect ratio.
+func (c Camera) ViewProj(aspect float32) lin.Mat4 {
+	return c.Projection(aspect).Mul(c.viewMatrix())
+}
+
+// Projection returns the perspective matrix alone.
+func (c Camera) Projection(aspect float32) lin.Mat4 {
+	_, fov, near, far := c.defaults()
+	return lin.Perspective(fov, aspect, near, far)
+}
+
+func (c Camera) viewMatrix() lin.Mat4 {
+	up, _, _, _ := c.defaults()
+	return lin.LookAt(c.Position, c.Target, up)
 }
 
 // Light is the directional light plus ambient, with optional shadows.
@@ -121,4 +141,15 @@ type meshDraw struct {
 	mesh  *Mesh
 	mat   Material
 	model lin.Mat4
+	set   vk.VkDescriptorSet
+	depth float32 // view-space distance for transparency sorting
 }
+
+// meshInstance is the per-instance vertex stream: see pbr.vert.
+type meshInstance struct {
+	model     lin.Mat4
+	baseColor [4]float32
+	material  [4]float32
+}
+
+const meshInstanceSize = 96

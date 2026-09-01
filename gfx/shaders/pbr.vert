@@ -16,22 +16,28 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 pointColor[8];
 } frame;
 
-layout(push_constant) uniform PC {
-    mat4 model;
-    vec4 baseColor;
-    vec4 material;     // x metallic, y roughness, z emissive strength, w normal map on
-} pc;
+// Per-instance stream: model matrix columns, base colour and material params.
+layout(location = 3) in vec4 iModel0;
+layout(location = 4) in vec4 iModel1;
+layout(location = 5) in vec4 iModel2;
+layout(location = 6) in vec4 iModel3;
+layout(location = 7) in vec4 iBaseColor;
+layout(location = 8) in vec4 iMaterial; // x metallic, y roughness, z emissive strength, w normal map on
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
 layout(location = 3) out vec4 vShadowPos;
+layout(location = 4) flat out vec4 vBaseColor;
+layout(location = 5) flat out vec4 vMaterial;
 
 void main() {
-    vec4 world = pc.model * vec4(iPos, 1.0);
+    vec4 world = mat4(iModel0, iModel1, iModel2, iModel3) * vec4(iPos, 1.0);
     gl_Position = frame.viewProj * world;
     vWorldPos = world.xyz;
-    vNormal = normalize(mat3(pc.model) * iNormal);
+    vNormal = normalize(mat3(mat4(iModel0, iModel1, iModel2, iModel3)) * iNormal);
     vUV = iUV;
     vShadowPos = frame.lightViewProj * world;
+    vBaseColor = iBaseColor;
+    vMaterial = iMaterial;
 }

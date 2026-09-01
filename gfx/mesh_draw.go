@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"slices"
 	"unsafe"
 
 	"github.com/matjam/bunyip/gfx/shaders"
@@ -18,6 +19,7 @@ const (
 // meshPass owns the 3D pipelines, targets and per-frame uniforms.
 type meshPass struct {
 	pbrPipe    *render.Pipeline
+	blendPipe  *render.Pipeline
 	shadowPipe *render.Pipeline
 	uniforms   *render.UniformSets
 	shadow     *render.Target
@@ -28,6 +30,7 @@ type meshPass struct {
 	matSets    map[[4]*Texture]vk.VkDescriptorSet
 	flatNormal *Texture
 	black      *Texture
+	instances  instanceStream
 
 	draws  []meshDraw
 	camera Camera
@@ -55,13 +58,6 @@ type frameUniforms struct {
 	pointColor    [maxPointLights]lin.Vec4
 }
 
-// meshPush mirrors the PC block in pbr.vert.
-type meshPush struct {
-	model     lin.Mat4
-	baseColor [4]float32
-	material  [4]float32
-}
-
 func (g *Graphics) initMeshPass() error {
 	mp := &g.meshes
 	mp.matSets = map[[4]*Texture]vk.VkDescriptorSet{}
@@ -83,8 +79,6 @@ func (g *Graphics) initMeshPass() error {
 	if mp.shadow, err = dev.NewTarget(vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}, vk.VK_FORMAT_UNDEFINED, g.R.DepthFormat); err != nil {
 		return err
 	}
-	// Frames without a shadow pass still bind the map, so it must already be
-	// in the layout the descriptor promises.
 	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, mp.shadow.Depth) }); err != nil {
 		return err
 	}
@@ -97,38 +91,55 @@ func (g *Graphics) initMeshPass() error {
 	if mp.black, err = g.newTexture(1, 1, []byte{0, 0, 0, 255}, TextureOptions{Data: true}); err != nil {
 		return err
 	}
-	bindings := []vk.VkVertexInputBindingDescription{{Binding: 0, Stride: vertexSize, InputRate: vk.VK_VERTEX_INPUT_RATE_VERTEX}}
-	attrs := []vk.VkVertexInputAttributeDescription{
-		{Location: 0, Binding: 0, Format: vk.VK_FORMAT_R32G32B32_SFLOAT, Offset: 0},
-		{Location: 1, Binding: 0, Format: vk.VK_FORMAT_R32G32B32_SFLOAT, Offset: 12},
-		{Location: 2, Binding: 0, Format: vk.VK_FORMAT_R32G32_SFLOAT, Offset: 24},
-	}
-	push := uint32(unsafe.Sizeof(meshPush{}))
-	mp.pbrPipe, err = dev.NewPipeline(render.PipelineDesc{
+	bindings, attrs := meshVertexLayout()
+	common := render.PipelineDesc{
 		Vert: shaders.PBRVert, Frag: shaders.PBRFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.R.DepthFormat,
 		Bindings: bindings, Attributes: attrs,
 		CullMode: vk.VK_CULL_MODE_BACK_BIT, DepthTest: true, DepthWrite: true,
-		PushConstantSize: push,
-		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniforms.Layout, mp.shadowDesc.Layout},
-	})
-	if err != nil {
+		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniforms.Layout, mp.shadowDesc.Layout},
+	}
+	if mp.pbrPipe, err = dev.NewPipeline(common); err != nil {
+		return err
+	}
+	blend := common
+	blend.Blend, blend.DepthWrite, blend.CullMode = true, false, vk.VK_CULL_MODE_NONE
+	if mp.blendPipe, err = dev.NewPipeline(blend); err != nil {
 		return err
 	}
 	mp.shadowPipe, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.ShadowVert, Frag: shaders.ShadowFrag,
 		NoColor: true, DepthFormat: g.R.DepthFormat,
-		Bindings: bindings, Attributes: attrs,
+		Bindings: bindings, Attributes: attrs[:7], // the depth pass reads no material attributes
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
 		DepthBias: 1.5, DepthSlopeBias: 2.0,
-		PushConstantSize: push,
-		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniforms.Layout},
+		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniforms.Layout},
 	})
 	if err != nil {
 		return err
 	}
 	mp.light = Light{Direction: lin.V3(-0.5, -1, -0.3), Color: Color{1, 1, 1, 1}, Ambient: Color{0.15, 0.15, 0.18, 1}}
 	return nil
+}
+
+// meshVertexLayout is the per-vertex binding 0 and per-instance binding 1.
+func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInputAttributeDescription) {
+	bindings := []vk.VkVertexInputBindingDescription{
+		{Binding: 0, Stride: vertexSize, InputRate: vk.VK_VERTEX_INPUT_RATE_VERTEX},
+		{Binding: 1, Stride: meshInstanceSize, InputRate: vk.VK_VERTEX_INPUT_RATE_INSTANCE},
+	}
+	attrs := []vk.VkVertexInputAttributeDescription{
+		{Location: 0, Binding: 0, Format: vk.VK_FORMAT_R32G32B32_SFLOAT, Offset: 0},
+		{Location: 1, Binding: 0, Format: vk.VK_FORMAT_R32G32B32_SFLOAT, Offset: 12},
+		{Location: 2, Binding: 0, Format: vk.VK_FORMAT_R32G32_SFLOAT, Offset: 24},
+		{Location: 3, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 0},
+		{Location: 4, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 16},
+		{Location: 5, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 32},
+		{Location: 6, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 48},
+		{Location: 7, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 64},
+		{Location: 8, Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 80},
+	}
+	return bindings, attrs
 }
 
 // SetCamera sets the camera for this frame's meshes.
@@ -144,9 +155,9 @@ func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
 	}
 }
 
-// DrawMesh queues a mesh with a material and a model matrix. Meshes are
-// drawn depth-tested and post-processed before any sprites, so 2D always
-// overlays 3D.
+// DrawMesh queues a mesh with a material and a model matrix. Draws that
+// share a mesh and material become one instanced draw call; blended
+// materials draw after everything opaque, farthest first.
 func (g *Graphics) DrawMesh(m *Mesh, mat Material, model lin.Mat4) {
 	if mat.BaseColor == (Color{}) {
 		mat.BaseColor = White
@@ -166,11 +177,7 @@ func (g *Graphics) materialSet(mat Material) (vk.VkDescriptorSet, error) {
 	}
 	bindings := make([]render.SamplerBinding, 4)
 	for i, t := range key {
-		sampler := g.linear
-		if t.nearest {
-			sampler = g.nearest
-		}
-		bindings[i] = render.SamplerBinding{View: t.img.View, Sampler: sampler}
+		bindings[i] = render.SamplerBinding{View: t.img.View, Sampler: g.sampler(!t.nearest, t.repeat)}
 	}
 	set, err := mp.materials.AllocateMany(bindings)
 	if err != nil {
@@ -253,30 +260,67 @@ func boolFloat(b bool) float32 {
 	return 0
 }
 
-// drawAll records every queued mesh with the given pipeline.
-func (g *Graphics) drawAll(cb vk.VkCommandBuffer, pipe *render.Pipeline, withMaterials bool) error {
+// prepareDraws resolves material sets, sorts opaque draws for instancing and
+// blended draws back to front, and uploads the instance stream.
+func (g *Graphics) prepareDraws(slot int) (opaque, blended []meshDraw, err error) {
 	mp := &g.meshes
-	var offset vk.VkDeviceSize
-	for _, d := range mp.draws {
-		if withMaterials {
-			set, err := g.materialSet(d.mat)
-			if err != nil {
-				return err
-			}
-			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &set, 0, nil)
+	view := mp.camera.viewMatrix()
+	for i := range mp.draws {
+		d := &mp.draws[i]
+		if d.set, err = g.materialSet(d.mat); err != nil {
+			return nil, nil, err
 		}
+		pos := d.model.MulPoint(d.mesh.Min.Add(d.mesh.Max).Mul(0.5))
+		d.depth = -view.MulPoint(pos).Z
+	}
+	slices.SortStableFunc(mp.draws, func(a, b meshDraw) int {
+		switch {
+		case a.mat.Blend != b.mat.Blend:
+			if a.mat.Blend {
+				return 1
+			}
+			return -1
+		case a.mat.Blend: // farthest first
+			if a.depth > b.depth {
+				return -1
+			}
+			if a.depth < b.depth {
+				return 1
+			}
+			return 0
+		case a.set != b.set:
+			if a.set < b.set {
+				return -1
+			}
+			return 1
+		case a.mesh != b.mesh:
+			if uintptr(unsafe.Pointer(a.mesh)) < uintptr(unsafe.Pointer(b.mesh)) {
+				return -1
+			}
+			return 1
+		}
+		return 0
+	})
+	mp.instances.reset()
+	for _, d := range mp.draws {
 		m := d.mat
-		push := meshPush{
+		mp.instances.add(meshInstance{
 			model:     d.model,
 			baseColor: [4]float32{m.BaseColor.R, m.BaseColor.G, m.BaseColor.B, m.BaseColor.A},
 			material:  [4]float32{orOne(m.Metallic, m.MetalRoughTexture != nil), m.Roughness, m.Emissive, boolFloat(m.NormalTexture != nil)},
-		}
-		vk.VkCmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, uint32(unsafe.Sizeof(push)), unsafe.Pointer(&push))
-		vk.VkCmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &offset)
-		vk.VkCmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
-		vk.VkCmdDrawIndexed(cb, d.mesh.IndexCount, 1, 0, 0, 0)
+		})
 	}
-	return nil
+	if err := mp.instances.upload(g.R.Device, slot); err != nil {
+		return nil, nil, err
+	}
+	split := len(mp.draws)
+	for i, d := range mp.draws {
+		if d.mat.Blend {
+			split = i
+			break
+		}
+	}
+	return mp.draws[:split], mp.draws[split:], nil
 }
 
 // orOne returns the metallic factor; with a metal-rough texture and a zero
@@ -288,6 +332,28 @@ func orOne(metallic float32, hasTexture bool) float32 {
 	return metallic
 }
 
+// drawRuns records draws as instanced runs of identical mesh and material.
+// first is the index of draws[0] in the instance stream.
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, pipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool) {
+	mp := &g.meshes
+	var offset vk.VkDeviceSize
+	vk.VkCmdBindVertexBuffers(cb, 1, 1, &mp.instances.buffers[mp.instances.slot].Handle, &offset)
+	for i := 0; i < len(draws); {
+		run := 1
+		for i+run < len(draws) && draws[i+run].mesh == draws[i].mesh && draws[i+run].set == draws[i].set {
+			run++
+		}
+		d := draws[i]
+		if withMaterials {
+			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &d.set, 0, nil)
+		}
+		vk.VkCmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &offset)
+		vk.VkCmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+		vk.VkCmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, first+uint32(i))
+		i += run
+	}
+}
+
 // renderScene runs the shadow and lit passes into the HDR target.
 func (g *Graphics) renderScene(fr *render.Frame) error {
 	mp := &g.meshes
@@ -296,22 +362,31 @@ func (g *Graphics) renderScene(fr *render.Frame) error {
 	if err := mp.writeUniforms(fr.Slot, aspect); err != nil {
 		return err
 	}
+	opaque, blended, err := g.prepareDraws(fr.Slot)
+	if err != nil {
+		return err
+	}
 	if mp.light.Shadows {
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow, ClearDepth: 1})
 		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.shadowPipe.Handle)
 		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.shadowPipe.Layout, 1, 1, &mp.uniforms.Sets[fr.Slot], 0, nil)
-		if err := g.drawAll(cb, mp.shadowPipe, false); err != nil {
-			return err
-		}
+		g.drawRuns(cb, mp.shadowPipe, opaque, 0, false)
 		render.EndTargetPass(cb, mp.shadow)
 	}
 	c := g.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: g.post.hdr, ClearColor: c, ClearDepth: 1})
-	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.pbrPipe.Handle)
-	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.pbrPipe.Layout, 1, 1, &mp.uniforms.Sets[fr.Slot], 0, nil)
-	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.pbrPipe.Layout, 2, 1, &mp.shadowSet, 0, nil)
-	if err := g.drawAll(cb, mp.pbrPipe, true); err != nil {
-		return err
+	for _, pass := range []struct {
+		pipe  *render.Pipeline
+		draws []meshDraw
+		first uint32
+	}{{mp.pbrPipe, opaque, 0}, {mp.blendPipe, blended, uint32(len(opaque))}} {
+		if len(pass.draws) == 0 {
+			continue
+		}
+		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Handle)
+		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 1, 1, &mp.uniforms.Sets[fr.Slot], 0, nil)
+		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 2, 1, &mp.shadowSet, 0, nil)
+		g.drawRuns(cb, pass.pipe, pass.draws, pass.first, true)
 	}
 	render.EndTargetPass(cb, g.post.hdr)
 	return nil
@@ -325,11 +400,11 @@ func (mp *meshPass) reset() {
 
 func (mp *meshPass) destroy(g *Graphics) {
 	dev := g.R.Device.Handle
-	if mp.pbrPipe != nil {
-		mp.pbrPipe.Destroy()
-	}
-	if mp.shadowPipe != nil {
-		mp.shadowPipe.Destroy()
+	mp.instances.destroy()
+	for _, p := range []*render.Pipeline{mp.pbrPipe, mp.blendPipe, mp.shadowPipe} {
+		if p != nil {
+			p.Destroy()
+		}
 	}
 	if mp.flatNormal != nil {
 		mp.flatNormal.Destroy()

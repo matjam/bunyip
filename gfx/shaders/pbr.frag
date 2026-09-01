@@ -22,16 +22,13 @@ layout(set = 1, binding = 0) uniform Frame {
 
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
 
-layout(push_constant) uniform PC {
-    mat4 model;
-    vec4 baseColor;
-    vec4 material;
-} pc;
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
 layout(location = 3) in vec4 vShadowPos;
+layout(location = 4) flat in vec4 vBaseColor;
+layout(location = 5) flat in vec4 vMaterial;
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -94,14 +91,14 @@ vec3 shade(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metallic, f
 }
 
 void main() {
-    vec4 albedoSample = texture(albedoTex, vUV) * pc.baseColor;
+    vec4 albedoSample = texture(albedoTex, vUV) * vBaseColor;
     vec3 albedo = albedoSample.rgb;
     vec3 mr = texture(metalRoughTex, vUV).rgb;
-    float metallic = clamp(pc.material.x * mr.b, 0.0, 1.0);
-    float roughness = clamp(pc.material.y * mr.g, 0.04, 1.0);
+    float metallic = clamp(vMaterial.x * mr.b, 0.0, 1.0);
+    float roughness = clamp(vMaterial.y * mr.g, 0.04, 1.0);
     vec3 n = normalize(vNormal);
     if (!gl_FrontFacing) n = -n;
-    if (pc.material.w > 0.5) n = perturbNormal(n, vWorldPos, vUV);
+    if (vMaterial.w > 0.5) n = perturbNormal(n, vWorldPos, vUV);
     vec3 v = normalize(frame.camPos.xyz - vWorldPos);
 
     vec3 l = normalize(-frame.lightDir.xyz);
@@ -126,6 +123,6 @@ void main() {
     vec3 ambientSpec = kS * mix(albedo, vec3(1.0), 0.5) * (1.0 - roughness * 0.8);
     color += frame.ambient.rgb * (ambientDiffuse + ambientSpec);
 
-    color += texture(emissiveTex, vUV).rgb * pc.material.z;
+    color += texture(emissiveTex, vUV).rgb * vMaterial.z;
     outColor = vec4(color, albedoSample.a);
 }

@@ -5,10 +5,10 @@ layout(location = 0) in vec3 iPos;
 layout(location = 1) in vec3 iNormal;
 layout(location = 2) in vec2 iUV;
 
-layout(push_constant) uniform PC {
-    mat4 model;
-    vec4 baseColor;
-} pc;
+layout(location = 3) in vec4 iModel0;
+layout(location = 4) in vec4 iModel1;
+layout(location = 5) in vec4 iModel2;
+layout(location = 6) in vec4 iModel3;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -23,5 +23,5 @@ layout(set = 1, binding = 0) uniform Frame {
 } frame;
 
 void main() {
-    gl_Position = frame.lightViewProj * pc.model * vec4(iPos, 1.0);
+    gl_Position = frame.lightViewProj * mat4(iModel0, iModel1, iModel2, iModel3) * vec4(iPos, 1.0);
 }
