@@ -37,8 +37,13 @@ const spriteInstanceSize = 64
 type spriteDraw struct {
 	tex          *Texture
 	proj         lin.Mat4
+	clip         ClipRect
 	first, count uint32
 }
+
+// ClipRect limits drawing to a rectangle in view units; a zero rect means
+// no clipping.
+type ClipRect struct{ X, Y, W, H float32 }
 
 // spriteItem is a queued sprite with its sort keys, resolved into the
 // instance stream at flush time.
@@ -46,6 +51,7 @@ type spriteItem struct {
 	inst  spriteInstance
 	tex   *Texture
 	proj  *lin.Mat4
+	clip  ClipRect
 	layer int32
 	seq   int32
 }
@@ -64,7 +70,7 @@ type spriteBatch struct {
 
 const initialSpriteCapacity = 4096
 
-func (b *spriteBatch) add(tex *Texture, s Sprite, proj lin.Mat4, layer int32) {
+func (b *spriteBatch) add(tex *Texture, s Sprite, proj lin.Mat4, layer int32, clip ClipRect) {
 	// Keep a stable pointer to the projection in use; most frames use one or two.
 	var pp *lin.Mat4
 	for i := range b.projs {
@@ -82,7 +88,7 @@ func (b *spriteBatch) add(tex *Texture, s Sprite, proj lin.Mat4, layer int32) {
 			pos: s.Pos, size: s.Size, uv0: s.UV0, uv1: s.UV1,
 			color: s.Color.premultiplied(), rotation: s.Rotation, origin: s.Origin,
 		},
-		tex: tex, proj: pp, layer: layer, seq: int32(len(b.items)),
+		tex: tex, proj: pp, clip: clip, layer: layer, seq: int32(len(b.items)),
 	})
 	if layer != 0 {
 		b.sorted = false
@@ -106,10 +112,10 @@ func (b *spriteBatch) build() {
 	b.instances = b.instances[:0]
 	b.draws = b.draws[:0]
 	for _, it := range b.items {
-		if n := len(b.draws); n > 0 && b.draws[n-1].tex == it.tex && b.draws[n-1].proj == *it.proj {
+		if n := len(b.draws); n > 0 && b.draws[n-1].tex == it.tex && b.draws[n-1].proj == *it.proj && b.draws[n-1].clip == it.clip {
 			b.draws[n-1].count++
 		} else {
-			b.draws = append(b.draws, spriteDraw{tex: it.tex, proj: *it.proj, first: uint32(len(b.instances)), count: 1})
+			b.draws = append(b.draws, spriteDraw{tex: it.tex, proj: *it.proj, clip: it.clip, first: uint32(len(b.instances)), count: 1})
 		}
 		b.instances = append(b.instances, it.inst)
 	}

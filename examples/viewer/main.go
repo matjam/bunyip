@@ -22,6 +22,9 @@ type viewer struct {
 	modelPath string
 	seconds   float64
 	shot      string
+	noAO      bool
+	noShadow  bool
+	showAO    bool
 
 	model    *gfx.Model
 	cube     *gfx.Mesh
@@ -106,13 +109,21 @@ func (v *viewer) Update(ctx *bunyip.Context) error {
 
 func (v *viewer) Draw(ctx *bunyip.Context) error {
 	g := ctx.Gfx
+	if v.noAO || v.showAO {
+		p := g.Post()
+		p.AmbientOcclusion = 0
+		if v.showAO {
+			p.AmbientOcclusion, p.ShowOcclusion = 1, true
+		}
+		g.SetPost(p)
+	}
 	eye := v.center.Add(lin.V3(
 		v.distance*float32(math.Cos(float64(v.pitch))*math.Sin(float64(v.yaw))),
 		v.distance*float32(math.Sin(float64(v.pitch))),
 		v.distance*float32(math.Cos(float64(v.pitch))*math.Cos(float64(v.yaw)))))
 	g.SetCamera(gfx.Camera{Position: eye, Target: v.center})
 	g.SetLight(gfx.Light{Direction: lin.V3(-0.4, -1, -0.6), Color: gfx.Color{R: 2.2, G: 2.1, B: 1.9, A: 1},
-		Ambient: gfx.Color{R: 0.18, G: 0.2, B: 0.25, A: 1}, Shadows: true, ShadowRadius: 12})
+		Ambient: gfx.Color{R: 0.18, G: 0.2, B: 0.25, A: 1}, Shadows: !v.noShadow, ShadowDistance: 40})
 	g.AddPointLight(lin.V3(4*float32(math.Sin(float64(ctx.Time))), 1.5, 4*float32(math.Cos(float64(ctx.Time)))), gfx.Color{R: 4, G: 1.5, B: 0.5, A: 1}, 8)
 	if v.model != nil {
 		g.DrawModel(v.model, lin.Identity())
@@ -158,9 +169,12 @@ func main() {
 	modelPath := flag.String("model", "", "glTF (.gltf or .glb) file to show")
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
+	noAO := flag.Bool("noao", false, "disable ambient occlusion")
+	noShadow := flag.Bool("noshadow", false, "disable shadows")
+	showAO := flag.Bool("showao", false, "display the ambient occlusion buffer")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true, Validation: true},
-		&viewer{modelPath: *modelPath, seconds: *seconds, shot: *shot})
+		&viewer{modelPath: *modelPath, seconds: *seconds, shot: *shot, noAO: *noAO, noShadow: *noShadow, showAO: *showAO})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "viewer:", err)
 		os.Exit(1)

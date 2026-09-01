@@ -21,6 +21,7 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 ground;       // rgb ambient from below
     vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count
     vec4 splits;       // view-space distances where cascades end
+    vec4 radii;        // half-size of each cascade's orthographic box
     vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
 } frame;

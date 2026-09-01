@@ -200,3 +200,17 @@ func firstOrNil[T any](s []T) *T {
 	}
 	return &s[0]
 }
+
+// SetScissor limits rasterisation to a pixel rectangle clamped to the
+// extent; full resets to the whole extent.
+func SetScissor(cb vk.VkCommandBuffer, extent vk.VkExtent2D, x, y int32, w, h uint32, full bool) {
+	scissor := vk.VkRect2D{Extent: extent}
+	if !full {
+		x = max(x, 0)
+		y = max(y, 0)
+		w = min(w, uint32(max(int32(extent.Width)-x, 0)))
+		h = min(h, uint32(max(int32(extent.Height)-y, 0)))
+		scissor = vk.VkRect2D{Offset: vk.VkOffset2D{X: x, Y: y}, Extent: vk.VkExtent2D{Width: w, Height: h}}
+	}
+	vk.VkCmdSetScissor(cb, 0, 1, &scissor)
+}

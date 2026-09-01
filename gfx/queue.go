@@ -27,6 +27,7 @@ type drawQueue struct {
 	cam2D      Camera2D
 	hasCam2D   bool
 	layer      int32
+	clips      []ClipRect // clip stack; the last entry applies
 }
 
 func (q *drawQueue) reset() {
@@ -38,6 +39,7 @@ func (q *drawQueue) reset() {
 	q.hasCam2D = false
 	q.spriteProj = q.proj
 	q.layer = 0
+	q.clips = q.clips[:0]
 }
 
 func (q *drawQueue) destroy() {

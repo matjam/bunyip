@@ -19,6 +19,7 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 ground;       // rgb ambient from below
     vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count
     vec4 splits;       // view-space distances where cascades end
+    vec4 radii;        // half-size of each cascade's orthographic box
     vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
 } frame;
@@ -65,11 +66,19 @@ float shadowFactor(vec3 n, vec3 l) {
     if (frame.params.y < 0.5) return 1.0;
     int c = vViewDepth < frame.splits.x ? 0 : (vViewDepth < frame.splits.y ? 1 : 2);
     if (vViewDepth > frame.splits.z) return 1.0;
-    vec4 sp = frame.lightViewProj[c] * vec4(vWorldPos, 1.0);
+    // Normal-offset shadows: push the lookup point off the surface by
+    // about one shadow texel of this cascade, more at grazing angles, so
+    // the map's quantisation cannot self-shadow.
+    float radius = c == 0 ? frame.radii.x : (c == 1 ? frame.radii.y : frame.radii.z);
+    float texelWorld = 2.0 * radius / frame.params.x;
+    float NoL = clamp(dot(n, l), 0.0, 1.0);
+    float slope = sqrt(1.0 - NoL * NoL) / max(NoL, 0.05);
+    vec3 pos = vWorldPos + n * texelWorld * (1.0 + slope);
+    vec4 sp = frame.lightViewProj[c] * vec4(pos, 1.0);
     vec3 p = sp.xyz / sp.w;
     vec2 uv = p.xy * 0.5 + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z > 1.0) return 1.0;
-    float bias = max(0.0015 * (1.0 - dot(n, l)), 0.0004) * (c == 0 ? 1.0 : 2.0);
+    float bias = texelWorld / (4.0 * radius); // one texel in depth units
     float texel = 1.0 / frame.params.x;
     return sampleCascade(c, vec3(uv, p.z - bias), vec2(texel));
 }

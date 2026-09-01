@@ -129,7 +129,39 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 		s.Color = White
 	}
 	q := g.cur
-	q.sprites.add(tex, s, q.spriteProj, q.layer)
+	var clip ClipRect
+	if n := len(q.clips); n > 0 {
+		clip = q.clips[n-1]
+	}
+	q.sprites.add(tex, s, q.spriteProj, q.layer, clip)
+}
+
+// PushClip limits later sprite drawing to a view-space rectangle,
+// intersected with any enclosing clip. Pair with PopClip.
+func (g *Graphics) PushClip(x, y, w, h float32) {
+	q := g.cur
+	r := ClipRect{x, y, w, h}
+	if n := len(q.clips); n > 0 {
+		r = intersectClip(q.clips[n-1], r)
+	}
+	q.clips = append(q.clips, r)
+}
+
+// PopClip restores the previous clip rectangle.
+func (g *Graphics) PopClip() {
+	q := g.cur
+	if len(q.clips) > 0 {
+		q.clips = q.clips[:len(q.clips)-1]
+	}
+}
+
+func intersectClip(a, b ClipRect) ClipRect {
+	x0, y0 := max(a.X, b.X), max(a.Y, b.Y)
+	x1, y1 := min(a.X+a.W, b.X+b.W), min(a.Y+a.H, b.Y+b.H)
+	if x1 <= x0 || y1 <= y0 {
+		return ClipRect{X: x0, Y: y0, W: 0.001, H: 0.001} // fully clipped, but not "no clip"
+	}
+	return ClipRect{x0, y0, x1 - x0, y1 - y0}
 }
 
 // FillRect queues a solid rectangle.
@@ -225,7 +257,14 @@ func (g *Graphics) flushSprites(fr *render.Frame, q *drawQueue, extent vk.VkExte
 	vk.VkCmdBindVertexBuffers(cb, 0, 1, &q.sprites.buffers[fr.Slot].Handle, &offset)
 	var bound *render.Pipeline
 	var boundProj lin.Mat4
+	var boundClip ClipRect
+	scaleX, scaleY := float32(extent.Width)/q.viewW, float32(extent.Height)/q.viewH
 	for _, d := range q.sprites.draws {
+		if d.clip != boundClip {
+			boundClip = d.clip
+			render.SetScissor(cb, extent, int32(d.clip.X*scaleX), int32(d.clip.Y*scaleY),
+				uint32(max(d.clip.W*scaleX, 0)), uint32(max(d.clip.H*scaleY, 0)), d.clip == ClipRect{})
+		}
 		pipe := g.spritePipe
 		if d.tex.sdf {
 			pipe = g.sdfPipe

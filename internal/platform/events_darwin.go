@@ -161,6 +161,11 @@ func (a *App) mousePos(w *Window, ev objc.ID) (float64, float64) {
 
 func (a *App) pushMouseButton(w *Window, ev objc.ID, kind EventKind) {
 	x, y := a.mousePos(w, ev)
+	// A press in the title bar or resize edge belongs to the window
+	// system (dragging, resizing), not to the game.
+	if kind == EventMouseDown && (x < 0 || y < 0 || x >= float64(w.width) || y >= float64(w.height)) {
+		return
+	}
 	n := objc.Send[int](ev, a.c.sel.buttonNumber)
 	var button MouseButton
 	switch n {

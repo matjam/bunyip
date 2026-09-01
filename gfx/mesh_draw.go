@@ -64,6 +64,7 @@ type frameUniforms struct {
 	ground        lin.Vec4
 	params        lin.Vec4
 	splits        lin.Vec4
+	radii         lin.Vec4
 	pointPos      [maxPointLights]lin.Vec4
 	pointColor    [maxPointLights]lin.Vec4
 }
@@ -246,9 +247,9 @@ func (g *Graphics) forgetTexture(t *Texture) {
 // cascades fits one orthographic light frustum to each slice of the
 // camera frustum out to the shadow distance, returning the matrices and
 // the view-space depth where each cascade ends.
-func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4) {
+func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4, lin.Vec4) {
 	var mats [shadowCascades]lin.Mat4
-	var splits lin.Vec4
+	var splits, radii lin.Vec4
 	far := q.light.ShadowDistance
 	if far <= 0 {
 		far = q.light.ShadowRadius
@@ -309,9 +310,17 @@ func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4
 		centre = view.Inverse().MulPoint(c)
 		view = lin.LookAt(centre.Sub(dir.Mul(radius*2)), centre, lightUp)
 		mats[i] = lin.Ortho(-radius, radius, -radius, radius, 0.1, radius*4).Mul(view)
+		switch i {
+		case 0:
+			radii.X = radius
+		case 1:
+			radii.Y = radius
+		default:
+			radii.Z = radius
+		}
 		prev = ends[i]
 	}
-	return mats, splits
+	return mats, splits, radii
 }
 
 func abs32(v float32) float32 {
@@ -338,7 +347,7 @@ func (q *drawQueue) writeUniforms(slot int, aspect float32) error {
 	if ground == (Color{}) {
 		ground = l.Ambient
 	}
-	mats, splits := q.cascades(aspect)
+	mats, splits, radii := q.cascades(aspect)
 	u := frameUniforms{
 		viewProj:      q.camera.ViewProj(aspect),
 		view:          q.camera.viewMatrix(),
@@ -350,6 +359,7 @@ func (q *drawQueue) writeUniforms(slot int, aspect float32) error {
 		ground:        lin.V4(ground.R, ground.G, ground.B, 1),
 		params:        lin.V4(shadowMapSize, boolFloat(l.Shadows), float32(len(q.points)), 0),
 		splits:        splits,
+		radii:         radii,
 	}
 	for i, p := range q.points {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
