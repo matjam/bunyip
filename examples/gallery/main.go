@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 
+	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/matjam/bunyip"
@@ -40,6 +41,21 @@ type gallery struct {
 	skinTex  []*gfx.Texture
 	useSkin  bool
 	shotDone bool
+
+	// The second window's state.
+	bold     *gfx.Font
+	win      ui.Rect
+	tab      int
+	radio    int
+	lives    int
+	players  int
+	sel      int
+	fog      bool
+	notes    string
+	linkHits int
+	tint     gfx.Color
+	confirm  bool
+	about    bool
 }
 
 func (g *gallery) Init(ctx *bunyip.Context) error {
@@ -50,7 +66,14 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	if g.big, err = ctx.Gfx.NewSDFFont(goregular.TTF, 32, gfx.FontOptions{AtlasSize: 1024}); err != nil {
 		return err
 	}
+	if g.bold, err = ctx.Gfx.NewFont(gobold.TTF, 16, gfx.FontOptions{}); err != nil {
+		return err
+	}
 	g.volume, g.check = 0.65, true
+	g.win = ui.Rect{X: 560, Y: 200, W: 320, H: 350}
+	g.lives, g.players, g.sel = 3, 2, 1
+	g.tint = gfx.RGB(255, 140, 40)
+	g.notes = "Multi-line notes wrap here.\nSelect with Shift and the arrows, cut, copy, paste and undo."
 	names := ui.ThemeNames()
 	for i, n := range names {
 		if n == g.theme {
@@ -87,6 +110,7 @@ func (g *gallery) applyTheme() {
 func (g *gallery) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
 	g.big.Destroy()
+	g.bold.Destroy()
 	for _, t := range g.skinTex {
 		t.Destroy()
 	}
@@ -115,7 +139,74 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 	ctx.Gfx.DrawTextBlock(g.big, "scalable text from one atlas", 384, 130, gfx.TextOptions{Size: 22}, gfx.RGB(200, 200, 215))
 	ctx.Gfx.DrawTextBlock(g.big, "tiny", 384, 160, gfx.TextOptions{Size: 11}, gfx.RGB(150, 150, 170))
 	u := g.ui
+	u.Theme.BoldFont = g.bold
+	u.Clipboard = ctx
 	u.Begin(ctx.Input, func() {
+		u.MenuBar(ui.Rect{X: 0, Y: 0, W: ctx.Width, H: 22}, func() {
+			u.Menu("File", func() {
+				if u.MenuItem("Reset clicks") {
+					g.clicks = 0
+				}
+				if u.MenuItem("Quit") {
+					g.confirm = true
+				}
+			})
+			u.Menu("Help", func() {
+				if u.MenuItem("About") {
+					g.about = true
+				}
+			})
+		})
+		u.Window("More widgets (drag me)", &g.win, func() {
+			u.Tabs([]string{"Widgets", "Text", "Colour"}, &g.tab)
+			switch g.tab {
+			case 0:
+				u.Row(3, func() {
+					for i, d := range []string{"Easy", "Normal", "Hard"} {
+						u.Radio(d, &g.radio, i)
+					}
+				})
+				u.IntSlider("Lives", &g.lives, 1, 9)
+				u.Spinner("Players", &g.players, 1, 8, 1)
+				u.ListBox("Maps", 56, []string{"Archipelago", "Pangaea", "Fractal", "Highlands"}, &g.sel)
+				u.TreeOpen("Options", func() {
+					u.Checkbox("Fog of war", &g.fog)
+				})
+			case 1:
+				u.TextArea("Notes", &g.notes, 120)
+				if link := u.RichLabel("[b]Rich[/b] labels mix [#ff8a5c]colour[/#], [u]underlines[/u] and a [link=docs]link[/link] you can click."); link != "" {
+					g.linkHits++
+				}
+				u.Label(fmt.Sprintf("Link clicks: %d", g.linkHits))
+			case 2:
+				u.ColorPicker("Tint", &g.tint)
+				u.Table([]string{"Channel", "Value"}, []float32{1, 1}, 3, func(row, col int) {
+					names, vals := []string{"Red", "Green", "Blue"}, []float32{g.tint.R, g.tint.G, g.tint.B}
+					if col == 0 {
+						u.Cell(names[row])
+					} else {
+						u.Cell(fmt.Sprintf("%.2f", vals[row]))
+					}
+				})
+			}
+		})
+		u.Modal("Quit?", ui.Rect{X: ctx.Width/2 - 140, Y: ctx.Height/2 - 60, W: 280, H: 110}, &g.confirm, func() {
+			u.Label("Leave the gallery?")
+			u.Row(2, func() {
+				if u.Button("Quit") {
+					ctx.Quit()
+				}
+				if u.Button("Stay") {
+					g.confirm = false
+				}
+			})
+		})
+		u.Modal("About", ui.Rect{X: ctx.Width/2 - 160, Y: ctx.Height/2 - 70, W: 320, H: 130}, &g.about, func() {
+			u.Label("Bunyip's immediate-mode interface: every widget here is rebuilt each frame.")
+			if u.Button("Close") {
+				g.about = false
+			}
+		})
 		u.Panel("Bunyip UI gallery", ui.Rect{X: 24, Y: 24, W: 320, H: 520}, func() {
 			u.Label("Widgets rebuild every frame from Theme values; long labels wrap to the panel.")
 			u.Columns([]float32{2, 1}, func() {

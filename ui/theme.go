@@ -13,6 +13,9 @@ import "github.com/matjam/bunyip/gfx"
 // Theme is every colour and measure the widgets use.
 type Theme struct {
 	Font *gfx.Font
+	// BoldFont, ItalicFont and BoldItalicFont serve RichLabel; nil falls
+	// back to Font.
+	BoldFont, ItalicFont, BoldItalicFont *gfx.Font
 
 	Text         gfx.Color
 	TextDim      gfx.Color
@@ -31,6 +34,7 @@ type Theme struct {
 	Spacing     float32 // between stacked widgets
 	BorderWidth float32
 	RowHeight   float32 // minimum widget height
+	FocusWidth  float32 // the keyboard focus ring; zero means 2
 
 	// Skin, when set, draws widgets from textures; colours above still
 	// tint text and fill in for any slice the skin leaves nil.
@@ -129,6 +133,7 @@ func NamedTheme(name string, font *gfx.Font) (theme Theme, ok bool) {
 	t := FromPalette(font, p)
 	if name == "high-contrast" {
 		t.BorderWidth = 2
+		t.FocusWidth = 4
 	}
 	return t, true
 }

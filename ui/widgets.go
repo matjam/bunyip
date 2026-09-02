@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/matjam/bunyip/gfx"
-	"github.com/matjam/bunyip/input"
 )
 
 // Label draws text, wrapped to the width available to it.
@@ -13,6 +12,8 @@ func (c *Context) Label(text string) {
 	_, h := c.Theme.Font.Measure(text, opts)
 	r := c.next(h)
 	c.g.DrawTextBlock(c.Theme.Font, text, r.X, r.Y+(r.H-h)/2, opts, c.Theme.Text)
+	c.lastRect = r
+	c.note("label", text, "", false)
 }
 
 // Button draws a push button and reports a click.
@@ -30,6 +31,7 @@ func (c *Context) Button(label string) bool {
 	}
 	c.box(slice, r, col, c.Theme.PanelBorder)
 	c.textCentred(label, r, c.Theme.Text)
+	c.note("button", label, "", false)
 	return clicked
 }
 
@@ -57,6 +59,7 @@ func (c *Context) Checkbox(label string, value *bool) bool {
 	}
 	_, h := c.Theme.Font.Measure(label, gfx.TextOptions{})
 	c.text(label, box.X+box.W+c.Theme.Spacing, r.Y+(r.H-h)/2, c.Theme.Text)
+	c.note("checkbox", label, "", *value)
 	return clicked
 }
 
@@ -90,75 +93,15 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 	c.box(sk.Knob, knob, c.Theme.Text, gfx.Color{})
 	caption := fmt.Sprintf("%s: %.2f", label, *value)
 	c.text(caption, full.X, full.Y, c.Theme.TextDim)
-	return changed
-}
-
-// TextField edits *value with the keyboard while focused and reports a change.
-func (c *Context) TextField(label string, value *string) bool {
-	id := c.id(label)
-	r := c.next(c.Theme.RowHeight)
-	_, _, clicked := c.interact(id, r)
-	if clicked {
-		c.focus = id
-	}
-	changed := false
-	if c.focus == id {
-		for _, ch := range c.in.Chars() {
-			if ch >= ' ' {
-				*value += string(ch)
-				changed = true
-			}
-		}
-		if c.in.KeyPressed(input.KeyBackspace) && len(*value) > 0 {
-			runes := []rune(*value)
-			*value = string(runes[:len(runes)-1])
-			changed = true
-		}
-		if c.in.KeyPressed(input.KeyEnter) || c.in.KeyPressed(input.KeyEscape) {
-			c.focus = 0
-		}
-	}
-	sk := c.skin()
-	border, slice := c.Theme.FieldBorder, sk.Field
-	if c.focus == id {
-		border, slice = c.Theme.Accent, or(sk.FieldFocus, sk.Field)
-	}
-	c.box(slice, r, c.Theme.Field, border)
-	shown := *value
-	composing := ""
-	if c.focus == id {
-		composing = c.in.Composition()
-		if composing == "" {
-			shown += "_"
-		}
-		if c.OnTextInputRect != nil {
-			c.OnTextInputRect(r.X, r.Y, r.W, r.H)
-		}
-	}
-	if shown == "" && composing == "" {
-		shown = label
-	}
-	_, h := c.Theme.Font.Measure(shown, gfx.TextOptions{})
-	col := c.Theme.Text
-	if *value == "" && c.focus != id {
-		col = c.Theme.TextDim
-	}
-	c.text(shown, r.X+c.Theme.Padding, r.Y+(r.H-h)/2, col)
-	if composing != "" {
-		// The input method's uncommitted text sits after the value with an
-		// underline, the way native fields show a word mid-conversion.
-		w, _ := c.Theme.Font.Measure(shown, gfx.TextOptions{})
-		x := r.X + c.Theme.Padding + w
-		cw, ch := c.Theme.Font.Measure(composing, gfx.TextOptions{})
-		c.text(composing, x, r.Y+(r.H-h)/2, c.Theme.Accent)
-		c.fill(Rect{X: x, Y: r.Y + (r.H-h)/2 + ch, W: cw, H: 1}, c.Theme.Accent)
-	}
+	c.note("slider", label, fmt.Sprintf("%.2f", *value), false)
 	return changed
 }
 
 // Progress draws a bar filled to t in [0,1].
 func (c *Context) Progress(label string, t float32) {
 	r := c.next(c.Theme.RowHeight)
+	c.lastRect = r
+	c.note("progress", label, fmt.Sprintf("%.0f%%", t*100), false)
 	sk := c.skin()
 	c.box(sk.Track, r, c.Theme.Track, gfx.Color{})
 	c.box(sk.Fill, Rect{X: r.X, Y: r.Y, W: r.W * max(0, min(1, t)), H: r.H}, c.Theme.Accent, gfx.Color{})

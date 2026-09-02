@@ -158,14 +158,17 @@ rich text with links and hyphenation are in. What remains:
 
 ## User interface
 
-- Text editing beyond a single line: multi-line fields, selection,
-  clipboard, undo.
-- Layout: anchors and stretch rules, tables, tabs, tree views, menus,
-  modal dialogs, windows the user can drag and resize.
-- Widgets: radio buttons, integer sliders and spinners, list boxes with
-  selection, colour pickers for tools, images and icons in buttons.
-- Accessibility: screen-reader names; high-contrast is a palette only.
-- Rich text in labels.
+Multi-line editing with selection, clipboard and undo, anchors and
+splits, tabs, tables, trees, menus, modals, draggable windows, radios,
+integer sliders, spinners, list boxes, colour pickers, images, icon
+buttons, rich labels with links, and an accessibility tree are in. What
+remains:
+
+- Handing the accessibility tree to a platform screen reader; the tree
+  is there, the bridge to VoiceOver and friends is not.
+- Keyboard navigation inside lists, tables and trees (Tab reaches each
+  row; arrows do not yet move within them).
+- Drag and drop between widgets, and reordering lists.
 
 ## Physics
 

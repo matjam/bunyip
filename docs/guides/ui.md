@@ -79,3 +79,40 @@ three states, fields, checkboxes, tracks, fills, knobs and scroll thumbs.
 Any slice left nil falls back to the theme's flat colours, so a skin can
 start with just a button image. The gallery example draws a complete skin
 procedurally; a game would load PNGs the same way.
+
+## Text editing
+
+`TextField` edits one line and `TextArea` several wrapped lines in a box.
+Both have a caret, a selection made with Shift and the arrows or by
+dragging, Home and End, word jumps with Ctrl or Cmd and the arrows,
+select all, cut, copy and paste, and undo and redo (Ctrl or Cmd with Z,
+Shift+Z or Y). Set `ui.Clipboard` to the engine's `Context` and the
+clipboard is the system's.
+
+## Layout and containers
+
+`Anchored`, `Stretched` and `Split` compute rectangles from the view:
+a panel pinned to a corner, one that grows with the window, a sidebar
+beside a main area. `Tabs` switches between sets of widgets, `Table`
+lays out rows of `Cell` values or any widget under a header, `Tree` and
+`TreeOpen` nest collapsible sections, and `Window` is a panel the user
+drags by its title and resizes by its corner. `MenuBar`, `Menu` and
+`MenuItem` make a menu bar with drop-down lists, and `Modal` dims
+everything and takes all input until its flag is cleared.
+
+## More widgets
+
+`Radio` and `RadioGroup`, `IntSlider` and `Spinner` for whole numbers,
+`ListBox` for a scrolling selection, `ColorPicker` with a hue bar and a
+saturation-value square, `Image` and `ImageRegion` for pictures,
+`IconButton` for a button with a picture, and `RichLabel` for markup
+with bold, italic, colour and links (set `Theme.BoldFont` and
+`ItalicFont` for the faces), which returns the link clicked.
+
+## Accessibility
+
+`Accessible` returns the last frame's widgets in reading order with a
+role, label, value, rectangle and state, so a game or a platform layer
+can hand them to a screen reader or drive the interface from them. The
+high-contrast theme has thicker borders and a wider focus ring, and
+`Theme.FocusWidth` sets the ring for any theme.

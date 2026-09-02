@@ -91,6 +91,7 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 	_, h := c.Theme.Font.Measure(text, gfx.TextOptions{})
 	c.text(text, r.X+c.Theme.Padding, r.Y+(r.H-h)/2, c.Theme.Text)
 	c.text("v", r.X+r.W-c.Theme.Padding-8, r.Y+(r.H-h)/2, c.Theme.TextDim)
+	c.note("dropdown", label, text, c.open == id)
 	if c.open != id {
 		return false
 	}

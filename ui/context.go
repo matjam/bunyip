@@ -56,6 +56,25 @@ type Context struct {
 	focusables []focusable
 	navFocus   widgetID
 	activate   bool // the focused widget was activated this frame
+
+	// Clipboard, when set, is what text fields cut, copy and paste
+	// through; the engine's Context satisfies it.
+	Clipboard Clipboard
+
+	edits    map[widgetID]*editState
+	expanded map[widgetID]bool // tree nodes
+	drags    map[widgetID]*dragState
+	hues     map[widgetID]float32 // colour pickers' last hue
+
+	openMenu    widgetID
+	menuX       float32
+	menuBar     Rect
+	menuItems   []string
+	menuMeasure bool
+	modal       widgetID // the open modal this frame, which alone takes input
+	inModal     bool
+
+	nodes, lastNodes []AccessibleNode
 }
 
 type focusable struct {
@@ -65,7 +84,8 @@ type focusable struct {
 
 // New makes a context drawing with g under theme.
 func New(g *gfx.Graphics, theme Theme) *Context {
-	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}, scroll: map[widgetID]*scrollState{}}
+	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}, scroll: map[widgetID]*scrollState{},
+		edits: map[widgetID]*editState{}, expanded: map[widgetID]bool{}, drags: map[widgetID]*dragState{}, hues: map[widgetID]float32{}}
 }
 
 // Begin runs one frame of interface: body calls the widget methods, and
@@ -98,18 +118,21 @@ func (c *Context) begin(in *input.State) {
 	}
 	c.navigate()
 	c.focusables = c.focusables[:0]
+	c.modal = 0
+	c.nodes = c.nodes[:0]
 }
 
 // end finishes the frame: deferred overlays draw above everything and
 // the press state settles.
 func (c *Context) end() {
-	for _, d := range c.deferred {
-		d()
+	for i := 0; i < len(c.deferred); i++ {
+		c.deferred[i]() // an overlay may add more overlays
 	}
 	if c.released {
 		c.active = 0
 	}
 	c.activate = false
+	c.lastNodes = append(c.lastNodes[:0], c.nodes...)
 }
 
 // WantsMouse reports whether the pointer is over a panel, so the game can
@@ -150,9 +173,16 @@ func (c *Context) id(label string) widgetID {
 // navigation and tooltips.
 func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
 	c.lastRect, c.lastID = r, id
+	if c.modal != 0 && !c.inModal {
+		return false, false, false // a modal owns every input
+	}
 	c.focusables = append(c.focusables, focusable{id: id, rect: r})
 	if c.navFocus == id {
-		c.border(Rect{X: r.X - 2, Y: r.Y - 2, W: r.W + 4, H: r.H + 4}, c.Theme.Accent)
+		fw := c.Theme.FocusWidth
+		if fw <= 0 {
+			fw = 2
+		}
+		c.ring(Rect{X: r.X - fw, Y: r.Y - fw, W: r.W + 2*fw, H: r.H + 2*fw}, fw, c.Theme.Accent)
 		if c.activate {
 			clicked = true
 		}
@@ -183,6 +213,11 @@ func (c *Context) border(r Rect, col gfx.Color) {
 	if w <= 0 {
 		return
 	}
+	c.ring(r, w, col)
+}
+
+// ring outlines r with a line of width w.
+func (c *Context) ring(r Rect, w float32, col gfx.Color) {
 	c.g.FillRect(r.X, r.Y, r.W, w, col)
 	c.g.FillRect(r.X, r.Y+r.H-w, r.W, w, col)
 	c.g.FillRect(r.X, r.Y, w, r.H, col)
