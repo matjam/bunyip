@@ -29,6 +29,13 @@ type State struct {
 	chars            []rune
 	composition      string
 	gamepads         [MaxGamepads]Gamepad
+	held             [KeyCount]float32 // seconds each key has been down
+	step             float32           // seconds per update, for held times and double clicks
+	clock            float32           // seconds of updates so far
+	lastClick        [MouseButtonCount]float32
+	lastClickX       [MouseButtonCount]float32
+	lastClickY       [MouseButtonCount]float32
+	doubleClicked    [MouseButtonCount]bool
 
 	// Transients are cleared after every Update, but a frame may run
 	// several updates (or none) before Draw. So each update's transients
@@ -42,6 +49,7 @@ type State struct {
 type frameTransients struct {
 	pressed, released               [KeyCount]bool
 	buttonsPressed, buttonsReleased [MouseButtonCount]bool
+	doubleClicked                   [MouseButtonCount]bool
 	scrollX, scrollY                float32
 	mouseDX, mouseDY                float32
 	chars                           []rune
@@ -62,16 +70,30 @@ func (s *State) EndUpdate() {
 	for b := range s.buttonsPressed {
 		f.buttonsPressed[b] = f.buttonsPressed[b] || s.buttonsPressed[b]
 		f.buttonsReleased[b] = f.buttonsReleased[b] || s.buttonsReleased[b]
+		f.doubleClicked[b] = f.doubleClicked[b] || s.doubleClicked[b]
 	}
 	f.scrollX += s.scrollX
 	f.scrollY += s.scrollY
 	f.mouseDX += s.mouseDX
 	f.mouseDY += s.mouseDY
 	f.chars = append(f.chars, s.chars...)
+	step := s.step
+	if step <= 0 {
+		step = 1.0 / 60
+	}
+	s.clock += step
+	for k := range s.down {
+		if s.down[k] {
+			s.held[k] += step
+		} else {
+			s.held[k] = 0
+		}
+	}
 	s.pressed = [KeyCount]bool{}
 	s.released = [KeyCount]bool{}
 	s.buttonsPressed = [MouseButtonCount]bool{}
 	s.buttonsReleased = [MouseButtonCount]bool{}
+	s.doubleClicked = [MouseButtonCount]bool{}
 	s.scrollX, s.scrollY = 0, 0
 	s.mouseDX, s.mouseDY = 0, 0
 	s.chars = s.chars[:0]
@@ -83,6 +105,8 @@ func (s *State) EndUpdate() {
 		}
 		g.pressed = [GamepadButtonCount]bool{}
 		g.released = [GamepadButtonCount]bool{}
+		g.justConnected, g.justDisconnected = false, false
+		g.prevAxes = g.Axes // stick edges last one update, like presses
 	}
 }
 
@@ -104,6 +128,42 @@ func (s *State) SetDrawing(drawing bool) { s.drawing = drawing }
 
 // KeyDown reports whether the key is held.
 func (s *State) KeyDown(k Key) bool { return s.down[k] }
+
+// KeyHeld reports how long the key has been held, in seconds of updates,
+// and zero when it is up: charge-up attacks, hold-to-confirm, cheat
+// codes that want a long press.
+func (s *State) KeyHeld(k Key) float32 { return s.held[k] }
+
+// KeysDown returns every key currently held, in key order: for
+// rebinding screens and combos.
+func (s *State) KeysDown() []Key {
+	var keys []Key
+	for k, down := range s.down {
+		if down {
+			keys = append(keys, Key(k))
+		}
+	}
+	return keys
+}
+
+// SetStep tells the state how many seconds each update covers, for
+// held times and double-click timing. The engine sets it from the fixed
+// step; zero means a sixtieth of a second.
+func (s *State) SetStep(seconds float32) { s.step = seconds }
+
+// DoubleClickTime is how close two presses must be to count as a
+// double click, in seconds, and DoubleClickDistance how close in view
+// units.
+const (
+	DoubleClickTime     = 0.4
+	DoubleClickDistance = 6
+)
+
+// MouseDoubleClicked reports whether the button was pressed twice within
+// DoubleClickTime and DoubleClickDistance, on the second press.
+func (s *State) MouseDoubleClicked(b MouseButton) bool {
+	return s.doubleClicked[b] || s.drawing && s.frame.doubleClicked[b]
+}
 
 // KeyPressed reports whether the key went down since the last update
 // (or, during Draw, since the last frame). Key repeats count as presses
@@ -202,6 +262,14 @@ func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float32) {
 	s.buttons[b] = down
 	if down {
 		s.buttonsPressed[b] = true
+		dx, dy := x-s.lastClickX[b], y-s.lastClickY[b]
+		if s.lastClick[b] > 0 && s.clock-s.lastClick[b] <= DoubleClickTime && dx*dx+dy*dy <= DoubleClickDistance*DoubleClickDistance {
+			s.doubleClicked[b] = true
+			s.lastClick[b] = 0 // a third click starts over
+		} else {
+			s.lastClick[b] = s.clock + 1e-6 // never exactly zero
+		}
+		s.lastClickX[b], s.lastClickY[b] = x, y
 	} else {
 		s.buttonsReleased[b] = true
 	}

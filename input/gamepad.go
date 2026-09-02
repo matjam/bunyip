@@ -40,12 +40,14 @@ const MaxGamepads = 4
 
 // Gamepad is one controller's current state.
 type Gamepad struct {
-	Connected bool
-	Name      string
-	Buttons   [GamepadButtonCount]bool
-	Axes      [GamepadAxisCount]float32
-	pressed   [GamepadButtonCount]bool
-	released  [GamepadButtonCount]bool
+	Connected                       bool
+	Name                            string
+	Buttons                         [GamepadButtonCount]bool
+	Axes                            [GamepadAxisCount]float32
+	pressed                         [GamepadButtonCount]bool
+	released                        [GamepadButtonCount]bool
+	prevAxes                        [GamepadAxisCount]float32 // the previous update's axes, for edges on sticks
+	justConnected, justDisconnected bool
 
 	framePressed, frameReleased [GamepadButtonCount]bool // latched for Draw
 }
@@ -99,8 +101,22 @@ func (s *State) FeedGamepad(i int, connected bool, name string, buttons [Gamepad
 			g.released[b] = true
 		}
 	}
+	if connected && !g.Connected {
+		g.justConnected = true
+	}
+	if !connected && g.Connected {
+		g.justDisconnected = true
+	}
 	g.Connected, g.Name, g.Buttons, g.Axes = connected, name, buttons, axes
 }
+
+// JustConnected reports whether the controller appeared since the last
+// update, for a "player 2 joined" prompt.
+func (g *Gamepad) JustConnected() bool { return g.justConnected }
+
+// JustDisconnected reports whether the controller went away since the
+// last update, so a game can pause.
+func (g *Gamepad) JustDisconnected() bool { return g.justDisconnected }
 
 // MouseDelta returns pointer movement since the last update, in view units;
 // it keeps reporting while the cursor is captured.

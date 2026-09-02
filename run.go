@@ -199,6 +199,11 @@ func (l *loop) run() error {
 	last := start
 	var accumulator time.Duration
 	step := l.cfg.FixedStep
+	l.ctx.Input.SetStep(float32(step.Seconds()))
+	catchUp := l.cfg.MaxCatchUp
+	if catchUp <= 0 {
+		catchUp = 250 * time.Millisecond
+	}
 	for !l.ctx.quit && !l.win.Closed() {
 		wait := l.cfg.TurnBased && !l.ctx.redraw
 		l.ctx.redraw = false
@@ -223,11 +228,15 @@ func (l *loop) run() error {
 		} else {
 			accumulator += now.Sub(last)
 			last = now
-			if accumulator > 250*time.Millisecond { // do not spiral after a stall
-				accumulator = 250 * time.Millisecond
+			if accumulator > catchUp { // do not spiral after a stall
+				accumulator = catchUp
 			}
 			l.ctx.Delta = step.Seconds()
-			for accumulator >= step {
+			for steps := 0; accumulator >= step; steps++ {
+				if l.cfg.MaxSteps > 0 && steps >= l.cfg.MaxSteps {
+					accumulator = 0 // drop the rest of the lost time
+					break
+				}
 				accumulator -= step
 				if err := l.update(); err != nil {
 					return err

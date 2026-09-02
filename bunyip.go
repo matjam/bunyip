@@ -1,13 +1,36 @@
 // Package bunyip is the engine's front door. A game implements Game, fills
 // in a Config and calls Run; the engine owns the window, the event loop,
-// the renderer and the frame pacing.
+// the renderer, the audio device and the frame pacing, and hands the game
+// a Context each call with the input state, the Graphics to draw with,
+// the audio Mixer, the clock and the window controls.
+//
+// # The loop
 //
 // Two loop modes serve two kinds of game. Real-time games get a fixed
-// timestep: Update runs at Config.FixedStep regardless of frame rate and
-// Draw runs once per frame. Turn-based games set TurnBased, and the loop
-// then sleeps in the operating system until input arrives, running one
-// Update and one Draw per batch of events; the process uses no CPU while
-// the player thinks.
+// timestep: Update runs at Config.FixedStep regardless of frame rate,
+// Draw runs once per frame, and Context.Alpha says how far the next
+// update is so drawing can interpolate. Turn-based games set TurnBased,
+// and the loop then sleeps in the operating system until input arrives
+// (or Context.Wake is called from another goroutine), running one Update
+// and one Draw per batch of events; the process uses no CPU while the
+// player thinks.
+//
+// # The view
+//
+// Config.ViewWidth and ViewHeight fix the game's coordinate space and
+// the window scales it by Config.Scaling (fit with letterboxing, whole
+// multiples for pixel art, or stretch); without them the view follows
+// the window's size in points. Config.Headless runs the same loop
+// without a window for tests and screenshot runs, and
+// Context.Screenshot saves any frame.
+//
+// # Errors and exit
+//
+// Returning an error from Init, Update or Draw stops the loop and Run
+// returns it; Context.Quit stops it cleanly. With Config.HandleClose the
+// window's close button sets Context.CloseRequested instead of quitting,
+// so a game can save or ask first. A lost graphics device is rebuilt
+// and Init runs again, so Init must be safe to run twice.
 package bunyip
 
 import (
@@ -31,6 +54,13 @@ type Config struct {
 
 	TurnBased bool          // wait for input instead of running a clock
 	FixedStep time.Duration // real-time update interval; default 1/60 s
+	// MaxCatchUp caps how much lost time the loop makes up with extra
+	// updates after a stall (a window drag, a long load), so a game does
+	// not spiral into ever more updates per frame; the rest is dropped.
+	// Zero means a quarter of a second. MaxSteps caps the updates in one
+	// frame the same way; zero means no cap beyond MaxCatchUp.
+	MaxCatchUp time.Duration
+	MaxSteps   int
 
 	// ViewWidth and ViewHeight fix the game's view in view units: the 2D
 	// coordinate space and the 3D viewport. The window scales that view by

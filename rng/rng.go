@@ -2,6 +2,15 @@
 // for games: the same seed always gives the same sequence on every
 // platform, streams can be forked so systems do not disturb each other,
 // and the state can be saved and restored.
+//
+// New(seed) makes a source; Fork derives an independent stream from it,
+// so a dungeon generator, loot tables and particle jitter each take
+// their own and adding a call to one never changes what another
+// produces, which keeps seeds shareable and replays exact. Beyond the
+// integer and float draws there are the game helpers: Roll for dice
+// notation ("2d6+1"), Chance, Range and Between, Pick, WeightedIndex,
+// Shuffle and Normal. State and Restore put the generator into a save
+// file. Sources are not safe for concurrent use; fork one per goroutine.
 package rng
 
 import (

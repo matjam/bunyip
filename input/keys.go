@@ -1,6 +1,27 @@
-// Package input defines the platform-independent vocabulary for keyboards,
-// mice and gamepads: key codes by physical position, modifier bits and
-// button numbers. Platform layers translate native events into these values.
+// Package input is the state of the keyboard, mouse and gamepads as a
+// game reads it, and the vocabulary the platform layers fill it with.
+//
+// State holds every key, button, stick and the pointer. Levels (KeyDown,
+// MouseDown, Gamepad.Down) say what is held now; edges (KeyPressed,
+// KeyReleased and their mouse and gamepad twins) say what changed since
+// the last update and are cleared by the engine after each one, so a
+// press is seen exactly once however many updates or frames it spans.
+// During Draw the edges cover the whole drawn frame instead, so an
+// immediate-mode interface built in Draw misses nothing. KeyHeld,
+// KeysDown, KeyRepeated and MouseDoubleClicked cover charged shots,
+// combos, scrolling menus and double clicks; Chars and Composition carry
+// typed text with the keyboard layout and input method applied.
+//
+// Keys are named by physical position (KeyW is the key in W's place on
+// a US keyboard whatever it prints), which is what movement bindings
+// want; Key.String names them for prompts. Actions maps named actions
+// to any keys, buttons and axes, with dead zones, rebinding through
+// Listen and JSON bindings for a settings file, so game code asks for
+// "jump" and takes a gamepad without a second set of checks.
+//
+// The Feed* methods and EndUpdate, EndFrame and SetDrawing are the
+// engine's plumbing; a game under bunyip.Run never calls them, and a
+// test drives a State through them.
 package input
 
 // Key identifies a physical key by position, independent of the active

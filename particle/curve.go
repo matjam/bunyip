@@ -3,6 +3,17 @@
 // Emitter of plain fields. New makes a System from an Emitter; the game
 // calls Update each step and Draw each frame.
 //
+// An Emitter says how many particles a second (or a Burst of how many
+// at once), where they start (a point, a circle, a rectangle, a line),
+// their speed, direction and spread, lifetime, size and colour over
+// life as Curves and Gradients, gravity and drag, spin, and the texture
+// or region each is drawn with, additive or blended. Presets (Fire,
+// Smoke, Sparks, Rain, Confetti and more) are starting points a game
+// tweaks. A System owns the live particles and can be moved, paused,
+// stopped when its emitter finishes, and asked how many are alive.
+// Thousands of particles are cheap; tens of thousands still draw as one
+// batch but cost CPU in Update.
+//
 // Emitter fields follow "zero means the default": an empty Emitter emits
 // nothing but is valid, and every preset is an Emitter a game can tweak
 // before or after New. Sizes and positions are in view units, angles in

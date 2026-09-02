@@ -6,18 +6,27 @@ anything else that wants 2D sprites and 3D models on the same screen.
 - Vulkan rendering through a generated, cgo-free binding (MoltenVK on macOS).
 - Native window, input and audio layers per platform; no SDL, no GLFW.
 - `CGO_ENABLED=0` everywhere. Native libraries are opened at runtime with purego.
-- Physically based rendering with cascaded shadow maps, SSAO, bloom, FXAA and
-  tone mapping; skeletal animation; automatic instancing; render textures;
-  picking. Sprites, tilemaps, cameras and scalable SDF text on top.
-- Immediate-mode, themeable UI with scroll areas, drop-downs, tooltips and
-  keyboard or gamepad navigation. glTF 2.0 models. Fullscreen, cursor
-  capture, gamepads, IME text input.
+- Physically based rendering with clearcoat, sheen, subsurface and glass,
+  cascaded shadow maps, point and spot lights, a procedural sky or
+  image-based lighting, fog, SSAO, bloom, FXAA and tone mapping; skeletal
+  animation; automatic instancing and frustum culling; levels of detail;
+  billboards and labels in the world; decals, outlines and x-ray; dynamic
+  meshes and terrain; render textures; picking. Sprites, tilemaps, vector
+  paths, particles, shaped text with emoji and rich markup on top, and
+  game-written sprite and surface shaders.
+- Immediate-mode, themeable UI: panels, windows, tabs, tables, trees,
+  menus and modals; text fields with selection, clipboard and undo;
+  sliders, spinners, list boxes, colour pickers, tooltips; keyboard or
+  gamepad navigation and an accessibility tree. glTF 2.0 models.
+  Fullscreen, cursor capture, gamepads, IME text input, action maps with
+  rebinding.
 - Audio mixer with streamed WAV, Ogg Vorbis and MP3, positional voices,
   reverb and filters, priorities, and a tracker player for MOD, S3M, XM and IT.
 - Game services: an archetype-based entity component system with systems,
-  resources and events; assets and packs with async loading and hot reload,
-  saves and settings, seeded RNG, timers and tweens, grids with pathfinding
-  and field of view, TCP and UDP messaging.
+  resources, events, saving, prefabs and cloning; assets and packs with
+  async loading and hot reload, saves and settings, seeded RNG, timers and
+  tweens, grids with pathfinding and field of view, Tiled maps, TCP and
+  UDP messaging with interpolation and prediction helpers.
 - A fixed view scaled into the window (fit, integer or stretch), an
   interpolation factor for smooth motion, window title, icon, cursor and
   clipboard control, and headless runs for tests and screenshots.
@@ -45,14 +54,16 @@ output.
 | Package | What |
 |---|---|
 | `bunyip` | `Run`, `Config`, `Game`, `Context`: the loop and everything a game touches |
-| `gfx` | textures, sprites, text, meshes, materials, camera, light, models |
-| `ui` | immediate-mode widgets with a `Theme` |
+| `gfx` | textures, sprites, paths, text, meshes, materials, cameras, lights, fog, culling, LOD, billboards, models, post-processing |
+| `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
+| `particle` | CPU particle systems drawn through the sprite batch |
+| `tiled` | maps from the Tiled editor, built into drawable levels |
 | `audio` | mixer, voices, streams; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
 | `audio/tracker` | MOD, S3M, XM and IT loader and player |
-| `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State` |
+| `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State`, action maps |
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
 | `lin` | vectors, matrices, quaternions |
-| `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy |
+| `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs |
 | `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons |
 | `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, spheres; impulse solver with friction and restitution; triggers, layers, raycasts |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
@@ -61,7 +72,7 @@ output.
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
 | `timer`, `tween` | game-time timers; eased value animation |
 | `grid` | cell grids, A*, Dijkstra maps, lines, field of view, flood fill |
-| `network` | typed messages over TCP (ordered) and UDP (fast) |
+| `network` | typed messages over TCP (ordered) and UDP (fast); interpolation, prediction, lag compensation and clock sync helpers |
 | `internal/vk` | generated Vulkan binding plus hand-written loader |
 | `internal/render` | Vulkan backend: device, swapchain, frames in flight, pipelines, uploads, readback |
 | `internal/platform` | per-OS window, events, surface creation |
@@ -125,6 +136,7 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
 | `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |
 | `go run ./examples/text [-font file.ttf]` | HarfBuzz-shaped text: kerning and ligatures, Arabic joining, right-to-left and mixed lines, a fallback font, Unicode wrapping, vertical text, distance-field text |
+| `go run ./examples/terrain` | a heightfield with a lake, billboard trees, rocks at three levels of detail, campfires and a searchlight, distance and valley fog, labels in the world, frustum culling counts, and terrain dug with a click |
 | `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |

@@ -51,23 +51,23 @@ comments) has landed. What remains:
 
 ## Game loop
 
-- A frame-time cap and maximum catch-up steps in `Config`; today a
-  stall is clamped to a quarter second.
+`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall.
+What remains:
+
 - Pausing the loop (and the mixer) when the window is hidden or
   minimised, as an option; `Mixer.SetPaused` exists for the game to
   call.
 
 ## Input
 
+Action maps with rebinding and JSON bindings, held-key durations, the
+list of keys down, double clicks, and gamepad connect and disconnect
+events are in. What remains:
+
 - Touch input with multi-touch points and the usual gestures.
-- Gamepad rumble; connect and disconnect events; controller names and a
-  mapping database so unusual controllers land on the standard layout;
-  the current mapping is unverified against real hardware.
-- Input action maps: named actions bound to keys, buttons and axes,
-  with dead zones, rebinding at runtime and a serialisable binding set.
-- Held-key durations and a list of keys currently down, for rebinding
-  screens and cheat codes; `KeyRepeated` reports OS repeats.
-- Double-click detection.
+- Gamepad rumble; a mapping database so unusual controllers land on the
+  standard layout; the current mapping is unverified against real
+  hardware.
 - Key names in the user's layout (what is printed on the key) beside the
   positional `Key.String`, for on-screen prompts.
 
@@ -201,7 +201,10 @@ remains:
 
 ## Networking
 
-- Client-side prediction, interpolation and lag compensation helpers.
+`Interpolator`, `Predictor`, `History` and `Clock` cover interpolation,
+prediction with reconciliation, lag compensation and server time. What
+remains:
+
 - Reliable-ordered channels over UDP; NAT traversal; matchmaking.
 - Snapshot delta compression and interest management.
 - Encryption and authentication.

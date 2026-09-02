@@ -2,6 +2,18 @@
 // (.tmj or .json maps, .tsj tilesets) into plain Go types, and builds
 // drawable levels from them. Parse and Load need no GPU; Build turns a
 // Map into gfx tilemaps for drawing.
+//
+// A Map has tile layers (CSV or base64 with zlib or gzip compression,
+// flipped and rotated tiles), object layers (rectangles, ellipses,
+// points, polygons and polylines with their names, types and custom
+// properties, for spawn points, triggers and collision shapes), image
+// layers and groups, and tilesets embedded or external with per-tile
+// animations, collision shapes and properties. Build loads the
+// tilesets' images, makes one gfx.Tilemap per tile layer with the
+// animations wired up, and returns a Level whose Draw draws the layers
+// in order; a game keeps the object layers to place its entities.
+// Properties are typed (string, int, float, bool, colour, file, object)
+// and read with the accessors on Properties.
 package tiled
 
 import (
