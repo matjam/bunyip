@@ -318,6 +318,23 @@ func (s *Shader) uniformOffset() int32 {
 	return int32(s.offset)
 }
 
+// Reload replaces the shader's program with newly compiled SPIR-V from
+// bunyip-shader, rebuilding its pipelines, so a game watching its shader
+// files (asset.Watcher) can swap them while it runs. Images and uniforms
+// are kept. It waits for the GPU first.
+func (s *Shader) Reload(spirv []byte) error {
+	fresh, err := s.g.newShader(spirv, s.mesh)
+	if err != nil {
+		return err
+	}
+	_ = s.g.r.Device.WaitIdle()
+	for _, p := range s.pipes {
+		p.Destroy()
+	}
+	s.frag, s.stages, s.pipes = fresh.frag, fresh.stages, fresh.pipes
+	return nil
+}
+
 // Destroy frees the shader's pipelines. It must not be in use by a frame
 // in flight.
 func (s *Shader) Destroy() {

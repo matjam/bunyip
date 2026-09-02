@@ -9,34 +9,37 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	stream     stream2D
-	draws      []meshDraw
-	decals     []decal
-	camera     Camera
-	light      Light
-	hasCam     bool
-	points     []pointLight
-	uniforms   *render.UniformSets
-	inst       instanceStream
-	joints     []lin.Mat4 // joint matrices for skinned draws this frame
-	jointBuf   *render.StorageSets
-	clear      Color
-	viewW      float32
-	viewH      float32
-	pixelW     float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)
-	proj       lin.Mat4 // screen-space projection
-	spriteProj lin.Mat4 // projection for sprite draws right now
-	cam2D      Camera2D
-	hasCam2D   bool
-	layer      int32
-	clips      []lin.Rect // clip stack; the last entry applies
-	shader     *Shader    // 2D shader in force, nil for the default
-	blend      Blend
-	xform      lin.Affine   // composed 2D transform in force
-	xforms     []lin.Affine // transform stack below it
-	skyCached  Sky          // the sky whose harmonics are in skySH
-	skySH      [9]lin.Vec4
-	lines      lineStream // debug lines drawn over the 3D scene
+	stream      stream2D
+	draws       []meshDraw
+	decals      []decal
+	camera      Camera
+	light       Light
+	hasCam      bool
+	points      []pointLight
+	uniforms    *render.UniformSets
+	inst        instanceStream
+	joints      []lin.Mat4 // joint matrices for skinned draws this frame
+	jointBuf    *render.StorageSets
+	clear       Color
+	viewW       float32
+	viewH       float32
+	pixelW      float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)
+	proj        lin.Mat4 // screen-space projection
+	spriteProj  lin.Mat4 // projection for sprite draws right now
+	cam2D       Camera2D
+	hasCam2D    bool
+	layer       int32
+	clips       []lin.Rect // clip stack; the last entry applies
+	shader      *Shader    // 2D shader in force, nil for the default
+	blend       Blend
+	colorMatrix *ColorMatrix // recolouring in force, nil for none
+	lights      lights2D     // this frame's 2D lights
+	lightsDirty bool
+	xform       lin.Affine   // composed 2D transform in force
+	xforms      []lin.Affine // transform stack below it
+	skyCached   Sky          // the sky whose harmonics are in skySH
+	skySH       [9]lin.Vec4
+	lines       lineStream // debug lines drawn over the 3D scene
 }
 
 func (q *drawQueue) reset() {
@@ -53,6 +56,9 @@ func (q *drawQueue) reset() {
 	q.clips = q.clips[:0]
 	q.shader = nil
 	q.blend = BlendAlpha
+	q.colorMatrix = nil
+	q.lights = lights2D{Ambient: lin.V4(1, 1, 1, 0)}
+	q.lightsDirty = true
 	q.xform = lin.Identity2()
 	q.xforms = q.xforms[:0]
 }

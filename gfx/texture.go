@@ -14,7 +14,8 @@ type Texture struct {
 	Width, Height int
 	img           *render.Image
 	set           vk.VkDescriptorSet
-	sdf           bool // drawn through the distance-field pipeline
+	altSet        vk.VkDescriptorSet // the other filtering, made on first use
+	sdf           bool               // drawn through the distance-field pipeline
 	nearest       bool
 	repeat        bool
 	external      bool // image owned elsewhere (render textures)
@@ -69,6 +70,23 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat, g: g}, nil
 }
 
+// setFor returns the descriptor set sampling the texture with a filter:
+// its own set for the default, or one made on first use for the other
+// filtering.
+func (t *Texture) setFor(f Filter) vk.VkDescriptorSet {
+	if f == FilterDefault || (f == FilterNearest) == t.nearest {
+		return t.set
+	}
+	if t.altSet == 0 {
+		set, err := t.g.textureSet(t.img.View, t.g.sampler(f == FilterLinear, t.repeat))
+		if err != nil {
+			return t.set
+		}
+		t.altSet = set
+	}
+	return t.altSet
+}
+
 // NewBlankTexture makes a transparent texture of a size, to be filled by
 // Write: a canvas to paint on, a video frame, a procedural map.
 func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Texture, error) {
@@ -79,9 +97,10 @@ func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Tex
 }
 
 // Write replaces the pixels under src placed at (x, y), clipped to the
-// texture, and rebuilds the mip chain. It waits for the GPU to finish
-// with the texture first, so keep it to loading screens and occasional
-// updates rather than every frame.
+// texture, and rebuilds the mip chain. Inside a frame (between the
+// engine's Begin and End, which is where Update and Draw run) the copy
+// is recorded into the frame and costs no wait, so video and painting
+// can write every frame; outside one it waits for the GPU first.
 func (t *Texture) Write(x, y int, src image.Image) error {
 	if t.img == nil {
 		return fmt.Errorf("gfx: write to a destroyed texture")
@@ -93,10 +112,20 @@ func (t *Texture) Write(x, y int, src image.Image) error {
 	}
 	rgba := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
 	draw.Draw(rgba, rgba.Bounds(), src, b.Min.Add(image.Pt(r.Min.X-x, r.Min.Y-y)), draw.Src)
-	if err := t.g.r.Device.WaitIdle(); err != nil {
+	g := t.g
+	if fr := g.frame; fr != nil {
+		staging, err := g.r.Device.NewStaging(rgba.Pix)
+		if err != nil {
+			return err
+		}
+		render.RecordImageWrite(fr.CB, t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), staging)
+		g.staging[fr.Slot] = append(g.staging[fr.Slot], staging)
+		return nil
+	}
+	if err := g.r.Device.WaitIdle(); err != nil {
 		return err
 	}
-	return t.g.r.Device.WriteImage(t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), rgba.Pix)
+	return g.r.Device.WriteImage(t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), rgba.Pix)
 }
 
 // Read copies the texture's pixels back from the GPU, premultiplied as
@@ -120,6 +149,10 @@ func (t *Texture) Destroy() {
 	_ = t.g.r.Device.WaitIdle()
 	t.g.forgetTexture(t)
 	t.g.descriptors.Free(t.set)
+	if t.altSet != 0 {
+		t.g.descriptors.Free(t.altSet)
+		t.altSet = 0
+	}
 	if !t.external {
 		t.img.Destroy()
 	}

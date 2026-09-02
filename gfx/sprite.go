@@ -12,7 +12,21 @@ type Sprite struct {
 	Color    Color
 	Rotation float32
 	Origin   lin.Vec2
+	// FlipX and FlipY mirror the image, for a character facing the other
+	// way.
+	FlipX, FlipY bool
+	// Filter overrides the texture's own filtering for this draw.
+	Filter Filter
 }
+
+// Filter is how a draw samples its texture.
+type Filter uint8
+
+const (
+	FilterDefault Filter = iota // the texture's own choice
+	FilterNearest               // sharp pixels
+	FilterLinear                // smooth
+)
 
 // NineSlice is a texture drawn stretched to any size while its corners
 // keep their size and its edges stretch along one axis: panels, buttons
@@ -21,6 +35,9 @@ type Sprite struct {
 type NineSlice struct {
 	Tex                      *Texture
 	Left, Top, Right, Bottom float32
+	// Tile repeats the edge and centre pieces at their own size instead
+	// of stretching them, for patterned borders and textured fills.
+	Tile bool
 }
 
 // Region is a rectangle of a texture, the piece an atlas or a sheet frame

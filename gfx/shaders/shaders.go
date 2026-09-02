@@ -15,12 +15,18 @@ import (
 //go:generate glslangValidator -V -o sprite.vert.spv sprite.vert
 //go:generate go run ../../cmd/bunyip-shader -kind sprite -o sprite.frag.spv sprite_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind sprite -o sdf.frag.spv sdf_default.glsl
+//go:generate go run ../../cmd/bunyip-shader -kind sprite -o colormatrix.frag.spv colormatrix_default.glsl
+//go:generate go run ../../cmd/bunyip-shader -kind sprite -o lit.frag.spv lit_default.glsl
 
 var (
 	//go:embed sprite.vert.spv
 	SpriteVert []byte
 	//go:embed sprite.frag.spv
 	SpriteFrag []byte
+	//go:embed colormatrix.frag.spv
+	MatrixFrag []byte
+	//go:embed lit.frag.spv
+	LitFrag []byte
 	//go:embed sdf.frag.spv
 	SDFFrag []byte
 )

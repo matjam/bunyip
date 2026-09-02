@@ -23,8 +23,13 @@ type Graphics struct {
 	linear        vk.VkSampler
 	nearestRep    vk.VkSampler
 	linearRep     vk.VkSampler
-	spriteShader  *Shader // the default 2D shader
-	sdfShader     *Shader // distance-field text
+	spriteShader  *Shader                                 // the default 2D shader
+	sdfShader     *Shader                                 // distance-field text
+	matrixShader  *Shader                                 // sprites through a colour matrix
+	litShader     *Shader                                 // normal-mapped sprites under 2D lights
+	staging       [render.FramesInFlight][]*render.Buffer // texture writes in flight, freed when the slot comes round
+	stats         FrameStats                              // counts for the frame being recorded
+	lastStats     FrameStats                              // the last finished frame's counts
 	meshes        meshPass
 	post          postPass
 	white         *Texture
@@ -136,7 +141,9 @@ func New(r *render.Renderer) (*Graphics, error) {
 	}
 	g.spriteShader = &Shader{g: g, frag: shaders.SpriteFrag, pipes: map[pipeKey]*render.Pipeline{}}
 	g.sdfShader = &Shader{g: g, frag: shaders.SDFFrag, pipes: map[pipeKey]*render.Pipeline{}}
-	for _, s := range []*Shader{g.spriteShader, g.sdfShader} {
+	g.matrixShader = &Shader{g: g, frag: shaders.MatrixFrag, pipes: map[pipeKey]*render.Pipeline{}}
+	g.litShader = &Shader{g: g, frag: shaders.LitFrag, pipes: map[pipeKey]*render.Pipeline{}}
+	for _, s := range []*Shader{g.spriteShader, g.sdfShader, g.matrixShader, g.litShader} {
 		if _, err := s.pipeline(pipeKey{}); err != nil {
 			return nil, err
 		}
@@ -180,6 +187,11 @@ func (g *Graphics) Begin(clear Color) (ok bool, err error) {
 	}
 	g.frameNo++
 	g.arena.Reset()
+	for _, b := range g.staging[g.frame.Slot] {
+		b.Destroy() // the frame that used it has finished; BeginFrame waited
+	}
+	g.staging[g.frame.Slot] = g.staging[g.frame.Slot][:0]
+	g.stats = FrameStats{}
 	g.main.reset()
 	g.main.clear = clear
 	g.cur = g.main
@@ -199,8 +211,14 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.Color == (Color{}) {
 		s.Color = White
 	}
+	if s.FlipX {
+		s.UV0.X, s.UV1.X = s.UV1.X, s.UV0.X
+	}
+	if s.FlipY {
+		s.UV0.Y, s.UV1.Y = s.UV1.Y, s.UV0.Y
+	}
 	g.scratch = spriteVertices(s, g.scratch[:0])
-	g.emit(tex, g.scratch)
+	g.emitFiltered(tex, g.scratch, s.Filter)
 }
 
 // DrawTriangles queues textured triangles: three vertices each, with
@@ -226,6 +244,37 @@ type Vertex2D struct {
 	UV    lin.Vec2
 	Color Color // zero means white
 }
+
+// DrawIndexed queues textured triangles from vertices and indices,
+// three indices per triangle, for meshes whose vertices are shared.
+func (g *Graphics) DrawIndexed(tex *Texture, verts []Vertex2D, indices []uint32) {
+	g.scratch = g.scratch[:0]
+	for _, i := range indices[:len(indices)/3*3] {
+		if int(i) >= len(verts) {
+			continue
+		}
+		v := verts[i]
+		c := v.Color
+		if c == (Color{}) {
+			c = White
+		}
+		g.scratch = append(g.scratch, vertex2D{pos: v.Pos, uv: v.UV, color: c.premultiplied()})
+	}
+	g.scratch = g.scratch[:len(g.scratch)/3*3]
+	g.emit(tex, g.scratch)
+}
+
+// FrameStats counts what a frame cost the GPU, for the debug overlay and
+// a draw-call budget.
+type FrameStats struct {
+	Draws2D    int // 2D draw calls after batching
+	Vertices2D int // 2D vertices drawn
+	Draws3D    int // mesh draw calls after instancing, all passes
+	Instances  int // mesh instances drawn in the main pass
+}
+
+// Stats returns the last finished frame's counts.
+func (g *Graphics) Stats() FrameStats { return g.lastStats }
 
 // PushClip limits later sprite drawing to a view-space rectangle,
 // intersected with any enclosing clip. Pair with PopClip.
@@ -293,6 +342,7 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 		return nil, err
 	}
 	img, err := g.r.EndFrame(fr, capture)
+	g.lastStats = g.stats
 	for _, t := range g.retired {
 		t.Destroy() // waits for the device, so the submitted frame is done with it
 	}
@@ -367,6 +417,8 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	if err := st.upload(g.r.Device, fr.Slot); err != nil {
 		return err
 	}
+	g.stats.Draws2D += len(st.draws)
+	g.stats.Vertices2D += len(st.ordered)
 	cb := fr.CB
 	render.SetViewportRect(cb, vp)
 	var offset vk.VkDeviceSize
@@ -439,6 +491,14 @@ func (g *Graphics) Destroy() {
 	}
 	g.spriteShader.Destroy()
 	g.sdfShader.Destroy()
+	g.matrixShader.Destroy()
+	g.litShader.Destroy()
+	for slot := range g.staging {
+		for _, b := range g.staging[slot] {
+			b.Destroy()
+		}
+		g.staging[slot] = nil
+	}
 	if g.uniforms != nil {
 		g.uniforms.Destroy()
 	}

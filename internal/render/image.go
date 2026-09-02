@@ -161,27 +161,47 @@ func (d *Device) WriteImage(img *Image, x, y, w, h int, pixels []byte) error {
 	if err := staging.Write(0, pixels[:w*h*4]); err != nil {
 		return err
 	}
+	return d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageWrite(cb, img, x, y, w, h, staging) })
+}
+
+// NewStaging makes a host-visible buffer holding pixels, for
+// RecordImageWrite inside a frame; destroy it once that frame is done.
+func (d *Device) NewStaging(pixels []byte) (*Buffer, error) {
+	staging, err := d.NewBuffer(vk.VkDeviceSize(len(pixels)), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if err != nil {
+		return nil, err
+	}
+	if err := staging.Write(0, pixels); err != nil {
+		staging.Destroy()
+		return nil, err
+	}
+	return staging, nil
+}
+
+// RecordImageWrite records a copy of a staging buffer into a rectangle
+// of a sampled image, with the barriers that order it after earlier
+// reads on the queue and before later ones, and rebuilds the mip chain.
+func RecordImageWrite(cb vk.VkCommandBuffer, img *Image, x, y, w, h int, staging *Buffer) {
 	mips := max(img.Mips, 1)
-	return d.OneShot(func(cb vk.VkCommandBuffer) {
-		imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
-			vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
-		region := vk.VkBufferImageCopy{
-			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
-			ImageOffset:      vk.VkOffset3D{X: int32(x), Y: int32(y)},
-			ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
-		}
-		vk.VkCmdCopyBufferToImage(cb, staging.Handle, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region)
-		if mips > 1 {
-			generateMips(cb, img)
-			return
-		}
-		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
-	})
+	imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
+		vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+		vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
+	region := vk.VkBufferImageCopy{
+		ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+		ImageOffset:      vk.VkOffset3D{X: int32(x), Y: int32(y)},
+		ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
+	}
+	vk.VkCmdCopyBufferToImage(cb, staging.Handle, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region)
+	if mips > 1 {
+		generateMips(cb, img)
+		return
+	}
+	imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+		vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 }
 
 // ReadImage copies level 0 of an image that is in shader-read-only layout

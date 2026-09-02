@@ -187,7 +187,10 @@ func vertex2DLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInputA
 // emit queues 2D triangles under the queue's current shader, blend, clip,
 // layer and transform. Positions are in view units (or world units under
 // a 2D camera) and pass through the transform stack.
-func (g *Graphics) emit(tex *Texture, verts []vertex2D) {
+func (g *Graphics) emit(tex *Texture, verts []vertex2D) { g.emitFiltered(tex, verts, FilterDefault) }
+
+// emitFiltered is emit with a per-draw filtering override.
+func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
 	if len(verts) == 0 {
 		return
 	}
@@ -200,6 +203,9 @@ func (g *Graphics) emit(tex *Texture, verts []vertex2D) {
 		shader = g.spriteShader
 		if tex.sdf {
 			shader = g.sdfShader
+		}
+		if q.colorMatrix != nil && !tex.sdf {
+			shader = g.matrixShader
 		}
 	}
 	if !q.xform.IsIdentity() {
@@ -214,7 +220,7 @@ func (g *Graphics) emit(tex *Texture, verts []vertex2D) {
 	if shader != nil && shader.images != [4]*Texture{} {
 		st.set = g.imageSet(tex, shader.images)
 	} else {
-		st.set = tex.set
+		st.set = tex.setFor(filter)
 	}
 	q.stream.add(st, q.layer, verts)
 }

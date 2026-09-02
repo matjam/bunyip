@@ -328,6 +328,8 @@ func (l *loop) publishStats() {
 	s.DrawMS = ms(l.drawDur)
 	s.Updates = l.updates
 	s.Scopes = append(s.Scopes[:0], l.ctx.scopes...)
+	gs := l.ctx.Gfx.Stats()
+	s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances = gs.Draws2D, gs.Vertices2D, gs.Draws3D, gs.Instances
 }
 
 func (l *loop) handleEvents(events []platform.Event) {

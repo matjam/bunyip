@@ -300,7 +300,10 @@ type FillOptions struct {
 	Texture       *Texture
 	TextureOrigin lin.Vec2
 	TextureSize   lin.Vec2
-	NoAntiAlias   bool
+	// Gradient colours the fill by position instead of a texture; the
+	// colour argument then tints it.
+	Gradient    *Gradient
+	NoAntiAlias bool
 }
 
 // LineCap is how a stroke ends.
@@ -323,10 +326,16 @@ const (
 
 // StrokeOptions controls StrokePath.
 type StrokeOptions struct {
-	Width       float32 // zero means 1
-	Cap         LineCap
-	Join        LineJoin
-	MiterLimit  float32 // miter length over width beyond which corners bevel; zero means 4
+	Width      float32 // zero means 1
+	Cap        LineCap
+	Join       LineJoin
+	MiterLimit float32 // miter length over width beyond which corners bevel; zero means 4
+	// Dash is a pattern of on and off lengths in view units, repeated
+	// along the path, starting DashOffset in; empty strokes solid.
+	Dash       []float32
+	DashOffset float32
+	// Gradient colours the stroke by position; the colour then tints it.
+	Gradient    *Gradient
 	NoAntiAlias bool
 }
 
@@ -360,7 +369,9 @@ func (g *Graphics) FillPath(p *Path, c Color, opts FillOptions) {
 	if opts.NoAntiAlias {
 		b.fringe = 0
 	}
-	if opts.Texture != nil {
+	if opts.Gradient != nil && opts.Gradient.tex != nil {
+		b.tex, b.grad = opts.Gradient.tex, opts.Gradient
+	} else if opts.Texture != nil {
 		b.tex = opts.Texture
 		b.uvOrigin, b.uvSize = opts.TextureOrigin, opts.TextureSize
 		if b.uvSize == (lin.Vec2{}) {
@@ -404,6 +415,7 @@ type filler struct {
 	color    [4]float32
 	fringe   float32
 	tex      *Texture
+	grad     *Gradient
 	uvOrigin lin.Vec2
 	uvSize   lin.Vec2
 	verts    []vertex2D
@@ -427,7 +439,9 @@ func (b *filler) vertex(p lin.Vec2, alpha float32) vertex2D {
 		}
 	}
 	var uv lin.Vec2
-	if b.tex != nil {
+	if b.grad != nil {
+		uv = b.grad.uv(p)
+	} else if b.tex != nil {
 		uv = lin.V2((p.X-b.uvOrigin.X)/b.uvSize.X, (p.Y-b.uvOrigin.Y)/b.uvSize.Y)
 	}
 	return vertex2D{pos: p, uv: uv, color: c}
@@ -578,10 +592,20 @@ func (g *Graphics) StrokePath(p *Path, c Color, opts StrokeOptions) {
 	if s.opts.MiterLimit <= 0 {
 		s.opts.MiterLimit = 4
 	}
+	var tex *Texture
+	if opts.Gradient != nil && opts.Gradient.tex != nil {
+		s.grad, tex = opts.Gradient, opts.Gradient.tex
+	}
 	for _, sub := range subs {
+		if len(opts.Dash) > 0 {
+			for _, piece := range dashed(sub, opts.Dash, opts.DashOffset) {
+				s.run(piece)
+			}
+			continue
+		}
 		s.run(sub)
 	}
-	g.emit(nil, s.verts)
+	g.emit(tex, s.verts)
 }
 
 // stroker expands polylines into triangles with joins and caps.
@@ -589,6 +613,7 @@ type stroker struct {
 	color  [4]float32
 	fringe float32
 	opts   StrokeOptions
+	grad   *Gradient
 	verts  []vertex2D
 }
 
@@ -599,7 +624,11 @@ func (s *stroker) vertex(p lin.Vec2, alpha float32) vertex2D {
 			c[i] *= alpha
 		}
 	}
-	return vertex2D{pos: p, color: c}
+	var uv lin.Vec2
+	if s.grad != nil {
+		uv = s.grad.uv(p)
+	}
+	return vertex2D{pos: p, uv: uv, color: c}
 }
 
 func (s *stroker) tri(p0, p1, p2 lin.Vec2) {

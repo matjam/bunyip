@@ -740,6 +740,10 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		vk.VkCmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &offset)
 		vk.VkCmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
 		vk.VkCmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, first+uint32(i))
+		g.stats.Draws3D++
+		if cascade == nil {
+			g.stats.Instances += run
+		}
 		i += run
 	}
 	return nil

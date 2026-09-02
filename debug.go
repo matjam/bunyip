@@ -21,6 +21,12 @@ type Stats struct {
 	PresentMS float64 // time submitting and waiting on the GPU
 	Updates   int     // Update calls this frame
 	Scopes    []Scope // Profile scopes recorded this frame
+
+	// GPU work in the last finished frame: 2D draw calls after batching
+	// and their vertices, mesh draw calls after instancing and the
+	// instances they covered. A rising Draws2D means state changes are
+	// breaking batches: textures, shaders, blend modes, clips.
+	Draws2D, Vertices2D, Draws3D, Instances int
 }
 
 // Scope is one timed section recorded with Context.Profile.
@@ -74,6 +80,7 @@ func (o *overlay) draw(ctx *Context) error {
 		fmt.Sprintf("%.0f fps  %.2f ms/frame", s.FPS, s.FrameMS),
 		fmt.Sprintf("update %.2f ms x%d  draw %.2f ms  present %.2f ms", s.UpdateMS, s.Updates, s.DrawMS, s.PresentMS),
 		fmt.Sprintf("voices %d  frame %d", ctx.Audio.Playing(), ctx.Frame),
+		fmt.Sprintf("2D %d draws %d verts  3D %d draws %d instances", s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances),
 	}
 	for _, sc := range s.Scopes {
 		lines = append(lines, fmt.Sprintf("  %s %.2f ms", sc.Name, sc.MS))
