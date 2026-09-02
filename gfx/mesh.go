@@ -226,7 +226,9 @@ func (c Camera) ViewProj(aspect float32) lin.Mat4 {
 func (c Camera) Projection(aspect float32) lin.Mat4 {
 	_, fov, near, far := c.defaults()
 	if c.Ortho > 0 {
-		return lin.Ortho(-c.Ortho*aspect, c.Ortho*aspect, -c.Ortho, c.Ortho, near, far)
+		// Ortho puts its bottom at the top of the screen, so a y-up world
+		// hands it the top first.
+		return lin.Ortho(-c.Ortho*aspect, c.Ortho*aspect, c.Ortho, -c.Ortho, near, far)
 	}
 	return lin.Perspective(fov, aspect, near, far)
 }

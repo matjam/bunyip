@@ -25,6 +25,12 @@ func NewSheet(tex *Texture, frameW, frameH int) *Sheet {
 func (s *Sheet) Count() int { return s.Columns * s.Rows }
 
 // UV returns the texture rectangle of a frame in 0..1.
+func (s *Sheet) Region(frame int) Region {
+	uv0, uv1 := s.UV(frame)
+	return Region{Tex: s.Texture, UV0: uv0, UV1: uv1}
+}
+
+// UV returns the texture rectangle of a frame in 0..1.
 func (s *Sheet) UV(frame int) (uv0, uv1 lin.Vec2) {
 	if s.Columns == 0 {
 		return lin.V2(0, 0), lin.V2(1, 1)

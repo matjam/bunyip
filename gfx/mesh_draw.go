@@ -800,6 +800,9 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err := g.drawRuns(cb, fr, q, blended, uint32(len(opaque)), nil); err != nil {
 		return err
 	}
+	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {
+		return err
+	}
 	render.EndTargetPass(cb, t.hdr)
 	if len(q.decals) > 0 {
 		g.drawDecals(cb, fr, q, t)

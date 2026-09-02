@@ -18,7 +18,8 @@ const (
 )
 
 // NewSDFFont prepares a scalable font. Size is a nominal em size in view
-// units used by DrawText; DrawTextSized draws at any size.
+// units used by DrawText; TextOptions.Size draws at any other size and
+// stays sharp, where a bitmap font would blur.
 func (g *Graphics) NewSDFFont(ttf []byte, size float32, opts FontOptions) (*Font, error) {
 	// scale is face pixels per view unit at the nominal size; the atlas is
 	// sdfOversample times coarser than the face.

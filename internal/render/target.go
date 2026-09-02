@@ -25,6 +25,12 @@ func (d *Device) NewTargetSampled(extent vk.VkExtent2D, colorFormat, depthFormat
 	return d.newTarget(extent, colorFormat, depthFormat, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 }
 
+// NewTargetReadable is NewTargetSampled with a colour image that can also
+// be read back to the host with ReadImage.
+func (d *Device) NewTargetReadable(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkFormat) (*Target, error) {
+	return d.newTarget(extent, colorFormat, depthFormat, vk.VkImageUsageFlags(vk.VK_IMAGE_USAGE_SAMPLED_BIT|vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
+}
+
 // NewTargetCopyable is NewTarget with a colour image that transfers can
 // read, for snapshots taken with CopyColorForSampling.
 func (d *Device) NewTargetCopyable(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkFormat) (*Target, error) {

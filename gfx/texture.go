@@ -69,6 +69,49 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat, g: g}, nil
 }
 
+// NewBlankTexture makes a transparent texture of a size, to be filled by
+// Write: a canvas to paint on, a video frame, a procedural map.
+func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Texture, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("gfx: blank texture needs a positive size")
+	}
+	return g.newTexture(width, height, make([]byte, width*height*4), opts)
+}
+
+// Write replaces the pixels under src placed at (x, y), clipped to the
+// texture, and rebuilds the mip chain. It waits for the GPU to finish
+// with the texture first, so keep it to loading screens and occasional
+// updates rather than every frame.
+func (t *Texture) Write(x, y int, src image.Image) error {
+	if t.img == nil {
+		return fmt.Errorf("gfx: write to a destroyed texture")
+	}
+	b := src.Bounds()
+	r := image.Rect(x, y, x+b.Dx(), y+b.Dy()).Intersect(image.Rect(0, 0, t.Width, t.Height))
+	if r.Empty() {
+		return nil
+	}
+	rgba := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
+	draw.Draw(rgba, rgba.Bounds(), src, b.Min.Add(image.Pt(r.Min.X-x, r.Min.Y-y)), draw.Src)
+	if err := t.g.r.Device.WaitIdle(); err != nil {
+		return err
+	}
+	return t.g.r.Device.WriteImage(t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), rgba.Pix)
+}
+
+// Read copies the texture's pixels back from the GPU, premultiplied as
+// they are stored. It waits for the GPU first; use it for screenshots of
+// render textures and tests, not per frame.
+func (t *Texture) Read() (*image.RGBA, error) {
+	if t.img == nil {
+		return nil, fmt.Errorf("gfx: read from a destroyed texture")
+	}
+	if err := t.g.r.Device.WaitIdle(); err != nil {
+		return nil, err
+	}
+	return t.g.r.Device.ReadImage(t.img)
+}
+
 // Destroy frees the texture. It must not be in use by a frame in flight.
 func (t *Texture) Destroy() {
 	if t.img == nil {

@@ -1,6 +1,9 @@
 package render
 
 import (
+	"fmt"
+	"image"
+
 	"github.com/matjam/bunyip/internal/vk"
 )
 
@@ -103,10 +106,10 @@ func (d *Device) NewImageMips(extent vk.VkExtent2D, format vk.VkFormat, usage vk
 // it in shader-read-only layout.
 func (d *Device) NewTextureImage(extent vk.VkExtent2D, format vk.VkFormat, pixels []byte, mipmaps bool) (*Image, error) {
 	mips := uint32(1)
-	usage := vk.VkImageUsageFlags(vk.VK_IMAGE_USAGE_SAMPLED_BIT | vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+	// Transfer source so the texture can be read back or blitted later.
+	usage := vk.VkImageUsageFlags(vk.VK_IMAGE_USAGE_SAMPLED_BIT | vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
 	if mipmaps {
 		mips = MipLevels(extent)
-		usage |= vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT
 	}
 	img, err := d.NewImageMips(extent, format, usage, vk.VK_IMAGE_ASPECT_COLOR_BIT, mips)
 	if err != nil {
@@ -140,6 +143,86 @@ func (d *Device) NewTextureImage(extent vk.VkExtent2D, format vk.VkFormat, pixel
 		return nil, err
 	}
 	return img, nil
+}
+
+// WriteImage replaces a rectangle of a sampled image's level 0 with RGBA
+// pixels (row-major, 4 bytes per pixel, w*h*4 bytes) and rebuilds any mip
+// chain. The image must not be in use by a frame in flight.
+func (d *Device) WriteImage(img *Image, x, y, w, h int, pixels []byte) error {
+	if len(pixels) < w*h*4 {
+		return fmt.Errorf("render: %d bytes for a %dx%d write", len(pixels), w, h)
+	}
+	staging, err := d.NewBuffer(vk.VkDeviceSize(w*h*4), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if err != nil {
+		return err
+	}
+	defer staging.Destroy()
+	if err := staging.Write(0, pixels[:w*h*4]); err != nil {
+		return err
+	}
+	mips := max(img.Mips, 1)
+	return d.OneShot(func(cb vk.VkCommandBuffer) {
+		imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
+			vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
+		region := vk.VkBufferImageCopy{
+			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+			ImageOffset:      vk.VkOffset3D{X: int32(x), Y: int32(y)},
+			ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
+		}
+		vk.VkCmdCopyBufferToImage(cb, staging.Handle, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region)
+		if mips > 1 {
+			generateMips(cb, img)
+			return
+		}
+		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+			vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+	})
+}
+
+// ReadImage copies level 0 of an image that is in shader-read-only layout
+// back to the host as RGBA, swizzling BGRA formats. The image must not be
+// in use by a frame in flight.
+func (d *Device) ReadImage(img *Image) (*image.RGBA, error) {
+	w, h := int(img.Extent.Width), int(img.Extent.Height)
+	buf, err := d.NewBuffer(vk.VkDeviceSize(w*h*4), vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if err != nil {
+		return nil, err
+	}
+	defer buf.Destroy()
+	err = d.OneShot(func(cb vk.VkCommandBuffer) {
+		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+			vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+			vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT|vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT)
+		region := vk.VkBufferImageCopy{
+			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+			ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
+		}
+		vk.VkCmdCopyImageToBuffer(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf.Handle, 1, &region)
+		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+			vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,
+			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	copy(out.Pix, buf.Bytes()[:w*h*4])
+	switch img.Format {
+	case vk.VK_FORMAT_B8G8R8A8_SRGB, vk.VK_FORMAT_B8G8R8A8_UNORM:
+		for i := 0; i+3 < len(out.Pix); i += 4 {
+			out.Pix[i], out.Pix[i+2] = out.Pix[i+2], out.Pix[i]
+		}
+	}
+	return out, nil
 }
 
 func (i *Image) Destroy() {

@@ -14,28 +14,31 @@ import (
 // Graphics is the drawing context for one window. Begin opens a frame,
 // the Draw* calls queue work, and End submits it.
 type Graphics struct {
-	r            *render.Renderer
-	descriptors  *render.DescriptorSets // five samplers: a texture and a shader's image0..3
-	uniforms     *render.DynamicUniforms
-	arena        *render.Arena // this frame's shader uniform blocks
-	imageSets    map[[5]*Texture]vk.VkDescriptorSet
-	nearest      vk.VkSampler
-	linear       vk.VkSampler
-	nearestRep   vk.VkSampler
-	linearRep    vk.VkSampler
-	spriteShader *Shader // the default 2D shader
-	sdfShader    *Shader // distance-field text
-	meshes       meshPass
-	post         postPass
-	white        *Texture
-	frame        *render.Frame
-	frameNo      uint64
-	time         float32
-	main         *drawQueue // the screen
-	cur          *drawQueue // where Draw* calls land
-	subFrames    []subFrame
-	retired      []*Texture // replaced mid-frame; destroyed once the frame is submitted
-	scratch      []vertex2D
+	r             *render.Renderer
+	descriptors   *render.DescriptorSets // five samplers: a texture and a shader's image0..3
+	uniforms      *render.DynamicUniforms
+	arena         *render.Arena // this frame's shader uniform blocks
+	imageSets     map[[5]*Texture]vk.VkDescriptorSet
+	nearest       vk.VkSampler
+	linear        vk.VkSampler
+	nearestRep    vk.VkSampler
+	linearRep     vk.VkSampler
+	spriteShader  *Shader // the default 2D shader
+	sdfShader     *Shader // distance-field text
+	meshes        meshPass
+	post          postPass
+	white         *Texture
+	frame         *render.Frame
+	frameNo       uint64
+	time          float32
+	main          *drawQueue // the screen
+	cur           *drawQueue // where Draw* calls land
+	subFrames     []subFrame
+	retired       []*Texture // replaced mid-frame; destroyed once the frame is submitted
+	scratch       []vertex2D
+	linePipe      *render.Pipeline // debug lines over the 3D scene
+	dbgFont       *Font            // the built-in font, made on first use
+	dbgFontFailed bool
 }
 
 // retire schedules a texture that queued sprites may still reference for
@@ -79,6 +82,9 @@ func New(r *render.Renderer) (*Graphics, error) {
 		return nil, err
 	}
 	if err := g.initPost(); err != nil {
+		return nil, err
+	}
+	if err := g.initLines(); err != nil {
 		return nil, err
 	}
 	ext := r.Swapchain.Extent
@@ -235,7 +241,7 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 // the 2D stream, into target (a render texture) or the swapchain when nil.
 func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, target *render.Target) error {
 	cb := fr.CB
-	has3D := len(q.draws) > 0 || q.light.Background
+	has3D := len(q.draws) > 0 || q.light.Background || len(q.lines.items) > 0
 	bloom := has3D && g.post.settings.Bloom > 0
 	ao := has3D && g.post.settings.AmbientOcclusion > 0
 	if has3D {
@@ -343,6 +349,13 @@ func (g *Graphics) Destroy() {
 	g.retired = nil
 	if g.main != nil {
 		g.main.destroy()
+	}
+	if g.dbgFont != nil {
+		g.dbgFont.Destroy()
+		g.dbgFont = nil
+	}
+	if g.linePipe != nil {
+		g.linePipe.Destroy()
 	}
 	g.post.destroy(g)
 	g.meshes.destroy(g)

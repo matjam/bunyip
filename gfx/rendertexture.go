@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"fmt"
+	"image"
 
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
@@ -27,7 +28,7 @@ func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
 	extent := vk.VkExtent2D{Width: uint32(width), Height: uint32(height)}
 	rt := &RenderTexture{Width: width, Height: height, g: g}
 	var err error
-	if rt.target, err = g.r.Device.NewTargetSampled(extent, g.r.Swapchain.Format, g.r.DepthFormat); err != nil {
+	if rt.target, err = g.r.Device.NewTargetReadable(extent, g.r.Swapchain.Format, g.r.DepthFormat); err != nil {
 		return nil, err
 	}
 	if rt.scene, err = g.newSceneTargets(extent); err != nil {
@@ -53,6 +54,10 @@ func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
 
 // Texture returns the surface for drawing as a sprite or material.
 func (rt *RenderTexture) Texture() *Texture { return rt.tex }
+
+// Read copies the last rendered image back from the GPU, after waiting
+// for it to finish: thumbnails, saved portraits, tests.
+func (rt *RenderTexture) Read() (*image.RGBA, error) { return rt.tex.Read() }
 
 // SetView sets the render texture's 2D coordinate space; default is pixels.
 func (rt *RenderTexture) SetView(width, height float32) { rt.queue.setView(width, height) }

@@ -40,6 +40,8 @@ var (
 //go:generate glslangValidator -V -o aoblur.frag.spv aoblur.frag
 //go:generate glslangValidator -V -o sky.frag.spv sky.frag
 //go:generate glslangValidator -V -o skyparam.frag.spv skyparam.frag
+//go:generate glslangValidator -V -o line.vert.spv line.vert
+//go:generate glslangValidator -V -o line.frag.spv line.frag
 //go:generate glslangValidator -V -o outline.vert.spv outline.vert
 //go:generate glslangValidator -V -o solid.frag.spv solid.frag
 //go:generate glslangValidator -V -o decal.vert.spv decal.vert
@@ -50,6 +52,10 @@ var (
 	SkyFrag []byte
 	//go:embed skyparam.frag.spv
 	SkyParamFrag []byte
+	//go:embed line.vert.spv
+	LineVert []byte
+	//go:embed line.frag.spv
+	LineFrag []byte
 	//go:embed outline.vert.spv
 	OutlineVert []byte
 	//go:embed solid.frag.spv

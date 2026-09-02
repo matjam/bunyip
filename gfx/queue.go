@@ -36,12 +36,14 @@ type drawQueue struct {
 	xforms     []lin.Affine // transform stack below it
 	skyCached  Sky          // the sky whose harmonics are in skySH
 	skySH      [9]lin.Vec4
+	lines      lineStream // debug lines drawn over the 3D scene
 }
 
 func (q *drawQueue) reset() {
 	q.stream.reset()
 	q.draws = q.draws[:0]
 	q.decals = q.decals[:0]
+	q.lines.reset()
 	q.points = q.points[:0]
 	q.joints = q.joints[:0]
 	q.hasCam = false
@@ -58,6 +60,7 @@ func (q *drawQueue) reset() {
 func (q *drawQueue) destroy() {
 	q.stream.destroy()
 	q.inst.destroy()
+	q.lines.destroy()
 	if q.uniforms != nil {
 		q.uniforms.Destroy()
 		q.uniforms = nil
