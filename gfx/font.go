@@ -154,7 +154,9 @@ func (f *Font) flush() error {
 		return nil
 	}
 	if f.atlas != nil {
-		f.atlas.Destroy()
+		// Sprites queued this frame still point at the old atlas, so it is
+		// destroyed after the frame is submitted rather than now.
+		f.g.retire(f.atlas)
 	}
 	tex, err := f.g.NewTexture(f.pix, TextureOptions{Linear: true, Data: true})
 	if err != nil {

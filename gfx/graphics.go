@@ -29,7 +29,12 @@ type Graphics struct {
 	main        *drawQueue // the screen
 	cur         *drawQueue // where Draw* calls land
 	subFrames   []subFrame
+	retired     []*Texture // replaced mid-frame; destroyed once the frame is submitted
 }
+
+// retire schedules a texture that queued sprites may still reference for
+// destruction at the end of the frame.
+func (g *Graphics) retire(t *Texture) { g.retired = append(g.retired, t) }
 
 // New builds the drawing context over a renderer.
 func New(r *render.Renderer) (*Graphics, error) {
@@ -192,7 +197,12 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 		return nil, err
 	}
 	_ = cb
-	return g.r.EndFrame(fr, capture)
+	img, err := g.r.EndFrame(fr, capture)
+	for _, t := range g.retired {
+		t.Destroy() // waits for the device, so the submitted frame is done with it
+	}
+	g.retired = g.retired[:0]
+	return img, err
 }
 
 // renderQueue draws one queue: the 3D scene through the post chain, then
