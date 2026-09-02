@@ -254,11 +254,15 @@ func boxBox(a, b obb) []contact3 {
 	}
 	n := bestN // from A to B
 	if bestAxis >= 6 {
-		// Edge against edge: one contact between the support points.
-		pa := a.support(n)
-		pb := b.support(n.Mul(-1))
-		overlap := pa.Sub(pb).Dot(n)
-		return []contact3{{point: pa.Add(pb).Mul(0.5), normal: n, depth: max(overlap, 0)}}
+		// Edge against edge: the contact is between the closest points
+		// of the two support edges, not their support vertices, which on
+		// a long box can sit far from where the edges actually cross.
+		ia, ib := (bestAxis-6)/3, (bestAxis-6)%3
+		pa, da, ha := a.supportEdge(n, ia)
+		pb, db, hb := b.supportEdge(n.Mul(-1), ib)
+		ca, cb := closestOnSegments(pa, da, ha, pb, db, hb)
+		overlap := ca.Sub(cb).Dot(n)
+		return []contact3{{point: ca.Add(cb).Mul(0.5), normal: n, depth: max(overlap, 0)}}
 	}
 	// Face axis: reference box is the one whose face it is.
 	ref, inc := a, b
@@ -267,13 +271,29 @@ func boxBox(a, b obb) []contact3 {
 		ref, inc = b, a
 		refN = n.Mul(-1) // reference normal points out of the reference box
 	}
+	refAxis := bestAxis % 3
+	// The incident face is the face of the other box most opposed to the
+	// reference normal. Its polygon is clipped against the four side
+	// planes of the reference face, so only the part above the face
+	// counts: a corner hanging past the edge of a ledge must not become a
+	// deep contact that launches the body.
+	poly := inc.face(refN.Mul(-1))
+	for i := range 3 {
+		if i == refAxis {
+			continue
+		}
+		u := ref.rot.axis(i)
+		h := [3]float32{ref.half.X, ref.half.Y, ref.half.Z}[i]
+		cu := ref.center.Dot(u)
+		poly = clipPolygon(poly, u, cu+h)
+		poly = clipPolygon(poly, u.Mul(-1), -cu+h)
+	}
 	// Reference face plane: point on face = ref.center + refN * extent.
-	extent := projectHalf(ref, refN)
-	planeD := ref.center.Dot(refN) + extent
+	planeD := ref.center.Dot(refN) + projectHalf(ref, refN)
 	var out []contact3
 	var deepest contact3
 	deepest.depth = float32(math.Inf(-1))
-	for _, v := range inc.vertices() {
+	for _, v := range poly {
 		depth := planeD - v.Dot(refN) // positive when v is inside the reference face
 		c := contact3{point: v, normal: n, depth: depth}
 		if depth > deepest.depth {
@@ -284,7 +304,94 @@ func boxBox(a, b obb) []contact3 {
 		}
 	}
 	if len(out) == 0 {
+		if deepest.depth == float32(math.Inf(-1)) {
+			return nil
+		}
 		out = append(out, deepest)
+	}
+	return out
+}
+
+// supportEdge returns the box edge parallel to local axis i that is
+// farthest along dir: its midpoint, unit direction and half-length.
+func (o obb) supportEdge(dir lin.Vec3, i int) (mid, d lin.Vec3, half float32) {
+	halves := [3]float32{o.half.X, o.half.Y, o.half.Z}
+	mid = o.center
+	for j := range 3 {
+		if j == i {
+			continue
+		}
+		ax := o.rot.axis(j)
+		mid = mid.Add(ax.Mul(sign(ax.Dot(dir)) * halves[j]))
+	}
+	return mid, o.rot.axis(i), halves[i]
+}
+
+// closestOnSegments finds the closest points between two segments given
+// by midpoint, unit direction and half-length.
+func closestOnSegments(pa, da lin.Vec3, ha float32, pb, db lin.Vec3, hb float32) (lin.Vec3, lin.Vec3) {
+	r := pa.Sub(pb)
+	c := da.Dot(db)
+	e := da.Dot(r)
+	f := db.Dot(r)
+	denom := 1 - c*c
+	var s, t float32
+	if denom > 1e-6 {
+		s = lin.Clamp((c*f-e)/denom, -ha, ha)
+	}
+	t = c*s + f
+	if t < -hb {
+		t = -hb
+		s = lin.Clamp(-e-c*hb, -ha, ha)
+	} else if t > hb {
+		t = hb
+		s = lin.Clamp(-e+c*hb, -ha, ha)
+	}
+	return pa.Add(da.Mul(s)), pb.Add(db.Mul(t))
+}
+
+// face returns the four corners of the box face whose outward normal is
+// closest to dir, in order around the face.
+func (o obb) face(dir lin.Vec3) []lin.Vec3 {
+	best, bestDot := 0, float32(math.Inf(-1))
+	for i := range 3 {
+		if d := float32(math.Abs(float64(o.rot.axis(i).Dot(dir)))); d > bestDot {
+			best, bestDot = i, d
+		}
+	}
+	half := [3]float32{o.half.X, o.half.Y, o.half.Z}
+	n := o.rot.axis(best)
+	if n.Dot(dir) < 0 {
+		n = n.Mul(-1)
+	}
+	centre := o.center.Add(n.Mul(half[best]))
+	j, k := (best+1)%3, (best+2)%3
+	u := o.rot.axis(j).Mul(half[j])
+	v := o.rot.axis(k).Mul(half[k])
+	return []lin.Vec3{centre.Add(u).Add(v), centre.Add(u).Sub(v), centre.Sub(u).Sub(v), centre.Sub(u).Add(v)}
+}
+
+// clipPolygon keeps the part of a convex polygon on the inside of the
+// plane n·p <= d (Sutherland-Hodgman).
+func clipPolygon(poly []lin.Vec3, n lin.Vec3, d float32) []lin.Vec3 {
+	if len(poly) == 0 {
+		return poly
+	}
+	out := make([]lin.Vec3, 0, len(poly)+2)
+	prev := poly[len(poly)-1]
+	prevD := prev.Dot(n) - d
+	for _, cur := range poly {
+		curD := cur.Dot(n) - d
+		if prevD <= 0 && curD <= 0 {
+			out = append(out, cur)
+		} else if prevD <= 0 && curD > 0 {
+			t := prevD / (prevD - curD)
+			out = append(out, prev.Add(cur.Sub(prev).Mul(t)))
+		} else if prevD > 0 && curD <= 0 {
+			t := prevD / (prevD - curD)
+			out = append(out, prev.Add(cur.Sub(prev).Mul(t)), cur)
+		}
+		prev, prevD = cur, curD
 	}
 	return out
 }
