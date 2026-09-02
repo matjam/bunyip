@@ -51,6 +51,7 @@ var groups = []struct {
 }{
 	{"Engine", []string{"bunyip", "input"}},
 	{"Graphics", []string{"gfx", "anim", "ui", "gltf", "lin"}},
+	{"Simulation", []string{"phys", "orbit", "orbit/sol"}},
 	{"Audio", []string{"audio", "audio/tracker"}},
 	{"Services", []string{"ecs", "asset", "save", "rng", "timer", "tween", "grid", "network"}},
 	{"Tools", []string{"cmd/"}},

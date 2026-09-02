@@ -13,6 +13,33 @@ type Transform struct {
 // At makes a transform at a position.
 func At(x, y, z float32) Transform { return Transform{Position: lin.V3(x, y, z)} }
 
+// Transform2 places a 2D entity: its centre in view or world units, a
+// rotation in radians and a scale (zero means 1). Physics and animation
+// systems write it; Apply turns a sprite template into the sprite to
+// draw there.
+type Transform2 struct {
+	Position lin.Vec2
+	Rotation float32
+	Scale    lin.Vec2
+}
+
+// At2 makes a 2D transform at a position.
+func At2(x, y float32) Transform2 { return Transform2{Position: lin.V2(x, y)} }
+
+// Apply centres the sprite on the transform's position, rotating about
+// its centre and scaling its size.
+func (t Transform2) Apply(s Sprite) Sprite {
+	scale := t.Scale
+	if scale == (lin.Vec2{}) {
+		scale = lin.V2(1, 1)
+	}
+	s.Size = lin.V2(s.Size.X*scale.X, s.Size.Y*scale.Y)
+	s.Pos = t.Position.Sub(s.Size.Mul(0.5))
+	s.Rotation = t.Rotation
+	s.Origin = lin.V2(0.5, 0.5)
+	return s
+}
+
 // Rotated adds a rotation of angle radians about axis.
 func (t Transform) Rotated(axis lin.Vec3, angle float32) Transform {
 	t.Rotation = lin.AxisAngle(axis, angle).Mul(t.rotation())

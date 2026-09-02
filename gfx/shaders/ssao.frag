@@ -20,6 +20,18 @@ vec3 viewPos(vec2 uv) {
     return p.xyz / p.w;
 }
 
+// viewPosAt reconstructs the position of an exact depth texel. This pass
+// runs at half resolution, so its pixel centres fall on full-resolution
+// texel boundaries; sampling there rounds unpredictably and tilts the
+// finite-difference normal, which false-occludes flat floors in streaks.
+vec3 viewPosAt(ivec2 px, ivec2 size) {
+    px = clamp(px, ivec2(0), size - 1);
+    float d = texelFetch(depthTex, px, 0).r;
+    vec2 uv = (vec2(px) + 0.5) / vec2(size);
+    vec4 p = pc.invProj * vec4(uv * 2.0 - 1.0, d, 1.0);
+    return p.xyz / p.w;
+}
+
 // Interleaved gradient noise (Jimenez): a per-pixel rotation without the
 // precision banding a sine-based hash shows on large coordinates.
 float hash(vec2 p) { return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y)); }
@@ -27,13 +39,14 @@ float hash(vec2 p) { return fract(52.9829189 * fract(0.06711056 * p.x + 0.005837
 void main() {
     float d0 = texture(depthTex, vUV).r;
     if (d0 >= 1.0) { outColor = vec4(1.0); return; }
-    vec3 p = viewPos(vUV);
+    ivec2 size = textureSize(depthTex, 0);
+    ivec2 c = ivec2(vUV * vec2(size));
+    vec3 p = viewPosAt(c, size);
     // Normal from explicit neighbours rather than quad derivatives, which
     // band on flat surfaces; pick the smaller difference on each axis so
     // depth edges do not smear the normal.
-    vec2 texel = 1.0 / vec2(textureSize(depthTex, 0));
-    vec3 px1 = viewPos(vUV + vec2(texel.x, 0)) - p, px2 = p - viewPos(vUV - vec2(texel.x, 0));
-    vec3 py1 = viewPos(vUV + vec2(0, texel.y)) - p, py2 = p - viewPos(vUV - vec2(0, texel.y));
+    vec3 px1 = viewPosAt(c + ivec2(1, 0), size) - p, px2 = p - viewPosAt(c - ivec2(1, 0), size);
+    vec3 py1 = viewPosAt(c + ivec2(0, 1), size) - p, py2 = p - viewPosAt(c - ivec2(0, 1), size);
     vec3 dx = length(px1) < length(px2) ? px1 : px2;
     vec3 dy = length(py1) < length(py2) ? py1 : py2;
     vec3 n = normalize(cross(dx, dy));

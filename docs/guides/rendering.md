@@ -1,6 +1,6 @@
 ---
 title: Rendering
-order: 6
+order: 8
 summary: sprites, cameras and text in 2D; meshes, materials, lights and post-processing in 3D
 ---
 

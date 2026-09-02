@@ -51,6 +51,8 @@ output.
 | `lin` | vectors, matrices, quaternions |
 | `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy |
 | `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons |
+| `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, spheres; impulse solver with friction and restitution; triggers, layers, raycasts |
+| `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
 | `asset` | files from directories and pack files, async loading, hot reload |
 | `save` | JSON saves and settings in the platform's data directory |
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
@@ -110,6 +112,9 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |
 | `go run ./examples/inputs` | keys, mouse, wheel, cursor capture, fullscreen, typed text with IME composition, gamepads |
 | `go run ./examples/animation` | keyframe clips on 2D sprites and 3D transforms, a flipbook walker, crossfades between a hero's clips, Finished events chaining back to idle |
+| `go run ./examples/physics3d` | five hundred cubes dropped into a pile, with a raycast highlighting the one under the pointer |
+| `go run ./examples/physics2d` | balls, boxes and triangles in a pit with a ramp, a kinematic paddle, a trigger zone and a raycast |
+| `go run ./examples/space` | a ship under thrust in a fictional star system: Kepler planets and moons, N-body gravity, predicted path, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
