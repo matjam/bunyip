@@ -194,7 +194,9 @@ stand) and `Rotation` adjust the rest. By default the parts share a
 layer that collides with everything except other ragdoll parts.
 
 The result names every part and joint (`Parts`, `Joints`,
-`RagdollPelvis` and the other part constants) so a game can draw them.
+`RagdollPelvis` and the other part constants) so a game can draw them,
+and `Bones` records each part's size as built, so the mesh for a limb
+can be scaled to fit its collider.
 `Pose` places the parts from an animated character's bones at the
 moment it dies: give it the world position and rotation of each part,
 where the position is the part's centre, which is the bone's origin
@@ -229,10 +231,12 @@ w.SpawnWith(gfx.At(0, 1.5, 0), bullet,
 When `Settings.SleepTime` is set, bodies that stay at rest for that long
 go to sleep: they are neither integrated nor paired with other sleeping
 bodies. A touch or an impulse wakes them. `Body.Asleep` reports the
-state and `Wake` ends it early. Sleeping is off by default. A stack of
-boxes at the default solver quality jitters slightly and may never
-settle below the threshold; raise `Substeps` and `Iterations` for
-stacks that should sleep.
+state and `Wake` ends it early. Sleeping is off by default. A body
+counts as at rest while it moves slower than `Settings.SleepThreshold`,
+in units and radians per second. A stack of boxes at the default solver
+quality jitters slightly and may never settle below the threshold;
+raise `Substeps` and `Iterations` for stacks that should sleep, or
+raise the threshold a little.
 
 ```go
 ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0),
