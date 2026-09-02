@@ -80,7 +80,12 @@ func runOnce(cfg Config, game Game) error {
 			defer dev.Close()
 		}
 	}
-	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win}}
+	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win, app: app}}
+	l.overlay.on = cfg.Debug
+	defer l.overlay.destroy() // before g.Destroy, which was deferred earlier
+	if cfg.Pprof != "" && !cfg.recovering {
+		servePprof(cfg.Pprof, l.ctx)
+	}
 	l.applySize(win)
 	if cfg.recovering {
 		if err := game.(Recoverer).Recover(l.ctx); err != nil {
@@ -98,11 +103,17 @@ func runOnce(cfg Config, game Game) error {
 }
 
 type loop struct {
-	cfg  Config
-	app  *platform.App
-	win  *platform.Window
-	game Game
-	ctx  *Context
+	cfg     Config
+	app     *platform.App
+	win     *platform.Window
+	game    Game
+	ctx     *Context
+	overlay overlay
+
+	// Timings gathered during the frame, published to ctx.Stats at its end.
+	frameStart          time.Time
+	updateTime, drawDur time.Duration
+	updates             int
 }
 
 func (l *loop) applySize(w *platform.Window) {
@@ -128,7 +139,9 @@ func (l *loop) run() error {
 		for i, g := range l.app.Gamepads() {
 			l.ctx.Input.FeedGamepad(i, g.Connected, g.Name, g.Buttons, g.Axes)
 		}
+		l.overlay.toggle(l.ctx.Input)
 		now := time.Now()
+		l.beginFrame(now)
 		l.ctx.Time = now.Sub(start).Seconds()
 		if l.cfg.TurnBased {
 			l.ctx.Delta = now.Sub(last).Seconds()
@@ -158,24 +171,50 @@ func (l *loop) run() error {
 }
 
 func (l *loop) update() error {
+	start := time.Now()
 	err := l.game.Update(l.ctx)
+	l.updateTime += time.Since(start)
+	l.updates++
 	l.ctx.Input.EndUpdate()
 	return err
 }
+
+// beginFrame resets the per-frame timing accumulators.
+func (l *loop) beginFrame(now time.Time) {
+	if !l.frameStart.IsZero() {
+		l.ctx.Stats.FrameMS = ms(now.Sub(l.frameStart))
+	}
+	l.frameStart = now
+	l.updateTime, l.drawDur, l.updates = 0, 0, 0
+	l.ctx.scopes = l.ctx.scopes[:0]
+	l.overlay.frame(now)
+}
+
+func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 
 func (l *loop) draw() error {
 	ok, err := l.ctx.Gfx.Begin(l.ctx.Clear)
 	if err != nil || !ok {
 		return err
 	}
+	drawStart := time.Now()
 	if err := l.game.Draw(l.ctx); err != nil {
 		return err
 	}
+	l.drawDur = time.Since(drawStart)
+	l.publishStats()
+	if l.overlay.on {
+		if err := l.overlay.draw(l.ctx); err != nil {
+			return err
+		}
+	}
 	capture := l.ctx.shot != ""
+	presentStart := time.Now()
 	img, err := l.ctx.Gfx.End(capture)
 	if err != nil {
 		return err
 	}
+	l.ctx.Stats.PresentMS = ms(time.Since(presentStart))
 	l.ctx.Frame++
 	if capture {
 		path := l.ctx.shot
@@ -191,6 +230,17 @@ func (l *loop) draw() error {
 		l.ctx.Log.Info("bunyip: screenshot written", "path", path, "width", img.Bounds().Dx(), "height", img.Bounds().Dy())
 	}
 	return nil
+}
+
+// publishStats copies this frame's timings into ctx.Stats so the game's
+// Draw (next frame) and the overlay (this frame) can show them.
+func (l *loop) publishStats() {
+	s := &l.ctx.Stats
+	s.FPS = l.overlay.fps
+	s.UpdateMS = ms(l.updateTime)
+	s.DrawMS = ms(l.drawDur)
+	s.Updates = l.updates
+	s.Scopes = append(s.Scopes[:0], l.ctx.scopes...)
 }
 
 func (l *loop) handleEvents(events []platform.Event) {

@@ -123,8 +123,9 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	beep := flag.Bool("beep", false, "play a tone at start")
+	debug := flag.Bool("debug", false, "show the frame-timing overlay (F3 toggles it)")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true, Debug: *debug},
 		&gallery{seconds: *seconds, shot: *shot, beep: *beep})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)

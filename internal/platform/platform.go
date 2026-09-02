@@ -39,6 +39,7 @@ const (
 	EventScroll               // DX, DY in lines (or points when Precise)
 	EventMouseEnter           // the pointer entered the content area
 	EventMouseLeave           // the pointer left the content area
+	EventWake                 // App.Wake was called from another goroutine
 )
 
 // GamepadState is one controller's inputs as read this poll.
@@ -75,7 +76,7 @@ var eventNames = [...]string{
 	EventNone: "None", EventClose: "Close", EventResize: "Resize", EventFocus: "Focus",
 	EventKeyDown: "KeyDown", EventKeyUp: "KeyUp", EventChar: "Char", EventCompose: "Compose", EventMouseMove: "MouseMove",
 	EventMouseDown: "MouseDown", EventMouseUp: "MouseUp", EventScroll: "Scroll",
-	EventMouseEnter: "MouseEnter", EventMouseLeave: "MouseLeave",
+	EventMouseEnter: "MouseEnter", EventMouseLeave: "MouseLeave", EventWake: "Wake",
 }
 
 func (k EventKind) String() string {

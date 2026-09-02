@@ -24,11 +24,15 @@ const (
 // focus keep working.
 func (a *App) handleEvent(ev objc.ID) bool {
 	c := a.c
+	kind := objc.Send[uint](ev, c.sel.eventType)
+	if kind == nsEventTypeAppDefined { // Wake: no window attached
+		a.push(Event{Kind: EventWake})
+		return false
+	}
 	w := a.windows[ev.Send(c.sel.window)]
 	if w == nil {
 		return true
 	}
-	kind := objc.Send[uint](ev, c.sel.eventType)
 	switch kind {
 	case nsEventTypeKeyDown, nsEventTypeKeyUp:
 		return a.handleKey(w, ev, kind == nsEventTypeKeyDown)

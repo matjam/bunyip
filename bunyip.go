@@ -35,6 +35,12 @@ type Config struct {
 	NoAudio    bool // skip opening the audio device
 	Log        *slog.Logger
 
+	// Debug shows the frame-timing overlay at start; F3 toggles it either
+	// way. Pprof, when set to an address such as "localhost:6060", serves
+	// Go's profiler there.
+	Debug bool
+	Pprof string
+
 	recovering bool // set by Run when rebuilding after a device loss
 }
 
@@ -89,10 +95,30 @@ type Context struct {
 	Time  float64
 	Frame uint64
 
+	// Stats holds the previous frame's timings.
+	Stats Stats
+
+	scopes []Scope
+	app    waker
 	quit   bool
 	redraw bool
 	shot   string
 	win    windowControl
+}
+
+// waker is what the context needs from the platform app.
+type waker interface {
+	Wake()
+}
+
+// Wake makes a turn-based game run an Update and Draw even though no
+// input arrived. It is safe to call from any goroutine, so a timer, a
+// network reply or a finished asset load can prod the game while it
+// sleeps waiting for the player.
+func (c *Context) Wake() {
+	if c.app != nil {
+		c.app.Wake()
+	}
 }
 
 // windowControl is what the context needs from the platform window.

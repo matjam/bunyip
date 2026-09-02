@@ -11,11 +11,19 @@ import (
 // AppKit insists on the main thread for windows, and the package init
 // locks it, so the window-driving part of the test runs from TestMain
 // before the test goroutines start; TestTextInput reports its outcome.
-var textInputResult error
+var textInputResult, wakeResult error
 
 func TestMain(m *testing.M) {
 	textInputResult = runTextInput()
 	os.Exit(m.Run())
+}
+
+// TestWake reports the outcome of runWake, which TestMain drove through
+// the shared window.
+func TestWake(t *testing.T) {
+	if wakeResult != nil {
+		t.Fatal(wakeResult)
+	}
 }
 
 // TestTextInput drives the BunyipView the way AppKit does: a key event
@@ -37,6 +45,7 @@ func runTextInput() error {
 		return err
 	}
 	defer w.Close()
+	wakeResult = runWake(app, w)
 	c := app.c
 	app.pending = app.pending[:0]
 

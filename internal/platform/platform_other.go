@@ -32,3 +32,4 @@ func (w *Window) SetCursorCaptured(bool)                       {}
 func (w *Window) SetTextInputRect(x, y, width, height float64) {}
 func (w *Window) CursorCaptured() bool                         { return false }
 func (a *App) Gamepads() []GamepadState                        { return nil }
+func (a *App) Wake()                                           {}
