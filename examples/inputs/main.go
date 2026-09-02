@@ -65,6 +65,10 @@ func keyName(k input.Key) string {
 func (g *game) Init(ctx *bunyip.Context) error {
 	var err error
 	g.font, err = ctx.Gfx.NewFont(goregular.TTF, 14, gfx.FontOptions{})
+	// The window controls: a title, a size floor and a crosshair pointer.
+	ctx.SetTitle("Bunyip inputs (paste with Ctrl+V or Cmd+V)")
+	ctx.SetSizeLimits(480, 320, 0, 0)
+	ctx.SetCursor(bunyip.CursorCrosshair)
 	return err
 }
 
@@ -98,6 +102,11 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	}
 	if in.KeyPressed(input.KeyBackspace) && len(g.typed) > 0 {
 		g.typed = g.typed[:len(g.typed)-1]
+	}
+	if in.KeyPressed(input.KeyV) && in.Mods()&(input.ModControl|input.ModSuper) != 0 {
+		if s, err := ctx.Clipboard(); err == nil {
+			g.typed = append(g.typed, []rune(s)...)
+		}
 	}
 	_, dy := in.Scroll()
 	g.scroll += dy
