@@ -232,9 +232,10 @@ func (c Camera) viewMatrix() lin.Mat4 {
 type Light struct {
 	Direction lin.Vec3 // direction the light travels
 	Color     Color
-	Ambient   Color // used for both sky and ground when they are zero
-	Sky       Color // ambient light arriving from above
-	Ground    Color // ambient light arriving from below
+	Ambient   Color // light from every direction when the Sky leaves a colour unset
+	// Sky is the procedural environment: sky and ground colours around an
+	// up axis, thinning to space, with a drawn sun and stars.
+	Sky Sky
 
 	Shadows        bool    // render cascaded shadow maps for the directional light
 	ShadowDistance float32 // how far from the camera shadows reach; default 60
@@ -242,9 +243,9 @@ type Light struct {
 
 	// Environment lights the scene from every direction with an image:
 	// reflections in metals, tinted ambient on everything. It replaces
-	// Ambient, Sky and Ground when set.
+	// Ambient and Sky when set.
 	Environment *Environment
-	// Background draws the environment as the sky behind the scene.
+	// Background draws the environment, or the Sky, behind the scene.
 	Background bool
 }
 

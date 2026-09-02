@@ -235,7 +235,7 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 // the 2D stream, into target (a render texture) or the swapchain when nil.
 func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, target *render.Target) error {
 	cb := fr.CB
-	has3D := len(q.draws) > 0
+	has3D := len(q.draws) > 0 || q.light.Background
 	bloom := has3D && g.post.settings.Bloom > 0
 	ao := has3D && g.post.settings.AmbientOcclusion > 0
 	if has3D {

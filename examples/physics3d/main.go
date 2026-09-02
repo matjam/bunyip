@@ -164,7 +164,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	w := g.world
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 3, 0), g.yaw, g.pitch, g.dist))
 	gr.SetLight(gfx.Light{Direction: lin.V3(-0.5, -1, -0.3), Color: gfx.Color{R: 2.4, G: 2.3, B: 2.1, A: 1},
-		Sky: gfx.Color{R: 0.3, G: 0.35, B: 0.5, A: 1}, Ground: gfx.Color{R: 0.15, G: 0.12, B: 0.1, A: 1}, Shadows: true, ShadowDistance: 60})
+		Sky: gfx.Sky{Zenith: gfx.Color{R: 0.3, G: 0.35, B: 0.5, A: 1}, Ground: gfx.Color{R: 0.15, G: 0.12, B: 0.1, A: 1}}, Shadows: true, ShadowDistance: 60})
 	gr.DrawMesh(g.mesh, gfx.Material{BaseColor: gfx.RGB(140, 140, 150), Roughness: 0.9}, lin.Translate(lin.V3(0, 0, 0)).Mul(lin.Scale(lin.V3(60, 1, 60))))
 	for _, wall := range []struct{ pos, half lin.Vec3 }{{lin.V3(12, 1.5, 0), lin.V3(0.5, 1.5, 12)}, {lin.V3(-12, 1.5, 0), lin.V3(0.5, 1.5, 12)}, {lin.V3(0, 1.5, 12), lin.V3(12, 1.5, 0.5)}, {lin.V3(0, 1.5, -12), lin.V3(12, 1.5, 0.5)}} {
 		gr.DrawMesh(g.mesh, gfx.Material{BaseColor: gfx.RGB(100, 100, 110), Roughness: 0.9}, lin.Translate(wall.pos).Mul(lin.Scale(wall.half.Mul(2))))

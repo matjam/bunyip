@@ -45,6 +45,7 @@ type game struct {
 	post     gfx.PostSettings
 	shadows  bool
 	env      *gfx.Environment
+	vacuum   float32
 	useEnv   bool
 	envPath  string
 	yaw      float32
@@ -98,10 +99,8 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		if g.env, err = ctx.Gfx.NewEnvironment(pano, gfx.EnvironmentOptions{Intensity: 1.5}); err != nil {
 			return err
 		}
-	} else if g.env, err = ctx.Gfx.NewSkyEnvironment(gfx.RGB(70, 120, 210), gfx.RGB(200, 215, 235), gfx.RGB(80, 70, 60), gfx.EnvironmentOptions{Intensity: 1.2}); err != nil {
-		return err
 	}
-	g.useEnv = true
+	g.useEnv = g.env != nil
 	g.post = gfx.DefaultPost()
 	g.post.Vignette = 0.3
 	g.shadows = true
@@ -151,13 +150,16 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	gr.SetPost(g.post)
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 1.5, 0), g.yaw, 0.35, 11))
+	// The procedural sky: its air thins as the vacuum slider climbs to
+	// orbit, the sky goes black and the stars come out, and the sun and
+	// ground light stay.
 	light := gfx.Light{Direction: lin.V3(-0.5, -1, -0.4), Color: gfx.Color{R: 2.5, G: 2.3, B: 2, A: 1},
-		Sky: gfx.Color{R: 0.25, G: 0.3, B: 0.45, A: 1}, Ground: gfx.Color{R: 0.12, G: 0.1, B: 0.08, A: 1},
-		Shadows: g.shadows, ShadowDistance: 30}
-	if g.useEnv {
-		// Image-based lighting: the environment replaces the sky and
-		// ground colours and is drawn behind the scene.
-		light.Environment, light.Background = g.env, true
+		Sky:        gfx.Sky{Zenith: gfx.RGB(70, 120, 210), Horizon: gfx.RGB(200, 215, 235), Ground: gfx.RGB(80, 70, 60), Vacuum: g.vacuum, Stars: 1},
+		Background: true, Shadows: g.shadows, ShadowDistance: 30}
+	if g.useEnv && g.env != nil {
+		// Image-based lighting: the panorama replaces the sky and is
+		// drawn behind the scene.
+		light.Environment = g.env
 	}
 	gr.SetLight(light)
 	t := float32(ctx.Time)
@@ -183,7 +185,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 470}, func() {
+		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 510}, func() {
+			u.Slider("Vacuum (up to orbit)", &g.vacuum, 0, 1)
 			u.Slider("Exposure", &g.post.Exposure, 0.1, 4)
 			u.Slider("Bloom", &g.post.Bloom, 0, 1)
 			u.Slider("Bloom threshold", &g.post.BloomThreshold, 0.2, 3)
@@ -263,9 +266,10 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	model := flag.String("model", "", "glTF file with animation clips to play")
 	env := flag.String("env", "", "equirectangular panorama (PNG or JPEG) to light the scene with")
+	vacuum := flag.Float64("vacuum", 0, "how thin the air starts: 0 on the ground, 1 in orbit")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip lighting", Width: 1024, Height: 640, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, modelPath: *model, envPath: *env})
+		&game{seconds: *seconds, shot: *shot, modelPath: *model, envPath: *env, vacuum: float32(*vacuum)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lighting:", err)
 		os.Exit(1)

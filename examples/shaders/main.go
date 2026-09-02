@@ -150,7 +150,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	// The 3D scene: a lava slab with plain cubes on it.
 	gr.SetCamera(gfx.Camera{Position: lin.V3(6*float32(math.Sin(float64(t)*0.2)), 4.5, 6*float32(math.Cos(float64(t)*0.2))), Target: lin.V3(0, 0, 0)})
 	gr.SetLight(gfx.Light{Direction: lin.V3(-0.4, -1, -0.3), Color: gfx.Color{R: 1.5, G: 1.4, B: 1.3, A: 1},
-		Sky: gfx.Color{R: 0.25, G: 0.3, B: 0.4, A: 1}, Ground: gfx.Color{R: 0.1, G: 0.05, B: 0.03, A: 1}, Shadows: true, ShadowDistance: 20})
+		Sky: gfx.Sky{Zenith: gfx.Color{R: 0.25, G: 0.3, B: 0.4, A: 1}, Ground: gfx.Color{R: 0.1, G: 0.05, B: 0.03, A: 1}}, Shadows: true, ShadowDistance: 20})
 	g.lava.SetUniforms(struct{ Heat float32 }{g.heat})
 	gr.DrawMesh(g.cube, gfx.Material{Shader: g.lava}, lin.Translate(lin.V3(0, -0.5, 0)).Mul(lin.Scale(lin.V3(8, 0.4, 8))))
 	for i := range 5 {

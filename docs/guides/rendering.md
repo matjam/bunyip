@@ -76,11 +76,21 @@ field of view); `OrbitCamera` builds one from yaw, pitch and distance.
 optional cascaded shadow maps; `AddPointLight` adds up to eight local
 lights per frame.
 
+**The sky.** `Light.Sky` is a procedural environment built from what
+the game already knows: an `Up` axis, `Zenith`, `Horizon` and `Ground`
+colours, and how much air there is. It costs nothing to change every
+frame. Raise `Vacuum` towards 1 and the sky fades to black while the
+`Stars` come out, so a ship can climb from a runway to orbit without a
+seam; point `Up` away from a nearby planet and set `Ground` to its
+colour and the planet lights the ship's night side. Rough surfaces take
+the sky's tint from every direction, metals reflect its gradient, and
+with `Light.Background` the sun's disc, its haze and the stars are
+drawn behind the scene. Leaving the sky unset gives a uniform `Ambient`.
+
 **Environments.** `NewEnvironment` turns an equirectangular panorama
-into image-based lighting, `NewEnvironmentHDR` does the same for a
+into image-based lighting and `NewEnvironmentHDR` does the same for a
 Radiance `.hdr` panorama read with `DecodeHDR` so bright skies keep
-their range, and `NewSkyEnvironment` makes one from a zenith, horizon
-and ground colour. Set it as `Light.Environment` and
+their range. Set it as `Light.Environment`, replacing the sky, and
 metals reflect it, rough surfaces take its tint from every direction
 (nine spherical harmonics for the diffuse part, a prefiltered cube map
 for the specular part), and `Light.Background` draws it as the sky.

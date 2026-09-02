@@ -34,6 +34,8 @@ type drawQueue struct {
 	blend      Blend
 	xform      lin.Affine   // composed 2D transform in force
 	xforms     []lin.Affine // transform stack below it
+	skyCached  Sky          // the sky whose harmonics are in skySH
+	skySH      [9]lin.Vec4
 }
 
 func (q *drawQueue) reset() {

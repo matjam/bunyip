@@ -22,16 +22,20 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 camPos;
     vec4 lightDir;     // direction the light travels
     vec4 lightColor;   // rgb, w = shadow strength
-    vec4 sky;          // rgb ambient from above
-    vec4 ground;       // rgb ambient from below
+    vec4 sky;          // rgb the procedural sky's zenith
+    vec4 ground;       // rgb light from below
     vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count, w = time
     vec4 splits;       // view-space distances where cascades end
     vec4 radii;        // half-size of each cascade's orthographic box
     vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
     vec4 sh[9];        // environment irradiance as spherical harmonics
-    vec4 env;          // x intensity, y mip count, z = 1 when an environment is set
+    vec4 env;          // x intensity, y mip count, z = 1 image environment, 2 procedural sky
     mat4 invViewProj;
+    vec4 horizon;      // rgb the sky at the horizon, w = air (1 - vacuum)
+    vec4 skyUp;        // xyz up, w = stars
+    vec4 sun;          // xyz towards the sun, w = angular radius
+    vec4 sunColor;     // rgb the drawn disc's radiance
 } frame;
 
 // Per-instance stream: the model matrix's rows, base colour, material

@@ -13,8 +13,9 @@ import (
 // Environment is distant light from every direction, for image-based
 // lighting: metals reflect it, rough surfaces are tinted by it, and it can
 // be drawn as the sky behind the scene. Build one from an equirectangular
-// panorama with NewEnvironment or from three colours with NewSkyEnvironment,
-// and set it on the Light.
+// panorama with NewEnvironment or NewEnvironmentHDR and set it on the
+// Light; without one the light's procedural Sky does the same job from
+// parameters alone.
 type Environment struct {
 	cube   *render.Image
 	set    vk.VkDescriptorSet // for the sky pass
@@ -50,28 +51,6 @@ func (g *Graphics) NewEnvironment(panorama image.Image, opts EnvironmentOptions)
 		for x := range src.w {
 			r, gg, bb, _ := panorama.At(b.Min.X+x, b.Min.Y+y).RGBA()
 			src.set(x, y, srgbToLinear(uint8(r>>8)), srgbToLinear(uint8(gg>>8)), srgbToLinear(uint8(bb>>8)))
-		}
-	}
-	return g.newEnvironment(src, opts)
-}
-
-// NewSkyEnvironment builds a simple environment from the colour at the
-// zenith, at the horizon and on the ground, blended by elevation. It is a
-// good default outdoors, and Intensity above 1 makes a bright day.
-func (g *Graphics) NewSkyEnvironment(zenith, horizon, ground Color, opts EnvironmentOptions) (*Environment, error) {
-	src := newRadianceMap(128, 64)
-	for y := range src.h {
-		elevation := 1 - 2*(float32(y)+0.5)/float32(src.h) // +1 up, -1 down
-		var c Color
-		if elevation >= 0 {
-			t := float32(math.Pow(float64(elevation), 0.7))
-			c = lerpColor(horizon, zenith, t)
-		} else {
-			t := float32(math.Pow(float64(-elevation), 0.5))
-			c = lerpColor(horizon, ground, t)
-		}
-		for x := range src.w {
-			src.set(x, y, c.R, c.G, c.B)
 		}
 	}
 	return g.newEnvironment(src, opts)
@@ -250,15 +229,21 @@ func radicalInverse(bits uint32) float32 {
 // folds in the cosine-lobe convolution and the 1/π of a Lambertian
 // surface, so the shader's sum is the diffuse radiance for an albedo of 1.
 func irradianceSH(src *radianceMap) [9]lin.Vec4 {
-	const w, h = 128, 64
+	return shProject(src.sample, 128, 64)
+}
+
+// shProject integrates a radiance function over the sphere on a w by h
+// longitude-latitude grid into nine spherical harmonics, convolved with
+// the cosine lobe so the shader sums them straight into irradiance.
+func shProject(sample func(lin.Vec3) (r, g, b float32), w, h int) [9]lin.Vec4 {
 	var sh [9][3]float64
 	for y := range h {
-		theta := math.Pi * (float64(y) + 0.5) / h
+		theta := math.Pi * (float64(y) + 0.5) / float64(h)
 		for x := range w {
-			phi := 2 * math.Pi * (float64(x) + 0.5) / w
+			phi := 2 * math.Pi * (float64(x) + 0.5) / float64(w)
 			d := lin.V3(float32(math.Sin(theta)*math.Sin(phi)), float32(math.Cos(theta)), -float32(math.Sin(theta)*math.Cos(phi)))
-			r, g, b := src.sample(d)
-			dOmega := (2 * math.Pi / w) * (math.Pi / h) * math.Sin(theta)
+			r, g, b := sample(d)
+			dOmega := (2 * math.Pi / float64(w)) * (math.Pi / float64(h)) * math.Sin(theta)
 			basis := shBasis(d)
 			for i := range 9 {
 				sh[i][0] += float64(r) * basis[i] * dOmega

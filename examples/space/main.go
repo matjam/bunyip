@@ -266,8 +266,30 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		sun = st.Position.Mul(-1).Norm()
 		strength = lin.Clamp(110*110/st.Position.Dot(st.Position), 0.25, 3)
 	}
+	// Planet-shine: the world that looms largest over the focused body
+	// lights the scene from its side of the sky in its own colour, so the
+	// night side of the ship is never pure black. The sky itself is a
+	// vacuum: no air, and the starfield is drawn by hand below.
+	sky := gfx.Sky{Up: lin.V3(0, 0, 1), Vacuum: 1}
+	var loom float32
+	for _, e := range g.focus {
+		if e == g.ship || e == g.star {
+			continue
+		}
+		t, ok := ecs.Get[gfx.Transform](w, e)
+		l, ok2 := ecs.Get[look](w, e)
+		if !ok || !ok2 || t.Position.Len() < 1e-3 {
+			continue
+		}
+		if size := l.Radius / t.Position.Len(); size > loom {
+			loom = size
+			k := lin.Clamp(size*2, 0, 1) * 0.35 * strength
+			sky.Up = t.Position.Mul(-1).Norm()
+			sky.Ground = gfx.Color{R: l.Color.R * k, G: l.Color.G * k, B: l.Color.B * k, A: 1}
+		}
+	}
 	gr.SetLight(gfx.Light{Direction: sun, Color: gfx.Color{R: 2.4 * strength, G: 2.2 * strength, B: 1.9 * strength, A: 1},
-		Ambient: gfx.Color{R: 0.05, G: 0.05, B: 0.08, A: 1}})
+		Ambient: gfx.Color{R: 0.03, G: 0.03, B: 0.05, A: 1}, Sky: sky})
 	settings := ecs.Resource[orbit.Settings](w)
 	origin := settings.Origin
 	// A distant starfield, fixed to the focused body so it never

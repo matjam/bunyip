@@ -94,8 +94,6 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		if g.env, err = loadEnvironment(ctx.Gfx, g.envPath); err != nil {
 			return err
 		}
-	} else if g.env, err = ctx.Gfx.NewSkyEnvironment(gfx.RGB(80, 130, 220), gfx.RGB(210, 220, 235), gfx.RGB(90, 80, 70), gfx.EnvironmentOptions{Intensity: 1.2}); err != nil {
-		return err
 	}
 	g.yaw, g.pitch, g.dist = 0.4, 0.3, 11
 	g.xray = true
@@ -125,7 +123,9 @@ func loadEnvironment(gr *gfx.Graphics, path string) (*gfx.Environment, error) {
 }
 
 func (g *game) Shutdown(ctx *bunyip.Context) {
-	g.env.Destroy()
+	if g.env != nil {
+		g.env.Destroy()
+	}
 	for _, t := range []*gfx.Texture{g.thick, g.splat, g.leaf, g.stripes} {
 		t.Destroy()
 	}
@@ -166,7 +166,9 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 0.8, 0), g.yaw, g.pitch, g.dist))
+	// A procedural sky lights the scene unless a panorama was given.
 	gr.SetLight(gfx.Light{Direction: lin.V3(-0.4, -1, -0.5), Color: gfx.Color{R: 2.2, G: 2.1, B: 2, A: 1},
+		Sky:     gfx.Sky{Zenith: gfx.RGB(80, 130, 220), Horizon: gfx.RGB(210, 220, 235), Ground: gfx.RGB(90, 80, 70)},
 		Shadows: true, ShadowDistance: 30, Environment: g.env, Background: true})
 	// The floor, with a scrolling stripe texture and a decal on it.
 	gr.DrawMesh(g.cube, gfx.Material{Texture: g.stripes, Roughness: 0.8, UVTransform: lin.Translate2(t*0.05, 0).Mul(lin.Scale2(6, 6))},

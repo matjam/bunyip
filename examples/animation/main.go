@@ -192,7 +192,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	w := g.world
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 0.8, 0), g.yaw, 0.45, 9))
 	gr.SetLight(gfx.Light{Direction: lin.V3(-0.4, -1, -0.5), Color: gfx.Color{R: 2.2, G: 2.1, B: 1.9, A: 1},
-		Sky: gfx.Color{R: 0.25, G: 0.3, B: 0.45, A: 1}, Ground: gfx.Color{R: 0.1, G: 0.1, B: 0.08, A: 1}, Shadows: true, ShadowDistance: 25})
+		Sky: gfx.Sky{Zenith: gfx.Color{R: 0.25, G: 0.3, B: 0.45, A: 1}, Ground: gfx.Color{R: 0.1, G: 0.1, B: 0.08, A: 1}}, Shadows: true, ShadowDistance: 25})
 	gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(150, 150, 160), Roughness: 0.9}, lin.Translate(lin.V3(0, -0.6, 0)).Mul(lin.Scale(lin.V3(9, 0.2, 9))))
 	g.meshes.Each(func(e ecs.Entity, t *gfx.Transform, m *mesh3D) {
 		gr.DrawMeshAt(m.Mesh, m.Mat, *t)

@@ -42,6 +42,10 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 sh[9];        // environment irradiance as spherical harmonics
     vec4 env;          // x intensity, y mip count, z = 1 when an environment is set
     mat4 invViewProj;
+    vec4 horizon;      // rgb the sky at the horizon, w = air (1 - vacuum)
+    vec4 skyUp;        // xyz up, w = stars
+    vec4 sun;          // xyz towards the sun, w = angular radius
+    vec4 sunColor;     // rgb the drawn disc's radiance
 } frame;
 
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap0;
@@ -321,19 +325,29 @@ vec3 envBRDF(vec3 f0, float roughness, float NoV) {
     return f0 * ab.x + ab.y;
 }
 
+// skyRadiance is the procedural sky's light from a direction, without
+// the sun: the atmosphere's gradient above the horizon and the ground or
+// planet below, blurred towards the mean for rough reflections. The
+// background shader draws the same gradient.
+vec3 skyRadiance(vec3 d, float roughness) {
+    float up = dot(d, frame.skyUp.xyz);
+    float air = frame.horizon.w;
+    vec3 above = mix(frame.horizon.rgb, frame.sky.rgb, pow(clamp(up, 0.0, 1.0), 0.7)) * air;
+    vec3 below = mix(frame.horizon.rgb * air, frame.ground.rgb, pow(clamp(-up, 0.0, 1.0), 0.5));
+    vec3 color = up >= 0.0 ? above : below;
+    return mix(color, frame.sh[0].rgb * 0.282095, roughness * 0.8);
+}
+
 // envSpecular is the environment's reflection along r for a roughness,
-// from the prefiltered map or the sky-ground gradient.
+// from the prefiltered map or the procedural sky.
 vec3 envSpecular(vec3 r, float roughness) {
-    if (frame.env.z > 0.5) {
-        return textureLod(envMap, r, roughness * (frame.env.y - 1.0)).rgb * frame.env.x;
-    }
-    return mix(frame.ground.rgb, frame.sky.rgb, r.y * 0.5 + 0.5) * (1.0 - roughness * 0.8);
+    if (frame.env.z > 1.5) return skyRadiance(r, roughness);
+    return textureLod(envMap, r, roughness * (frame.env.y - 1.0)).rgb * frame.env.x;
 }
 
 // envDiffuse is the ambient irradiance for a normal.
 vec3 envDiffuse(vec3 n) {
-    if (frame.env.z > 0.5) return irradiance(n) * frame.env.x;
-    return mix(frame.ground.rgb, frame.sky.rgb, n.y * 0.5 + 0.5);
+    return irradiance(n) * frame.env.x;
 }
 
 // ambient is light from everywhere: the environment map when one is set
@@ -349,11 +363,7 @@ vec3 ambient(Surface s, vec3 n, vec3 v) {
     if (s.transmission > 0.0) {
         color += kD * s.transmission * transmitted(s, n, v);
     }
-    if (frame.env.z > 0.5) {
-        color += envSpecular(r, s.roughness) * envBRDF(f0, s.roughness, NoV);
-    } else {
-        color += kS * envSpecular(r, s.roughness);
-    }
+    color += envSpecular(r, s.roughness) * envBRDF(f0, s.roughness, NoV);
     if (dot(s.sheen, s.sheen) > 0.0) {
         color += s.sheen * envDiffuse(n) * 0.25 * (1.0 - s.sheenRoughness * 0.5);
     }

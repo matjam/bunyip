@@ -53,7 +53,8 @@ items are done; the list is meant to be edited as work lands.
 - Depth of field, motion blur, colour grading LUTs, lens effects.
 - Order-independent transparency; blended draws are sorted per mesh.
 - OpenEXR panoramas for environments; Radiance .hdr and LDR images decode
-  today.
+  today, and the procedural sky covers most outdoor and space scenes
+  without any image.
 
 ## Animation
 

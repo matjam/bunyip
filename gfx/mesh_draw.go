@@ -31,8 +31,9 @@ type meshPass struct {
 	matSets       map[materialKey]vk.VkDescriptorSet
 	flatNormal    *Texture
 	black         *Texture
-	blackCube     *render.Image // stands in for the environment when none is set
-	skyPipe       *render.Pipeline
+	blackCube     *render.Image    // stands in for the environment when none is set
+	skyPipe       *render.Pipeline // an image environment as the background
+	skyParamPipe  *render.Pipeline // the procedural sky as the background
 	outlinePipe   *render.Pipeline // solid shell where the stencil is clear
 	xrayPipe      *render.Pipeline // solid tint where depth says hidden
 	decalPipe     *render.Pipeline // set up by the post pass, which owns the depth sampler layout
@@ -103,8 +104,12 @@ type frameUniforms struct {
 	pointPos      [maxPointLights]lin.Vec4
 	pointColor    [maxPointLights]lin.Vec4
 	sh            [9]lin.Vec4 // environment irradiance
-	env           lin.Vec4    // intensity, mip count, has environment
+	env           lin.Vec4    // intensity, mip count, kind (1 image, 2 procedural sky)
 	invViewProj   lin.Mat4
+	horizon       lin.Vec4 // sky at the horizon, w = air (1 - vacuum)
+	skyUp         lin.Vec4 // up axis, w = stars
+	sun           lin.Vec4 // towards the sun, w = angular radius
+	sunColor      lin.Vec4 // the drawn disc's radiance
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -143,6 +148,14 @@ func (g *Graphics) initMeshPass() error {
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push2DSize,
 		SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout},
+	}); err != nil {
+		return err
+	}
+	if mp.skyParamPipe, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.PostVert, Frag: shaders.SkyParamFrag,
+		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
+		PushConstantSize: push2DSize,
+		SetLayouts:       []vk.VkDescriptorSetLayout{mp.uniformLayout.Layout},
 	}); err != nil {
 		return err
 	}
@@ -487,13 +500,7 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	if strength == 0 {
 		strength = 1
 	}
-	sky, ground := l.Sky, l.Ground
-	if sky == (Color{}) {
-		sky = l.Ambient
-	}
-	if ground == (Color{}) {
-		ground = l.Ambient
-	}
+	sky := l.Sky.resolved(l)
 	mats, splits, radii := q.cascades(aspect)
 	u := frameUniforms{
 		viewProj:      q.camera.ViewProj(aspect),
@@ -502,11 +509,15 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		camPos:        q.camera.Position.Vec4(1),
 		lightDir:      l.Direction.Norm().Vec4(0),
 		lightColor:    lin.V4(l.Color.R, l.Color.G, l.Color.B, strength),
-		sky:           lin.V4(sky.R, sky.G, sky.B, 1),
-		ground:        lin.V4(ground.R, ground.G, ground.B, 1),
+		sky:           lin.V4(sky.Zenith.R, sky.Zenith.G, sky.Zenith.B, 1),
+		ground:        lin.V4(sky.Ground.R, sky.Ground.G, sky.Ground.B, 1),
 		params:        lin.V4(shadowMapSize, boolFloat(l.Shadows), float32(len(q.points)), time),
 		splits:        splits,
 		radii:         radii,
+		horizon:       lin.V4(sky.Horizon.R, sky.Horizon.G, sky.Horizon.B, 1-sky.Vacuum),
+		skyUp:         sky.Up.Vec4(sky.Stars),
+		sun:           l.Direction.Norm().Mul(-1).Vec4(sky.SunSize),
+		sunColor:      lin.V4(sky.Sun.R, sky.Sun.G, sky.Sun.B, 1),
 	}
 	for i, p := range q.points {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
@@ -515,6 +526,12 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	if env := l.Environment; env != nil && env.cube != nil {
 		u.sh = env.sh
 		u.env = lin.V4(env.scale, float32(env.mips), 1, 0)
+	} else {
+		if sky != q.skyCached {
+			q.skyCached, q.skySH = sky, sky.sh()
+		}
+		u.sh = q.skySH
+		u.env = lin.V4(1, 0, 2, 0)
 	}
 	u.invViewProj = u.viewProj.Inverse()
 	return q.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u)))
@@ -672,6 +689,9 @@ func orOne(metallic float32, hasTexture bool) float32 {
 // used; otherwise each draw's shader picks its lit pipeline. Skinned
 // draws are never merged, since each has its own joint matrices.
 func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws []meshDraw, first uint32, cascade *int32) error {
+	if len(draws) == 0 {
+		return nil // a sky-only frame has no instance buffer to bind
+	}
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &offset)
 	var bound *render.Pipeline
@@ -750,13 +770,20 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	}
 	c := q.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
-	if env := q.light.Environment; env != nil && env.cube != nil && q.light.Background {
-		// The sky first, under everything: it neither tests nor writes depth.
+	if q.light.Background {
+		// The sky first, under everything: it neither tests nor writes
+		// depth. An image environment is looked up; the procedural sky is
+		// evaluated from the frame block.
 		render.SetViewport(cb, t.extent)
-		push := push2D{proj: q.camera.ViewProj(aspect).Inverse(), frame: lin.V4(env.scale, 0, 0, 0)}
-		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.skyPipe.Handle)
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.skyPipe.Layout, 0, 1, &env.set, 0, nil)
-		vk.VkCmdPushConstants(cb, mp.skyPipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&push))
+		push := push2D{proj: q.camera.ViewProj(aspect).Inverse()}
+		pipe, set := mp.skyParamPipe, q.uniforms.Sets[fr.Slot]
+		if env := q.light.Environment; env != nil && env.cube != nil {
+			pipe, set = mp.skyPipe, env.set
+			push.frame = lin.V4(env.scale, 0, 0, 0)
+		}
+		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &set, 0, nil)
+		vk.VkCmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&push))
 		vk.VkCmdDraw(cb, 3, 1, 0, 0)
 	}
 	if err := g.drawRuns(cb, fr, q, opaque, 0, nil); err != nil {
@@ -784,6 +811,9 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 // for them, after the opaque pass has marked the stencil. Skinned meshes
 // are skipped: the solid vertex program does not skin.
 func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws []meshDraw, first uint32, extent vk.VkExtent2D) {
+	if len(draws) == 0 {
+		return
+	}
 	mp := &g.meshes
 	var offset vk.VkDeviceSize
 	for _, pass := range []struct {
@@ -852,7 +882,7 @@ func (mp *meshPass) destroy(g *Graphics) {
 	if mp.defaultShader != nil {
 		mp.defaultShader.Destroy()
 	}
-	for _, p := range []*render.Pipeline{mp.skyPipe, mp.outlinePipe, mp.xrayPipe, mp.decalPipe} {
+	for _, p := range []*render.Pipeline{mp.skyPipe, mp.skyParamPipe, mp.outlinePipe, mp.xrayPipe, mp.decalPipe} {
 		if p != nil {
 			p.Destroy()
 		}
