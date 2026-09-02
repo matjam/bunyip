@@ -42,6 +42,9 @@ func runOnce(cfg Config, game Game) error {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	if os.Getenv("BUNYIP_HEADLESS") != "" {
+		cfg.Headless = true // build machines and the examples test
+	}
 	if cfg.FixedStep <= 0 {
 		cfg.FixedStep = time.Second / 60
 	}
@@ -228,6 +231,9 @@ func (l *loop) run() error {
 		} else {
 			accumulator += now.Sub(last)
 			last = now
+			if l.cfg.PauseUnfocused && !l.ctx.focused {
+				accumulator = 0 // the game stands still while another window has focus
+			}
 			if accumulator > catchUp { // do not spiral after a stall
 				accumulator = catchUp
 			}
@@ -355,6 +361,9 @@ func (l *loop) handleEvents(events []platform.Event) {
 			l.applySize()
 		case platform.EventFocus:
 			l.ctx.focused = e.Focused
+			if l.cfg.PauseUnfocused && l.ctx.Audio != nil {
+				l.ctx.Audio.SetPaused(!e.Focused)
+			}
 			if !e.Focused {
 				in.FeedFocusLost()
 			}

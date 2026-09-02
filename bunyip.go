@@ -61,6 +61,11 @@ type Config struct {
 	// frame the same way; zero means no cap beyond MaxCatchUp.
 	MaxCatchUp time.Duration
 	MaxSteps   int
+	// PauseUnfocused stops updates and silences the mixer while the
+	// window does not have focus, so a game does not play on behind
+	// another window; frames still draw. Off by default: a server, a
+	// music player or a game with real-time multiplayer keeps running.
+	PauseUnfocused bool
 
 	// ViewWidth and ViewHeight fix the game's view in view units: the 2D
 	// coordinate space and the 3D viewport. The window scales that view by

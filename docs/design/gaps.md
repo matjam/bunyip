@@ -51,12 +51,12 @@ comments) has landed. What remains:
 
 ## Game loop
 
-`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall.
-What remains:
+`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall, and
+`PauseUnfocused` stops updates and the mixer while another window has
+focus. What remains:
 
-- Pausing the loop (and the mixer) when the window is hidden or
-  minimised, as an option; `Mixer.SetPaused` exists for the game to
-  call.
+- Pausing when the window is hidden or minimised but still focused;
+  the platform layers do not report visibility yet.
 
 ## Input
 
@@ -157,8 +157,6 @@ Reverb zones and per-bus reverb, occlusion, mute and solo on voices
 and buses, Doppler, click-free pausing, and tracker seek, position and
 per-channel mute and solo are in. What remains:
 
-- Pause everything on focus loss, as an option; `Mixer.SetPaused` is
-  the call.
 - Hardware or platform mixing (spatialiser plugins, HRTF); the mixer is
   a Go loop.
 - Microphone input.
@@ -226,7 +224,13 @@ remains:
 ## Quality and process
 
 - Hardware verification on Windows and Linux; a GPU matrix in CI.
-- Screenshot-comparison tests for examples, on `Config.Headless`.
-- Fuzzing of loaders (glTF, WAV, MOD, S3M, XM, IT, HDR, PNG paths).
+- Screenshot comparison for the examples; `examples/examples_test.go`
+  runs each one headless (`BUNYIP_HEADLESS=1`) and checks it drew
+  something, but not what.
+- Fuzzing of the glTF and Tiled tileset loaders; the sound decoders,
+  tracker loaders, HDR, atlas, rich text and Tiled map parsers have fuzz
+  targets (run `go test -fuzz=Fuzz ./audio/...` and friends), and the
+  first runs found two third-party decoder panics now turned into
+  errors.
 - A public API stability policy once the engine tags 1.0, after the
   plumbing above is hidden.

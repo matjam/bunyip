@@ -69,7 +69,12 @@ func DecodeWAV(data []byte) (PCM, error) {
 }
 
 // DecodeOGG decodes a whole Ogg Vorbis file into memory.
-func DecodeOGG(data []byte) (PCM, error) {
+func DecodeOGG(data []byte) (pcm PCM, err error) {
+	defer func() { // a corrupt stream is an error, not a crash
+		if r := recover(); r != nil {
+			pcm, err = PCM{}, fmt.Errorf("audio: ogg: corrupt stream: %v", r)
+		}
+	}()
 	samples, format, err := oggvorbis.ReadAll(bytes.NewReader(data))
 	if err != nil {
 		return PCM{}, fmt.Errorf("audio: ogg: %w", err)

@@ -13,7 +13,14 @@ import (
 //
 // Encode game audio at 44.1 or 48 kHz: the decoder reproduces MPEG-2
 // low-sample-rate files (22.05 kHz and below) with an uneven level.
-func DecodeMP3(data []byte) (PCM, error) {
+func DecodeMP3(data []byte) (pcm PCM, err error) {
+	// The MP3 library indexes past its tables on some corrupt streams;
+	// a broken file is an error, not a crash.
+	defer func() {
+		if r := recover(); r != nil {
+			pcm, err = PCM{}, fmt.Errorf("audio: mp3: corrupt stream: %v", r)
+		}
+	}()
 	dec, err := mp3.NewDecoder(bytes.NewReader(data))
 	if err != nil {
 		return PCM{}, fmt.Errorf("audio: mp3: %w", err)
