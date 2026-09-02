@@ -61,6 +61,13 @@ the Markdown in `docs/guides` and the packages' godoc, so `go doc ./gfx`
 shows the same text and `go test ./...` runs every example that prints
 output.
 
+Every page is also published as Markdown for language models and other
+tools: the guides at `guides/<name>.md`, each package at
+`pkg/<package>.md`, an index at [llms.txt](https://matjam.github.io/bunyip/llms.txt)
+and everything in one file at `llms-full.txt`. `CLAUDE.md` in the
+repository orients a model working on the engine or writing a game with
+it.
+
 ## Packages
 
 | Package | What |

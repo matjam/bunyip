@@ -39,8 +39,9 @@ import (
 var assets embed.FS
 
 const (
-	module = "github.com/matjam/bunyip"
-	repo   = "https://github.com/matjam/bunyip"
+	module  = "github.com/matjam/bunyip"
+	repo    = "https://github.com/matjam/bunyip"
+	siteURL = "https://matjam.github.io/bunyip/"
 )
 
 // groups orders the package sidebar; packages not listed fall into the
@@ -50,10 +51,10 @@ var groups = []struct {
 	Paths []string
 }{
 	{"Engine", []string{"bunyip", "input"}},
-	{"Graphics", []string{"gfx", "anim", "ui", "gltf", "lin"}},
-	{"Simulation", []string{"phys", "orbit", "orbit/sol"}},
+	{"Graphics", []string{"gfx", "anim", "ui", "particle", "tiled", "gltf", "lin"}},
+	{"Simulation", []string{"ecs", "phys", "orbit", "orbit/sol"}},
 	{"Audio", []string{"audio", "audio/tracker"}},
-	{"Services", []string{"ecs", "asset", "save", "rng", "timer", "tween", "grid", "network"}},
+	{"Services", []string{"asset", "save", "locale", "rng", "timer", "tween", "grid", "network"}},
 	{"Tools", []string{"cmd/"}},
 	{"Example programs", []string{"examples/"}},
 }
@@ -61,12 +62,14 @@ var groups = []struct {
 func main() {
 	out := flag.String("out", "site", "output directory")
 	guides := flag.String("guides", "docs/guides", "directory of Markdown guides")
+	base := flag.String("base", siteURL, "the URL the site is published at, for the llms.txt index")
 	flag.Parse()
 	site, err := build(".", *guides)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bunyip-docs:", err)
 		os.Exit(1)
 	}
+	site.Base = strings.TrimSuffix(*base, "/") + "/"
 	if err := site.write(*out); err != nil {
 		fmt.Fprintln(os.Stderr, "bunyip-docs:", err)
 		os.Exit(1)
@@ -79,6 +82,7 @@ type Site struct {
 	Guides   []*Guide
 	Packages []*Package
 	Groups   []Group
+	Base     string // the published URL, with a trailing slash
 	pages    map[string][]byte
 	symbols  []symbol
 }
@@ -94,6 +98,7 @@ type Guide struct {
 	Title, Slug, Summary string
 	Order                int
 	Body                 template.HTML
+	Markdown             string // the source, with the front matter replaced by a heading
 	Headings             []heading
 }
 
@@ -104,6 +109,7 @@ type Package struct {
 	Name, ImportPath, Rel, URL, Synopsis string
 	IsCommand                            bool
 	Doc                                  template.HTML
+	DocMD                                string // the package comment as Markdown
 	Consts, Vars                         []*Value
 	Funcs                                []*Func
 	Types                                []*Type
@@ -111,19 +117,26 @@ type Package struct {
 	Files                                []string
 }
 
+// MarkdownURL is the package's Markdown page, beside the HTML one.
+func (p *Package) MarkdownURL() string { return strings.TrimSuffix(p.URL, ".html") + ".md" }
+
 // Value is a const or var block.
 type Value struct {
-	Names []string
-	Doc   template.HTML
-	Decl  template.HTML
-	Src   string
+	Names    []string
+	Doc      template.HTML
+	DocMD    string
+	Decl     template.HTML
+	DeclText string
+	Src      string
 }
 
 // Func is a function or method.
 type Func struct {
 	Name, ID string
 	Doc      template.HTML
+	DocMD    string
 	Decl     template.HTML
+	DeclText string
 	Src      string
 	Examples []*Example
 }
@@ -132,7 +145,9 @@ type Func struct {
 type Type struct {
 	Name         string
 	Doc          template.HTML
+	DocMD        string
 	Decl         template.HTML
+	DeclText     string
 	Src          string
 	Consts, Vars []*Value
 	Funcs        []*Func // constructors
@@ -144,7 +159,9 @@ type Type struct {
 type Example struct {
 	Name, Suffix string
 	Doc          template.HTML
+	DocMD        string
 	Code         template.HTML
+	CodeText     string
 	Output       string
 }
 
@@ -245,7 +262,7 @@ func (s *Site) loadPackage(dir, rel string) (*Package, error) {
 	}
 	r := &renderer{fset: fset, pkg: dp, rel: rel, site: s}
 	p := &Package{Name: pkgName, ImportPath: importPath, Rel: rel, URL: pkgURL(rel), IsCommand: pkgName == "main",
-		Synopsis: dp.Synopsis(dp.Doc), Doc: r.doc(dp.Doc), Files: fileNames}
+		Synopsis: dp.Synopsis(dp.Doc), Doc: r.doc(dp.Doc), DocMD: r.md(dp.Doc), Files: fileNames}
 	sort.Strings(p.Files)
 	for _, v := range dp.Consts {
 		p.Consts = append(p.Consts, r.value(v))
@@ -257,7 +274,7 @@ func (s *Site) loadPackage(dir, rel string) (*Package, error) {
 		p.Funcs = append(p.Funcs, r.fn(f, ""))
 	}
 	for _, t := range dp.Types {
-		tt := &Type{Name: t.Name, Doc: r.doc(t.Doc), Decl: r.decl(t.Decl), Src: r.src(t.Decl), Examples: r.examples(t.Examples)}
+		tt := &Type{Name: t.Name, Doc: r.doc(t.Doc), DocMD: r.md(t.Doc), Decl: r.decl(t.Decl), DeclText: r.declText(t.Decl), Src: r.src(t.Decl), Examples: r.examples(t.Examples)}
 		for _, v := range t.Consts {
 			tt.Consts = append(tt.Consts, r.value(v))
 		}
@@ -331,8 +348,36 @@ func (r *renderer) doc(text string) template.HTML {
 	return template.HTML(p.HTML(r.pkg.Parser().Parse(text)))
 }
 
+// md renders a doc comment as Markdown, for the pages language models
+// read. Links to other symbols point at the Markdown pages.
+func (r *renderer) md(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	p := r.pkg.Printer()
+	p.HeadingLevel = 3
+	p.DocLinkURL = func(link *comment.DocLink) string {
+		rel := r.rel
+		if link.ImportPath != "" {
+			if !strings.HasPrefix(link.ImportPath, module) {
+				return "https://pkg.go.dev/" + link.ImportPath
+			}
+			rel = strings.TrimPrefix(strings.TrimPrefix(link.ImportPath, module), "/")
+		}
+		url := strings.TrimSuffix(pkgURL(rel), ".html") + ".md"
+		switch {
+		case link.Recv != "" && link.Name != "":
+			return url + "#" + link.Recv + "." + link.Name
+		case link.Name != "":
+			return url + "#" + link.Name
+		}
+		return url
+	}
+	return strings.TrimSpace(string(p.Markdown(r.pkg.Parser().Parse(text))))
+}
+
 func (r *renderer) value(v *doc.Value) *Value {
-	return &Value{Names: v.Names, Doc: r.doc(v.Doc), Decl: r.decl(v.Decl), Src: r.src(v.Decl)}
+	return &Value{Names: v.Names, Doc: r.doc(v.Doc), DocMD: r.md(v.Doc), Decl: r.decl(v.Decl), DeclText: r.declText(v.Decl), Src: r.src(v.Decl)}
 }
 
 func (r *renderer) fn(f *doc.Func, recv string) *Func {
@@ -343,13 +388,16 @@ func (r *renderer) fn(f *doc.Func, recv string) *Func {
 	if recv != "" {
 		id = recv + "." + f.Name
 	}
-	return &Func{Name: f.Name, ID: id, Doc: r.doc(f.Doc), Decl: r.decl(&decl), Src: r.src(f.Decl), Examples: r.examples(f.Examples)}
+	return &Func{Name: f.Name, ID: id, Doc: r.doc(f.Doc), DocMD: r.md(f.Doc), Decl: r.decl(&decl), DeclText: r.declText(&decl), Src: r.src(f.Decl), Examples: r.examples(f.Examples)}
 }
 
 // decl prints a declaration without its doc comment and highlights it.
-// Large composite literals in variable initialisers are elided, as the
-// value is data rather than API.
-func (r *renderer) decl(d ast.Node) template.HTML {
+func (r *renderer) decl(d ast.Node) template.HTML { return highlight(r.declText(d)) }
+
+// declText prints a declaration without its doc comment. Large
+// composite literals in variable initialisers are elided, as the value
+// is data rather than API.
+func (r *renderer) declText(d ast.Node) string {
 	elided := false
 	if gd, ok := d.(*ast.GenDecl); ok {
 		cp := *gd
@@ -386,7 +434,7 @@ func (r *renderer) decl(d ast.Node) template.HTML {
 	if elided {
 		text = strings.ReplaceAll(text, "{}", "{ /* … */ }")
 	}
-	return highlight(text)
+	return text
 }
 
 func (r *renderer) src(d ast.Node) string {
@@ -413,7 +461,7 @@ func (r *renderer) examples(list []*doc.Example) []*Example {
 		if name == "" {
 			name = "Example"
 		}
-		out = append(out, &Example{Name: name, Suffix: ex.Suffix, Doc: r.doc(ex.Doc), Code: highlight(code), Output: strings.TrimSpace(ex.Output)})
+		out = append(out, &Example{Name: name, Suffix: ex.Suffix, Doc: r.doc(ex.Doc), DocMD: r.md(ex.Doc), Code: highlight(code), CodeText: code, Output: strings.TrimSpace(ex.Output)})
 	}
 	return out
 }
@@ -531,6 +579,8 @@ func (s *Site) loadGuides(dir string) error {
 				body = body[4+end+4:]
 			}
 		}
+		// The Markdown copy links to the Markdown pages.
+		g.Markdown = "# " + g.Title + "\n\n" + strings.TrimLeft(strings.ReplaceAll(body, ".html)", ".md)"), "\n")
 		var buf bytes.Buffer
 		if err := md.Convert([]byte(body), &buf); err != nil {
 			return fmt.Errorf("%s: %w", e.Name(), err)
@@ -648,30 +698,152 @@ func (s *Site) write(dir string) error {
 		s.pages[url] = buf.Bytes()
 		return os.WriteFile(full, buf.Bytes(), 0o644)
 	}
-	if err := render("index.html", "index", page{Site: s, URL: "index.html", Title: "Bunyip"}); err != nil {
+	if err := render("index.html", "index", page{Site: s, URL: "index.html", Title: "Bunyip", Markdown: "llms.txt"}); err != nil {
 		return err
 	}
+	// Every page is also written as Markdown, and llms.txt indexes them,
+	// so a language model reads the documentation without parsing HTML.
+	writeText := func(url, text string) error {
+		full := filepath.Join(dir, filepath.FromSlash(url))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		s.pages[url] = []byte(text)
+		return os.WriteFile(full, []byte(text), 0o644)
+	}
+	var full strings.Builder
+	fmt.Fprintf(&full, "# Bunyip\n\n%s\n", llmsIntro)
 	for _, g := range s.Guides {
 		url := "guides/" + g.Slug + ".html"
-		if err := render(url, "guide", page{Site: s, URL: url, Title: g.Title, Guide: g}); err != nil {
+		if err := render(url, "guide", page{Site: s, URL: url, Title: g.Title, Guide: g, Markdown: "guides/" + g.Slug + ".md"}); err != nil {
 			return err
 		}
+		if err := writeText("guides/"+g.Slug+".md", g.Markdown); err != nil {
+			return err
+		}
+		fmt.Fprintf(&full, "\n\n---\n\n%s", g.Markdown)
 	}
 	for _, p := range s.Packages {
-		if err := render(p.URL, "package", page{Site: s, URL: p.URL, Title: shortName(p.Rel), Package: p}); err != nil {
+		if err := render(p.URL, "package", page{Site: s, URL: p.URL, Title: shortName(p.Rel), Package: p, Markdown: p.MarkdownURL()}); err != nil {
 			return err
 		}
+		md := packageMarkdown(p)
+		if err := writeText(p.MarkdownURL(), md); err != nil {
+			return err
+		}
+		fmt.Fprintf(&full, "\n\n---\n\n%s", md)
 	}
-	return nil
+	if err := writeText("llms.txt", s.llmsIndex()); err != nil {
+		return err
+	}
+	return writeText("llms-full.txt", full.String())
+}
+
+// llmsIntro opens llms.txt and llms-full.txt.
+const llmsIntro = "> A game engine in Go for real-time and turn-based games, with 2D sprites and 3D models on one screen, a Vulkan renderer without cgo, an entity component system, physics, an immediate-mode interface and an audio mixer.\n\nThe guides explain each area of the engine; the package pages are the full API reference with doc comments, declarations and examples. Import path: github.com/matjam/bunyip."
+
+// llmsIndex writes llms.txt: the site's pages as Markdown links with a
+// line of description each.
+func (s *Site) llmsIndex() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Bunyip\n\n%s\n\n", llmsIntro)
+	fmt.Fprintf(&b, "The whole documentation in one file: %sllms-full.txt\n\n", s.Base)
+	b.WriteString("## Guides\n\n")
+	for _, g := range s.Guides {
+		fmt.Fprintf(&b, "- [%s](%sguides/%s.md): %s\n", g.Title, s.Base, g.Slug, g.Summary)
+	}
+	for _, grp := range s.Groups {
+		fmt.Fprintf(&b, "\n## %s\n\n", grp.Title)
+		for _, p := range grp.Packages {
+			fmt.Fprintf(&b, "- [%s](%s%s): %s\n", shortName(p.Rel), s.Base, p.MarkdownURL(), strings.TrimSpace(p.Synopsis))
+		}
+	}
+	return b.String()
+}
+
+// packageMarkdown renders a package's reference as Markdown.
+func packageMarkdown(p *Package) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n`import \"%s\"`\n\n", shortName(p.Rel), p.ImportPath)
+	if p.DocMD != "" {
+		b.WriteString(p.DocMD + "\n\n")
+	}
+	values := func(title string, vals []*Value) {
+		if len(vals) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "## %s\n\n", title)
+		for _, v := range vals {
+			fmt.Fprintf(&b, "```go\n%s\n```\n\n", strings.TrimSpace(v.DeclText))
+			if v.DocMD != "" {
+				b.WriteString(v.DocMD + "\n\n")
+			}
+		}
+	}
+	examples := func(list []*Example) {
+		for _, ex := range list {
+			fmt.Fprintf(&b, "Example%s:\n\n", map[bool]string{true: " (" + ex.Suffix + ")", false: ""}[ex.Suffix != ""])
+			if ex.DocMD != "" {
+				b.WriteString(ex.DocMD + "\n\n")
+			}
+			fmt.Fprintf(&b, "```go\n%s\n```\n\n", strings.TrimSpace(ex.CodeText))
+			if ex.Output != "" {
+				fmt.Fprintf(&b, "Output:\n\n```\n%s\n```\n\n", ex.Output)
+			}
+		}
+	}
+	fn := func(level string, f *Func) {
+		fmt.Fprintf(&b, "%s %s\n\n```go\n%s\n```\n\n", level, f.ID, strings.TrimSpace(f.DeclText))
+		if f.DocMD != "" {
+			b.WriteString(f.DocMD + "\n\n")
+		}
+		examples(f.Examples)
+	}
+	values("Constants", p.Consts)
+	values("Variables", p.Vars)
+	if len(p.Funcs) > 0 {
+		b.WriteString("## Functions\n\n")
+		for _, f := range p.Funcs {
+			fn("###", f)
+		}
+	}
+	if len(p.Types) > 0 {
+		b.WriteString("## Types\n\n")
+		for _, t := range p.Types {
+			fmt.Fprintf(&b, "### %s\n\n```go\n%s\n```\n\n", t.Name, strings.TrimSpace(t.DeclText))
+			if t.DocMD != "" {
+				b.WriteString(t.DocMD + "\n\n")
+			}
+			for _, v := range append(append([]*Value{}, t.Consts...), t.Vars...) {
+				fmt.Fprintf(&b, "```go\n%s\n```\n\n", strings.TrimSpace(v.DeclText))
+				if v.DocMD != "" {
+					b.WriteString(v.DocMD + "\n\n")
+				}
+			}
+			examples(t.Examples)
+			for _, f := range t.Funcs {
+				fn("####", f)
+			}
+			for _, m := range t.Methods {
+				fn("####", m)
+			}
+		}
+	}
+	if len(p.Examples) > 0 {
+		b.WriteString("## Examples\n\n")
+		examples(p.Examples)
+	}
+	return strings.TrimSpace(b.String()) + "\n"
 }
 
 // page is the data every template sees.
 type page struct {
-	Site    *Site
-	URL     string
-	Title   string
-	Guide   *Guide
-	Package *Package
+	Site     *Site
+	URL      string
+	Title    string
+	Markdown string // the same page as Markdown, relative to the site root
+	Guide    *Guide
+	Package  *Package
 }
 
 // Root is the relative path back to the site root from this page.
@@ -686,7 +858,8 @@ const layoutTmpl = `{{define "layout"}}<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · Bunyip</title>
-<link rel="stylesheet" href="{{.Root}}site.css">
+{{if .Markdown}}<link rel="alternate" type="text/markdown" href="{{.Root}}{{.Markdown}}" title="{{.Title}} as Markdown">
+{{end}}<link rel="stylesheet" href="{{.Root}}site.css">
 <script defer src="{{.Root}}site.js" data-root="{{.Root}}"></script>
 </head>
 <body>
