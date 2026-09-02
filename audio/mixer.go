@@ -2,10 +2,14 @@
 // platform's output device. A Sound holds decoded samples at the mixer's
 // rate; Play starts a Voice that can be adjusted or stopped while it runs.
 // Music streams from a decoder instead of being held in memory. Voices
-// can be placed in the listener's world, filtered, sent to a shared reverb,
-// faded, pitched and prioritised, and grouped on a Bus to be turned down
-// or paused together. Mixing happens on the audio device's thread, so
-// every method is safe to call from the game loop.
+// can be placed in the listener's world (with distance, panning, Doppler
+// and occlusion), filtered, sent to a reverb, faded, pitched, muted,
+// soloed and prioritised, and grouped on a Bus to be turned down, muted
+// or paused together. The mixer has one shared reverb, replaced by a
+// ReverbZone while the listener stands in one, and a Bus can carry a
+// reverb of its own. Mixing happens on the audio device's thread, so
+// every method is safe to call from the game loop, and every change in
+// gain ramps across a block so nothing clicks.
 //
 // Decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole file
 // as bytes; streams (OpenMusic) take readers, because they seek while
@@ -30,8 +34,18 @@ type Mixer struct {
 	scratch   []float32
 	sendBuf   []float32
 	listener  Listener
-	reverb    *reverb
 	finished  []func() // OnDone callbacks to run once the lock is released
+
+	reverb     *reverb        // the shared reverb, nil when off
+	baseReverb ReverbSettings // what SetReverb was given
+	applied    ReverbSettings // what the shared reverb is using now
+	zones      []ReverbZone
+
+	doppler      float32 // Doppler factor, 0 off
+	speedOfSound float32
+
+	// Solo state for this block, worked out at the top of Mix.
+	soloVoices, soloBuses bool
 
 	buses                    map[string]*Bus
 	music, effects, dialogue *Bus
@@ -39,7 +53,7 @@ type Mixer struct {
 
 // NewMixer makes a mixer for the given output sample rate.
 func NewMixer(rate int) *Mixer {
-	m := &Mixer{rate: rate, master: 1, maxVoices: 64, buses: map[string]*Bus{},
+	m := &Mixer{rate: rate, master: 1, maxVoices: 64, buses: map[string]*Bus{}, speedOfSound: 343,
 		listener: Listener{Forward: lin.Vec3{Z: -1}, Up: lin.Vec3{Y: 1}}}
 	m.music = m.NewBus("music")
 	m.effects = m.NewBus("effects")
@@ -74,15 +88,22 @@ type PlayOptions struct {
 	Pitch    float32 // playback rate multiplier for sounds; 1
 	Priority int     // higher survives when the mixer is full
 	FadeIn   float32 // seconds to rise from silence
-	Reverb   float32 // 0..1 send into the mixer's reverb (see SetReverb)
+	Reverb   float32 // 0..1 send into the bus's reverb, or the mixer's (see SetReverb)
 	LowPass  float32 // low-pass cutoff in Hz; 0 leaves the sound unfiltered
 	Bus      *Bus    // bus the voice plays through; nil is the master alone
 
+	// Occlusion is how much of the world is between the source and the
+	// listener: 0 clear, 1 fully blocked, which drops the voice 20 dB and
+	// muffles it to 400 Hz. A game sets it from a physics ray.
+	Occlusion float32
+
 	// Positional voices are heard from Position relative to the listener:
 	// full volume within MinDistance (1), fading to silence at
-	// MaxDistance (100), panned by direction.
+	// MaxDistance (100), panned by direction. Velocity, in world units per
+	// second, drives Doppler once SetDoppler turns it on.
 	Positional  bool
 	Position    lin.Vec3
+	Velocity    lin.Vec3
 	MinDistance float32
 	MaxDistance float32
 }
@@ -109,10 +130,11 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 	}
 	v := &Voice{m: m, bus: opts.Bus, vol: opts.Volume, pan: opts.Pan, loop: opts.Loop, pitch: opts.Pitch,
 		priority: opts.Priority, reverb: opts.Reverb, positional: opts.Positional,
-		position: opts.Position, minDist: opts.MinDistance, maxDist: opts.MaxDistance}
+		position: opts.Position, velocity: opts.Velocity, minDist: opts.MinDistance, maxDist: opts.MaxDistance}
 	if opts.LowPass > 0 {
 		v.lp = newLowPass(opts.LowPass, m.rate)
 	}
+	v.setOcclusion(opts.Occlusion)
 	if opts.FadeIn > 0 {
 		total := int(opts.FadeIn * float32(m.rate))
 		v.fade = &fade{from: 0, to: opts.Volume, left: total, total: total}
@@ -205,6 +227,19 @@ func (m *Mixer) Mix(out []float32) {
 	}
 	scratch, send := m.scratch[:len(out)], m.sendBuf[:len(out)]
 	clear(send)
+	m.soloVoices, m.soloBuses = false, false
+	for _, v := range m.voices {
+		m.soloVoices = m.soloVoices || v.solo
+	}
+	for _, b := range m.buses {
+		m.soloBuses = m.soloBuses || b.solo
+		if b.reverb != nil {
+			if len(b.sendBuf) < len(out) {
+				b.sendBuf = make([]float32, len(out))
+			}
+			clear(b.sendBuf[:len(out)])
+		}
+	}
 	live := m.voices[:0]
 	for _, v := range m.voices {
 		if v.render(m, out, send, scratch, frames) {
@@ -219,6 +254,11 @@ func (m *Mixer) Mix(out []float32) {
 	m.voices = live
 	if m.reverb != nil {
 		m.reverb.process(send, out)
+	}
+	for _, b := range m.buses {
+		if b.reverb != nil {
+			b.reverb.process(b.sendBuf[:len(out)], out)
+		}
 	}
 	for i, s := range out {
 		out[i] = max(-1, min(1, s))
@@ -248,9 +288,15 @@ type Voice struct {
 	reverb   float32
 	lp       *lowPass
 	fade     *fade
+	mute     bool
+	solo     bool
+
+	occlusion float32
+	occ       *lowPass // occlusion's own filter, nil at 0
 
 	positional       bool
 	position         lin.Vec3
+	velocity         lin.Vec3
 	minDist, maxDist float32
 
 	// Gains ramp across each block so changes never click.
@@ -292,13 +338,69 @@ func (v *Voice) SetPan(pan float32) { v.set(func() { v.pan = pan }) }
 // double speed. Streams ignore it.
 func (v *Voice) SetPitch(p float32) { v.set(func() { v.pitch = max(p, 0.01) }) }
 
-// SetPaused holds the voice in place, silent, until resumed.
+// SetPaused holds the voice in place, silent, until resumed. The block
+// the pause lands in fades out, so it never clicks.
 func (v *Voice) SetPaused(p bool) { v.set(func() { v.paused = p }) }
+
+// SetMute silences the voice while it keeps playing, so unmuting picks
+// up wherever the sound has got to; pausing holds it instead.
+func (v *Voice) SetMute(mute bool) { v.set(func() { v.mute = mute }) }
+
+// Muted reports whether the voice is muted.
+func (v *Voice) Muted() bool {
+	v.m.mu.Lock()
+	defer v.m.mu.Unlock()
+	return v.mute
+}
+
+// SetSolo auditions the voice: while any voice is soloed, every voice
+// that is not falls silent, still playing. Clearing the last solo brings
+// them back. Bus solos are separate and combine with it.
+func (v *Voice) SetSolo(solo bool) { v.set(func() { v.solo = solo }) }
+
+// Soloed reports whether the voice is soloed.
+func (v *Voice) Soloed() bool {
+	v.m.mu.Lock()
+	defer v.m.mu.Unlock()
+	return v.solo
+}
 
 // SetPosition moves a positional voice.
 func (v *Voice) SetPosition(p lin.Vec3) { v.set(func() { v.position = p; v.positional = true }) }
 
-// SetReverb changes the send level into the mixer's reverb.
+// SetVelocity sets a positional voice's velocity in world units per
+// second, for Doppler. It only changes the pitch; the game moves the
+// voice with SetPosition.
+func (v *Voice) SetVelocity(vel lin.Vec3) { v.set(func() { v.velocity = vel }) }
+
+// SetOcclusion sets how blocked the path from the source is: 0 clear, 1
+// fully blocked (20 dB down and muffled to 400 Hz), in between for a
+// half-open door. A game sets it from a physics ray each frame; the gain
+// ramps, so the change never clicks.
+func (v *Voice) SetOcclusion(o float32) { v.set(func() { v.setOcclusion(o) }) }
+
+// Occlusion reports the voice's occlusion amount.
+func (v *Voice) Occlusion() float32 {
+	v.m.mu.Lock()
+	defer v.m.mu.Unlock()
+	return v.occlusion
+}
+
+// setOcclusion updates the amount and its filter under the lock.
+func (v *Voice) setOcclusion(o float32) {
+	o = max(0, min(1, o))
+	v.occlusion = o
+	switch {
+	case o <= 0:
+		v.occ = nil
+	case v.occ == nil:
+		v.occ = newLowPass(occlusionCutoff(o), v.m.rate)
+	default:
+		v.occ.set(occlusionCutoff(o), v.m.rate)
+	}
+}
+
+// SetReverb changes the send level into the bus's reverb, or the mixer's.
 func (v *Voice) SetReverb(send float32) { v.set(func() { v.reverb = send }) }
 
 // SetLowPass sets the low-pass cutoff in Hz; 0 removes the filter.
@@ -411,9 +513,16 @@ func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool 
 	if v.stop || v.done {
 		return false
 	}
-	if v.paused || m.paused || (v.bus != nil && v.bus.paused) {
-		v.curL, v.curR = 0, 0
+	// A pause fades the voice out over the block it lands in, then holds
+	// it in place until resumed; a voice that is already silent holds at
+	// once, so a pause before the first block costs nothing.
+	held := v.paused || m.paused || (v.bus != nil && v.bus.paused)
+	if held && v.curL == 0 && v.curR == 0 {
 		return true
+	}
+	step := v.pitch
+	if v.positional && m.doppler > 0 {
+		step *= m.listener.doppler(v.position, v.velocity, m.doppler, m.speedOfSound)
 	}
 	var n int
 	var more bool
@@ -422,13 +531,16 @@ func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool 
 		more = n == frames
 		v.played += int64(n)
 	} else {
-		n, more = v.readSound(scratch[:frames*2])
+		n, more = v.readSound(scratch[:frames*2], step)
 	}
 	if n == 0 {
 		return more
 	}
 	if v.lp != nil {
 		v.lp.process(scratch[:n*2])
+	}
+	if v.occ != nil {
+		v.occ.process(scratch[:n*2])
 	}
 	vol := v.vol
 	if v.fade != nil {
@@ -438,6 +550,15 @@ func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool 
 	gain := vol * m.master
 	if v.bus != nil {
 		gain *= v.bus.vol
+		if v.bus.reverb != nil {
+			send = v.bus.sendBuf
+		}
+	}
+	if held || v.silenced(m) {
+		gain = 0
+	}
+	if v.occlusion > 0 {
+		gain *= occlusionGain(v.occlusion)
 	}
 	pan := v.pan
 	if v.positional {
@@ -478,9 +599,23 @@ func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool 
 	return more
 }
 
-// readSound copies the next frames of the sound into dst at the voice's
-// pitch, and reports how many it wrote and whether more remain.
-func (v *Voice) readSound(dst []float32) (int, bool) {
+// silenced reports whether mute or solo state keeps the voice quiet this
+// block: its own mute, another voice's solo, or its bus being muted or
+// passed over by a bus solo.
+func (v *Voice) silenced(m *Mixer) bool {
+	if v.mute || (m.soloVoices && !v.solo) {
+		return true
+	}
+	if v.bus == nil {
+		return m.soloBuses
+	}
+	return v.bus.mute || (m.soloBuses && !v.bus.solo)
+}
+
+// readSound copies the next frames of the sound into dst, advancing step
+// source frames per output frame (the pitch, with Doppler applied), and
+// reports how many it wrote and whether more remain.
+func (v *Voice) readSound(dst []float32, step float32) (int, bool) {
 	s := v.snd
 	if s == nil || len(s.samples) < 2 {
 		return 0, false
@@ -506,7 +641,7 @@ func (v *Voice) readSound(dst []float32) (int, bool) {
 		}
 		dst[i*2] = s.samples[j*2]*(1-t) + s.samples[k*2]*t
 		dst[i*2+1] = s.samples[j*2+1]*(1-t) + s.samples[k*2+1]*t
-		v.pos += float64(v.pitch)
+		v.pos += float64(step)
 	}
 	return frames, true
 }

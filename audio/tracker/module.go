@@ -1,9 +1,20 @@
 // Package tracker loads and plays tracker music: ProTracker MOD (4 to 32
 // channels), ScreamTracker 3 S3M, FastTracker 2 XM and Impulse Tracker IT.
 // Player implements audio.Stream, so a module plays through the mixer like
-// any other voice. The four formats share one Module model; format-specific
-// behaviour (period tables, slide units, effect semantics) is selected by
-// Module.Format and the flags the loaders set.
+// any other voice; while it plays the game can Seek to a song position
+// and row, read the Position, and Mute or Solo pattern channels. The four
+// formats share one Module model; format-specific behaviour (period
+// tables, slide units, effect semantics) is selected by Module.Format and
+// the flags the loaders set.
+//
+// Load reads a module from bytes, sniffing the format (LoadMOD, LoadS3M,
+// LoadXM and LoadIT take one each); a Module carries the song's name,
+// orders, patterns, samples and instruments, so a game can show what is
+// playing or drive visuals from the pattern data.
+// NewPlayer renders it at the mixer's rate; the player reports its
+// position (order and row) for syncing gameplay to the music and takes
+// seeks and per-channel mute and solo. Playback is deterministic, so a
+// module renders the same bytes on every platform.
 package tracker
 
 import (

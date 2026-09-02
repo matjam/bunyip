@@ -105,7 +105,7 @@ func (p *Player) startNote(ch *channel, sample *Sample, inst *Instrument, note i
 	}
 	old := ch.voice
 	ch.voice = voice{
-		sample: sample, inst: inst, active: len(sample.Data) > 0, dir: 1,
+		sample: sample, inst: inst, active: len(sample.Data) > 0, dir: 1, index: ch.index,
 		note: note, volume: ch.volume, pan: ch.voice.pan, fade: 65536,
 		cutoff: ch.cutoff, resonance: ch.resonance, filterOn: ch.filterOn, sustainOn: true,
 	}

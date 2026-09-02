@@ -153,12 +153,14 @@ meshes, and dynamic mesh updates are in. What remains:
 
 ## Audio
 
+Reverb zones and per-bus reverb, occlusion, mute and solo on voices
+and buses, Doppler, click-free pausing, and tracker seek, position and
+per-channel mute and solo are in. What remains:
+
 - Pause everything on focus loss, as an option; `Mixer.SetPaused` is
   the call.
 - Hardware or platform mixing (spatialiser plugins, HRTF); the mixer is
   a Go loop.
-- Occlusion and reverb zones driven by the scene.
-- Streaming tracker music with seek; per-channel mute and solo.
 - Microphone input.
 - Windows and Linux audio layers untested on hardware.
 

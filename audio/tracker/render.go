@@ -95,6 +95,11 @@ func (p *Player) renderVoice(out []float32, frames int, v *voice, ch *channel, p
 	if vol <= 0 {
 		return
 	}
+	if !p.audible(v.index) {
+		// Muted: advance the sample as if heard, so unmuting is seamless.
+		p.advanceSilent(v, step, frames)
+		return
+	}
 	pan = clampPan(pan)
 	// Linear panning, as the trackers themselves mix: centre is unity on
 	// both sides, hard left is double on one side and silent on the other.
@@ -186,6 +191,54 @@ func (p *Player) renderVoice(out []float32, frames int, v *voice, ch *channel, p
 		pos += step * float64(dir)
 	}
 	v.pos, v.dir = pos, dir
+}
+
+// advanceSilent moves a muted voice through its sample without mixing
+// it, ending it where a one-shot runs out and wrapping a loop the same
+// way renderVoice does.
+func (p *Player) advanceSilent(v *voice, step float64, frames int) {
+	s := v.sample
+	n := len(s.Data)
+	loopStart, loopEnd, loopType := s.LoopStart, s.LoopEnd, s.Loop
+	if v.sustainOn && !v.keyOff && s.SusLoop != LoopNone && s.SusLoopEnd > s.SusLoopStart+1 {
+		loopStart, loopEnd, loopType = s.SusLoopStart, s.SusLoopEnd, s.SusLoop
+	}
+	looping := loopType != LoopNone && loopEnd > loopStart+1
+	end := n
+	if looping {
+		end = min(loopEnd, n)
+	}
+	pos := v.pos + step*float64(v.dir)*float64(frames)
+	switch {
+	case !looping:
+		if pos >= float64(end) {
+			v.active = false
+			return
+		}
+	case loopType == LoopPingPong:
+		span := float64(end - loopStart)
+		// Fold the position into a forward pass and a backward pass.
+		off := pos - float64(loopStart)
+		for off >= 2*span {
+			off -= 2 * span
+		}
+		for off < 0 {
+			off += 2 * span
+		}
+		if off >= span {
+			off = 2*span - off - 1
+			v.dir = -1
+		} else {
+			v.dir = 1
+		}
+		pos = float64(loopStart) + off
+	default:
+		span := float64(end - loopStart)
+		for pos >= float64(end) {
+			pos -= span
+		}
+	}
+	v.pos = pos
 }
 
 // hermite interpolates between y1 and y2 at t, using y0 and y3 for slope.

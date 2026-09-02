@@ -10,6 +10,11 @@ type Bus struct {
 	name   string
 	vol    float32
 	paused bool
+	mute   bool
+	solo   bool
+
+	reverb  *reverb   // the bus's own reverb, nil to share the mixer's
+	sendBuf []float32 // reverb send for this block
 }
 
 // NewBus makes a named bus; the name is how Mixer.Bus finds it again. If a
@@ -61,7 +66,8 @@ func (b *Bus) Volume() float32 {
 }
 
 // SetPaused holds every voice on the bus in place, silent, until resumed;
-// voices started while the bus is paused wait too.
+// voices started while the bus is paused wait too. The pause fades out
+// over the block it lands in, so it never clicks.
 func (b *Bus) SetPaused(p bool) {
 	b.m.mu.Lock()
 	b.paused = p
@@ -75,9 +81,44 @@ func (b *Bus) Paused() bool {
 	return b.paused
 }
 
-// SetPaused holds every voice on every bus, for when the game loses focus.
-// Bus and voice pauses are kept separately, so resuming the mixer leaves
-// them as they were.
+// SetMute silences every voice on the bus while leaving it playing, so
+// unmuting picks up where the sound has got to. The gain ramps over one
+// block, so it never clicks.
+func (b *Bus) SetMute(mute bool) {
+	b.m.mu.Lock()
+	b.mute = mute
+	b.m.mu.Unlock()
+}
+
+// Muted reports whether the bus is muted.
+func (b *Bus) Muted() bool {
+	b.m.mu.Lock()
+	defer b.m.mu.Unlock()
+	return b.mute
+}
+
+// SetSolo makes the bus one of the few heard: while any bus is soloed,
+// every other bus (and voices on no bus) fall silent, still playing, the
+// way a mixing desk's solo button auditions one group. Clearing the last
+// solo brings the rest back.
+func (b *Bus) SetSolo(solo bool) {
+	b.m.mu.Lock()
+	b.solo = solo
+	b.m.mu.Unlock()
+}
+
+// Soloed reports whether the bus is soloed.
+func (b *Bus) Soloed() bool {
+	b.m.mu.Lock()
+	defer b.m.mu.Unlock()
+	return b.solo
+}
+
+// SetPaused holds every voice on every bus, for when the game loses focus
+// or a pause menu opens; the engine calls it, so a game rarely has to.
+// The block in which the pause lands fades out and the block after the
+// resume fades back in, so neither clicks. Bus and voice pauses are kept
+// separately, so resuming the mixer leaves them as they were.
 func (m *Mixer) SetPaused(p bool) {
 	m.mu.Lock()
 	m.paused = p

@@ -182,6 +182,110 @@ func TestSongEnds(t *testing.T) {
 	}
 }
 
+// level is the peak absolute sample in out.
+func level(out []float32) float32 {
+	var peak float32
+	for _, s := range out {
+		if s > peak {
+			peak = s
+		} else if -s > peak {
+			peak = -s
+		}
+	}
+	return peak
+}
+
+func TestSeekAndPosition(t *testing.T) {
+	m, _ := Load(buildMOD())
+	p := NewPlayer(m, 48000)
+	if p.Length() != 1 || p.Rows(0) != 64 || p.Rows(1) != 0 || p.Rows(-1) != 0 || p.Channels() != 4 {
+		t.Fatalf("Length %d Rows %d/%d/%d Channels %d", p.Length(), p.Rows(0), p.Rows(1), p.Rows(-1), p.Channels())
+	}
+	// Half way through the one pattern: 32 rows of 6 ticks at 960 frames.
+	p.Seek(0, 32)
+	if o, r := p.Position(); o != 0 || r != 32 {
+		t.Fatalf("Position after Seek(0, 32) = %d/%d", o, r)
+	}
+	out := make([]float32, 48000*2)
+	total := 0
+	for range 20 {
+		n := p.Read(out)
+		total += n
+		if n < 48000 {
+			break
+		}
+	}
+	if want := 32 * 6 * 960; !p.Finished() || total != want {
+		t.Fatalf("from row 32 the song rendered %d frames, want %d, finished=%v", total, want, p.Finished())
+	}
+	// Seeking a finished song restarts it, and the note on row 0 sounds.
+	p.Seek(0, 0)
+	if p.Finished() {
+		t.Fatal("still finished after Seek")
+	}
+	if n := p.Read(out[:4800*2]); n != 4800 || level(out[:4800*2]) < 0.05 {
+		t.Fatalf("after restarting: %d frames at peak %.3f", n, level(out[:4800*2]))
+	}
+	if o, r := p.Position(); o != 0 || r != 0 {
+		t.Fatalf("Position after a tenth of a second = %d/%d, want row 0", o, r)
+	}
+	// Out of range positions clamp to the song.
+	p.Seek(7, 500)
+	if o, r := p.Position(); o != 0 || r != 63 {
+		t.Fatalf("Position after Seek(7, 500) = %d/%d, want 0/63", o, r)
+	}
+	p.Seek(-3, -3)
+	if o, r := p.Position(); o != 0 || r != 0 {
+		t.Fatalf("Position after Seek(-3, -3) = %d/%d, want 0/0", o, r)
+	}
+}
+
+func TestMuteAndSolo(t *testing.T) {
+	m, _ := Load(buildMOD()) // only channel 0 plays a note
+	p := NewPlayer(m, 48000)
+	p.Loop = true
+	out := make([]float32, 4800*2)
+	read := func() float32 {
+		p.Read(out)
+		return level(out)
+	}
+	if read() < 0.05 {
+		t.Fatal("song silent before any mute")
+	}
+	p.Mute(0, true)
+	if !p.Muted(0) || p.Muted(1) || p.Muted(9) {
+		t.Fatal("Muted did not read back")
+	}
+	if l := read(); l != 0 {
+		t.Fatalf("muted channel still sounds: %.3f", l)
+	}
+	p.Mute(0, false)
+	if read() < 0.05 {
+		t.Fatal("channel silent after unmuting")
+	}
+	p.Solo(1, true)
+	if !p.Soloed(1) || p.Soloed(0) {
+		t.Fatal("Soloed did not read back")
+	}
+	if l := read(); l != 0 {
+		t.Fatalf("soloing an empty channel left channel 0 audible: %.3f", l)
+	}
+	p.Solo(0, true)
+	if read() < 0.05 {
+		t.Fatal("soloed channel 0 is silent")
+	}
+	p.Solo(0, false)
+	p.Solo(1, false)
+	p.Solo(1, false) // clearing twice must not count down past zero
+	if read() < 0.05 {
+		t.Fatal("channel silent after clearing every solo")
+	}
+	p.Mute(99, true) // ignored
+	if read() < 0.05 {
+		t.Fatal("muting a channel outside the module silenced the song")
+	}
+}
+
 // TestRealSongs plays real modules from the user's Downloads when present,
 // which exercises the loaders and every effect a real tune uses.
 func TestRealSongs(t *testing.T) {

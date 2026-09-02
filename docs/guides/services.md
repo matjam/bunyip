@@ -1,7 +1,7 @@
 ---
 title: Game services
 order: 12
-summary: entities, assets, saves, random numbers, timers, tweens, grids and networking
+summary: entities, assets, saves, random numbers, timers, sequences, tweens, translation, grids and networking
 ---
 
 These packages have no GPU or window dependency, so their examples run
@@ -51,6 +51,22 @@ and `Restore` put the generator in a save file. `Pick`, `Shuffle`,
 eases a value from one number to another with the usual curves, repeats
 and yo-yos, and `Sequence` chains tweens.
 
+`timer.Sequence` writes a cutscene, a turn's animation or a boss pattern
+as a list of steps instead of a state machine: `Do` something, `Wait` a
+second, wait `Until` a condition holds, `Run` a function each update
+until it says it is done, and `Loop` for patrols. `Skip` jumps to the
+end for a player who presses through.
+
+## Text in the player's language: locale
+
+[locale](../pkg/locale.html) holds a `Table` of messages per language,
+loaded from JSON a translator edits, with `{name}` placeholders and
+plural forms chosen by each language's rules (`Plural` knows the common
+ones, from English's two forms to Arabic's six). A `Bundle` falls back
+through languages for keys a translation lacks, `Missing` lists a
+translator's to-do, and `For` gives a `Translator` whose `T` and `N`
+the game calls.
+
 ## Maps: grid
 
 [grid](../pkg/grid.html) is for tile games: a generic `Grid`, `AStar`
@@ -65,3 +81,11 @@ instances: ordered over TCP for turn-based play, lobbies and chat, and
 unordered over UDP for real-time state. A `Registry` names the message
 types both ends agree on; events arrive through `Poll` once per frame,
 and `SetOnActivity` can wake a sleeping turn-based game.
+
+For real-time play the helpers do the usual tricks: an `Interpolator`
+draws other players a little behind the newest snapshot so they move
+smoothly whatever the packet timing; a `Predictor` applies the local
+player's inputs at once and reconciles with the server's state by
+replaying the inputs it has not seen; a `History` lets a server rewind
+targets to where a shooter saw them; and a `Clock` estimates the
+server's time from pings.

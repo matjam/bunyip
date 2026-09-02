@@ -71,6 +71,15 @@ func TestBusAndMixerPause(t *testing.T) {
 	if !m.Paused() {
 		t.Fatal("mixer Paused did not read back")
 	}
+	m.Mix(out) // the pause block fades out rather than cutting
+	for i := 2; i < len(out); i += 2 {
+		if out[i] >= out[i-2] {
+			t.Fatalf("pause did not fade: frame %d %v then %v", i/2, out[i-2], out[i])
+		}
+	}
+	if out[len(out)-2] > 0.1 {
+		t.Fatalf("pause fade ended at %v, want near silence", out[len(out)-2])
+	}
 	m.Mix(out)
 	if l, r := rms(out); l+r != 0 {
 		t.Fatalf("paused mixer produced %.3f/%.3f", l, r)

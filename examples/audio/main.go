@@ -1,7 +1,9 @@
 // Command audio is the sound tour: positional voices orbiting the
-// listener, a shared reverb and a low-pass filter on sliders, fades,
-// pitch, voice priorities under a small voice cap, a synthesised music
-// stream, and -music to stream an Ogg, MP3 or WAV file from disk.
+// listener with Doppler and occlusion on sliders, a shared reverb and a
+// low-pass filter on sliders, fades, pitch, voice priorities under a
+// small voice cap, a synthesised music stream, -music to stream an Ogg,
+// MP3 or WAV file from disk, and -zone to put a reverb zone at the
+// listener so the room changes as the orbiting sources pass through it.
 package main
 
 import (
@@ -32,6 +34,7 @@ type game struct {
 	seconds   float64
 	shot      string
 	musicPath string
+	zone      bool
 
 	font    *gfx.Font
 	ui      *ui.Context
@@ -42,11 +45,13 @@ type game struct {
 	music   *audio.Music
 	stream  *audio.Voice
 
-	reverb   float32
-	room     float32
-	cutoff   float32
-	pitch    float32
-	shotDone bool
+	reverb    float32
+	room      float32
+	cutoff    float32
+	pitch     float32
+	occlusion float32
+	doppler   float32
+	shotDone  bool
 }
 
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -69,6 +74,11 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	g.reverb, g.room, g.cutoff, g.pitch = 0.3, 0.6, 4000, 1
 	m.SetReverb(audio.ReverbSettings{RoomSize: g.room, Wet: g.reverb})
+	// Doppler in pixels: a high speed of sound keeps the orbit's shift
+	// to a semitone or so at full factor.
+	g.doppler = 1
+	m.SetDoppler(g.doppler)
+	m.SetSpeedOfSound(3000)
 	// A looping pad the sliders act on.
 	g.pad = m.Play(pad, audio.PlayOptions{Loop: true, Volume: 0.35, LowPass: g.cutoff, Reverb: 1, FadeIn: 1.5, Priority: 10})
 	// Three orbiting positional sources at different pitches.
@@ -112,21 +122,34 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		ctx.Screenshot(g.shot)
 		g.shotDone = true
 	}
-	// The listener sits at the window centre; sources circle it.
+	// The listener sits at the window centre; sources circle it. With
+	// -zone, a large hall covers the left half of the window and the
+	// listener is moved with the mouse so it can walk in and out.
 	cx, cy := ctx.Width/2, ctx.Height/2
-	ctx.Audio.SetListener2D(cx, cy)
+	lx, ly := cx, cy
+	if g.zone {
+		lx, ly = ctx.Input.Mouse()
+		ctx.Audio.SetReverbZones([]audio.ReverbZone{{
+			Center: lin.V3(cx/2, cy, 0), Radius: cx / 2, Fade: cx / 8,
+			Settings: audio.ReverbSettings{RoomSize: 0.95, Damping: 0.2, Wet: 0.8},
+		}})
+	}
+	ctx.Audio.SetListener2D(lx, ly)
 	for i := range g.sources {
 		s := &g.sources[i]
 		a := float64(float32(ctx.Time) * s.speed)
 		s.pos = lin.V3(cx+s.dist*float32(math.Cos(a)), cy+s.dist*float32(math.Sin(a)), 0)
 		s.voice.SetPosition(s.pos)
+		// The orbit's tangent, in pixels per second, drives Doppler.
+		v := s.dist * s.speed
+		s.voice.SetVelocity(lin.V3(-v*float32(math.Sin(a)), v*float32(math.Cos(a)), 0))
 	}
 	return nil
 }
 
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
-	cx, cy := ctx.Width/2, ctx.Height/2
+	cx := ctx.Width / 2
 	for _, s := range g.sources {
 		for r := float32(3); r <= 9; r += 3 { // rings fade with distance
 			c := s.color
@@ -135,18 +158,32 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		}
 		gr.FillRect(s.pos.X-6, s.pos.Y-6, 12, 12, s.color)
 	}
-	gr.FillRect(cx-8, cy-8, 16, 16, gfx.RGB(240, 240, 250))
-	gr.DrawText(g.font, "listener", cx-24, cy+12, gfx.RGB(200, 200, 210))
+	l := ctx.Audio.Listener().Position
+	if g.zone {
+		gr.FillRect(0, 0, cx, ctx.Height, gfx.RGBA(80, 90, 160, 40)) // the hall
+		r := ctx.Audio.Reverb()
+		gr.DrawText(g.font, fmt.Sprintf("hall: wet %.2f room %.2f (move the mouse)", r.Wet, r.RoomSize), 16, ctx.Height-30, gfx.RGB(200, 200, 210))
+	}
+	gr.FillRect(l.X-8, l.Y-8, 16, 16, gfx.RGB(240, 240, 250))
+	gr.DrawText(g.font, "listener", l.X-24, l.Y+12, gfx.RGB(200, 200, 210))
 
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 420}, func() {
+		u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 480}, func() {
 			u.Label(fmt.Sprintf("%d voices playing (cap 12)", ctx.Audio.Playing()))
 			if u.Slider("Reverb wet", &g.reverb, 0, 1) || u.Slider("Room size", &g.room, 0, 1) {
 				ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: g.room, Wet: g.reverb})
 			}
 			if u.Slider("Pad low-pass Hz", &g.cutoff, 200, 8000) {
 				g.pad.SetLowPass(g.cutoff)
+			}
+			if u.Slider("Orbit occlusion", &g.occlusion, 0, 1) {
+				for _, s := range g.sources {
+					s.voice.SetOcclusion(g.occlusion)
+				}
+			}
+			if u.Slider("Doppler factor", &g.doppler, 0, 3) {
+				ctx.Audio.SetDoppler(g.doppler)
 			}
 			u.Slider("Click pitch", &g.pitch, 0.5, 2)
 			u.Row(2, func() {
@@ -215,9 +252,10 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	music := flag.String("music", "", "Ogg, MP3 or WAV file to stream")
+	zone := flag.Bool("zone", false, "put a reverb zone over the left half and move the listener with the mouse")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip audio", Width: 900, Height: 600, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, musicPath: *music})
+		&game{seconds: *seconds, shot: *shot, musicPath: *music, zone: *zone})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "audio:", err)
 		os.Exit(1)
