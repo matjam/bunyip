@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/matjam/bunyip/gfx"
@@ -134,7 +133,7 @@ func (c *Context) Table(columns []string, weights []float32, rows int, cell func
 			case row%2 == 1:
 				c.fill(r, c.Theme.Field.WithAlpha(0.35))
 			}
-			c.noteAt("row", fmt.Sprint(row), "", false, r, id+widgetID(row+1))
+			c.noteAt("row", c.formatInt(row), "", false, r, id+widgetID(row+1))
 		}
 		c.endGroup(saved)
 		c.Columns(weights, func() {

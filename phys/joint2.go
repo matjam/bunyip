@@ -1,8 +1,9 @@
 package phys
 
 import (
+	"cmp"
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
@@ -164,38 +165,76 @@ type jointSolver2 interface {
 	sides() (ecs.Entity, ecs.Entity)
 }
 
+// jointItem2 is one prepared joint waiting to be put in entity order.
+// kind and at name the solver slice and the row in it, because the
+// slices may still grow while the joints are being gathered.
+type jointItem2 struct {
+	id   uint64
+	kind uint8
+	at   int32
+}
+
+const (
+	jointDistance2 = iota
+	jointRevolute2
+	jointSpring2
+	jointFixed2
+)
+
 // gatherJoints2 collects every joint in a stable order (by entity id).
+// The solvers are stored by value in the state's slices and the returned
+// interfaces point into them, so a step allocates nothing once the
+// slices have grown to fit.
 func gatherJoints2(w *ecs.World, s *state2) []jointSolver2 {
-	type item struct {
-		id uint64
-		j  jointSolver2
-	}
-	var items []item
-	add := func(e ecs.Entity, ea, eb ecs.Entity, mk func(a, b jointSide2) jointSolver2) {
+	s.items = s.items[:0]
+	s.distanceSolvers = s.distanceSolvers[:0]
+	s.revoluteSolvers = s.revoluteSolvers[:0]
+	s.springSolvers = s.springSolvers[:0]
+	s.fixedSolvers = s.fixedSolvers[:0]
+	sides := func(ea, eb ecs.Entity) (jointSide2, jointSide2, bool) {
 		a, oka := sideOf2(w, ea)
 		b, okb := sideOf2(w, eb)
-		if oka && okb && (a.b != nil || b.b != nil) {
-			items = append(items, item{e.ID(), mk(a, b)})
-		}
+		return a, b, oka && okb && (a.b != nil || b.b != nil)
 	}
 	s.distance.Each(func(e ecs.Entity, j *DistanceJoint2) {
-		add(e, j.A, j.B, func(a, b jointSide2) jointSolver2 { return &distanceSolver2{j: j, a: a, b: b} })
+		if a, b, ok := sides(j.A, j.B); ok {
+			s.items = append(s.items, jointItem2{e.ID(), jointDistance2, int32(len(s.distanceSolvers))})
+			s.distanceSolvers = append(s.distanceSolvers, distanceSolver2{j: j, a: a, b: b})
+		}
 	})
 	s.revolute.Each(func(e ecs.Entity, j *RevoluteJoint2) {
-		add(e, j.A, j.B, func(a, b jointSide2) jointSolver2 { return &revoluteSolver2{j: j, a: a, b: b} })
+		if a, b, ok := sides(j.A, j.B); ok {
+			s.items = append(s.items, jointItem2{e.ID(), jointRevolute2, int32(len(s.revoluteSolvers))})
+			s.revoluteSolvers = append(s.revoluteSolvers, revoluteSolver2{j: j, a: a, b: b})
+		}
 	})
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint2) {
-		add(e, j.A, j.B, func(a, b jointSide2) jointSolver2 { return &springSolver2{j: j, a: a, b: b} })
+		if a, b, ok := sides(j.A, j.B); ok {
+			s.items = append(s.items, jointItem2{e.ID(), jointSpring2, int32(len(s.springSolvers))})
+			s.springSolvers = append(s.springSolvers, springSolver2{j: j, a: a, b: b})
+		}
 	})
 	s.fixed.Each(func(e ecs.Entity, j *FixedJoint2) {
-		add(e, j.A, j.B, func(a, b jointSide2) jointSolver2 { return &fixedSolver2{j: j, a: a, b: b} })
+		if a, b, ok := sides(j.A, j.B); ok {
+			s.items = append(s.items, jointItem2{e.ID(), jointFixed2, int32(len(s.fixedSolvers))})
+			s.fixedSolvers = append(s.fixedSolvers, fixedSolver2{j: j, a: a, b: b})
+		}
 	})
-	sort.Slice(items, func(i, k int) bool { return items[i].id < items[k].id })
-	out := make([]jointSolver2, len(items))
-	for i, it := range items {
-		out[i] = it.j
+	slices.SortFunc(s.items, func(a, b jointItem2) int { return cmp.Compare(a.id, b.id) })
+	s.joints = s.joints[:0]
+	for _, it := range s.items {
+		switch it.kind {
+		case jointDistance2:
+			s.joints = append(s.joints, &s.distanceSolvers[it.at])
+		case jointRevolute2:
+			s.joints = append(s.joints, &s.revoluteSolvers[it.at])
+		case jointSpring2:
+			s.joints = append(s.joints, &s.springSolvers[it.at])
+		default:
+			s.joints = append(s.joints, &s.fixedSolvers[it.at])
+		}
 	}
-	return out
+	return s.joints
 }
 
 type distanceSolver2 struct {

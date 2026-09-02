@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 )
 
 // Registry maps message types to the small numbers sent on the wire.
@@ -66,30 +67,77 @@ const MaxMessage = 16 << 20
 
 // encode produces [type uint16][payload] for a message value or pointer.
 func (r *Registry) encode(msg any) ([]byte, error) {
-	v := reflect.ValueOf(msg)
-	t := v.Type()
+	if _, ok := msg.(encoding.BinaryMarshaler); ok {
+		// A binary message knows its own size, so appendEncoded sizes
+		// the buffer exactly.
+		return r.appendEncoded(nil, msg)
+	}
+	// A JSON message does not, so start with room for a small one and
+	// let the prefix and the payload land in one allocation.
+	return r.appendEncoded(make([]byte, 0, 64), msg)
+}
+
+// appendEncoded appends [type uint16][payload] to dst and returns the
+// grown slice, so a caller with a buffer of its own encodes without
+// allocating. dst is left alone when the message cannot be encoded.
+func (r *Registry) appendEncoded(dst []byte, msg any) ([]byte, error) {
+	t := reflect.TypeOf(msg)
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	id, ok := r.byType[t]
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownMessage, t)
+		return dst, fmt.Errorf("%w: %s", ErrUnknownMessage, t)
 	}
-	var payload []byte
-	var err error
 	if bm, ok := msg.(encoding.BinaryMarshaler); ok {
-		payload, err = bm.MarshalBinary()
-	} else {
-		payload, err = json.Marshal(msg)
+		payload, err := bm.MarshalBinary()
+		if err != nil {
+			return dst, fmt.Errorf("network: encode %s: %w", t, err)
+		}
+		if need := 2 + len(payload); cap(dst)-len(dst) < need {
+			grown := make([]byte, len(dst), len(dst)+need)
+			copy(grown, dst)
+			dst = grown
+		}
+		dst = binary.BigEndian.AppendUint16(dst, id)
+		return append(dst, payload...), nil
 	}
+	out := binary.BigEndian.AppendUint16(dst, id)
+	// json.Marshal would allocate a payload for us to copy out of. An
+	// Encoder writing into the buffer skips that copy; it adds a
+	// newline the encoding does not need, which comes off again.
+	w := jsonAppenders.Get().(*jsonAppender)
+	w.buf = out
+	err := w.enc.Encode(msg)
+	out, w.buf = w.buf, nil
+	jsonAppenders.Put(w)
 	if err != nil {
-		return nil, fmt.Errorf("network: encode %s: %w", t, err)
+		return dst, fmt.Errorf("network: encode %s: %w", t, err)
 	}
-	out := make([]byte, 2+len(payload))
-	binary.BigEndian.PutUint16(out, id)
-	copy(out[2:], payload)
+	if n := len(out); n > 0 && out[n-1] == '\n' {
+		out = out[:n-1]
+	}
 	return out, nil
 }
+
+// jsonAppender lets a json.Encoder write straight into a caller's
+// buffer. The encoders are pooled because one is bound to its writer
+// for life.
+type jsonAppender struct {
+	buf []byte
+	enc *json.Encoder
+}
+
+func (w *jsonAppender) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	return len(p), nil
+}
+
+var jsonAppenders = sync.Pool{New: func() any {
+	w := &jsonAppender{}
+	w.enc = json.NewEncoder(w)
+	return w
+}}
 
 // decode turns a wire buffer back into a pointer to a fresh message.
 func (r *Registry) decode(data []byte) (any, error) {

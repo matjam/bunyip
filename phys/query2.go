@@ -1,8 +1,9 @@
 package phys
 
 import (
+	"cmp"
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
@@ -45,12 +46,14 @@ func OverlapShape2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint3
 
 func overlapShape2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32, triggers bool, exclude ecs.Entity) []Hit2 {
 	lo, hi := s.bounds(pos, rot)
+	st := stateOf2(w)
 	var out []Hit2
 	eachCollider2(w, lo, hi, mask, triggers, func(p placed2) {
 		if p.e == exclude {
 			return
 		}
-		cs := collide2(s, pos, rot, p.c.Shape, p.pos, p.rot)
+		st.qs.contacts = collide2(&st.qs, st.qs.contacts[:0], s, pos, rot, p.c.Shape, p.pos, p.rot)
+		cs := st.qs.contacts
 		if len(cs) == 0 {
 			return
 		}
@@ -93,6 +96,7 @@ func shapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec
 	slo, shi := lo.Min(lo.Add(delta)), hi.Max(hi.Add(delta))
 	ext := hi.Sub(lo)
 	minHalfA := min(ext.X, ext.Y) / 2
+	st := stateOf2(w)
 	best := Hit2{Distance: float32(math.Inf(1))}
 	found := false
 	eachCollider2(w, slo, shi, mask, false, func(p placed2) {
@@ -100,7 +104,7 @@ func shapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec
 			return
 		}
 		cext := p.hi.Sub(p.lo)
-		t, cs, ok := marchSweep2(s, pos, rot, delta, minHalfA, p.c.Shape, p.pos, p.rot, min(cext.X, cext.Y)/2, best.Distance)
+		t, cs, ok := marchSweep2(&st.qs, s, pos, rot, delta, minHalfA, p.c.Shape, p.pos, p.rot, min(cext.X, cext.Y)/2, best.Distance)
 		if !ok {
 			return
 		}
@@ -119,7 +123,7 @@ func shapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec
 // thinnest feature of either shape and bisects the first overlapping
 // step, returning the fraction and the contacts there. Sweeps that
 // start overlapping, or hit past limit, report nothing.
-func marchSweep2(s Shape2, pos lin.Vec2, rot float32, delta lin.Vec2, minHalfA float32, other Shape2, opos lin.Vec2, orot float32, minHalfB, limit float32) (float32, []contact2, bool) {
+func marchSweep2(sc *scratch2, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec2, minHalfA float32, other Shape2, opos lin.Vec2, orot float32, minHalfB, limit float32) (float32, []contact2, bool) {
 	length := delta.Len()
 	step := 0.5 * (minHalfA + minHalfB)
 	if step <= 0 {
@@ -127,7 +131,8 @@ func marchSweep2(s Shape2, pos lin.Vec2, rot float32, delta lin.Vec2, minHalfA f
 	}
 	steps := max(1, min(256, int(math.Ceil(float64(length/step)))))
 	overlaps := func(t float32) []contact2 {
-		return collide2(s, pos.Add(delta.Mul(t)), rot, other, opos, orot)
+		sc.contacts = collide2(sc, sc.contacts[:0], s, pos.Add(delta.Mul(t)), rot, other, opos, orot)
+		return sc.contacts
 	}
 	if len(overlaps(0)) > 0 {
 		return 0, nil, false
@@ -147,18 +152,21 @@ func marchSweep2(s Shape2, pos lin.Vec2, rot float32, delta lin.Vec2, minHalfA f
 	if hit < 0 {
 		return 0, nil, false
 	}
-	var cs []contact2
+	// The contacts of the last overlapping probe are copied out, because
+	// the next probe reuses the scratch they were written into.
+	cs, kept := sc.keep[:0], false
 	for range 12 {
 		mid := (free + hit) / 2
 		if c := overlaps(mid); len(c) > 0 {
-			hit, cs = mid, c
+			hit, cs, kept = mid, append(cs[:0], c...), true
 		} else {
 			free = mid
 		}
 	}
-	if cs == nil {
-		cs = overlaps(hit)
+	if !kept {
+		cs = append(cs[:0], overlaps(hit)...)
 	}
+	sc.keep = cs
 	return hit, cs, true
 }
 
@@ -179,19 +187,40 @@ func Nearest2(w *ecs.World, point lin.Vec2, radius float32, mask uint32) (Hit2, 
 }
 
 // RaycastAll2 returns every collider along the ray, nearest first,
-// ignoring triggers and colliders the mask excludes.
+// ignoring triggers and colliders the mask excludes. To cast repeatedly
+// without allocating a result each time, call RaycastAll2Into.
 func RaycastAll2(w *ecs.World, r Ray2, mask uint32) []Hit2 {
-	var out []Hit2
+	return RaycastAll2Into(nil, w, r, mask)
+}
+
+// RaycastAll2Into appends every collider along the ray to out, nearest
+// first, and returns out. Pass the previous result truncated with [:0]
+// to reuse its storage; pass nil for a fresh slice. The appended hits
+// are sorted among themselves, not against what out already held.
+func RaycastAll2Into(out []Hit2, w *ecs.World, r Ray2, mask uint32) []Hit2 {
+	start := len(out)
 	stateOf2(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
 		if c.Shape == nil || c.Trigger || !(Layers{Mask: mask}).collides(c.Layers) {
 			return
 		}
 		cs, sn := cosSin(t.Rotation)
 		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
+		lo, hi := c.Shape.bounds(pos, t.Rotation)
+		if !raySlab2(r, lo, hi, 1) {
+			return
+		}
 		if tt, n, ok := rayShape2(r, c.Shape, pos, t.Rotation); ok {
 			out = append(out, Hit2{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
 		}
 	})
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Distance < out[j].Distance })
+	slices.SortStableFunc(out[start:], func(a, b Hit2) int { return cmp.Compare(a.Distance, b.Distance) })
 	return out
+}
+
+// raySlab2 reports whether the ray reaches the box within maxT, as a
+// cheap reject before the shape's own test.
+func raySlab2(r Ray2, lo, hi lin.Vec2, maxT float32) bool {
+	tmin, tmax := float32(0), maxT
+	return slabAxis(r.Origin.X, r.Dir.X, lo.X, hi.X, &tmin, &tmax) &&
+		slabAxis(r.Origin.Y, r.Dir.Y, lo.Y, hi.Y, &tmin, &tmax)
 }

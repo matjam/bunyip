@@ -130,6 +130,26 @@ for _, child := range ecs.ChildrenOf(w, planet) {
 w.Despawn(planet) // the moon goes with it
 ```
 
+`WorldMatrix` climbs the parent chain each time it is called. To pay for
+the chain once a frame instead of once an entity, call
+`UpdateWorldMatrices` from a system after the ones that move transforms;
+it walks every hierarchy from its roots down and caches a matrix per
+entity, and `WorldMatrix` reads the cache instead of climbing. Reading
+every entity's matrix over a ten thousand entity hierarchy four deep
+takes about half as long with the pass as without it.
+
+```go
+w.AddSystem("transforms", func(w *ecs.World, dt float64) {
+	ecs.UpdateWorldMatrices(w)
+})
+```
+
+The cache lasts until the next `World.Update`, so `Draw` reads what the
+last `Update` left. `SetParent` and `Despawn` drop it, and a transform
+written after the pass is not seen until the pass runs again.
+`WorldMatrix` falls back to the walk whenever the cache is not fresh, so
+code that never calls the pass behaves as it always has.
+
 ## Saving and loading
 
 A world saves as JSON. The file holds every live entity with its parent

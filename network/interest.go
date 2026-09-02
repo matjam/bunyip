@@ -12,10 +12,12 @@ type Interest[ID comparable] struct {
 	Radius float32
 	// Margin is how much further an entity may go before it leaves;
 	// zero means a tenth of Radius.
-	Margin float32
-	vx, vy float32
-	in     map[ID]struct{} // the set after the last End
-	seen   map[ID]struct{} // the set being built this frame
+	Margin  float32
+	vx, vy  float32
+	in      map[ID]struct{} // the set after the last End
+	seen    map[ID]struct{} // the set being built this frame
+	entered []ID            // reused by End
+	left    []ID            // reused by End
 }
 
 // Begin starts a frame at the viewer's position.
@@ -52,21 +54,24 @@ func (in *Interest[ID]) Visit(id ID, x, y float32) bool {
 
 // End finishes the frame and reports which entities entered the set
 // and which left it since the last End, in no particular order. An
-// entity not visited this frame leaves.
+// entity not visited this frame leaves. Both slices belong to the
+// Interest and are refilled by the next End, so send from them during
+// the frame and copy anything that has to outlive it.
 func (in *Interest[ID]) End() (entered, left []ID) {
+	in.entered, in.left = in.entered[:0], in.left[:0]
 	for id := range in.seen {
 		if _, was := in.in[id]; !was {
-			entered = append(entered, id)
+			in.entered = append(in.entered, id)
 		}
 	}
 	for id := range in.in {
 		if _, still := in.seen[id]; !still {
-			left = append(left, id)
+			in.left = append(in.left, id)
 		}
 	}
 	in.in, in.seen = in.seen, in.in
 	clear(in.seen)
-	return entered, left
+	return in.entered, in.left
 }
 
 // Contains reports whether an entity was in the set at the last End.

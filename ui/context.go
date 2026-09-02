@@ -2,6 +2,7 @@ package ui
 
 import (
 	"hash/fnv"
+	"strconv"
 
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
@@ -98,6 +99,26 @@ type Context struct {
 	inModal     bool
 
 	nodes, lastNodes []AccessibleNode
+
+	// rich holds the markup RichLabel has parsed, keyed by the markup
+	// string: the runs, the plain text and the last size measured for
+	// them. The maps are two generations, swapped every frame, so an
+	// entry not used for two frames is dropped.
+	rich, richOld map[string]*richEntry
+
+	// buf is scratch for formatting numbers into captions without fmt.
+	buf []byte
+}
+
+// richEntry is one markup string's parsed runs, its plain text and the
+// size those runs took the last time they were measured.
+type richEntry struct {
+	rt    gfx.RichText
+	plain string
+	fonts gfx.RichFonts
+	opts  gfx.TextOptions
+	w, h  float32
+	sized bool
 }
 
 type focusable struct {
@@ -128,7 +149,8 @@ const (
 func New(g *gfx.Graphics, theme Theme) *Context {
 	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}, scroll: map[widgetID]*scrollState{},
 		edits: map[widgetID]*editState{}, expanded: map[widgetID]bool{}, drags: map[widgetID]*dragState{}, hues: map[widgetID]float32{},
-		groupFocus: map[widgetID]widgetID{}}
+		groupFocus: map[widgetID]widgetID{},
+		rich:       map[string]*richEntry{}, richOld: map[string]*richEntry{}}
 }
 
 // Begin runs one frame of interface: body calls the widget methods, and
@@ -174,6 +196,10 @@ func (c *Context) begin(in *input.State) {
 	c.dropHover = false
 	c.modal = 0
 	c.nodes = c.nodes[:0]
+	// Rich text used this frame moves into the current map; whatever
+	// stayed behind in the older one goes.
+	c.rich, c.richOld = c.richOld, c.rich
+	clear(c.rich)
 }
 
 // end finishes the frame: deferred overlays draw above everything, the
@@ -314,6 +340,71 @@ func (c *Context) ring(r Rect, w float32, col gfx.Color) {
 
 func (c *Context) text(s string, x, y float32, col gfx.Color) {
 	c.g.DrawText(c.Theme.Font, s, x, y, col)
+}
+
+// richText returns the parsed form of markup, parsing it the first time
+// it is seen and keeping it while the interface keeps asking for it.
+func (c *Context) richText(markup string) *richEntry {
+	if e, ok := c.rich[markup]; ok {
+		return e
+	}
+	if e, ok := c.richOld[markup]; ok {
+		c.rich[markup] = e
+		return e
+	}
+	rt := gfx.ParseRich(markup)
+	e := &richEntry{rt: rt, plain: rt.Plain()}
+	c.rich[markup] = e
+	return e
+}
+
+// The formatting helpers below build captions in a buffer the context
+// reuses, which fmt cannot do because its arguments go through
+// interfaces. Each returns one string; the digits match what fmt's
+// %.*f, %d and %02x produce.
+
+// formatFloat renders v with prec digits after the point.
+func (c *Context) formatFloat(v float32, prec int) string {
+	c.buf = strconv.AppendFloat(c.buf[:0], float64(v), 'f', prec, 32)
+	return string(c.buf)
+}
+
+// formatInt renders v in base ten.
+func (c *Context) formatInt(v int) string {
+	c.buf = strconv.AppendInt(c.buf[:0], int64(v), 10)
+	return string(c.buf)
+}
+
+// formatPercent renders v with no digits after the point and a per cent
+// sign, for a progress bar's note.
+func (c *Context) formatPercent(v float32) string {
+	c.buf = strconv.AppendFloat(c.buf[:0], float64(v), 'f', 0, 32)
+	c.buf = append(c.buf, '%')
+	return string(c.buf)
+}
+
+// labelFloat renders "label: value" for a slider's caption.
+func (c *Context) labelFloat(label string, v float32, prec int) string {
+	c.buf = append(append(c.buf[:0], label...), ':', ' ')
+	c.buf = strconv.AppendFloat(c.buf, float64(v), 'f', prec, 32)
+	return string(c.buf)
+}
+
+// labelInt renders "label: value" for a whole-number slider's caption.
+func (c *Context) labelInt(label string, v int) string {
+	c.buf = append(append(c.buf[:0], label...), ':', ' ')
+	c.buf = strconv.AppendInt(c.buf, int64(v), 10)
+	return string(c.buf)
+}
+
+// formatHex renders a colour as "#rrggbb".
+func (c *Context) formatHex(r, g, b uint8) string {
+	const digits = "0123456789abcdef"
+	c.buf = append(c.buf[:0], '#',
+		digits[r>>4], digits[r&15],
+		digits[g>>4], digits[g&15],
+		digits[b>>4], digits[b&15])
+	return string(c.buf)
 }
 
 // textCentred draws s centred in r.

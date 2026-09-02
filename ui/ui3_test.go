@@ -507,3 +507,51 @@ func TestReorderableList(t *testing.T) {
 		t.Errorf("Move(3, 1) = %v, want %v", s, want)
 	}
 }
+
+// TestRichLabelCache checks that the parsed markup is reused frame to
+// frame, still reports the plain text, and is dropped once the label
+// stops being drawn.
+func TestRichLabelCache(t *testing.T) {
+	c := newContext(t)
+	in := newFeeder()
+	const markup = "a [b]bold[/b] word"
+	draw := true
+	var plain string
+	body := func() {
+		c.Panel("Rich", Rect{X: 0, Y: 0, W: 200, H: 120}, func() {
+			if draw {
+				c.RichLabel(markup)
+			}
+		})
+		for _, n := range c.nodes {
+			if n.Role == "label" {
+				plain = n.Label
+			}
+		}
+	}
+	run(t, c, in, body)
+	first, ok := c.rich[markup]
+	if !ok {
+		t.Fatal("markup was not cached")
+	}
+	if plain != "a bold word" {
+		t.Errorf("plain text %q", plain)
+	}
+	if !first.sized {
+		t.Error("the measured size was not kept")
+	}
+	run(t, c, in, body)
+	if again := c.rich[markup]; again != first {
+		t.Error("the markup was parsed again on the second frame")
+	}
+	// Two frames without the label and the entry is gone.
+	draw = false
+	run(t, c, in, body)
+	run(t, c, in, body)
+	if _, ok := c.rich[markup]; ok {
+		t.Error("an unused entry survived two frames")
+	}
+	if _, ok := c.richOld[markup]; ok {
+		t.Error("an unused entry survived in the older map")
+	}
+}

@@ -246,6 +246,30 @@ grid.FOV(g.player, 9, opaque, func(p grid.Point) { seen[p] = true })
 The algorithms take a cost or passability function over points, not a
 `Grid`, so they work against whatever the game keeps its map in.
 
+`AStar`, `Dijkstra` and `FOV` allocate only their result. To search or
+cast sight every frame without allocating at all, keep a `Pathfinder`
+for the map and a `Vision` for the viewer and call their methods.
+`Pathfinder.AStar` appends the path to a slice the game owns and reports
+whether there was one, `Pathfinder.DijkstraInto` fills a map the game
+already has, and `Vision.FOV` reuses the scratch space a cast needs.
+
+```go
+// Made once, with the map, and kept.
+g.pf = grid.NewPathfinder(64, 48)
+g.dist = grid.New[float32](64, 48)
+
+// Each frame, searching into the game's own buffers.
+if path, ok := g.pf.AStar(g.path[:0], g.player, g.exit, true, cost); ok {
+	g.path = path
+}
+g.pf.DijkstraInto(g.dist, []grid.Point{g.player}, true, cost)
+g.sight.FOV(g.player, 9, opaque, func(p grid.Point) { g.seen[p] = true })
+```
+
+`Resize` points a `Pathfinder` at a map of another size when the level
+changes. Both types hold scratch space rather than results, so give each
+goroutine its own.
+
 ## Networking
 
 [network](../pkg/network.html) moves typed messages between game
@@ -361,7 +385,10 @@ sends only the fields of a snapshot struct that changed since a
 baseline; `SnapshotBuffer` picks each client's baseline from what it
 last acknowledged, with `SnapshotReceiver` on the other end. `Interest`
 chooses which entities are near enough to a viewer to be worth sending,
-with hysteresis at the edge so nothing flickers in and out.
+with hysteresis at the edge so nothing flickers in and out. The two
+slices `Interest.End` returns belong to the `Interest` and are refilled
+by the next `End`, so send from them in the same frame and copy anything
+that has to outlive it.
 
 Prediction takes the most setting up. `Step` must be the same function
 the server runs, so the replay lands where the server did:

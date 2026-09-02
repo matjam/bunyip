@@ -15,9 +15,13 @@ package timer
 
 // Scheduler runs timers in game time.
 type Scheduler struct {
-	timers []*timer
-	next   int
-	now    float64
+	heap     []timer // a min-heap ordered by due time, then by handle
+	next     int
+	now      float64
+	live     int   // timers that have neither fired nor been cancelled
+	dead     int   // cancelled timers still sitting in the heap
+	firing   timer // the timer whose callback is running
+	isFiring bool
 }
 
 type timer struct {
@@ -26,6 +30,15 @@ type timer struct {
 	interval float64
 	fn       func()
 	dead     bool
+}
+
+// before orders timers by due time, then by the order they were
+// scheduled, which is the order Update fires them in.
+func (t timer) before(u timer) bool {
+	if t.at != u.at {
+		return t.at < u.at
+	}
+	return t.id < u.id
 }
 
 // Handle identifies a scheduled timer for Cancel.
@@ -44,16 +57,28 @@ func (s *Scheduler) Every(seconds float64, fn func()) Handle {
 
 func (s *Scheduler) add(delay, interval float64, fn func()) Handle {
 	s.next++
-	t := &timer{id: Handle(s.next), at: s.now + delay, interval: interval, fn: fn}
-	s.timers = append(s.timers, t)
+	t := timer{id: Handle(s.next), at: s.now + delay, interval: interval, fn: fn}
+	s.push(t)
+	s.live++
 	return t.id
 }
 
 // Cancel stops a timer; cancelling one that already fired is harmless.
 func (s *Scheduler) Cancel(h Handle) {
-	for _, t := range s.timers {
-		if t.id == h {
-			t.dead = true
+	if s.isFiring && s.firing.id == h && !s.firing.dead {
+		s.firing.dead = true // a timer cancelling itself from its callback
+		s.live--
+		return
+	}
+	for i := range s.heap {
+		if s.heap[i].id == h && !s.heap[i].dead {
+			s.heap[i].dead = true
+			s.live--
+			s.dead++
+			if s.dead*2 > len(s.heap) {
+				s.compact()
+			}
+			return
 		}
 	}
 }
@@ -63,43 +88,112 @@ func (s *Scheduler) Cancel(h Handle) {
 // scheduled. Callbacks may schedule or cancel timers.
 func (s *Scheduler) Update(dt float64) {
 	s.now += dt
-	for {
-		var due *timer
-		for _, t := range s.timers {
-			if t.dead || t.at > s.now {
-				continue
-			}
-			if due == nil || t.at < due.at || (t.at == due.at && t.id < due.id) {
-				due = t
-			}
+	for len(s.heap) > 0 && s.heap[0].at <= s.now {
+		due := s.pop()
+		if due.dead {
+			continue
 		}
-		if due == nil {
-			break
-		}
+		// The timer is off the heap while it runs, so Cancel looks at
+		// s.firing to let a callback cancel the timer it belongs to.
+		s.firing, s.isFiring = due, true
 		due.fn()
-		if due.interval <= 0 {
-			due.dead = true
-		} else {
+		dead := s.firing.dead
+		s.firing, s.isFiring = timer{}, false
+		switch {
+		case dead:
+		case due.interval <= 0:
+			s.live--
+		default:
 			due.at += due.interval
+			s.push(due)
 		}
 	}
-	live := s.timers[:0]
-	for _, t := range s.timers {
-		if !t.dead {
-			live = append(live, t)
-		}
+	// Drop cancelled timers that sank to the front while callbacks ran.
+	for len(s.heap) > 0 && s.heap[0].dead {
+		s.pop()
 	}
-	for i := len(live); i < len(s.timers); i++ {
-		s.timers[i] = nil
-	}
-	s.timers = live
 }
 
 // Now is the scheduler's elapsed game time in seconds.
 func (s *Scheduler) Now() float64 { return s.now }
 
-// Pending counts scheduled timers.
-func (s *Scheduler) Pending() int { return len(s.timers) }
+// Pending counts scheduled timers that have not fired or been cancelled.
+func (s *Scheduler) Pending() int { return s.live }
+
+// push adds a timer to the min-heap.
+func (s *Scheduler) push(t timer) {
+	h := append(s.heap, t)
+	i := len(h) - 1
+	for i > 0 {
+		parent := (i - 1) / 2
+		if !t.before(h[parent]) {
+			break
+		}
+		h[i] = h[parent]
+		i = parent
+	}
+	h[i] = t
+	s.heap = h
+}
+
+// pop removes and returns the earliest timer; the heap must not be empty.
+func (s *Scheduler) pop() timer {
+	h := s.heap
+	top := h[0]
+	n := len(h) - 1
+	h[0] = h[n]
+	h[n] = timer{} // release the callback so it can be collected
+	s.heap = h[:n]
+	if n > 0 {
+		s.siftDown(0)
+	}
+	if top.dead {
+		s.dead--
+	}
+	return top
+}
+
+func (s *Scheduler) siftDown(i int) {
+	h := s.heap
+	n := len(h)
+	t := h[i]
+	for {
+		left := 2*i + 1
+		if left >= n {
+			break
+		}
+		small := left
+		if right := left + 1; right < n && h[right].before(h[left]) {
+			small = right
+		}
+		if !h[small].before(t) {
+			break
+		}
+		h[i] = h[small]
+		i = small
+	}
+	h[i] = t
+}
+
+// compact drops cancelled timers from the heap, so a game that cancels
+// timers due far in the future does not hold their callbacks until they
+// come due.
+func (s *Scheduler) compact() {
+	kept := s.heap[:0]
+	for _, t := range s.heap {
+		if !t.dead {
+			kept = append(kept, t)
+		}
+	}
+	for i := len(kept); i < len(s.heap); i++ {
+		s.heap[i] = timer{}
+	}
+	s.heap = kept
+	s.dead = 0
+	for i := len(kept)/2 - 1; i >= 0; i-- {
+		s.siftDown(i)
+	}
+}
 
 // Countdown is a simple timer a game polls rather than a callback: set
 // it and ask each frame whether it has run out.

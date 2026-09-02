@@ -9,6 +9,14 @@ The [audio](../pkg/audio.html) package mixes in Go on the output device's
 own thread. A game gets a `Mixer` from `ctx.Audio` and never touches the
 device.
 
+Every method is safe to call from the game loop. A setter copies its
+value in under a short lock and the mixer picks it up at the start of the
+next block, so the game thread never waits for a block to finish; the
+mixer in turn reads streams with no lock held, so a `Stream.Read` that
+takes locks of its own, or that calls back into the mixer, cannot stall
+the game. The exception is `Voice.Seek`, which moves the playhead the
+mixer is reading from and so waits for the block in flight.
+
 ## Sounds and voices
 
 `NewSound` converts decoded PCM to the mixer's format; `Decode` reads

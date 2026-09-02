@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	"golang.org/x/image/font/gofont/goregular"
@@ -139,6 +140,69 @@ func TestLayoutWrapsByUnicodeRules(t *testing.T) {
 	w, h := f.Measure(text, TextOptions{Width: full / 3})
 	if w > full/3+1 || h < float32(len(lines))*f.LineHeight-0.01 {
 		t.Errorf("block %.1fx%.1f for %d lines of %.1f", w, h, len(lines), f.LineHeight)
+	}
+}
+
+// TestTextCacheMatchesFreshLayout checks that the glyphs a repeated draw
+// takes from the block cache are the ones a fresh layout would produce,
+// for every alignment and for sized, spaced and multi-paragraph text, so
+// that caching a block cannot move what is drawn.
+func TestTextCacheMatchesFreshLayout(t *testing.T) {
+	g := newHeadless(t, 256, 256)
+	f, err := g.NewFont(goregular.TTF, 16, FontOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Destroy()
+	text := "the quick brown fox jumps over the lazy dog\nand does it again for a second paragraph"
+	cases := []struct {
+		name string
+		opts TextOptions
+	}{
+		{"left", TextOptions{Width: 120}},
+		{"center", TextOptions{Width: 120, Align: AlignCenter}},
+		{"right", TextOptions{Width: 120, Align: AlignRight}},
+		{"justify", TextOptions{Width: 120, Align: AlignJustify}},
+		{"unwrapped", TextOptions{}},
+		{"sized and spaced", TextOptions{Width: 120, Size: 24, LetterSpacing: 1.5, LineSpacing: 1.4}},
+		{"baseline", TextOptions{Width: 120, Baseline: true}},
+		{"vertical", TextOptions{Direction: DirectionTTB}},
+		{"hyphenated", TextOptions{Width: 60, Align: AlignJustify, Hyphenate: EnglishHyphenator()}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cached := f.blockGlyphs(text, c.opts) // computes, then caches
+			if again := f.blockGlyphs(text, c.opts); &again[0] != &cached[0] {
+				t.Fatalf("second call laid the block out again instead of using the cache")
+			}
+			fresh := slices.Clone(f.layoutBlock(text, c.opts))
+			if !slices.Equal(fresh, cached) {
+				t.Errorf("cached glyphs differ from a fresh layout: %d vs %d glyphs", len(cached), len(fresh))
+				for i := range min(len(fresh), len(cached)) {
+					if fresh[i] != cached[i] {
+						t.Fatalf("glyph %d: cached %+v, fresh %+v", i, cached[i], fresh[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestTextCacheEvictionKeepsHotEntries checks that a string drawn every
+// frame survives many one-off strings passing through the cache, which
+// clearing the whole map at a limit did not.
+func TestTextCacheEvictionKeepsHotEntries(t *testing.T) {
+	var c genCache[int, int]
+	c.put(-1, -1)
+	for i := range textCacheEntries * 4 {
+		c.put(i, i)
+		if v, ok := c.get(-1); !ok || v != -1 {
+			t.Fatalf("the hot entry was evicted after %d one-off entries", i+1)
+		}
+	}
+	// The one-off entries are dropped rather than kept for ever.
+	if n := len(c.cur) + len(c.prev); n > 2*textCacheEntries+2 {
+		t.Errorf("cache holds %d entries for a limit of %d", n, textCacheEntries)
 	}
 }
 

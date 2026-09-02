@@ -92,24 +92,23 @@ type contact2 struct {
 	depth  float32
 }
 
-// worldPolygon transforms polygon points into the world.
-func worldPolygon(p Polygon2, pos lin.Vec2, rot float32) []lin.Vec2 {
+// worldPolygon appends the polygon's points, placed in the world, to
+// dst.
+func worldPolygon(dst []lin.Vec2, p Polygon2, pos lin.Vec2, rot float32) []lin.Vec2 {
 	c, s := cosSin(rot)
-	out := make([]lin.Vec2, len(p.Points))
-	for i, pt := range p.Points {
-		out[i] = rotate2(pt, c, s).Add(pos)
+	for _, pt := range p.Points {
+		dst = append(dst, rotate2(pt, c, s).Add(pos))
 	}
-	return out
+	return dst
 }
 
-// polygonNormals returns outward unit normals for each edge.
-func polygonNormals(pts []lin.Vec2) []lin.Vec2 {
+// polygonNormals appends an outward unit normal for each edge to dst.
+func polygonNormals(dst, pts []lin.Vec2) []lin.Vec2 {
 	var centroid lin.Vec2
 	for _, p := range pts {
 		centroid = centroid.Add(p)
 	}
 	centroid = centroid.Mul(1 / float32(len(pts)))
-	out := make([]lin.Vec2, len(pts))
 	for i := range pts {
 		a, b := pts[i], pts[(i+1)%len(pts)]
 		e := b.Sub(a)
@@ -117,54 +116,52 @@ func polygonNormals(pts []lin.Vec2) []lin.Vec2 {
 		if n.Dot(a.Sub(centroid)) < 0 {
 			n = n.Mul(-1)
 		}
-		out[i] = n
+		dst = append(dst, n)
 	}
-	return out
+	return dst
 }
 
-// collide2 generates contacts between two placed shapes; normals point
-// from A to B. Each shape becomes circles, polygons, capsules and
-// segments (a chain contributes only the edges near the other shape)
-// and every pair of those is tested.
-func collide2(sa Shape2, pa lin.Vec2, ra float32, sb Shape2, pb lin.Vec2, rb float32) []contact2 {
+// collide2 appends the contacts between two placed shapes to out;
+// normals point from A to B. Each shape becomes circles, polygons,
+// capsules and segments (a chain contributes only the edges near the
+// other shape) and every pair of those is tested. The scratch carries
+// the working buffers so a step allocates nothing.
+func collide2(sc *scratch2, out []contact2, sa Shape2, pa lin.Vec2, ra float32, sb Shape2, pb lin.Vec2, rb float32) []contact2 {
 	alo, ahi := sa.bounds(pa, ra)
 	blo, bhi := sb.bounds(pb, rb)
-	pa2 := prims2(sa, pa, ra, blo, bhi)
-	pb2 := prims2(sb, pb, rb, alo, ahi)
-	if len(pa2) == 1 && len(pb2) == 1 {
-		return collidePrims(pa2[0], pb2[0])
-	}
-	var out []contact2
-	for _, a := range pa2 {
-		for _, b := range pb2 {
-			out = append(out, collidePrims(a, b)...)
+	sc.primsA = prims2(sc.primsA[:0], &sc.ptsA, sa, pa, ra, blo, bhi)
+	sc.primsB = prims2(sc.primsB[:0], &sc.ptsB, sb, pb, rb, alo, ahi)
+	for _, a := range sc.primsA {
+		for _, b := range sc.primsB {
+			out = collidePrims(sc, out, a, b)
 		}
 	}
 	return out
 }
 
-func circleCircle(a Circle, pa lin.Vec2, b Circle, pb lin.Vec2) []contact2 {
+func circleCircle(out []contact2, a Circle, pa lin.Vec2, b Circle, pb lin.Vec2) []contact2 {
 	d := pb.Sub(pa)
 	dist := d.Len()
 	r := a.Radius + b.Radius
 	if dist >= r {
-		return nil
+		return out
 	}
 	n := lin.V2(0, 1)
 	if dist > 1e-6 {
 		n = d.Mul(1 / dist)
 	}
-	return []contact2{{point: pa.Add(n.Mul(a.Radius)), normal: n, depth: r - dist}}
+	return append(out, contact2{point: pa.Add(n.Mul(a.Radius)), normal: n, depth: r - dist})
 }
 
-func circlePolygon(c Circle, pc lin.Vec2, poly []lin.Vec2) []contact2 {
-	normals := polygonNormals(poly)
+func circlePolygon(sc *scratch2, out []contact2, c Circle, pc lin.Vec2, poly []lin.Vec2) []contact2 {
+	sc.normA = polygonNormals(sc.normA[:0], poly)
+	normals := sc.normA
 	// The face the centre is furthest outside of.
 	best, bestSep := 0, float32(math.Inf(-1))
 	for i := range poly {
 		sep := normals[i].Dot(pc.Sub(poly[i]))
 		if sep > c.Radius {
-			return nil
+			return out
 		}
 		if sep > bestSep {
 			best, bestSep = i, sep
@@ -174,7 +171,7 @@ func circlePolygon(c Circle, pc lin.Vec2, poly []lin.Vec2) []contact2 {
 	if bestSep < 0 {
 		// Centre inside: push out along that face's normal.
 		n := normals[best]
-		return []contact2{{point: pc.Sub(n.Mul(c.Radius)), normal: n.Mul(-1), depth: c.Radius - bestSep}}
+		return append(out, contact2{point: pc.Sub(n.Mul(c.Radius)), normal: n.Mul(-1), depth: c.Radius - bestSep})
 	}
 	// Outside: closest point on the face segment.
 	e := b.Sub(a)
@@ -183,34 +180,35 @@ func circlePolygon(c Circle, pc lin.Vec2, poly []lin.Vec2) []contact2 {
 	d := pc.Sub(closest)
 	dist := d.Len()
 	if dist >= c.Radius || dist < 1e-6 {
-		return nil
+		return out
 	}
 	n := d.Mul(1 / dist)
 	// Normal from the circle (A) to the polygon (B).
-	return []contact2{{point: closest, normal: n.Mul(-1), depth: c.Radius - dist}}
+	return append(out, contact2{point: closest, normal: n.Mul(-1), depth: c.Radius - dist})
 }
 
 // polygonPolygon is the separating-axis test with reference-face
 // clipping, producing up to two contact points.
-func polygonPolygon(pa, pb []lin.Vec2) []contact2 {
-	na, nb := polygonNormals(pa), polygonNormals(pb)
+func polygonPolygon(sc *scratch2, out []contact2, pa, pb []lin.Vec2) []contact2 {
+	sc.normA = polygonNormals(sc.normA[:0], pa)
+	sc.normB = polygonNormals(sc.normB[:0], pb)
+	na, nb := sc.normA, sc.normB
 	faceA, sepA := bestFace(pa, na, pb)
 	if sepA > 0 {
-		return nil
+		return out
 	}
 	faceB, sepB := bestFace(pb, nb, pa)
 	if sepB > 0 {
-		return nil
+		return out
 	}
 	// The reference polygon is the one with the larger separation, with
 	// a small preference for A so the result is stable frame to frame.
-	ref, inc, refNormals, refFace, flip := pa, pb, na, faceA, false
+	ref, inc, refNormals, incNormals, refFace, flip := pa, pb, na, nb, faceA, false
 	if sepB > sepA+1e-4 {
-		ref, inc, refNormals, refFace, flip = pb, pa, nb, faceB, true
+		ref, inc, refNormals, incNormals, refFace, flip = pb, pa, nb, na, faceB, true
 	}
 	n := refNormals[refFace]
 	// Incident face: the one on inc most opposed to n.
-	incNormals := polygonNormals(inc)
 	incFace, best := 0, float32(math.Inf(1))
 	for i, in := range incNormals {
 		if d := in.Dot(n); d < best {
@@ -221,16 +219,18 @@ func polygonPolygon(pa, pb []lin.Vec2) []contact2 {
 	r1, r2 := ref[refFace], ref[(refFace+1)%len(ref)]
 	side := r2.Sub(r1).Norm()
 	// Clip the incident edge to the reference face's side planes.
-	pts := []lin.Vec2{v1, v2}
-	pts = clipSegment(pts, side.Mul(-1), -side.Dot(r1))
+	pts := append(sc.clip0[:0], v1, v2)
+	sc.clip0 = pts
+	pts = clipSegment(sc.clip1[:0], pts, side.Mul(-1), -side.Dot(r1))
+	sc.clip1 = pts
 	if len(pts) < 2 {
-		return nil
+		return out
 	}
-	pts = clipSegment(pts, side, side.Dot(r2))
+	pts = clipSegment(sc.clip0[:0], pts, side, side.Dot(r2))
+	sc.clip0 = pts
 	if len(pts) < 2 {
-		return nil
+		return out
 	}
-	var out []contact2
 	for _, p := range pts {
 		depth := -n.Dot(p.Sub(r1))
 		if depth >= 0 {
@@ -260,9 +260,9 @@ func bestFace(poly, normals, other []lin.Vec2) (int, float32) {
 	return best, bestSep
 }
 
-// clipSegment keeps the part of a two-point segment with n·p <= c.
-func clipSegment(pts []lin.Vec2, n lin.Vec2, c float32) []lin.Vec2 {
-	var out []lin.Vec2
+// clipSegment appends the part of a two-point segment with n·p <= c to
+// out, which must not share storage with pts.
+func clipSegment(out, pts []lin.Vec2, n lin.Vec2, c float32) []lin.Vec2 {
 	d0 := n.Dot(pts[0]) - c
 	d1 := n.Dot(pts[1]) - c
 	if d0 <= 0 {
@@ -303,9 +303,10 @@ func rayShape2(r Ray2, s Shape2, pos lin.Vec2, rot float32) (t float32, normal l
 		hit := r.Origin.Add(r.Dir.Mul(t))
 		return t, hit.Sub(pos).Norm(), true
 	case Box2:
-		return rayPolygon(r, worldPolygon(sh.polygon(), pos, rot))
+		var buf [4]lin.Vec2
+		return rayPolygon(r, worldPolygon(buf[:0], sh.polygon(), pos, rot))
 	case Polygon2:
-		return rayPolygon(r, worldPolygon(sh, pos, rot))
+		return rayPolygon(r, worldPolygon(nil, sh, pos, rot))
 	case Capsule2:
 		a, b := sh.segment(pos, rot)
 		return rayCapsule2(r, a, b, sh.Radius)
@@ -326,7 +327,8 @@ func rayShape2(r Ray2, s Shape2, pos lin.Vec2, rot float32) (t float32, normal l
 }
 
 func rayPolygon(r Ray2, poly []lin.Vec2) (float32, lin.Vec2, bool) {
-	normals := polygonNormals(poly)
+	var nbuf [8]lin.Vec2
+	normals := polygonNormals(nbuf[:0], poly)
 	tEnter, tExit := float32(0), float32(1)
 	var enterNormal lin.Vec2
 	for i, n := range normals {

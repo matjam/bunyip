@@ -10,7 +10,12 @@
 // while the listener is inside that zone, and a Bus can carry a reverb
 // of its own. Mixing happens on the audio device's thread, so every
 // method is safe to call from the game loop, and every change in gain
-// ramps across a block so nothing clicks.
+// ramps across a block so nothing clicks. A setter copies its value in
+// under a short lock and the mixer applies it at the start of the next
+// block, so the game loop never waits for a block; the mixer reads
+// streams with no lock held, so a Stream may take locks of its own and
+// may call back into the mixer. Voice.Seek is the one method that waits
+// for the block in flight, because it moves the playhead being read.
 //
 // The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole
 // file as bytes. The streams (OpenMusic) take readers, because they seek
@@ -19,14 +24,27 @@ package audio
 
 import (
 	"errors"
+	"math"
 	"sync"
+	"sync/atomic"
 
 	"github.com/matjam/bunyip/lin"
 )
 
 // Mixer sums playing voices into the output stream.
+//
+// Two locks divide the work. mu guards everything a game can change from
+// its own goroutine, and is held only briefly: a setter takes it, and the
+// mixer takes it twice a block, once to copy out what it is about to mix
+// and once to write back where every voice reached. mixMu is held across
+// the whole block and marks the playback state the mixer owns while it
+// runs, so nothing else may move a voice through its sound mid-block.
+// Streams are read with neither lock held, so music, a tracker player or
+// game code called from Stream.Read may take locks of its own, and may
+// call back into the mixer, without waiting on the game loop.
 type Mixer struct {
 	mu        sync.Mutex
+	mixMu     sync.Mutex // held across a block; guards playback position
 	rate      int
 	voices    []*Voice
 	master    float32
@@ -37,18 +55,24 @@ type Mixer struct {
 	listener  Listener
 	finished  []func() // OnDone callbacks to run once the lock is released
 
+	// The block being mixed. Only the mixer's thread touches these, under
+	// mixMu, and they are reused from block to block so mixing allocates
+	// nothing.
+	snap      []voiceMix
+	revBuses  []busReverb
+	blkReverb *reverb
+
 	reverb     *reverb        // the shared reverb, nil when off
 	baseReverb ReverbSettings // what SetReverb was given
 	applied    ReverbSettings // what the shared reverb is using now
+	pending    bool           // applied has not reached the reverb yet
 	zones      []ReverbZone
 
 	doppler      float32 // Doppler factor, 0 off
 	speedOfSound float32
 
-	// Solo state for this block, worked out at the top of Mix.
-	soloVoices, soloBuses bool
-
 	buses                    map[string]*Bus
+	busList                  []*Bus // the same buses in creation order, to walk without the map
 	music, effects, dialogue *Bus
 }
 
@@ -133,7 +157,7 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 		priority: opts.Priority, reverb: opts.Reverb, positional: opts.Positional,
 		position: opts.Position, velocity: opts.Velocity, minDist: opts.MinDistance, maxDist: opts.MaxDistance}
 	if opts.LowPass > 0 {
-		v.lp = newLowPass(opts.LowPass, m.rate)
+		v.lp, v.lpc = &lowPass{}, newBiquad(opts.LowPass, m.rate)
 	}
 	v.setOcclusion(opts.Occlusion)
 	if opts.FadeIn > 0 {
@@ -215,68 +239,233 @@ func (m *Mixer) Playing() int {
 	return len(m.voices)
 }
 
+// busReverb is a bus's reverb and its send buffer for one block, copied
+// out under the lock because a game may drop the reverb at any moment.
+type busReverb struct {
+	r   *reverb
+	buf []float32
+}
+
+// voiceMix is one voice's part in a block: everything the mixer needs
+// copied out under the lock, and what it reached written back under the
+// lock afterwards. Every gain, pan and pitch is worked out at snapshot
+// time, so mixing itself reads samples, filters them and ramps them into
+// the output and touches no state a game can change.
+type voiceMix struct {
+	v      *Voice
+	stream Stream
+	snd    *Sound
+	send   []float32 // reverb send this voice feeds, the mixer's or its bus's
+
+	pos    float64 // frames into the sound, carried across blocks
+	step   float32 // source frames per output frame, pitch with Doppler
+	loop   bool
+	reverb float32
+
+	lp   *lowPass // the voice's filter state, nil when unfiltered
+	lpc  biquad
+	occ  *lowPass // occlusion's filter state, nil at 0
+	occc biquad
+
+	curL, curR float32 // gains at the start of the block
+	tl, tr     float32 // gains to ramp to by the end of it
+
+	skip   bool // held silent: nothing to read, nothing to write back
+	frames int  // frames written
+	more   bool // the voice continues into the next block
+	fade   *fade
+}
+
 // mix writes len(out)/2 stereo frames. The output device calls it from
 // its own thread, through internal/hook.
 func (m *Mixer) mix(out []float32) {
+	m.mixMu.Lock()
+	defer m.mixMu.Unlock()
 	clear(out)
-	m.mu.Lock()
 	frames := len(out) / 2
-	if len(m.scratch) < len(out) {
-		m.scratch = make([]float32, len(out))
-		m.sendBuf = make([]float32, len(out))
+	send := m.snapshot(out)
+	scratch := m.scratch[:len(out)]
+	for i := range m.snap {
+		m.snap[i].render(scratch, out, frames)
 	}
-	scratch, send := m.scratch[:len(out)], m.sendBuf[:len(out)]
-	clear(send)
-	m.soloVoices, m.soloBuses = false, false
-	for _, v := range m.voices {
-		m.soloVoices = m.soloVoices || v.solo
+	if m.blkReverb != nil {
+		m.blkReverb.process(send, out)
 	}
-	for _, b := range m.buses {
-		m.soloBuses = m.soloBuses || b.solo
-		if b.reverb != nil {
-			if len(b.sendBuf) < len(out) {
-				b.sendBuf = make([]float32, len(out))
-			}
-			clear(b.sendBuf[:len(out)])
-		}
-	}
-	live := m.voices[:0]
-	for _, v := range m.voices {
-		if v.render(m, out, send, scratch, frames) {
-			live = append(live, v)
-		} else {
-			m.finish(v)
-		}
-	}
-	for i := len(live); i < len(m.voices); i++ {
-		m.voices[i] = nil
-	}
-	m.voices = live
-	if m.reverb != nil {
-		m.reverb.process(send, out)
-	}
-	for _, b := range m.buses {
-		if b.reverb != nil {
-			b.reverb.process(b.sendBuf[:len(out)], out)
-		}
+	for _, b := range m.revBuses {
+		b.r.process(b.buf, out)
 	}
 	for i, s := range out {
 		out[i] = max(-1, min(1, s))
 	}
+	run(m.apply())
+}
+
+// snapshot copies the block's voices and their settled gains out from
+// under the lock and returns the shared reverb send. Callers hold mixMu.
+func (m *Mixer) snapshot(out []float32) []float32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.scratch) < len(out) {
+		m.scratch = make([]float32, len(out))
+		m.sendBuf = make([]float32, len(out))
+	}
+	send := m.sendBuf[:len(out)]
+	clear(send)
+	if m.reverb != nil && m.pending {
+		// The reverb's own settings are applied here rather than in the
+		// setter, because process runs on this thread without the lock.
+		m.reverb.set(m.applied)
+		m.pending = false
+	}
+	m.blkReverb = m.reverb
+	soloVoices, soloBuses := false, false
+	for _, v := range m.voices {
+		soloVoices = soloVoices || v.solo
+	}
+	m.revBuses = m.revBuses[:0]
+	for _, b := range m.busList {
+		soloBuses = soloBuses || b.solo
+		if b.reverb == nil {
+			continue
+		}
+		if b.pending {
+			b.reverb.set(b.applied)
+			b.pending = false
+		}
+		if len(b.sendBuf) < len(out) {
+			b.sendBuf = make([]float32, len(out))
+		}
+		clear(b.sendBuf[:len(out)])
+		m.revBuses = append(m.revBuses, busReverb{r: b.reverb, buf: b.sendBuf[:len(out)]})
+	}
+	m.snap = m.snap[:0]
+	for _, v := range m.voices {
+		if sn, ok := m.snapVoice(v, send, soloVoices, soloBuses); ok {
+			m.snap = append(m.snap, sn)
+		}
+	}
+	return send
+}
+
+// snapVoice copies one voice's block, or reports false when the voice has
+// ended and takes no part in it. Callers hold the lock.
+func (m *Mixer) snapVoice(v *Voice, send []float32, soloVoices, soloBuses bool) (voiceMix, bool) {
+	sn := voiceMix{v: v, stream: v.stream, snd: v.snd, send: send, pos: v.pos,
+		loop: v.loop, reverb: v.reverb, lp: v.lp, lpc: v.lpc, occ: v.occ, occc: v.occc,
+		curL: v.curL, curR: v.curR, fade: v.fade, more: true}
+	if v.stop || v.done {
+		sn.more = false
+		return sn, true
+	}
+	// A pause fades the voice out over the block it lands in, then holds
+	// it in place until resumed; a voice that is already silent holds at
+	// once, so a pause before the first block costs nothing.
+	held := v.paused || m.paused || (v.bus != nil && v.bus.paused)
+	if held && v.curL == 0 && v.curR == 0 {
+		sn.skip = true
+		return sn, true
+	}
+	sn.step = v.pitch
+	if v.positional && m.doppler > 0 {
+		sn.step *= m.listener.doppler(v.position, v.velocity, m.doppler, m.speedOfSound)
+	}
+	vol := v.vol
+	if v.fade != nil {
+		vol = v.fade.value()
+	}
+	gain := vol * m.master
+	if v.bus != nil {
+		gain *= v.bus.vol
+		if v.bus.reverb != nil {
+			sn.send = v.bus.sendBuf
+		}
+	}
+	if held || v.silenced(soloVoices, soloBuses) {
+		gain = 0
+	}
+	if v.occlusion > 0 {
+		gain *= occlusionGain(v.occlusion)
+	}
+	pan := v.pan
+	if v.positional {
+		att, p := m.listener.attenuate(v.position, v.minDist, v.maxDist)
+		gain *= att
+		pan = p
+	}
+	pan = max(-1, min(1, pan))
+	sn.tl = gain * sqrt32((1-pan)/2)
+	sn.tr = gain * sqrt32((1+pan)/2)
+	if !v.started {
+		sn.curL, sn.curR = sn.tl, sn.tr
+	}
+	return sn, true
+}
+
+// apply writes each voice's block back, retires the ones that ended and
+// hands over their callbacks. Callers hold mixMu.
+func (m *Mixer) apply() []func() {
+	m.mu.Lock()
+	ended := false
+	for i := range m.snap {
+		sn := &m.snap[i]
+		v := sn.v
+		if !sn.skip && sn.frames > 0 {
+			v.pos = sn.pos
+			v.posPub.Store(math.Float64bits(sn.pos))
+			if sn.stream != nil {
+				v.played += int64(sn.frames)
+				v.playedPub.Store(v.played)
+			}
+			v.curL, v.curR, v.started = sn.tl, sn.tr, true
+			// A fade the game replaced mid-block belongs to the new fade,
+			// not this one, so only the fade that was mixed is advanced.
+			if f := v.fade; f != nil && f == sn.fade {
+				f.left = max(f.left-sn.frames, 0)
+				if f.left == 0 {
+					v.vol = f.to
+					v.fade = nil
+					if f.stop {
+						sn.more = false
+					}
+				}
+			}
+		}
+		if !sn.more && !v.done {
+			m.finish(v)
+			ended = true
+		}
+	}
+	if ended {
+		live := m.voices[:0]
+		for _, v := range m.voices {
+			if !v.done {
+				live = append(live, v)
+			}
+		}
+		for i := len(live); i < len(m.voices); i++ {
+			m.voices[i] = nil
+		}
+		m.voices = live
+	}
 	done := m.takeFinished()
 	m.mu.Unlock()
-	run(done)
+	return done
 }
 
 // Voice is one playing sound or stream.
 type Voice struct {
-	m        *Mixer
-	bus      *Bus
-	snd      *Sound
-	stream   Stream
-	pos      float64 // frames into the sound, fractional under pitch
-	played   int64   // frames taken from a stream since it started or last sought
-	onDone   func()
+	m      *Mixer
+	bus    *Bus
+	snd    *Sound
+	stream Stream
+	pos    float64 // frames into the sound, fractional under pitch
+	played int64   // frames taken from a stream since it started or last sought
+	onDone func()
+	// pos and played belong to the mixer's thread while a block runs, so
+	// Position reads these copies instead of taking a lock behind it.
+	posPub    atomic.Uint64 // pos as float64 bits
+	playedPub atomic.Int64
+
 	vol      float32
 	pan      float32
 	pitch    float32
@@ -286,13 +475,15 @@ type Voice struct {
 	paused   bool
 	priority int
 	reverb   float32
-	lp       *lowPass
+	lp       *lowPass // the filter's running state, nil when unfiltered
+	lpc      biquad   // its coefficients, which SetLowPass replaces
 	fade     *fade
 	mute     bool
 	solo     bool
 
 	occlusion float32
-	occ       *lowPass // occlusion's own filter, nil at 0
+	occ       *lowPass // occlusion's own filter state, nil at 0
+	occc      biquad
 
 	positional       bool
 	position         lin.Vec3
@@ -395,9 +586,9 @@ func (v *Voice) setOcclusion(o float32) {
 	case o <= 0:
 		v.occ = nil
 	case v.occ == nil:
-		v.occ = newLowPass(occlusionCutoff(o), v.m.rate)
+		v.occ, v.occc = &lowPass{}, newBiquad(occlusionCutoff(o), v.m.rate)
 	default:
-		v.occ.set(occlusionCutoff(o), v.m.rate)
+		v.occc.set(occlusionCutoff(o), v.m.rate)
 	}
 }
 
@@ -410,29 +601,31 @@ func (v *Voice) SetLowPass(cutoff float32) {
 		if cutoff <= 0 {
 			v.lp = nil
 		} else if v.lp == nil {
-			v.lp = newLowPass(cutoff, v.m.rate)
+			v.lp, v.lpc = &lowPass{}, newBiquad(cutoff, v.m.rate)
 		} else {
-			v.lp.set(cutoff, v.m.rate)
+			v.lpc.set(cutoff, v.m.rate)
 		}
 	})
 }
 
 // FadeTo moves the volume to vol over seconds.
 func (v *Voice) FadeTo(vol, seconds float32) {
-	v.set(func() {
-		from := v.vol
-		if v.fade != nil {
-			from = v.fade.value()
-		}
-		total := int(seconds * float32(v.m.rate))
-		v.fade = &fade{from: from, to: vol, left: total, total: total}
-	})
+	v.set(func() { v.startFade(vol, seconds, false) })
+}
+
+// startFade replaces the current fade. The caller holds the mixer lock.
+func (v *Voice) startFade(vol, seconds float32, stop bool) {
+	from := v.vol
+	if v.fade != nil {
+		from = v.fade.value()
+	}
+	total := int(seconds * float32(v.m.rate))
+	v.fade = &fade{from: from, to: vol, left: total, total: total, stop: stop}
 }
 
 // FadeOut fades to silence over seconds and then stops the voice.
 func (v *Voice) FadeOut(seconds float32) {
-	v.FadeTo(0, seconds)
-	v.set(func() { v.fade.stop = true })
+	v.set(func() { v.startFade(0, seconds, true) })
 }
 
 // Playing reports whether the voice is still audible.
@@ -444,14 +637,14 @@ func (v *Voice) Playing() bool {
 
 // Position is how far into the sound the voice is, in seconds. For a
 // stream it counts the frames taken since the voice started or last
-// sought, which for Music is what the listener has heard.
+// sought, which for Music is what the listener has heard. It reads the
+// position the last finished block reached, so it takes no lock and
+// never waits on the mixer.
 func (v *Voice) Position() float64 {
-	v.m.mu.Lock()
-	defer v.m.mu.Unlock()
 	if v.stream != nil {
-		return float64(v.played) / float64(v.m.rate)
+		return float64(v.playedPub.Load()) / float64(v.m.rate)
 	}
-	return v.pos / float64(v.m.rate)
+	return math.Float64frombits(v.posPub.Load()) / float64(v.m.rate)
 }
 
 // ErrNotSeekable is returned by Voice.Seek for a stream that cannot seek.
@@ -466,12 +659,13 @@ type Seeker interface {
 
 // Seek moves a sound voice to seconds from the start, clamped to the
 // sound's length. A stream voice is moved when its stream is a Seeker;
-// otherwise it stays put and ErrNotSeekable is returned. The stream
-// itself is asked to seek while the mixer is locked, so a Seeker must
-// not call back into the mixer.
+// otherwise it stays put and ErrNotSeekable is returned. Seeking waits
+// for the block being mixed to finish, because it moves the position the
+// mixer is reading from, so it may block for the length of one block; a
+// Seeker must not call back into the mixer.
 func (v *Voice) Seek(seconds float64) error {
-	v.m.mu.Lock()
-	defer v.m.mu.Unlock()
+	v.m.mixMu.Lock()
+	defer v.m.mixMu.Unlock()
 	seconds = max(seconds, 0)
 	if v.stream != nil {
 		s, ok := v.stream.(Seeker)
@@ -482,10 +676,12 @@ func (v *Voice) Seek(seconds float64) error {
 			return err
 		}
 		v.played = int64(seconds * float64(v.m.rate))
+		v.playedPub.Store(v.played)
 		return nil
 	}
 	if v.snd != nil {
 		v.pos = min(seconds*float64(v.m.rate), float64(v.snd.Frames()))
+		v.posPub.Store(math.Float64bits(v.pos))
 	}
 	return nil
 }
@@ -508,74 +704,35 @@ func (v *Voice) OnDone(fn func()) {
 	}
 }
 
-// render accumulates the voice into out (and its reverb send into send),
-// using scratch for the dry signal, and reports whether it continues.
-func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool {
-	if v.stop || v.done {
-		return false
-	}
-	// A pause fades the voice out over the block it lands in, then holds
-	// it in place until resumed; a voice that is already silent holds at
-	// once, so a pause before the first block costs nothing.
-	held := v.paused || m.paused || (v.bus != nil && v.bus.paused)
-	if held && v.curL == 0 && v.curR == 0 {
-		return true
-	}
-	step := v.pitch
-	if v.positional && m.doppler > 0 {
-		step *= m.listener.doppler(v.position, v.velocity, m.doppler, m.speedOfSound)
+// render accumulates the voice into out and its reverb send, using
+// scratch for the dry signal. It runs with no lock held, so Stream.Read
+// may take locks of its own and may call back into the mixer.
+func (sn *voiceMix) render(scratch, out []float32, frames int) {
+	if sn.skip || !sn.more {
+		return
 	}
 	var n int
 	var more bool
-	if v.stream != nil {
-		n = v.stream.Read(scratch[:frames*2])
+	if sn.stream != nil {
+		n = sn.stream.Read(scratch[:frames*2])
 		more = n == frames
-		v.played += int64(n)
 	} else {
-		n, more = v.readSound(scratch[:frames*2], step)
+		n, more = sn.readSound(scratch[:frames*2])
 	}
+	sn.frames, sn.more = n, more
 	if n == 0 {
-		return more
+		return
 	}
-	if v.lp != nil {
-		v.lp.process(scratch[:n*2])
+	if sn.lp != nil {
+		sn.lp.process(sn.lpc, scratch[:n*2])
 	}
-	if v.occ != nil {
-		v.occ.process(scratch[:n*2])
+	if sn.occ != nil {
+		sn.occ.process(sn.occc, scratch[:n*2])
 	}
-	vol := v.vol
-	if v.fade != nil {
-		vol = v.fade.value()
-		v.fade.left = max(v.fade.left-n, 0)
-	}
-	gain := vol * m.master
-	if v.bus != nil {
-		gain *= v.bus.vol
-		if v.bus.reverb != nil {
-			send = v.bus.sendBuf
-		}
-	}
-	if held || v.silenced(m) {
-		gain = 0
-	}
-	if v.occlusion > 0 {
-		gain *= occlusionGain(v.occlusion)
-	}
-	pan := v.pan
-	if v.positional {
-		att, p := m.listener.attenuate(v.position, v.minDist, v.maxDist)
-		gain *= att
-		pan = p
-	}
-	pan = max(-1, min(1, pan))
-	tl := gain * sqrt32((1-pan)/2)
-	tr := gain * sqrt32((1+pan)/2)
-	if !v.started {
-		v.curL, v.curR, v.started = tl, tr, true
-	}
-	dl := (tl - v.curL) / float32(n)
-	dr := (tr - v.curR) / float32(n)
-	l, r := v.curL, v.curR
+	dl := (sn.tl - sn.curL) / float32(n)
+	dr := (sn.tr - sn.curR) / float32(n)
+	l, r := sn.curL, sn.curR
+	send, rev := sn.send, sn.reverb
 	for i := range n {
 		l += dl
 		r += dr
@@ -583,58 +740,50 @@ func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool 
 		sr := scratch[i*2+1] * r
 		out[i*2] += sl
 		out[i*2+1] += sr
-		if v.reverb > 0 {
-			send[i*2] += sl * v.reverb
-			send[i*2+1] += sr * v.reverb
+		if rev > 0 {
+			send[i*2] += sl * rev
+			send[i*2+1] += sr * rev
 		}
 	}
-	v.curL, v.curR = tl, tr
-	if v.fade != nil && v.fade.left == 0 {
-		v.vol = v.fade.to
-		stop := v.fade.stop
-		v.fade = nil
-		if stop {
-			return false
-		}
-	}
-	return more
 }
 
 // silenced reports whether mute or solo state keeps the voice quiet this
 // block: its own mute, another voice's solo, or its bus being muted or
 // passed over by a bus solo.
-func (v *Voice) silenced(m *Mixer) bool {
-	if v.mute || (m.soloVoices && !v.solo) {
+func (v *Voice) silenced(soloVoices, soloBuses bool) bool {
+	if v.mute || (soloVoices && !v.solo) {
 		return true
 	}
 	if v.bus == nil {
-		return m.soloBuses
+		return soloBuses
 	}
-	return v.bus.mute || (m.soloBuses && !v.bus.solo)
+	return v.bus.mute || (soloBuses && !v.bus.solo)
 }
 
-// readSound copies the next frames of the sound into dst, advancing step
-// source frames per output frame (the pitch, with Doppler applied), and
-// reports how many it wrote and whether more remain.
-func (v *Voice) readSound(dst []float32, step float32) (int, bool) {
-	s := v.snd
+// readSound copies the next frames of the sound into dst, advancing the
+// block's step source frames per output frame (the pitch, with Doppler
+// applied), and reports how many it wrote and whether more remain.
+func (sn *voiceMix) readSound(dst []float32) (int, bool) {
+	s := sn.snd
 	if s == nil || len(s.samples) < 2 {
 		return 0, false
 	}
 	total := len(s.samples) / 2
 	frames := len(dst) / 2
+	pos, step, loop := sn.pos, float64(sn.step), sn.loop
 	for i := range frames {
-		if v.pos >= float64(total) {
-			if !v.loop {
+		if pos >= float64(total) {
+			if !loop {
+				sn.pos = pos
 				return i, false
 			}
-			v.pos -= float64(total)
+			pos -= float64(total)
 		}
-		j := int(v.pos)
-		t := float32(v.pos - float64(j))
+		j := int(pos)
+		t := float32(pos - float64(j))
 		k := j + 1
 		if k >= total {
-			if v.loop {
+			if loop {
 				k = 0
 			} else {
 				k = j
@@ -642,7 +791,8 @@ func (v *Voice) readSound(dst []float32, step float32) (int, bool) {
 		}
 		dst[i*2] = s.samples[j*2]*(1-t) + s.samples[k*2]*t
 		dst[i*2+1] = s.samples[j*2+1]*(1-t) + s.samples[k*2+1]*t
-		v.pos += float64(step)
+		pos += step
 	}
+	sn.pos = pos
 	return frames, true
 }

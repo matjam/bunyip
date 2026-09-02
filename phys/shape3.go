@@ -95,93 +95,95 @@ type obb struct {
 	half   lin.Vec3
 }
 
-// collide3 generates contacts between two placed shapes; normals point
-// from A to B. Compounds split into their parts, meshes into the
-// triangles near the other shape; sphere and box pairs have exact
-// tests and every other pair goes through the support functions.
-func collide3(sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) []contact3 {
+// collide3 appends the contacts between two placed shapes to out and
+// returns it; normals point from A to B. Compounds split into their
+// parts, meshes into the triangles near the other shape; sphere and box
+// pairs have exact tests and every other pair goes through the support
+// functions. The scratch carries the working buffers so a step allocates
+// nothing.
+func collide3(sc *scratch3, out []contact3, sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) []contact3 {
 	if c, ok := sa.(Compound3); ok {
-		var out []contact3
 		for _, p := range c.Parts {
 			if p.Shape == nil {
 				continue
 			}
 			pp, pr := p.place(pa, ra)
-			out = append(out, collide3(p.Shape, pp, pr, sb, pb, rb)...)
+			out = collide3(sc, out, p.Shape, pp, pr, sb, pb, rb)
 		}
 		return out
 	}
 	if c, ok := sb.(Compound3); ok {
-		var out []contact3
 		for _, p := range c.Parts {
 			if p.Shape == nil {
 				continue
 			}
 			pp, pr := p.place(pb, rb)
-			out = append(out, collide3(sa, pa, ra, p.Shape, pp, pr)...)
+			out = collide3(sc, out, sa, pa, ra, p.Shape, pp, pr)
 		}
 		return out
 	}
 	if m, ok := sa.(MeshShape); ok {
-		cs := meshContacts(m, pa, ra, sb, pb, rb)
-		for i := range cs {
-			cs[i].normal = cs[i].normal.Neg()
+		start := len(out)
+		out = meshContacts(sc, out, m, pa, ra, sb, pb, rb)
+		for i := start; i < len(out); i++ {
+			out[i].normal = out[i].normal.Neg()
 		}
-		return cs
+		return out
 	}
 	if m, ok := sb.(MeshShape); ok {
-		return meshContacts(m, pb, rb, sa, pa, ra)
+		return meshContacts(sc, out, m, pb, rb, sa, pa, ra)
 	}
 	switch a := sa.(type) {
 	case Sphere:
 		switch b := sb.(type) {
 		case Sphere:
-			return sphereSphere(a, pa, b, pb)
+			return sphereSphere(out, a, pa, b, pb)
 		case Box3:
-			return sphereBox(a, pa, obb{pb, rb, b.Half})
+			return sphereBox(out, a, pa, obb{pb, rb, b.Half})
 		}
 	case Box3:
 		switch b := sb.(type) {
 		case Sphere:
-			cs := sphereBox(b, pb, obb{pa, ra, a.Half})
-			for i := range cs {
-				cs[i].normal = cs[i].normal.Mul(-1)
+			start := len(out)
+			out = sphereBox(out, b, pb, obb{pa, ra, a.Half})
+			for i := start; i < len(out); i++ {
+				out[i].normal = out[i].normal.Mul(-1)
 			}
-			return cs
+			return out
 		case Box3:
-			return boxBox(obb{pa, ra, a.Half}, obb{pb, rb, b.Half})
+			return boxBox(sc, out, obb{pa, ra, a.Half}, obb{pb, rb, b.Half})
 		}
 	}
-	return convexPair(sa, pa, ra, sb, pb, rb)
+	return convexPair(sc, out, sa, pa, ra, sb, pb, rb)
 }
 
-func sphereSphere(a Sphere, pa lin.Vec3, b Sphere, pb lin.Vec3) []contact3 {
+func sphereSphere(out []contact3, a Sphere, pa lin.Vec3, b Sphere, pb lin.Vec3) []contact3 {
 	d := pb.Sub(pa)
 	dist := d.Len()
 	r := a.Radius + b.Radius
 	if dist >= r {
-		return nil
+		return out
 	}
 	n := lin.V3(0, 1, 0)
 	if dist > 1e-6 {
 		n = d.Mul(1 / dist)
 	}
-	return []contact3{{point: pa.Add(n.Mul(a.Radius)), normal: n, depth: r - dist}}
+	return append(out, contact3{point: pa.Add(n.Mul(a.Radius)), normal: n, depth: r - dist})
 }
 
-func sphereBox(s Sphere, ps lin.Vec3, b obb) []contact3 {
+func sphereBox(out []contact3, s Sphere, ps lin.Vec3, b obb) []contact3 {
 	local := b.rot.transpose().mulVec(ps.Sub(b.center))
 	closest := lin.V3(lin.Clamp(local.X, -b.half.X, b.half.X), lin.Clamp(local.Y, -b.half.Y, b.half.Y), lin.Clamp(local.Z, -b.half.Z, b.half.Z))
 	d := local.Sub(closest)
 	dist := d.Len()
 	if dist > 1e-6 {
 		if dist >= s.Radius {
-			return nil
+			return out
 		}
 		nLocal := d.Mul(1 / dist)
 		n := b.rot.mulVec(nLocal) // from box toward sphere
 		point := b.center.Add(b.rot.mulVec(closest))
-		return []contact3{{point: point, normal: n.Mul(-1), depth: s.Radius - dist}}
+		return append(out, contact3{point: point, normal: n.Mul(-1), depth: s.Radius - dist})
 	}
 	// Centre inside the box: exit through the nearest face.
 	best := 0
@@ -202,7 +204,7 @@ func sphereBox(s Sphere, ps lin.Vec3, b obb) []contact3 {
 		nLocal = lin.V3(0, 0, sign(local.Z))
 	}
 	n := b.rot.mulVec(nLocal)
-	return []contact3{{point: ps, normal: n.Mul(-1), depth: s.Radius + bestGap}}
+	return append(out, contact3{point: ps, normal: n.Mul(-1), depth: s.Radius + bestGap})
 }
 
 func sign(v float32) float32 {
@@ -215,7 +217,7 @@ func sign(v float32) float32 {
 // boxBox is the separating-axis test over the fifteen candidate axes,
 // with contact points from the incident box's vertices inside the
 // reference face.
-func boxBox(a, b obb) []contact3 {
+func boxBox(sc *scratch3, out []contact3, a, b obb) []contact3 {
 	var axes [15]lin.Vec3
 	for i := range 3 {
 		axes[i] = a.rot.axis(i)
@@ -241,7 +243,7 @@ func boxBox(a, b obb) []contact3 {
 		dist := d.Dot(ax)
 		overlap := ra + rb - float32(math.Abs(float64(dist)))
 		if overlap <= 0 {
-			return nil
+			return out
 		}
 		// Edge axes get a slight penalty so faces win ties, for stability.
 		weight := overlap
@@ -258,7 +260,7 @@ func boxBox(a, b obb) []contact3 {
 		}
 	}
 	if bestAxis < 0 {
-		return nil
+		return out
 	}
 	n := bestN // from A to B
 	if bestAxis >= 6 {
@@ -270,7 +272,7 @@ func boxBox(a, b obb) []contact3 {
 		pb, db, hb := b.supportEdge(n.Mul(-1), ib)
 		ca, cb := closestOnSegments(pa, da, ha, pb, db, hb)
 		overlap := ca.Sub(cb).Dot(n)
-		return []contact3{{point: ca.Add(cb).Mul(0.5), normal: n, depth: max(overlap, 0)}}
+		return append(out, contact3{point: ca.Add(cb).Mul(0.5), normal: n, depth: max(overlap, 0)})
 	}
 	// Face axis: reference box is the one whose face it is.
 	ref, inc := a, b
@@ -285,7 +287,8 @@ func boxBox(a, b obb) []contact3 {
 	// planes of the reference face, so only the part above the face
 	// counts: a corner hanging past the edge of a ledge must not become a
 	// deep contact that launches the body.
-	poly := inc.face(refN.Mul(-1))
+	poly := inc.faceInto(sc.polyA[:0], refN.Mul(-1))
+	buf := sc.polyB[:0]
 	for i := range 3 {
 		if i == refAxis {
 			continue
@@ -293,12 +296,15 @@ func boxBox(a, b obb) []contact3 {
 		u := ref.rot.axis(i)
 		h := [3]float32{ref.half.X, ref.half.Y, ref.half.Z}[i]
 		cu := ref.center.Dot(u)
-		poly = clipPolygon(poly, u, cu+h)
-		poly = clipPolygon(poly, u.Mul(-1), -cu+h)
+		buf = clipPolygon(buf[:0], poly, u, cu+h)
+		poly, buf = buf, poly
+		buf = clipPolygon(buf[:0], poly, u.Mul(-1), -cu+h)
+		poly, buf = buf, poly
 	}
+	sc.polyA, sc.polyB = poly, buf
 	// Reference face plane: point on face = ref.center + refN * extent.
 	planeD := ref.center.Dot(refN) + projectHalf(ref, refN)
-	var out []contact3
+	start := len(out)
 	var deepest contact3
 	deepest.depth = float32(math.Inf(-1))
 	for _, v := range poly {
@@ -307,13 +313,13 @@ func boxBox(a, b obb) []contact3 {
 		if depth > deepest.depth {
 			deepest = c
 		}
-		if depth >= 0 && len(out) < 4 {
+		if depth >= 0 && len(out)-start < 4 {
 			out = append(out, c)
 		}
 	}
-	if len(out) == 0 {
+	if len(out) == start {
 		if deepest.depth == float32(math.Inf(-1)) {
-			return nil
+			return out
 		}
 		out = append(out, deepest)
 	}
@@ -358,9 +364,9 @@ func closestOnSegments(pa, da lin.Vec3, ha float32, pb, db lin.Vec3, hb float32)
 	return pa.Add(da.Mul(s)), pb.Add(db.Mul(t))
 }
 
-// face returns the four corners of the box face whose outward normal is
-// closest to dir, in order around the face.
-func (o obb) face(dir lin.Vec3) []lin.Vec3 {
+// faceInto appends the four corners of the box face whose outward normal
+// is closest to dir, in order around the face, to dst.
+func (o obb) faceInto(dst []lin.Vec3, dir lin.Vec3) []lin.Vec3 {
 	best, bestDot := 0, float32(math.Inf(-1))
 	for i := range 3 {
 		if d := float32(math.Abs(float64(o.rot.axis(i).Dot(dir)))); d > bestDot {
@@ -376,16 +382,16 @@ func (o obb) face(dir lin.Vec3) []lin.Vec3 {
 	j, k := (best+1)%3, (best+2)%3
 	u := o.rot.axis(j).Mul(half[j])
 	v := o.rot.axis(k).Mul(half[k])
-	return []lin.Vec3{centre.Add(u).Add(v), centre.Add(u).Sub(v), centre.Sub(u).Sub(v), centre.Sub(u).Add(v)}
+	return append(dst, centre.Add(u).Add(v), centre.Add(u).Sub(v), centre.Sub(u).Sub(v), centre.Sub(u).Add(v))
 }
 
-// clipPolygon keeps the part of a convex polygon on the inside of the
-// plane n·p <= d (Sutherland-Hodgman).
-func clipPolygon(poly []lin.Vec3, n lin.Vec3, d float32) []lin.Vec3 {
+// clipPolygon appends the part of a convex polygon on the inside of the
+// plane n·p <= d to out and returns it (Sutherland-Hodgman). out must
+// not share storage with poly.
+func clipPolygon(out, poly []lin.Vec3, n lin.Vec3, d float32) []lin.Vec3 {
 	if len(poly) == 0 {
-		return poly
+		return out
 	}
-	out := make([]lin.Vec3, 0, len(poly)+2)
 	prev := poly[len(poly)-1]
 	prevD := prev.Dot(n) - d
 	for _, cur := range poly {

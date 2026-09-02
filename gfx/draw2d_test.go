@@ -213,3 +213,70 @@ func TestStreamingWrite(t *testing.T) {
 		t.Errorf("stats report %d 2D draws, want 1", g.Stats().Draws2D)
 	}
 }
+
+// TestLayerOrder checks the 2D stream orders items by layer while keeping
+// submission order inside a layer, over the layer spreads that pick the
+// counting sort and the ones that fall back to the comparison sort. It
+// works on the stream directly, so it needs no device.
+func TestLayerOrder(t *testing.T) {
+	cases := []struct {
+		name   string
+		layers []int32
+	}{
+		{"one layer", []int32{0, 0, 0, 0}},
+		{"ascending", []int32{0, 1, 2, 3}},
+		{"descending", []int32{3, 2, 1, 0}},
+		{"repeats", []int32{2, 0, 2, 1, 0, 2, 1}},
+		{"negative", []int32{-3, 4, -3, 0, -1, 4}},
+		{"sparse, falls back", []int32{0, 1 << 20, -1 << 20, 7}},
+		{"extremes, falls back", []int32{math.MaxInt32, math.MinInt32, 0}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var s stream2D
+			proj := lin.Ortho2D(8, 8)
+			// One vertex per item, its x recording the submission order.
+			// Each item gets its own state so none of them merge.
+			for i, layer := range c.layers {
+				v := []vertex2D{{pos: lin.V2(float32(i), 0)}}
+				s.add(state2D{set: 1, uniform: int32(i), proj: s.proj(proj)}, layer, v)
+			}
+			s.build()
+			if len(s.items) != len(c.layers) {
+				t.Fatalf("built %d items, want %d", len(s.items), len(c.layers))
+			}
+			if len(s.ordered) != len(c.layers) {
+				t.Fatalf("built %d vertices, want %d", len(s.ordered), len(c.layers))
+			}
+			for i := 1; i < len(s.items); i++ {
+				prev, it := s.items[i-1], s.items[i]
+				before := s.verts[prev.first].pos.X
+				sub := s.verts[it.first].pos.X
+				switch {
+				case it.layer < prev.layer:
+					t.Fatalf("item %d is on layer %d after layer %d", i, it.layer, prev.layer)
+				case it.layer == prev.layer && sub < before:
+					t.Fatalf("layer %d has submission %v after %v", it.layer, sub, before)
+				}
+			}
+			// The draw runs must cover the ordered vertices end to end in
+			// the same order the items are in.
+			at := uint32(0)
+			for _, d := range s.draws {
+				if d.first != at {
+					t.Fatalf("draw starts at %d, want %d", d.first, at)
+				}
+				at += d.count
+			}
+			if int(at) != len(s.ordered) {
+				t.Fatalf("draws cover %d vertices, want %d", at, len(s.ordered))
+			}
+			for i := range s.items {
+				want := s.verts[s.items[i].first].pos.X
+				if got := s.ordered[i].pos.X; got != want {
+					t.Fatalf("ordered vertex %d is submission %v, want %v", i, got, want)
+				}
+			}
+		})
+	}
+}

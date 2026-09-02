@@ -2,9 +2,9 @@ package platform
 
 import (
 	"encoding/binary"
-	"fmt"
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/matjam/bunyip/input"
@@ -33,14 +33,36 @@ var jsButtons = [...]input.GamepadButton{
 	6: input.ButtonOptions, 7: input.ButtonMenu, 8: input.ButtonHome, 9: input.ButtonLeftStick, 10: input.ButtonRightStick,
 }
 
-// Gamepads reads every joystick device that can be opened.
+// jsPaths are the device paths, formatted once rather than per poll.
+var jsPaths = [input.MaxGamepads]string{"/dev/input/js0", "/dev/input/js1", "/dev/input/js2", "/dev/input/js3"}
+
+// jsStates is the array Gamepads fills and returns, reused every poll.
+var jsStates [input.MaxGamepads]GamepadState
+
+// jsRetry is when each empty slot may be opened again. Opening a device
+// that is not there costs a system call and fails, so a slot with no
+// controller is only tried once a second; plugging one in is noticed
+// within that second, which is faster than a player can look up.
+var jsRetry [input.MaxGamepads]time.Time
+
+// jsRetryInterval is how long an empty slot waits before being tried again.
+const jsRetryInterval = time.Second
+
+// Gamepads reads every joystick device that can be opened. The slice it
+// returns is reused by the next call, so read it before polling again.
 func (a *App) Gamepads() []GamepadState {
-	out := make([]GamepadState, input.MaxGamepads)
+	now := time.Now()
 	for i := range joysticks {
 		js := joysticks[i]
 		if js == nil {
-			f, err := os.OpenFile(fmt.Sprintf("/dev/input/js%d", i), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+			if now.Before(jsRetry[i]) {
+				jsStates[i] = GamepadState{}
+				continue
+			}
+			f, err := os.OpenFile(jsPaths[i], os.O_RDONLY|syscall.O_NONBLOCK, 0)
 			if err != nil {
+				jsRetry[i] = now.Add(jsRetryInterval)
+				jsStates[i] = GamepadState{}
 				continue
 			}
 			js = &joystick{f: f, state: GamepadState{Connected: true, Name: jsName(f)}}
@@ -49,11 +71,13 @@ func (a *App) Gamepads() []GamepadState {
 		if !js.read() {
 			js.f.Close()
 			joysticks[i] = nil
+			jsRetry[i] = now.Add(jsRetryInterval)
+			jsStates[i] = GamepadState{}
 			continue
 		}
-		out[i] = js.state
+		jsStates[i] = js.state
 	}
-	return out
+	return jsStates[:]
 }
 
 func jsName(f *os.File) string {

@@ -6,9 +6,38 @@ import (
 	"github.com/matjam/bunyip/input"
 )
 
+// padStates is the array Gamepads fills and returns, reused every poll.
+var padStates [input.MaxGamepads]GamepadState
+
+// padNames caches each controller's vendor name against the controller
+// object it came from. Reading the name means an objc_msgSend and a fresh
+// Go string, and a controller's name does not change while it is plugged
+// in, so it is read once per controller rather than once per frame.
+var padNames = map[objc.ID]string{}
+
+// vendorName is the controller's name, from the cache when it is known.
+func (a *App) vendorName(ctl objc.ID) string {
+	if s, ok := padNames[ctl]; ok {
+		return s
+	}
+	s := ""
+	if name := ctl.Send(a.c.sel.vendorName); name != 0 {
+		s = objc.Send[string](name, a.c.sel.UTF8String)
+	}
+	if len(padNames) > 32 {
+		// Controllers come and go over a long session; the cache is small
+		// and bounded, so it starts over rather than growing without end.
+		clear(padNames)
+	}
+	padNames[ctl] = s
+	return s
+}
+
 // Gamepads reads every connected controller through GameController.framework.
 // Values are read directly from the framework's input objects, so no
 // callbacks are registered and the read is safe at any point in the loop.
+// The slice it returns is reused by the next call, so read it before
+// polling again.
 func (a *App) Gamepads() []GamepadState {
 	c := a.c
 	if c.GCController == 0 {
@@ -19,17 +48,14 @@ func (a *App) Gamepads() []GamepadState {
 		return nil
 	}
 	n := min(int(objc.Send[uint](list, c.sel.count)), input.MaxGamepads)
-	out := make([]GamepadState, 0, n)
+	out := padStates[:0]
 	for i := range n {
 		ctl := list.Send(c.sel.objectAtIndex, uint(i))
 		pad := ctl.Send(c.sel.extendedGamepad)
 		if pad == 0 {
 			continue // micro or directional gamepads are not mapped
 		}
-		st := GamepadState{Connected: true}
-		if name := ctl.Send(c.sel.vendorName); name != 0 {
-			st.Name = objc.Send[string](name, c.sel.UTF8String)
-		}
+		st := GamepadState{Connected: true, Name: a.vendorName(ctl)}
 		button := func(b input.GamepadButton, sel objc.SEL) {
 			if el := pad.Send(sel); el != 0 {
 				st.Buttons[b] = objc.Send[bool](el, c.sel.isPressed)
@@ -53,10 +79,13 @@ func (a *App) Gamepads() []GamepadState {
 		button(input.ButtonOptions, c.sel.buttonOptions)
 		button(input.ButtonHome, c.sel.buttonHome)
 		if dpad := pad.Send(c.sel.dpad); dpad != 0 {
-			for _, d := range []struct {
+			// A fixed array rather than a slice literal, so the table
+			// costs nothing on a path that runs every frame.
+			dirs := [4]struct {
 				b   input.GamepadButton
 				sel objc.SEL
-			}{{input.ButtonDpadUp, c.sel.up}, {input.ButtonDpadDown, c.sel.down}, {input.ButtonDpadLeft, c.sel.left}, {input.ButtonDpadRight, c.sel.right}} {
+			}{{input.ButtonDpadUp, c.sel.up}, {input.ButtonDpadDown, c.sel.down}, {input.ButtonDpadLeft, c.sel.left}, {input.ButtonDpadRight, c.sel.right}}
+			for _, d := range dirs {
 				if el := dpad.Send(d.sel); el != 0 {
 					st.Buttons[d.b] = objc.Send[bool](el, c.sel.isPressed)
 				}

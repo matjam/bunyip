@@ -207,11 +207,12 @@ func (g *Graphics) drawDebugLines(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 	if err := q.lines.upload(g.r.Device, fr.Slot); err != nil {
 		return err
 	}
-	vp := q.camera.ViewProj(aspect)
-	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, g.linePipe.Handle)
-	vk.VkCmdPushConstants(cb, g.linePipe.Layout, meshStages, 0, 64, unsafe.Pointer(&vp))
-	var offset vk.VkDeviceSize
-	vk.VkCmdBindVertexBuffers(cb, 0, 1, &q.lines.buffers[q.lines.slot].Handle, &offset)
-	vk.VkCmdDraw(cb, uint32(len(q.lines.items)), 1, 0, 0)
+	rec := &g.rec
+	rec.push.proj = q.camera.ViewProj(aspect)
+	rec.offset = 0
+	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, g.linePipe.Handle)
+	vk.CmdPushConstants(cb, g.linePipe.Layout, meshStages, 0, 64, unsafe.Pointer(&rec.push.proj))
+	vk.CmdBindVertexBuffers(cb, 0, 1, &q.lines.buffers[q.lines.slot].Handle, &rec.offset)
+	vk.CmdDraw(cb, uint32(len(q.lines.items)), 1, 0, 0)
 	return nil
 }

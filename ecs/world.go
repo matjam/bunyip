@@ -47,6 +47,7 @@ type SystemStat struct {
 // previous Update (or between updates, in Draw) are cleared first, so
 // order systems with producers before consumers.
 func (w *World) Update(dt float64) {
+	w.updates++
 	for _, q := range w.events {
 		q.clear()
 	}
@@ -102,6 +103,7 @@ func SetParent(w *World, child, parent Entity) {
 	if !w.Alive(child) || child == parent {
 		return
 	}
+	w.wmat.valid = false
 	if p, ok := Get[Parent](w, child); ok && w.Alive(p.Entity) {
 		detach(w, p.Entity, child)
 	}
@@ -158,11 +160,83 @@ func ChildrenOf(w *World, e Entity) []Entity {
 	return nil
 }
 
+// worldMatrices caches one matrix per entity slot, filled by
+// UpdateWorldMatrices and read by WorldMatrix while it is fresh.
+type worldMatrices struct {
+	valid bool
+	stamp uint64 // the World.updates the pass ran under
+	mats  []lin.Mat4
+	gens  []uint32
+	has   []bool
+}
+
+// UpdateWorldMatrices composes every entity's world matrix in one walk
+// from the roots down and caches the results, so WorldMatrix costs a
+// slice index instead of a climb up the parent chain. Call it from a
+// system after the ones that move transforms and before the ones that
+// read world positions. The cache lasts until the next World.Update, so
+// Draw reads what the last Update left; changing a parent link or
+// despawning drops it, and a transform written after the pass is not
+// seen until the pass runs again.
+func UpdateWorldMatrices(w *World) {
+	c := &w.wmat
+	n := len(w.meta)
+	if len(c.mats) < n {
+		c.mats = make([]lin.Mat4, n)
+		c.gens = make([]uint32, n)
+		c.has = make([]bool, n)
+	} else {
+		clear(c.has)
+	}
+	// The ids are resolved once so the walk indexes columns directly
+	// instead of looking a type up per entity.
+	tid, cid, pid := componentID[gfx.Transform](w), componentID[Children](w), componentID[Parent](w)
+	for _, a := range w.archs {
+		if a.mask.has(pid) {
+			continue // reached from its parent instead
+		}
+		for _, e := range a.entities {
+			walkMatrices(w, c, e, lin.Identity(), tid, cid)
+		}
+	}
+	c.valid, c.stamp = true, w.updates
+}
+
+// walkMatrices writes e's world matrix and its subtree's.
+func walkMatrices(w *World, c *worldMatrices, e Entity, parent lin.Mat4, tid, cid ComponentID) {
+	meta := &w.meta[e.id-1]
+	a := meta.arch
+	local := lin.Identity()
+	if col := a.column(tid); col >= 0 {
+		local = a.columns[col].(*typedColumn[gfx.Transform]).data[meta.row].Matrix()
+	}
+	m := parent.Mul(local)
+	i := int(e.id) - 1
+	c.mats[i], c.gens[i], c.has[i] = m, e.gen, true
+	col := a.column(cid)
+	if col < 0 {
+		return
+	}
+	list := a.columns[col].(*typedColumn[Children]).data[meta.row].List
+	for _, k := range list {
+		if w.Alive(k) {
+			walkMatrices(w, c, k, m, tid, cid)
+		}
+	}
+}
+
 // WorldMatrix composes the gfx.Transform components from the root down
-// to e; entities without one contribute identity.
+// to e; entities without one contribute identity. When
+// UpdateWorldMatrices has run in this update the cached matrix is
+// returned instead of walking the chain.
 func WorldMatrix(w *World, e Entity) lin.Mat4 {
 	if !w.Alive(e) {
 		return lin.Identity()
+	}
+	if c := &w.wmat; c.valid && c.stamp == w.updates {
+		if i := int(e.id) - 1; i < len(c.has) && c.has[i] && c.gens[i] == e.gen {
+			return c.mats[i]
+		}
 	}
 	local := lin.Identity()
 	if t, ok := Get[gfx.Transform](w, e); ok {

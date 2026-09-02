@@ -137,8 +137,31 @@ type state2 struct {
 	fixed     *ecs.Query1[FixedJoint2]
 	entries   []entry2
 	dynamic   []bodyRec2
-	index     map[ecs.Entity]int
+	index     slotMap
 	parent    []int
+	// Scratch kept between steps so a step allocates nothing: ss serves
+	// the step and qs the queries, which the game may call while the
+	// step's buffers still hold contacts.
+	ss, qs          scratch2
+	sweep           sweepState
+	contacts        []contact2
+	arbiters        []arbiter2
+	events          []pending2
+	reported        pairSet
+	rest            []float32
+	joints          []jointSolver2
+	items           []jointItem2
+	distanceSolvers []distanceSolver2
+	revoluteSolvers []revoluteSolver2
+	springSolvers   []springSolver2
+	fixedSolvers    []fixedSolver2
+}
+
+// pending2 is a collision event waiting for the solver to say how hard
+// the hit was.
+type pending2 struct {
+	ev  Collision2
+	arb int
 }
 
 func stateOf2(w *ecs.World) *state2 {
@@ -151,7 +174,6 @@ func stateOf2(w *ecs.World) *state2 {
 			revolute:  ecs.NewQuery1[RevoluteJoint2](w),
 			spring:    ecs.NewQuery1[SpringJoint2](w),
 			fixed:     ecs.NewQuery1[FixedJoint2](w),
-			index:     map[ecs.Entity]int{},
 		})
 		s = ecs.Resource[state2](w)
 	}
@@ -177,9 +199,9 @@ func System2(w *ecs.World, dt float64) {
 	}
 	s := stateOf2(w)
 	h := float32(dt) / float32(substeps)
-	reported := map[pairKey]bool{}
+	s.reported.reset()
 	for range substeps {
-		s.step(w, settings, h, iterations, reported)
+		s.step(w, settings, h, iterations)
 	}
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform2, b *Body2) {
 		b.force, b.torque = lin.Vec2{}, 0
@@ -198,17 +220,17 @@ func active2(b *Body2) bool {
 	return b.invMass > 0
 }
 
-func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations int, reported map[pairKey]bool) {
+func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations int) {
 	// Integrate velocities.
 	s.dynamic = s.dynamic[:0]
-	clear(s.index)
+	s.index.reset()
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform2, b *Body2) {
 		b.fraction = 1
 		if b.Sleeping || b.Kinematic || b.Mass <= 0 {
 			b.invMass, b.invInertia = 0, 0
 			return
 		}
-		s.index[e] = len(s.dynamic)
+		s.index.set(e, len(s.dynamic))
 		s.dynamic = append(s.dynamic, bodyRec2{e: e, t: t, b: b})
 		if b.asleep {
 			if b.Vel != (lin.Vec2{}) || b.AngVel != 0 || b.force != (lin.Vec2{}) || b.torque != 0 {
@@ -252,7 +274,7 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
 		lo, hi := c.Shape.bounds(pos, t.Rotation)
 		bi := -1
-		if i, ok := s.index[e]; ok {
+		if i, ok := s.index.get(e); ok {
 			bi = i
 		}
 		s.entries = append(s.entries, entry2{e: e, t: t, b: b, c: c, pos: pos, lo: lo, hi: hi, bi: bi})
@@ -262,14 +284,14 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		s.parent = append(s.parent, i)
 	}
 	// Broadphase and contact generation.
-	var arbiters []arbiter2
-	type pending struct {
-		ev  Collision2
-		arb int
-	}
-	var events []pending
+	s.arbiters = s.arbiters[:0]
+	s.events = s.events[:0]
 	en := s.entries
-	sweepPairs(len(en), func(i int) float32 { return en[i].lo.X }, func(i int) float32 { return en[i].hi.X }, func(i, j int) {
+	slo, shi := s.sweep.begin(len(en))
+	for i := range en {
+		slo[i], shi[i] = en[i].lo.X, en[i].hi.X
+	}
+	s.sweep.pairs(func(i, j int) {
 		a, b := &en[i], &en[j]
 		if a.lo.Y > b.hi.Y || b.lo.Y > a.hi.Y {
 			return
@@ -281,14 +303,14 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		if !a.c.Layers.collides(b.c.Layers) {
 			return
 		}
-		contacts := collide2(a.c.Shape, a.pos, a.t.Rotation, b.c.Shape, b.pos, b.t.Rotation)
+		s.contacts = collide2(&s.ss, s.contacts[:0], a.c.Shape, a.pos, a.t.Rotation, b.c.Shape, b.pos, b.t.Rotation)
+		contacts := s.contacts
 		if len(contacts) == 0 {
 			return
 		}
 		key := keyOf(a.e, b.e)
 		if a.c.Trigger || b.c.Trigger {
-			if !reported[key] {
-				reported[key] = true
+			if !s.reported.add(key) {
 				if a.c.Trigger {
 					ecs.Emit(w, Trigger2{Trigger: a.e, Other: b.e})
 				}
@@ -307,24 +329,23 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		if a.bi >= 0 && b.bi >= 0 {
 			s.union(a.bi, b.bi)
 		}
-		if !reported[key] {
-			reported[key] = true
+		if !s.reported.add(key) {
 			c := contacts[0]
 			ev := Collision2{A: a.e, B: b.e, Point: c.point, Normal: c.normal, Depth: c.depth}
 			if key.a != a.e {
 				ev.A, ev.B, ev.Normal = b.e, a.e, c.normal.Mul(-1)
 			}
-			events = append(events, pending{ev, len(arbiters)})
+			s.events = append(s.events, pending2{ev, len(s.arbiters)})
 		}
-		arbiters = append(arbiters, newArbiter2(a, b, contacts, h))
+		initArbiter2(s.nextArbiter(), a, b, contacts, h)
 	})
 	// Joints.
 	joints := gatherJoints2(w, s)
 	for _, j := range joints {
 		j.prepare(h)
 		ja, jb := j.sides()
-		if ia, ok := s.index[ja]; ok {
-			if ib, ok := s.index[jb]; ok {
+		if ia, ok := s.index.get(ja); ok {
+			if ib, ok := s.index.get(jb); ok {
 				s.union(ia, ib)
 			}
 		}
@@ -334,12 +355,12 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		for _, j := range joints {
 			j.solve()
 		}
-		for i := range arbiters {
-			arbiters[i].solve()
+		for i := range s.arbiters {
+			s.arbiters[i].solve()
 		}
 	}
-	for _, p := range events {
-		for _, c := range arbiters[p.arb].contacts {
+	for _, p := range s.events {
+		for _, c := range s.arbiters[p.arb].contacts {
 			p.ev.Impulse += c.pn
 		}
 		ecs.Emit(w, p.ev)
@@ -404,7 +425,7 @@ func (s *state2) sleep(settings *Settings2, h float32) {
 	if thr <= 0 {
 		thr = 0.05
 	}
-	var rest []float32
+	rest := s.rest[:0]
 	for i, r := range s.dynamic {
 		b := r.b
 		if !b.asleep {
@@ -420,6 +441,7 @@ func (s *state2) sleep(settings *Settings2, h float32) {
 		}
 		rest[root] = min(rest[root], b.sleepTime)
 	}
+	s.rest = rest
 	for i, r := range s.dynamic {
 		b := r.b
 		if !b.asleep && rest[s.find(i)] >= after {
@@ -446,7 +468,7 @@ func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
 			continue
 		}
 		oext := o.hi.Sub(o.lo)
-		if t, _, ok := marchSweep2(e.c.Shape, e.pos, e.t.Rotation, delta, minHalf, o.c.Shape, o.pos, o.t.Rotation, min(oext.X, oext.Y)/2, best); ok && t < best {
+		if t, _, ok := marchSweep2(&s.ss, e.c.Shape, e.pos, e.t.Rotation, delta, minHalf, o.c.Shape, o.pos, o.t.Rotation, min(oext.X, oext.Y)/2, best); ok && t < best {
 			best, found = t, true
 		}
 	}
@@ -478,7 +500,7 @@ func (s *state2) sweepDynamic(e *entry2, h float32) {
 			continue
 		}
 		oext := o.hi.Sub(o.lo)
-		if t, _, ok := marchSweep2(e.c.Shape, e.pos, e.t.Rotation, delta, minHalf, o.c.Shape, o.pos, o.t.Rotation, min(oext.X, oext.Y)/2, 1); ok && t < 1 {
+		if t, _, ok := marchSweep2(&s.ss, e.c.Shape, e.pos, e.t.Rotation, delta, minHalf, o.c.Shape, o.pos, o.t.Rotation, min(oext.X, oext.Y)/2, 1); ok && t < 1 {
 			f := min(1, t+0.5*slop/length)
 			e.b.fraction = min(e.b.fraction, f)
 			o.b.fraction = min(o.b.fraction, f)
@@ -491,11 +513,25 @@ func circleOfBounds2(lo, hi lin.Vec2) (lin.Vec2, float32) {
 	return lo.Add(hi).Mul(0.5), hi.Sub(lo).Len() / 2
 }
 
-// arbiter2 holds a pair's contacts through the solver iterations.
+// arbiter2 holds a pair's contacts through the solver iterations. It
+// keeps the two bodies directly, because the solver reads their velocity
+// and inverse inertia twice per contact per iteration.
 type arbiter2 struct {
-	a, b     *entry2
+	ba, bb   *Body2 // nil for a static collider
 	contacts []solverContact2
 	friction float32
+}
+
+// nextArbiter extends the arbiter list by one, keeping the contact
+// buffer the reused element already holds.
+func (s *state2) nextArbiter() *arbiter2 {
+	n := len(s.arbiters)
+	if n < cap(s.arbiters) {
+		s.arbiters = s.arbiters[:n+1]
+	} else {
+		s.arbiters = append(s.arbiters, arbiter2{})
+	}
+	return &s.arbiters[n]
 }
 
 type solverContact2 struct {
@@ -508,15 +544,20 @@ type solverContact2 struct {
 	pn, pt      float32
 }
 
-func bodyVel2(e *entry2) (lin.Vec2, float32, float32, float32) {
-	if e.b == nil {
+// bodyVel2 reads a body's velocity and inverse mass, or zeros for a
+// static collider.
+func bodyVel2(b *Body2) (lin.Vec2, float32, float32, float32) {
+	if b == nil {
 		return lin.Vec2{}, 0, 0, 0
 	}
-	return e.b.Vel, e.b.AngVel, e.b.invMass, e.b.invInertia
+	return b.Vel, b.AngVel, b.invMass, b.invInertia
 }
 
-func newArbiter2(a, b *entry2, contacts []contact2, h float32) arbiter2 {
-	arb := arbiter2{a: a, b: b}
+// initArbiter2 prepares one pair's contacts in place, reusing whatever
+// contact storage arb already holds.
+func initArbiter2(arb *arbiter2, a, b *entry2, contacts []contact2, h float32) {
+	arb.ba, arb.bb = a.b, b.b
+	arb.contacts = arb.contacts[:0]
 	var fa, fb, ra, rb float32 = 0.5, 0.5, 0, 0
 	if a.b != nil {
 		fa, ra = a.b.Friction, a.b.Restitution
@@ -526,8 +567,8 @@ func newArbiter2(a, b *entry2, contacts []contact2, h float32) arbiter2 {
 	}
 	arb.friction = float32(math.Sqrt(float64(fa * fb)))
 	restitution := max(ra, rb)
-	va, wa, ima, iia := bodyVel2(a)
-	vb, wb, imb, iib := bodyVel2(b)
+	va, wa, ima, iia := bodyVel2(a.b)
+	vb, wb, imb, iib := bodyVel2(b.b)
 	for _, c := range contacts {
 		sc := solverContact2{normal: c.normal}
 		sc.rA = c.point.Sub(a.t.Position)
@@ -551,15 +592,16 @@ func newArbiter2(a, b *entry2, contacts []contact2, h float32) arbiter2 {
 		}
 		arb.contacts = append(arb.contacts, sc)
 	}
-	return arb
 }
 
 func (arb *arbiter2) solve() {
-	a, b := arb.a, arb.b
+	a, b := arb.ba, arb.bb
+	va, wa, ima, iia := bodyVel2(a)
+	vb, wb, imb, iib := bodyVel2(b)
 	for i := range arb.contacts {
 		c := &arb.contacts[i]
-		va, wa, ima, iia := bodyVel2(a)
-		vb, wb, imb, iib := bodyVel2(b)
+		va, wa, _, _ = bodyVel2(a)
+		vb, wb, _, _ = bodyVel2(b)
 		dv := vb.Add(crossSV(wb, c.rB)).Sub(va).Sub(crossSV(wa, c.rA))
 		vn := dv.Dot(c.normal)
 		dpn := c.massNormal * (-vn + c.bias)
@@ -567,13 +609,13 @@ func (arb *arbiter2) solve() {
 		c.pn = max(pn0+dpn, 0)
 		dpn = c.pn - pn0
 		p := c.normal.Mul(dpn)
-		if a.b != nil {
-			a.b.Vel = a.b.Vel.Sub(p.Mul(ima))
-			a.b.AngVel -= iia * cross2(c.rA, p)
+		if a != nil {
+			a.Vel = a.Vel.Sub(p.Mul(ima))
+			a.AngVel -= iia * cross2(c.rA, p)
 		}
-		if b.b != nil {
-			b.b.Vel = b.b.Vel.Add(p.Mul(imb))
-			b.b.AngVel += iib * cross2(c.rB, p)
+		if b != nil {
+			b.Vel = b.Vel.Add(p.Mul(imb))
+			b.AngVel += iib * cross2(c.rB, p)
 		}
 		// Friction.
 		va, wa, _, _ = bodyVel2(a)
@@ -586,13 +628,13 @@ func (arb *arbiter2) solve() {
 		c.pt = lin.Clamp(pt0+dpt, -maxPt, maxPt)
 		dpt = c.pt - pt0
 		p = c.tangent.Mul(dpt)
-		if a.b != nil {
-			a.b.Vel = a.b.Vel.Sub(p.Mul(ima))
-			a.b.AngVel -= iia * cross2(c.rA, p)
+		if a != nil {
+			a.Vel = a.Vel.Sub(p.Mul(ima))
+			a.AngVel -= iia * cross2(c.rA, p)
 		}
-		if b.b != nil {
-			b.b.Vel = b.b.Vel.Add(p.Mul(imb))
-			b.b.AngVel += iib * cross2(c.rB, p)
+		if b != nil {
+			b.Vel = b.Vel.Add(p.Mul(imb))
+			b.AngVel += iib * cross2(c.rB, p)
 		}
 	}
 }
@@ -622,6 +664,10 @@ func raycast2(w *ecs.World, r Ray2, mask uint32, exclude ecs.Entity) (Hit2, bool
 		}
 		cs, sn := cosSin(t.Rotation)
 		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
+		lo, hi := c.Shape.bounds(pos, t.Rotation)
+		if !raySlab2(r, lo, hi, min(best.Distance, 1)) {
+			return
+		}
 		if tt, n, ok := rayShape2(r, c.Shape, pos, t.Rotation); ok && tt < best.Distance {
 			best = Hit2{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
 			found = true

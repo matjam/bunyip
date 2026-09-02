@@ -17,8 +17,9 @@ named frames, tweens over any value, engine plumbing hidden behind an
 internal hook package, and the naming and zero-value conventions stated
 in each package's comment.
 
-- The X11 clipboard: serving selections needs a request loop the
-  platform layer does not run yet; macOS and Windows have it.
+- The Linux clipboard: X11 selections need a request loop the platform
+  layer does not run yet, and Wayland needs `wl_data_device` with a pipe
+  to read an offer from. macOS and Windows have it.
 
 ## Platforms and window
 
@@ -26,12 +27,20 @@ in each package's comment.
   graphics backend, since Vulkan is unavailable there; WebGPU is the
   plausible common target. This is the largest single gap.
 - Windows and Linux have been cross-compiled and vetted but never run on
-  real machines. Native Wayland is not written; XWayland works meanwhile.
+  real machines. Linux has both a native Wayland layer and an X11 layer,
+  chosen at startup; neither has been exercised on hardware.
+- What the Wayland layer does not do yet: the clipboard through
+  `wl_data_device`, text input through `zwp_text_input_v3`, fractional
+  scale through `wp_fractional_scale_v1` and `wp_viewporter` (the buffer
+  scale is an integer today), and the window icon through
+  `xdg-toplevel-icon-v1`. Without `zxdg_decoration_manager_v1` the window
+  has no title bar, because drawing one client-side is not written.
+  libwayland 1.20 or later is required, for `wl_proxy_marshal_flags`.
 - Window position, always-on-top and custom cursor images work on macOS
   (`SetPosition`, `Position`, `SetAlwaysOnTop`, `SetCursorImage`) and
-  are no-ops on Windows and X11 until those layers run on hardware.
-  Decorations, transparent and click-through windows, choice of monitor,
-  and starting fullscreen or unfocused are not written.
+  are no-ops on Windows, Wayland and X11. Wayland has no protocol for
+  the first two at all. Transparent and click-through windows, choice of
+  monitor, and starting fullscreen or unfocused are not written.
 - Drag and drop of files onto the window, and native file dialogs.
   `OpenURL` opens the browser on every platform.
 - Multiple windows.

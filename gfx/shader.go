@@ -137,8 +137,9 @@ type pipeKey struct {
 	stencil      bool // mark the stencil buffer, for outlines
 }
 
-// meshKey is the pipeline variant a material needs.
-func meshKey(mat Material, skinned bool) pipeKey {
+// meshKey is the pipeline variant a material needs. It takes a pointer
+// because Material is large and this sits in the draw loop.
+func meshKey(mat *Material, skinned bool) pipeKey {
 	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0}
 	if mat.blended() {
 		key.blend = BlendAlpha

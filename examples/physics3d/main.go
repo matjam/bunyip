@@ -153,9 +153,9 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	g.lastX, g.lastY = x, y
 	_, dy := in.Scroll()
 	g.dist = lin.Clamp(g.dist-float32(dy)*2, 8, 120)
-	done := ctx.Profile("physics")
+	step := ctx.Profile("physics")
 	g.world.Update(ctx.Delta)
-	done()
+	step.End()
 	return nil
 }
 

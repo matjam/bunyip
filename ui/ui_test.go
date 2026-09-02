@@ -14,7 +14,7 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
-func newContext(t *testing.T) *Context {
+func newContext(t testing.TB) *Context {
 	t.Helper()
 	if err := vk.Load(); err != nil {
 		t.Skipf("no Vulkan: %v", err)

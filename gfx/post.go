@@ -84,6 +84,13 @@ type postPass struct {
 	singles   *render.DescriptorSets
 	triples   *render.DescriptorSets
 	main      *sceneTargets
+	// The recording commands take their block and set by pointer, and a
+	// pointer to a local is forced onto the heap once per call. These
+	// live with the pass and are filled in place instead.
+	push postPush
+	ao   ssaoPush
+	set  vk.VkDescriptorSet
+	lut  vk.VkDescriptorSet
 }
 
 // sceneTargets are the offscreen images one output needs: HDR scene,
@@ -287,11 +294,12 @@ func (t *sceneTargets) destroy(g *Graphics) {
 }
 
 // fullscreen records one fullscreen triangle with the pipeline and set.
-func fullscreen(cb vk.VkCommandBuffer, pipe *render.Pipeline, set vk.VkDescriptorSet, push postPush) {
-	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
-	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &set, 0, nil)
-	vk.VkCmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, uint32(unsafe.Sizeof(push)), unsafe.Pointer(&push))
-	vk.VkCmdDraw(cb, 3, 1, 0, 0)
+func (p *postPass) fullscreen(cb vk.VkCommandBuffer, pipe *render.Pipeline, set vk.VkDescriptorSet, push postPush) {
+	p.set, p.push = set, push
+	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &p.set, 0, nil)
+	vk.CmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, uint32(unsafe.Sizeof(p.push)), unsafe.Pointer(&p.push))
+	vk.CmdDraw(cb, 3, 1, 0, 0)
 }
 
 // renderBloom runs bright pass and two blur passes; the result ends in bloomA.
@@ -299,14 +307,14 @@ func (g *Graphics) renderBloom(cb vk.VkCommandBuffer, t *sceneTargets) {
 	p := &g.post
 	s := p.settings
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.bloomA})
-	fullscreen(cb, p.bright, t.hdrSet, postPush{a: [4]float32{s.BloomThreshold, 0.5, 0, 0}})
+	p.fullscreen(cb, p.bright, t.hdrSet, postPush{a: [4]float32{s.BloomThreshold, 0.5, 0, 0}})
 	render.EndTargetPass(cb, t.bloomA)
 	step := [2]float32{1 / float32(t.bloomA.Extent.Width), 1 / float32(t.bloomA.Extent.Height)}
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.bloomB})
-	fullscreen(cb, p.blur, t.bloomASet, postPush{a: [4]float32{step[0] * 1.5, 0, 0, 0}})
+	p.fullscreen(cb, p.blur, t.bloomASet, postPush{a: [4]float32{step[0] * 1.5, 0, 0, 0}})
 	render.EndTargetPass(cb, t.bloomB)
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.bloomA})
-	fullscreen(cb, p.blur, t.bloomBSet, postPush{a: [4]float32{0, step[1] * 1.5, 0, 0}})
+	p.fullscreen(cb, p.blur, t.bloomBSet, postPush{a: [4]float32{0, step[1] * 1.5, 0, 0}})
 	render.EndTargetPass(cb, t.bloomA)
 }
 
@@ -316,20 +324,20 @@ func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets
 	p := &g.post
 	aspect := float32(t.extent.Width) / float32(t.extent.Height)
 	proj := q.camera.Projection(aspect)
-	push := ssaoPush{proj: proj, invProj: proj.Inverse()}
+	p.ao = ssaoPush{proj: proj, invProj: proj.Inverse()}
 	radius := p.settings.OcclusionRadius
 	if radius <= 0 {
 		radius = 1
 	}
-	push.proj[15] = radius // see ssao.frag
+	p.ao.proj[15] = radius // see ssao.frag
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.aoA})
-	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Handle)
-	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Layout, 0, 1, &t.depthSet, 0, nil)
-	vk.VkCmdPushConstants(cb, p.ssao.Layout, meshStages, 0, uint32(unsafe.Sizeof(push)), unsafe.Pointer(&push))
-	vk.VkCmdDraw(cb, 3, 1, 0, 0)
+	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Handle)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Layout, 0, 1, &t.depthSet, 0, nil)
+	vk.CmdPushConstants(cb, p.ssao.Layout, meshStages, 0, uint32(unsafe.Sizeof(p.ao)), unsafe.Pointer(&p.ao))
+	vk.CmdDraw(cb, 3, 1, 0, 0)
 	render.EndTargetPass(cb, t.aoA)
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.aoB})
-	fullscreen(cb, p.aoBlur, t.aoASet, postPush{a: [4]float32{1 / float32(t.aoA.Extent.Width), 1 / float32(t.aoA.Extent.Height), 0, 0}})
+	p.fullscreen(cb, p.aoBlur, t.aoASet, postPush{a: [4]float32{1 / float32(t.aoA.Extent.Width), 1 / float32(t.aoA.Extent.Height), 0, 0}})
 	render.EndTargetPass(cb, t.aoB)
 }
 
@@ -355,9 +363,9 @@ func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom, ao b
 			lutStrength = 1
 		}
 	}
-	lutSet := lut.set
-	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.composite.Layout, 1, 1, &lutSet, 0, nil)
-	fullscreen(cb, p.composite, set, postPush{
+	p.lut = lut.set
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.composite.Layout, 1, 1, &p.lut, 0, nil)
+	p.fullscreen(cb, p.composite, set, postPush{
 		a: [4]float32{s.Exposure, strength, s.Vignette, s.Saturation},
 		b: [4]float32{s.Contrast, aoStrength, boolFloat(s.ShowOcclusion), lutStrength},
 	})
@@ -365,7 +373,7 @@ func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom, ao b
 
 // antiAlias resolves the LDR image into the current pass with FXAA.
 func (g *Graphics) antiAlias(cb vk.VkCommandBuffer, t *sceneTargets) {
-	fullscreen(cb, g.post.fxaa, t.ldrSet, postPush{a: [4]float32{1 / float32(t.extent.Width), 1 / float32(t.extent.Height), 0, 0}})
+	g.post.fullscreen(cb, g.post.fxaa, t.ldrSet, postPush{a: [4]float32{1 / float32(t.extent.Width), 1 / float32(t.extent.Height), 0, 0}})
 }
 
 func (p *postPass) destroy(g *Graphics) {

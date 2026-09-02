@@ -127,6 +127,46 @@ func TestSpriteTracksAndProperty(t *testing.T) {
 	}
 }
 
+// countingTrack is a Track written by hand, which cannot be grouped by
+// component and so is applied on its own.
+type countingTrack struct{ n *int }
+
+func (c countingTrack) Apply(*ecs.World, ecs.Entity, float32, float32) { *c.n++ }
+func (c countingTrack) Duration() float32                              { return 3 }
+
+func TestClipCaches(t *testing.T) {
+	w := ecs.NewWorld()
+	clip := NewClip("c", Loop, Position(Vec3s(At(0, lin.V3(0, 0, 0)), At(2, lin.V3(2, 0, 0)))))
+	if clip.Duration() != 2 || clip.Duration() != 2 {
+		t.Fatalf("duration %v", clip.Duration())
+	}
+	n := 0
+	clip.AddTrack(countingTrack{&n}, Scale(Vec3s(At(0, lin.V3(1, 1, 1)), At(1, lin.V3(2, 2, 2)))))
+	if clip.Duration() != 3 {
+		t.Fatalf("duration after AddTrack %v", clip.Duration())
+	}
+	e := w.SpawnWith(gfx.Transform{Scale: lin.V3(1, 1, 1)})
+	clip.Apply(w, e, 1, 1)
+	tr, _ := ecs.Get[gfx.Transform](w, e)
+	if !near(tr.Position.X, 1) || !near(tr.Scale.X, 2) || n != 1 {
+		t.Fatalf("transform %+v, hand-written track ran %d times", tr, n)
+	}
+	// Both transform tracks share one group, so the component is looked
+	// up once.
+	if len(clip.groups) != 1 || len(clip.groups[0].tracks) != 2 || len(clip.loose) != 1 {
+		t.Fatalf("groups %d, loose %d", len(clip.groups), len(clip.loose))
+	}
+	// Length overrides the memo without disturbing it.
+	clip.Length = 9
+	if clip.Duration() != 9 {
+		t.Fatal("Length ignored")
+	}
+	clip.Length = 0
+	if clip.Duration() != 3 {
+		t.Fatal("duration lost after clearing Length")
+	}
+}
+
 func TestFlipbookAndSkeleton(t *testing.T) {
 	w := ecs.NewWorld()
 	w.AddSystem("anim", System)

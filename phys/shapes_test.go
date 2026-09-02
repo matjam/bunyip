@@ -60,7 +60,7 @@ func TestPenetration3D(t *testing.T) {
 		{"sphere on hull", Sphere{0.5}, lin.V3(0, 1.4, 0), octahedron(1), lin.Vec3{}, 0.1, lin.V3(0, -1, 0), true},
 	}
 	for _, c := range cases {
-		cs := collide3(c.a, c.pa, id, c.b, c.pb, id)
+		cs := collide3(new(scratch3), nil, c.a, c.pa, id, c.b, c.pb, id)
 		if !c.hit {
 			if len(cs) != 0 {
 				t.Errorf("%s: got %d contacts, want none: %+v", c.name, len(cs), cs)

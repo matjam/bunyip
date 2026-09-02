@@ -159,7 +159,12 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 			if c.navFocus == itemID(i) {
 				c.focusRing(rows[i])
 			}
-			_, oh := c.Theme.Font.Measure(opt, gfx.TextOptions{})
+			// The chosen option was measured above for the closed box;
+			// carry that height rather than measure the same string twice.
+			oh := h
+			if opt != text {
+				_, oh = c.Theme.Font.Measure(opt, gfx.TextOptions{})
+			}
 			c.text(opt, rows[i].X+c.Theme.Padding, rows[i].Y+(rows[i].H-oh)/2, c.Theme.Text)
 		}
 	})

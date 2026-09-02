@@ -197,22 +197,74 @@ func (q *Query4[A, B, C, D]) Each(fn func(e Entity, a *A, b *B, c *C, d *D)) {
 // Count is the number of matching entities.
 func (q *Query4[A, B, C, D]) Count() int { return q.m.count() }
 
+// queryKey names one component set in the order the type parameters
+// gave it, so the memo hands back a query of the type that asked for it.
+type queryKey struct {
+	n          uint8
+	a, b, c, d ComponentID
+}
+
 // Each is a one-off iteration over entities with a T, for code that
-// does not keep a query around.
-func Each[T any](w *World, fn func(e Entity, t *T)) { NewQuery1[T](w).Each(fn) }
+// does not keep a query around. The query it needs is built once per
+// world and component set and kept, so calling this every frame costs
+// no more than a query of your own.
+func Each[T any](w *World, fn func(e Entity, t *T)) { query1[T](w).Each(fn) }
 
 // Each2 is a one-off iteration over entities with an A and a B.
-func Each2[A, B any](w *World, fn func(e Entity, a *A, b *B)) { NewQuery2[A, B](w).Each(fn) }
+func Each2[A, B any](w *World, fn func(e Entity, a *A, b *B)) { query2[A, B](w).Each(fn) }
 
 // Each3 is a one-off iteration over entities with an A, a B and a C.
 func Each3[A, B, C any](w *World, fn func(e Entity, a *A, b *B, c *C)) {
-	NewQuery3[A, B, C](w).Each(fn)
+	query3[A, B, C](w).Each(fn)
 }
 
 // Each4 is a one-off iteration over entities with four components.
 func Each4[A, B, C, D any](w *World, fn func(e Entity, a *A, b *B, c *C, d *D)) {
-	NewQuery4[A, B, C, D](w).Each(fn)
+	query4[A, B, C, D](w).Each(fn)
 }
 
 // Count returns how many entities carry a T.
-func Count[T any](w *World) int { return NewQuery1[T](w).Count() }
+func Count[T any](w *World) int { return query1[T](w).Count() }
+
+// query1 returns the world's memoised Query1 for A, building it the
+// first time. The queries live as long as the world, so a one-off Each
+// in a loop allocates nothing after the first call.
+func query1[A any](w *World) *Query1[A] {
+	key := queryKey{n: 1, a: componentID[A](w)}
+	if q, ok := w.oneOff[key]; ok {
+		return q.(*Query1[A])
+	}
+	q := NewQuery1[A](w)
+	w.oneOff[key] = q
+	return q
+}
+
+func query2[A, B any](w *World) *Query2[A, B] {
+	key := queryKey{n: 2, a: componentID[A](w), b: componentID[B](w)}
+	if q, ok := w.oneOff[key]; ok {
+		return q.(*Query2[A, B])
+	}
+	q := NewQuery2[A, B](w)
+	w.oneOff[key] = q
+	return q
+}
+
+func query3[A, B, C any](w *World) *Query3[A, B, C] {
+	key := queryKey{n: 3, a: componentID[A](w), b: componentID[B](w), c: componentID[C](w)}
+	if q, ok := w.oneOff[key]; ok {
+		return q.(*Query3[A, B, C])
+	}
+	q := NewQuery3[A, B, C](w)
+	w.oneOff[key] = q
+	return q
+}
+
+func query4[A, B, C, D any](w *World) *Query4[A, B, C, D] {
+	key := queryKey{n: 4, a: componentID[A](w), b: componentID[B](w), c: componentID[C](w), d: componentID[D](w)}
+	if q, ok := w.oneOff[key]; ok {
+		return q.(*Query4[A, B, C, D])
+	}
+	q := NewQuery4[A, B, C, D](w)
+	w.oneOff[key] = q
+	return q
+}

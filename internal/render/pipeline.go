@@ -238,13 +238,23 @@ func (p *Pipeline) Destroy() {
 	}
 }
 
+// The viewport and scissor commands take a pointer to their rectangle, and
+// a pointer to a local variable would be forced onto the heap once per
+// call. These two live for the process instead and are filled in place.
+// Commands are recorded from the goroutine that owns the device, so there
+// is one recorder at a time.
+var (
+	viewportScratch vk.VkViewport
+	scissorScratch  vk.VkRect2D
+)
+
 // SetViewport records a full-extent viewport and scissor. Vulkan's viewport
 // is flipped here so that +Y is down, matching 2D screen conventions.
 func SetViewport(cb vk.VkCommandBuffer, extent vk.VkExtent2D) {
-	viewport := vk.VkViewport{Width: float32(extent.Width), Height: float32(extent.Height), MaxDepth: 1}
-	scissor := vk.VkRect2D{Extent: extent}
-	vk.VkCmdSetViewport(cb, 0, 1, &viewport)
-	vk.VkCmdSetScissor(cb, 0, 1, &scissor)
+	viewportScratch = vk.VkViewport{Width: float32(extent.Width), Height: float32(extent.Height), MaxDepth: 1}
+	scissorScratch = vk.VkRect2D{Extent: extent}
+	vk.CmdSetViewport(cb, 0, 1, &viewportScratch)
+	vk.CmdSetScissor(cb, 0, 1, &scissorScratch)
 }
 
 func boolean(b bool) vk.VkBool32 {
@@ -264,26 +274,27 @@ func firstOrNil[T any](s []T) *T {
 // SetScissor limits rasterisation to a pixel rectangle clamped to the
 // extent; full resets to the whole extent.
 func SetScissor(cb vk.VkCommandBuffer, extent vk.VkExtent2D, x, y int32, w, h uint32, full bool) {
-	scissor := vk.VkRect2D{Extent: extent}
+	scissorScratch = vk.VkRect2D{Extent: extent}
 	if !full {
 		x = max(x, 0)
 		y = max(y, 0)
 		w = min(w, uint32(max(int32(extent.Width)-x, 0)))
 		h = min(h, uint32(max(int32(extent.Height)-y, 0)))
-		scissor = vk.VkRect2D{Offset: vk.VkOffset2D{X: x, Y: y}, Extent: vk.VkExtent2D{Width: w, Height: h}}
+		scissorScratch = vk.VkRect2D{Offset: vk.VkOffset2D{X: x, Y: y}, Extent: vk.VkExtent2D{Width: w, Height: h}}
 	}
-	vk.VkCmdSetScissor(cb, 0, 1, &scissor)
+	vk.CmdSetScissor(cb, 0, 1, &scissorScratch)
 }
 
 // SetViewportRect sets the viewport to a pixel rectangle.
 func SetViewportRect(cb vk.VkCommandBuffer, r vk.VkRect2D) {
-	viewport := vk.VkViewport{X: float32(r.Offset.X), Y: float32(r.Offset.Y), Width: float32(r.Extent.Width), Height: float32(r.Extent.Height), MaxDepth: 1}
-	vk.VkCmdSetViewport(cb, 0, 1, &viewport)
+	viewportScratch = vk.VkViewport{X: float32(r.Offset.X), Y: float32(r.Offset.Y), Width: float32(r.Extent.Width), Height: float32(r.Extent.Height), MaxDepth: 1}
+	vk.CmdSetViewport(cb, 0, 1, &viewportScratch)
 }
 
 // SetScissorRect limits rasterisation to a pixel rectangle.
 func SetScissorRect(cb vk.VkCommandBuffer, r vk.VkRect2D) {
-	vk.VkCmdSetScissor(cb, 0, 1, &r)
+	scissorScratch = r
+	vk.CmdSetScissor(cb, 0, 1, &scissorScratch)
 }
 
 // ClearRect fills a rectangle of the pass's colour attachment with a

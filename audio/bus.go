@@ -13,8 +13,10 @@ type Bus struct {
 	mute   bool
 	solo   bool
 
-	reverb  *reverb   // the bus's own reverb, nil to share the mixer's
-	sendBuf []float32 // reverb send for this block
+	reverb  *reverb        // the bus's own reverb, nil to share the mixer's
+	applied ReverbSettings // what SetReverb was given
+	pending bool           // applied has not reached the reverb yet
+	sendBuf []float32      // reverb send for this block
 }
 
 // NewBus makes a named bus; the name is how Mixer.Bus finds it again. If a
@@ -27,6 +29,7 @@ func (m *Mixer) NewBus(name string) *Bus {
 	}
 	b := &Bus{m: m, name: name, vol: 1}
 	m.buses[name] = b
+	m.busList = append(m.busList, b)
 	return b
 }
 

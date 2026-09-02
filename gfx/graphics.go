@@ -42,10 +42,14 @@ type Graphics struct {
 	retired       []*Texture       // replaced mid-frame; destroyed once the frame is submitted
 	retiredBufs   []*render.Buffer // a mesh's old geometry after Update, likewise
 	scratch       []vertex2D
+	pathSubs      []subpath        // flattened sub-paths, reused by FillPath and StrokePath
+	pathFill      filler           // likewise the scanline filler
+	pathStroke    stroker          // and the stroke expander
 	linePipe      *render.Pipeline // debug lines over the 3D scene
 	dbgFont       *Font            // the built-in font, made on first use
 	dbgFontFailed bool
-	viewport      vk.VkRect2D // the main output's pixel rectangle; zero means the whole window
+	rec           recordScratch // long-lived arguments for the recording commands
+	viewport      vk.VkRect2D   // the main output's pixel rectangle; zero means the whole window
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
@@ -429,6 +433,20 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	return nil
 }
 
+// recordScratch holds the arguments the recording commands take by
+// pointer. The Vulkan calls force what a pointer argument refers to onto
+// the heap, so a fresh local for each draw would allocate once per draw
+// run; these fields live as long as the Graphics and are filled in place.
+type recordScratch struct {
+	push    push2D             // the 2D push-constant block, and the sky's
+	solid   solidPush          // the outline and x-ray block
+	decal   decalPush          // the decal block
+	set     vk.VkDescriptorSet // the run's material set
+	dyn     uint32             // the run's dynamic uniform offset
+	cascade int32              // the shadow pass's cascade index
+	offset  vk.VkDeviceSize    // always zero: the vertex buffer bind offset
+}
+
 // flush2D records the queue's 2D stream: one draw per run of equal state.
 func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error {
 	st := &q.stream
@@ -443,14 +461,15 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	g.stats.Vertices2D += len(st.ordered)
 	cb := fr.CB
 	render.SetViewportRect(cb, vp)
-	var offset vk.VkDeviceSize
-	vk.VkCmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &offset)
+	rec := &g.rec
+	rec.offset = 0
+	vk.CmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &rec.offset)
 	var bound *render.Pipeline
 	var boundProj *lin.Mat4
 	var boundClip lin.Rect
 	boundUniform := int32(-2)
 	scaleX, scaleY := float32(vp.Extent.Width)/q.viewW, float32(vp.Extent.Height)/q.viewH
-	push := push2D{frame: lin.V4(g.time, q.viewW, q.viewH, scaleX)}
+	rec.push = push2D{frame: lin.V4(g.time, q.viewW, q.viewH, scaleX)}
 	for _, d := range st.draws {
 		s := d.state
 		if s.clip != boundClip {
@@ -467,23 +486,23 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		}
 		if pipe != bound {
 			bound = pipe
-			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+			vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 			boundProj, boundUniform = nil, -2
 		}
 		if s.proj != boundProj {
 			boundProj = s.proj
-			push.proj = *s.proj
-			vk.VkCmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-				0, push2DSize, unsafe.Pointer(&push))
+			rec.push.proj = *s.proj
+			vk.CmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+				0, push2DSize, unsafe.Pointer(&rec.push))
 		}
 		if s.uniform >= 0 && s.uniform != boundUniform {
 			boundUniform = s.uniform
-			dyn := uint32(s.uniform)
-			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &g.uniforms.Sets[fr.Slot], 1, &dyn)
+			rec.dyn = uint32(s.uniform)
+			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &g.uniforms.Sets[fr.Slot], 1, &rec.dyn)
 		}
-		set := s.set
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &set, 0, nil)
-		vk.VkCmdDraw(cb, d.count, 1, d.first, 0)
+		rec.set = s.set
+		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
+		vk.CmdDraw(cb, d.count, 1, d.first, 0)
 	}
 	return nil
 }

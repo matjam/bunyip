@@ -45,6 +45,9 @@ type meshPass struct {
 	shadowSamp    vk.VkSampler
 	materials     *render.DescriptorSets // five material textures, a shader's image0..3, the environment cube
 	matSets       map[materialKey]vk.VkDescriptorSet
+	lastMatKey    materialKey // the key materialSet last resolved, to skip hashing matSets
+	lastMatSet    vk.VkDescriptorSet
+	lastMatOK     bool
 	flatNormal    *Texture
 	black         *Texture
 	blackCube     *render.Image    // stands in for the environment when none is set
@@ -420,7 +423,9 @@ func (g *Graphics) queueMesh(d meshDraw) {
 
 // materialSet returns the descriptor set for a material's textures, its
 // shader's images, the environment map in use and the output's scene copy.
-func (g *Graphics) materialSet(mat Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, error) {
+// A frame's draws are usually grouped by material, so the last key and
+// set are remembered and compared before the map is hashed.
+func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, error) {
 	mp := &g.meshes
 	key := materialKey{env: env, scene: scene}
 	key.tex = [11]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
@@ -435,7 +440,11 @@ func (g *Graphics) materialSet(mat Material, env *Environment, scene *render.Ima
 	}
 	key.tex[9] = orTex(mat.ThicknessTexture, thin)
 	key.tex[10] = orTex(mat.TransmissionTexture, g.white)
+	if mp.lastMatOK && key == mp.lastMatKey {
+		return mp.lastMatSet, nil
+	}
 	if set, ok := mp.matSets[key]; ok {
+		mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
 		return set, nil
 	}
 	// Bindings 0..8 are the material and image textures, 9 the environment
@@ -462,12 +471,14 @@ func (g *Graphics) materialSet(mat Material, env *Environment, scene *render.Ima
 		return 0, err
 	}
 	mp.matSets[key] = set
+	mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
 	return set, nil
 }
 
 // forgetEnvironment drops cached material sets that reference a destroyed
 // environment.
 func (g *Graphics) forgetEnvironment(env *Environment) {
+	g.meshes.lastMatOK = false
 	for key, set := range g.meshes.matSets {
 		if key.env == env {
 			g.meshes.materials.Free(set)
@@ -479,6 +490,7 @@ func (g *Graphics) forgetEnvironment(env *Environment) {
 // forgetScene drops cached material sets that reference an output's
 // destroyed scene copy.
 func (g *Graphics) forgetScene(scene *render.Image) {
+	g.meshes.lastMatOK = false
 	for key, set := range g.meshes.matSets {
 		if key.scene == scene {
 			g.meshes.materials.Free(set)
@@ -496,6 +508,7 @@ func orTex(t, fallback *Texture) *Texture {
 
 // forgetTexture drops cached descriptor sets that reference a destroyed texture.
 func (g *Graphics) forgetTexture(t *Texture) {
+	g.meshes.lastMatOK = false
 	for key, set := range g.meshes.matSets {
 		if slices.Contains(key.tex[:], t) {
 			g.meshes.materials.Free(set)
@@ -661,41 +674,27 @@ func boolFloat(b bool) float32 {
 	return 0
 }
 
-// prepareDraws resolves material sets, culls draws outside the camera's
-// view, sorts opaque draws for instancing and blended draws back to
-// front, and uploads the instance stream. Culled draws sort to the end
-// of their group and stay in the lists for the shadow pass, which sees
-// them from the light; q.visOpaque and q.visBlended count the draws the
-// camera sees at the front of each list.
-func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, blended []meshDraw, err error) {
-	view := q.camera.viewMatrix()
-	frustum := FrustumOf(q.camera.ViewProj(aspect))
-	env := q.light.Environment
-	if env != nil && env.cube == nil {
-		env = nil
+// sortDraws puts the queue's draws in the order they are recorded in:
+// opaque before blended, what the camera sees before what it does not,
+// blended draws back to front, and opaque draws grouped by the state a
+// run of instances must share. It leaves q.draws where they are and
+// orders a permutation instead, so the sort moves indices rather than
+// 360-byte records. Each draw's blended field must already be resolved.
+func (q *drawQueue) sortDraws() drawList {
+	n := len(q.draws)
+	if cap(q.order) < n {
+		q.order = make([]int32, n)
 	}
-	culled := 0
-	for i := range q.draws {
-		d := &q.draws[i]
-		if d.set, err = g.materialSet(d.mat, env, scene); err != nil {
-			return nil, nil, err
-		}
-		centre, radius := d.mesh.boundingSphere(d.model)
-		d.depth = -view.MulPoint(centre).Z
-		if d.skinned {
-			radius *= 2 // the bind pose's bounds, loosely
-		}
-		// A shader that moves vertices may push them anywhere.
-		d.culled = len(d.shader.stages) == 0 && !frustum.ContainsSphere(centre, radius)
-		if d.culled {
-			culled++
-		}
+	q.order = q.order[:n]
+	for i := range q.order {
+		q.order[i] = int32(i)
 	}
-	g.stats.Culled += culled
-	slices.SortStableFunc(q.draws, func(a, b meshDraw) int {
+	draws := q.draws
+	slices.SortStableFunc(q.order, func(x, y int32) int {
+		a, b := &draws[x], &draws[y]
 		switch {
-		case a.mat.blended() != b.mat.blended():
-			if a.mat.blended() {
+		case a.blended != b.blended:
+			if a.blended {
 				return 1
 			}
 			return -1
@@ -704,7 +703,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 				return 1
 			}
 			return -1
-		case a.mat.blended(): // farthest first
+		case a.blended: // farthest first
 			if a.depth > b.depth {
 				return -1
 			}
@@ -737,9 +736,46 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		}
 		return 0
 	})
+	return drawList{draws: draws, order: q.order}
+}
+
+// prepareDraws resolves material sets, culls draws outside the camera's
+// view, sorts opaque draws for instancing and blended draws back to
+// front, and uploads the instance stream. Culled draws sort to the end
+// of their group and stay in the lists for the shadow pass, which sees
+// them from the light; q.visOpaque and q.visBlended count the draws the
+// camera sees at the front of each list.
+func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, blended drawList, err error) {
+	view := q.camera.viewMatrix()
+	frustum := FrustumOf(q.camera.ViewProj(aspect))
+	env := q.light.Environment
+	if env != nil && env.cube == nil {
+		env = nil
+	}
+	culled := 0
+	for i := range q.draws {
+		d := &q.draws[i]
+		if d.set, err = g.materialSet(&d.mat, env, scene); err != nil {
+			return drawList{}, drawList{}, err
+		}
+		centre, radius := d.mesh.boundingSphere(d.model)
+		d.depth = -view.MulPoint(centre).Z
+		d.blended = d.mat.blended()
+		if d.skinned {
+			radius *= 2 // the bind pose's bounds, loosely
+		}
+		// A shader that moves vertices may push them anywhere.
+		d.culled = len(d.shader.stages) == 0 && !frustum.ContainsSphere(centre, radius)
+		if d.culled {
+			culled++
+		}
+	}
+	g.stats.Culled += culled
+	all := q.sortDraws()
 	q.inst.reset()
-	for _, d := range q.draws {
-		m := d.mat
+	for k := range all.len() {
+		d := all.at(k)
+		m := &d.mat
 		flags := boolFloat(m.NormalTexture != nil) + 2*boolFloat(m.Unlit) + 4*boolFloat(m.OcclusionUV2) + 8*boolFloat(m.EmissiveTexture == nil)
 		occlusion := float32(0)
 		if m.OcclusionTexture != nil {
@@ -783,41 +819,41 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		})
 	}
 	if err := q.inst.upload(g.r.Device, slot); err != nil {
-		return nil, nil, err
+		return drawList{}, drawList{}, err
 	}
 	if len(q.joints) > 0 {
 		data := unsafe.Slice((*byte)(unsafe.Pointer(&q.joints[0])), len(q.joints)*64)
 		if err := q.jointBuf.Write(slot, data); err != nil {
-			return nil, nil, err
+			return drawList{}, drawList{}, err
 		}
 	}
-	split := len(q.draws)
-	for i, d := range q.draws {
-		if d.mat.blended() {
+	split := all.len()
+	for i := range all.len() {
+		if all.at(i).blended {
 			split = i
 			break
 		}
 	}
-	opaque, blended = q.draws[:split], q.draws[split:]
+	opaque, blended = all.slice(0, split), all.slice(split, all.len())
 	q.visOpaque, q.visBlended = visibleCount(opaque), visibleCount(blended)
 	return opaque, blended, nil
 }
 
 // visibleCount is how many draws at the front of a sorted group the
 // camera sees.
-func visibleCount(draws []meshDraw) int {
-	for i, d := range draws {
-		if d.culled {
+func visibleCount(draws drawList) int {
+	for i := range draws.len() {
+		if draws.at(i).culled {
 			return i
 		}
 	}
-	return len(draws)
+	return draws.len()
 }
 
 // transmissive reports whether any draw needs the opaque scene copy.
-func transmissive(draws []meshDraw) bool {
-	for _, d := range draws {
-		if d.mat.Transmission > 0 {
+func transmissive(draws drawList) bool {
+	for i := range draws.len() {
+		if draws.at(i).mat.Transmission > 0 {
 			return true
 		}
 	}
@@ -838,27 +874,30 @@ func orOne(metallic float32, hasTexture bool) float32 {
 // stream. In the shadow pass (cascade set) the depth-only pipelines are
 // used; otherwise each draw's shader picks its lit pipeline. Skinned
 // draws are never merged, since each has its own joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws []meshDraw, first uint32, cascade *int32) error {
-	if len(draws) == 0 {
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32) error {
+	n := draws.len()
+	if n == 0 {
 		return nil // a sky-only frame has no instance buffer to bind
 	}
-	var offset vk.VkDeviceSize
-	vk.VkCmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &offset)
+	rec := &g.rec
+	rec.offset = 0
+	vk.CmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &rec.offset)
 	var bound *render.Pipeline
 	boundUniform := int32(-2)
-	for i := 0; i < len(draws); {
-		d := draws[i]
+	for i := 0; i < n; {
+		d := draws.at(i)
 		run := 1
 		if !d.skinned {
-			for i+run < len(draws) {
-				n := draws[i+run]
-				if n.skinned || n.mesh != d.mesh || n.set != d.set || n.shader != d.shader || n.uniform != d.uniform || meshKey(n.mat, false) != meshKey(d.mat, false) {
+			runKey := meshKey(&d.mat, false)
+			for i+run < n {
+				e := draws.at(i + run)
+				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false) != runKey {
 					break
 				}
 				run++
 			}
 		}
-		key := meshKey(d.mat, d.skinned)
+		key := meshKey(&d.mat, d.skinned)
 		if cascade != nil {
 			key = pipeKey{shadow: true, skinned: d.skinned}
 		}
@@ -869,27 +908,28 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		if p != bound {
 			bound = p
 			boundUniform = -2
-			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
-			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+			vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
+			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
 			if cascade != nil {
-				vk.VkCmdPushConstants(cb, p.Layout, meshStages, 0, 4, unsafe.Pointer(cascade))
+				rec.cascade = *cascade
+				vk.CmdPushConstants(cb, p.Layout, meshStages, 0, 4, unsafe.Pointer(&rec.cascade))
 			} else {
-				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 2, 1, &g.meshes.shadowSet, 0, nil)
+				vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 2, 1, &g.meshes.shadowSet, 0, nil)
 			}
 			if d.skinned {
-				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 3, 1, &q.jointBuf.Sets[fr.Slot], 0, nil)
+				vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 3, 1, &q.jointBuf.Sets[fr.Slot], 0, nil)
 			}
 		}
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &d.set, 0, nil)
+		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &d.set, 0, nil)
 		if d.uniform >= 0 && d.uniform != boundUniform {
 			// Shader uniforms serve the vertex hook in the shadow pass too.
 			boundUniform = d.uniform
-			dyn := uint32(d.uniform)
-			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 4, 1, &g.uniforms.Sets[fr.Slot], 1, &dyn)
+			rec.dyn = uint32(d.uniform)
+			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 4, 1, &g.uniforms.Sets[fr.Slot], 1, &rec.dyn)
 		}
-		vk.VkCmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &offset)
-		vk.VkCmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
-		vk.VkCmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, first+uint32(i))
+		vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
+		vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+		vk.CmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, first+uint32(i))
 		g.stats.Draws3D++
 		if cascade == nil {
 			g.stats.Instances += run
@@ -912,7 +952,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err != nil {
 		return err
 	}
-	seen, seenBlended := opaque[:q.visOpaque], blended[:q.visBlended]
+	seen, seenBlended := opaque.slice(0, q.visOpaque), blended.slice(0, q.visBlended)
 	// Every shadow map is a region of one atlas: the cascades, then the
 	// spot maps, each drawn with its own viewport. The vertex program
 	// picks the projection by index, spot lights past the cascades.
@@ -944,16 +984,18 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		// depth. An image environment is looked up; the procedural sky is
 		// evaluated from the frame block.
 		render.SetViewport(cb, t.extent)
-		push := push2D{proj: q.camera.ViewProj(aspect).Inverse()}
-		pipe, set := mp.skyParamPipe, q.uniforms.Sets[fr.Slot]
+		rec := &g.rec
+		rec.push = push2D{proj: q.camera.ViewProj(aspect).Inverse()}
+		pipe := mp.skyParamPipe
+		rec.set = q.uniforms.Sets[fr.Slot]
 		if env := q.light.Environment; env != nil && env.cube != nil {
-			pipe, set = mp.skyPipe, env.set
-			push.frame = lin.V4(env.scale, 0, 0, 0)
+			pipe, rec.set = mp.skyPipe, env.set
+			rec.push.frame = lin.V4(env.scale, 0, 0, 0)
 		}
-		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &set, 0, nil)
-		vk.VkCmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&push))
-		vk.VkCmdDraw(cb, 3, 1, 0, 0)
+		vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
+		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
+		vk.CmdDraw(cb, 3, 1, 0, 0)
 	}
 	if err := g.drawRuns(cb, fr, q, seen, 0, nil); err != nil {
 		return err
@@ -966,7 +1008,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
-	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(len(opaque)), nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {
@@ -982,43 +1024,45 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 // drawSolid draws the outline shells and x-ray tints of draws that ask
 // for them, after the opaque pass has marked the stencil. Skinned meshes
 // are skipped: the solid vertex program does not skin.
-func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws []meshDraw, first uint32, extent vk.VkExtent2D) {
-	if len(draws) == 0 {
+func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, extent vk.VkExtent2D) {
+	if draws.len() == 0 {
 		return
 	}
 	mp := &g.meshes
-	var offset vk.VkDeviceSize
+	rec := &g.rec
+	rec.offset = 0
 	for _, pass := range []struct {
 		pipe    *render.Pipeline
 		outline bool
 	}{{mp.outlinePipe, true}, {mp.xrayPipe, false}} {
 		bound := false
-		for i, d := range draws {
+		for i := range draws.len() {
+			d := draws.at(i)
 			if d.skinned || (pass.outline && d.mat.Outline <= 0) || (!pass.outline && d.mat.XRay == (Color{})) {
 				continue
 			}
 			if !bound {
 				bound = true
-				vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Handle)
-				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 0, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
-				vk.VkCmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &offset)
+				vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Handle)
+				vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 0, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+				vk.CmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &rec.offset)
 			}
-			push := solidPush{params: lin.V4(0, float32(extent.Width), float32(extent.Height), 0)}
+			rec.solid = solidPush{params: lin.V4(0, float32(extent.Width), float32(extent.Height), 0)}
 			if pass.outline {
 				c := d.mat.OutlineColor
 				if c == (Color{}) {
 					c = Color{0, 0, 0, 1}
 				}
-				push.color = lin.V4(c.R, c.G, c.B, c.A)
-				push.params.X = d.mat.Outline
+				rec.solid.color = lin.V4(c.R, c.G, c.B, c.A)
+				rec.solid.params.X = d.mat.Outline
 			} else {
 				c := d.mat.XRay.premultiplied()
-				push.color = lin.V4(c[0], c[1], c[2], c[3])
+				rec.solid.color = lin.V4(c[0], c[1], c[2], c[3])
 			}
-			vk.VkCmdPushConstants(cb, pass.pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(push)), unsafe.Pointer(&push))
-			vk.VkCmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &offset)
-			vk.VkCmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
-			vk.VkCmdDrawIndexed(cb, d.mesh.IndexCount, 1, 0, 0, first+uint32(i))
+			vk.CmdPushConstants(cb, pass.pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.solid)), unsafe.Pointer(&rec.solid))
+			vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
+			vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+			vk.CmdDrawIndexed(cb, d.mesh.IndexCount, 1, 0, 0, first+uint32(i))
 		}
 	}
 }
@@ -1029,22 +1073,23 @@ func (g *Graphics) drawDecals(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQu
 	mp := &g.meshes
 	pass := render.PassDesc{Target: t.hdr, LoadColor: true, NoDepth: true}
 	render.BeginTargetPass(cb, pass)
-	vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Handle)
-	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 0, 1, &t.depthSet, 0, nil)
-	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
-	var offset vk.VkDeviceSize
-	vk.VkCmdBindVertexBuffers(cb, 0, 1, &mp.decalMesh.vbuf.Handle, &offset)
-	vk.VkCmdBindIndexBuffer(cb, mp.decalMesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Handle)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 0, 1, &t.depthSet, 0, nil)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+	rec := &g.rec
+	rec.offset = 0
+	vk.CmdBindVertexBuffers(cb, 0, 1, &mp.decalMesh.vbuf.Handle, &rec.offset)
+	vk.CmdBindIndexBuffer(cb, mp.decalMesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
 	for _, d := range q.decals {
 		inv := d.box.Inverse()
-		push := decalPush{box: d.box, tint: lin.V4(d.tint.R*d.tint.A, d.tint.G*d.tint.A, d.tint.B*d.tint.A, d.tint.A)}
+		rec.decal = decalPush{box: d.box, tint: lin.V4(d.tint.R*d.tint.A, d.tint.G*d.tint.A, d.tint.B*d.tint.A, d.tint.A)}
 		for r := range 3 {
-			push.invBox[r] = lin.V4(inv.At(r, 0), inv.At(r, 1), inv.At(r, 2), inv.At(r, 3))
+			rec.decal.invBox[r] = lin.V4(inv.At(r, 0), inv.At(r, 1), inv.At(r, 2), inv.At(r, 3))
 		}
-		vk.VkCmdPushConstants(cb, mp.decalPipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(push)), unsafe.Pointer(&push))
-		set := d.tex.set
-		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 2, 1, &set, 0, nil)
-		vk.VkCmdDrawIndexed(cb, mp.decalMesh.IndexCount, 1, 0, 0, 0)
+		vk.CmdPushConstants(cb, mp.decalPipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.decal)), unsafe.Pointer(&rec.decal))
+		rec.set = d.tex.set
+		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 2, 1, &rec.set, 0, nil)
+		vk.CmdDrawIndexed(cb, mp.decalMesh.IndexCount, 1, 0, 0, 0)
 	}
 	render.EndTargetPassDesc(cb, pass)
 }

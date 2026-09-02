@@ -18,6 +18,9 @@ report the changes since the last update; `KeyRepeated` reports the
 operating system's auto-repeat, for menus that scroll while a key is
 held. `KeyHeld` is how long a key has been down, for a charged shot, and
 `KeysDown` lists every held key, for combos and rebinding screens.
+`KeysDown` allocates the slice it returns, so it belongs in a settings
+screen or a check made on demand; to scan every frame, keep a slice and
+pass it to `AppendKeysDown`.
 `Chars` is the text typed this update with the keyboard layout and
 modifiers applied, which is what a text field reads; `Composition` is
 the input method's text in progress.
@@ -38,7 +41,8 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	if t := in.KeyHeld(input.KeyF); t > 0 {
 		g.charge = min(t, 2) // seconds the key has been down
 	}
-	for _, k := range in.KeysDown() { // combos and rebinding screens
+	g.held = in.AppendKeysDown(g.held[:0]) // combos, without allocating
+	for _, k := range g.held {
 		g.combo = append(g.combo, k.String())
 	}
 	g.typed = append(g.typed, in.Chars()...)
@@ -132,6 +136,43 @@ vx := acts.Value(ctx.Input, "move_x") // -1 to 1 from keys or the stick
 the sources and clamps the result, applying a dead zone to sticks. An
 axis source reads one side of a stick, so bind its `Neg` for the other
 side. `Pad` chooses which controller the pad sources read.
+
+### Action handles
+
+The methods above look the name up on every call. A game asks the same
+few actions several times per frame, so resolve each one once with
+`Action` and keep the handle:
+
+```go
+type game struct {
+	acts        *input.Actions
+	jump, moveX input.Action
+}
+
+func (g *game) Init(ctx *bunyip.Context) error {
+	g.acts = input.NewActions()
+	g.acts.Bind("jump", input.KeySource(input.KeySpace), input.PadButton(input.ButtonA))
+	g.acts.Bind("move_x",
+		input.KeySource(input.KeyD), input.KeySource(input.KeyA).Neg(),
+		input.PadAxis(input.AxisLeftX), input.PadAxis(input.AxisLeftX).Neg())
+	g.jump = g.acts.Action("jump")
+	g.moveX = g.acts.Action("move_x")
+	return nil
+}
+
+func (g *game) Update(ctx *bunyip.Context) error {
+	if g.jump.Pressed(ctx.Input) { ... }
+	vx := g.moveX.Value(ctx.Input)
+	return nil
+}
+```
+
+`Action` is a small value with the same `Value`, `Down`, `Pressed`,
+`Released` and `Bindings` methods, minus the name argument. A handle
+names the action rather than the sources behind it, so it stays valid
+across `Bind`, `Rebind`, `Unbind` and loading a settings file, and the
+name need not be bound when the handle is taken. The zero `Action` is
+bound to nothing and reads as off.
 
 A settings screen calls `Listen` each update while it waits for the
 player. `Listen` returns the first key, button or stick flick, and

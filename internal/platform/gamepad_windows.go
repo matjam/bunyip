@@ -2,6 +2,7 @@ package platform
 
 import (
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/matjam/bunyip/input"
@@ -58,17 +59,41 @@ var xiButtons = [...]struct {
 	{xiDpadUp, input.ButtonDpadUp}, {xiDpadDown, input.ButtonDpadDown}, {xiDpadLeft, input.ButtonDpadLeft}, {xiDpadRight, input.ButtonDpadRight},
 }
 
-// Gamepads reads every XInput controller.
+// xiStates is the array Gamepads fills and returns, reused every poll.
+var xiStates [input.MaxGamepads]GamepadState
+
+// xiRetry is when each empty slot may be polled again. XInputGetState on
+// a slot with no controller is slow, so an empty one is only asked once
+// a second; plugging a controller in is noticed within that second.
+var xiRetry [input.MaxGamepads]time.Time
+
+// xiRetryInterval is how long an empty slot waits before being polled again.
+const xiRetryInterval = time.Second
+
+// xiAddr is XInputGetState resolved once, so each poll is a direct call
+// rather than a LazyProc.Call, which allocates its variadic arguments.
+var xiAddr uintptr
+
+// Gamepads reads every XInput controller. The slice it returns is reused
+// by the next call, so read it before polling again.
 func (a *App) Gamepads() []GamepadState {
-	if procXInputState.Find() != nil {
-		return nil
+	if xiAddr == 0 {
+		if procXInputState.Find() != nil {
+			return nil
+		}
+		xiAddr = procXInputState.Addr()
 	}
-	out := make([]GamepadState, 0, input.MaxGamepads)
+	now := time.Now()
 	for i := range input.MaxGamepads {
+		if now.Before(xiRetry[i]) {
+			xiStates[i] = GamepadState{}
+			continue
+		}
 		var st xinputState
-		r, _, _ := procXInputState.Call(uintptr(i), uintptr(unsafe.Pointer(&st)))
+		r, _, _ := syscall.SyscallN(xiAddr, uintptr(i), uintptr(unsafe.Pointer(&st)))
 		if r != 0 {
-			out = append(out, GamepadState{})
+			xiRetry[i] = now.Add(xiRetryInterval)
+			xiStates[i] = GamepadState{}
 			continue
 		}
 		g := GamepadState{Connected: true, Name: "XInput controller"}
@@ -81,9 +106,9 @@ func (a *App) Gamepads() []GamepadState {
 		g.Axes[input.AxisRightY] = stick(st.Gamepad.ThumbRY)
 		g.Axes[input.AxisLeftTrigger] = float32(st.Gamepad.LeftTrigger) / 255
 		g.Axes[input.AxisRightTrigger] = float32(st.Gamepad.RightTrigger) / 255
-		out = append(out, g)
+		xiStates[i] = g
 	}
-	return out
+	return xiStates[:]
 }
 
 func stick(v int16) float32 {

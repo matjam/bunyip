@@ -117,7 +117,7 @@ func triangleConvex(a, b, c lin.Vec3) convex {
 
 // penetration finds how far two grown convex shapes overlap: the normal
 // from a to b, the depth, and a point midway between the deepest points.
-func penetration(a, b *convex) (n lin.Vec3, depth float32, point lin.Vec3, ok bool) {
+func penetration(sc *scratch3, a, b *convex) (n lin.Vec3, depth float32, point lin.Vec3, ok bool) {
 	r := gjk(a, b)
 	total := a.margin + b.margin
 	if !r.overlap {
@@ -136,7 +136,7 @@ func penetration(a, b *convex) (n lin.Vec3, depth float32, point lin.Vec3, ok bo
 		point = r.pa.Add(n.Mul(a.margin)).Add(r.pb.Sub(n.Mul(b.margin))).Mul(0.5)
 		return n, depth, point, true
 	}
-	en, ed, pa, pb, eok := epa(a, b, r)
+	en, ed, pa, pb, eok := epa(sc, a, b, r)
 	if !eok {
 		n = b.center.Sub(a.center).Norm()
 		if n == (lin.Vec3{}) {
@@ -154,54 +154,57 @@ func penetration(a, b *convex) (n lin.Vec3, depth float32, point lin.Vec3, ok bo
 	return n, depth, point, true
 }
 
-// convexContacts generates contacts between two grown convex shapes.
-// With a forced normal (a mesh triangle's face) the depth is measured
-// along it from the plane through planePoint instead.
-func convexContacts(a, b *convex, forced *lin.Vec3, planePoint lin.Vec3) []contact3 {
-	n, depth, point, ok := penetration(a, b)
+// convexContacts appends the contacts between two grown convex shapes to
+// out. With a forced normal (a mesh triangle's face) the depth is
+// measured along it from the plane through planePoint instead.
+func convexContacts(sc *scratch3, out []contact3, a, b *convex, forced *lin.Vec3, planePoint lin.Vec3) []contact3 {
+	n, depth, point, ok := penetration(sc, a, b)
 	if !ok {
-		return nil
+		return out
 	}
 	if forced != nil {
 		n = *forced
 		deepest := a.support(n)
 		depth = n.Dot(deepest.Sub(planePoint))
 		if depth <= 0 {
-			return nil
+			return out
 		}
 		point = deepest.Sub(n.Mul(depth / 2))
 	}
-	return manifold(a, b, n, depth, point)
+	return manifold(sc, out, a, b, n, depth, point)
 }
 
 // manifold turns one penetration into a set of contacts: the incident
 // face of one shape clipped to the reference face of the other when both
 // have flat faces there, the closest points of two edges, or the single
 // deepest point otherwise.
-func manifold(a, b *convex, n lin.Vec3, depth float32, point lin.Vec3) []contact3 {
-	single := []contact3{{point: point, normal: n, depth: depth}}
-	fa, fb := a.face(n), b.face(n.Neg())
+func manifold(sc *scratch3, out []contact3, a, b *convex, n lin.Vec3, depth float32, point lin.Vec3) []contact3 {
+	single := contact3{point: point, normal: n, depth: depth}
+	fa := a.face(sc, sc.faceA[:0], n)
+	fb := b.face(sc, sc.faceB[:0], n.Neg())
+	sc.faceA, sc.faceB = fa, fb
 	if len(fa) < 2 || len(fb) < 2 {
-		return single
+		return append(out, single)
 	}
 	if len(fa) == 2 && len(fb) == 2 {
 		da, db := fa[1].Sub(fa[0]), fb[1].Sub(fb[0])
 		la, lb := da.Len(), db.Len()
 		if la < 1e-6 || lb < 1e-6 {
-			return single
+			return append(out, single)
 		}
 		ca, cb := closestOnSegments(fa[0].Add(fa[1]).Mul(0.5), da.Mul(1/la), la/2, fb[0].Add(fb[1]).Mul(0.5), db.Mul(1/lb), lb/2)
 		d := ca.Sub(cb).Dot(n) + a.margin + b.margin
 		if d < 0 {
-			return single
+			return append(out, single)
 		}
-		return []contact3{{point: ca.Add(cb).Mul(0.5), normal: n, depth: d}}
+		return append(out, contact3{point: ca.Add(cb).Mul(0.5), normal: n, depth: d})
 	}
 	ref, inc, refN := fa, fb, n
 	if len(fa) < 3 {
 		ref, inc, refN = fb, fa, n.Neg()
 	}
-	poly := append([]lin.Vec3(nil), inc...)
+	poly := append(sc.polyA[:0], inc...)
+	buf := sc.polyB[:0]
 	for i := range ref {
 		e := ref[(i+1)%len(ref)].Sub(ref[i])
 		side := e.Cross(refN)
@@ -209,10 +212,12 @@ func manifold(a, b *convex, n lin.Vec3, depth float32, point lin.Vec3) []contact
 			continue
 		}
 		side = side.Norm()
-		poly = clipPolygon(poly, side, side.Dot(ref[i]))
+		buf = clipPolygon(buf[:0], poly, side, side.Dot(ref[i]))
+		poly, buf = buf, poly
 	}
+	sc.polyA, sc.polyB = poly, buf
 	planeD := refN.Dot(ref[0])
-	var out []contact3
+	start := len(out)
 	deepest := contact3{depth: float32(math.Inf(-1))}
 	for _, p := range poly {
 		d := planeD - refN.Dot(p) + a.margin + b.margin
@@ -220,27 +225,29 @@ func manifold(a, b *convex, n lin.Vec3, depth float32, point lin.Vec3) []contact
 		if d > deepest.depth {
 			deepest = c
 		}
-		if d >= 0 && len(out) < 8 {
+		if d >= 0 && len(out)-start < 8 {
 			out = append(out, c)
 		}
 	}
-	if len(out) == 0 {
+	if len(out) == start {
 		if deepest.depth == float32(math.Inf(-1)) {
-			return single
+			return append(out, single)
 		}
-		return []contact3{deepest}
+		return append(out, deepest)
 	}
 	return out
 }
 
-// pairContacts collides two convex shapes, adding each capsule's end
-// spheres so a capsule lying on a face rests on two points.
-func pairContacts(a, b *convex, forced *lin.Vec3, planePoint lin.Vec3) []contact3 {
-	out := convexContacts(a, b, forced, planePoint)
+// pairContacts appends the contacts between two convex shapes to out,
+// adding each capsule's end spheres so a capsule lying on a face rests
+// on two points.
+func pairContacts(sc *scratch3, out []contact3, a, b *convex, forced *lin.Vec3, planePoint lin.Vec3) []contact3 {
+	start := len(out)
+	out = convexContacts(sc, out, a, b, forced, planePoint)
 	addUnique := func(cs []contact3) {
 		for _, c := range cs {
 			dup := false
-			for _, o := range out {
+			for _, o := range out[start:] {
 				if o.point.Sub(c.point).Len() < 1e-3*(a.size+b.size) {
 					dup = true
 					break
@@ -253,26 +260,29 @@ func pairContacts(a, b *convex, forced *lin.Vec3, planePoint lin.Vec3) []contact
 	}
 	for _, e := range a.ends {
 		end := pointConvex(e, a.margin)
-		addUnique(convexContacts(&end, b, forced, planePoint))
+		sc.ends = convexContacts(sc, sc.ends[:0], &end, b, forced, planePoint)
+		addUnique(sc.ends)
 	}
 	for _, e := range b.ends {
 		end := pointConvex(e, b.margin)
-		addUnique(convexContacts(a, &end, forced, planePoint))
+		sc.ends = convexContacts(sc, sc.ends[:0], a, &end, forced, planePoint)
+		addUnique(sc.ends)
 	}
 	return out
 }
 
-// convexPair collides two placed shapes through their support functions.
-func convexPair(sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) []contact3 {
+// convexPair appends the contacts between two placed shapes found
+// through their support functions to out.
+func convexPair(sc *scratch3, out []contact3, sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) []contact3 {
 	a, ok := placeConvex(sa, pa, ra)
 	if !ok {
-		return nil
+		return out
 	}
 	b, ok := placeConvex(sb, pb, rb)
 	if !ok {
-		return nil
+		return out
 	}
-	return pairContacts(&a, &b, nil, lin.Vec3{})
+	return pairContacts(sc, out, &a, &b, nil, lin.Vec3{})
 }
 
 // rayConvex casts a ray at a placed convex shape.

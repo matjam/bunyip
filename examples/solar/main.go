@@ -149,9 +149,9 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		ctx.Screenshot(g.shot)
 		g.shotDone = true
 	}
-	done := ctx.Profile("systems")
+	systems := ctx.Profile("systems")
 	g.world.Update(ctx.Delta)
-	done()
+	systems.End()
 	g.yaw += float32(ctx.Delta) * 0.05
 	return nil
 }
@@ -180,19 +180,19 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		})
 	}
 	// The minimap: the same scene from straight above into a render texture.
-	done := ctx.Profile("minimap")
+	minimap := ctx.Profile("minimap")
 	gr.DrawTo(g.minimap, gfx.RGB(5, 5, 12), func() {
 		gr.SetCamera(gfx.Camera{Position: lin.V3(0, 40, 0.01), Target: lin.V3(0, 0, 0), FovY: lin.Radians(50)})
 		gr.SetLight(light)
 		drawBodies(false)
 	})
-	done()
+	minimap.End()
 
-	done = ctx.Profile("scene")
+	scene := ctx.Profile("scene")
 	gr.SetCamera(g.camera())
 	gr.SetLight(light)
 	drawBodies(true)
-	done()
+	scene.End()
 
 	// Picking happens here because the ray needs the camera just set.
 	if ctx.Input.MousePressed(input.MouseLeft) {

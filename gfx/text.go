@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 	"unicode"
@@ -80,8 +81,6 @@ type lineKey struct {
 	hyph    *Hyphenator
 }
 
-const textCacheEntries = 2048
-
 // direction resolves DirectionAuto by the first strong character.
 func direction(text string, d Direction) di.Direction {
 	switch d {
@@ -106,11 +105,8 @@ func direction(text string, d Direction) di.Direction {
 // shape runs the segmenter and HarfBuzz over one paragraph, cached.
 func (f *Font) shape(text string, opts TextOptions) []shaping.Output {
 	key := runKey{text, opts.Direction, opts.Language}
-	if runs, ok := f.runs[key]; ok {
+	if runs, ok := f.runs.get(key); ok {
 		return runs
-	}
-	if len(f.runs) >= textCacheEntries {
-		clear(f.runs)
 	}
 	runes := []rune(text)
 	in := shaping.Input{
@@ -127,7 +123,7 @@ func (f *Font) shape(text string, opts TextOptions) []shaping.Output {
 	for _, run := range f.seg.Split(in, fontmap{f}) {
 		outs = append(outs, f.shaper.Shape(run))
 	}
-	f.runs[key] = outs
+	f.runs.put(key, outs)
 	return outs
 }
 
@@ -155,11 +151,8 @@ func (f *Font) wrapText(text string, opts TextOptions, width float32) ([]shaping
 		// leave room for one on every line.
 		px -= int(f.hyphenAdvance() * f.scale)
 	}
-	if lines, ok := f.lines[key]; ok {
+	if lines, ok := f.lines.get(key); ok {
 		return lines, shaped
-	}
-	if len(f.lines) >= textCacheEntries {
-		clear(f.lines)
 	}
 	outs := f.shape(shaped, opts)
 	var lines []shaping.Line
@@ -181,7 +174,7 @@ func (f *Font) wrapText(text string, opts TextOptions, width float32) ([]shaping
 	for _, l := range lines {
 		track(l, spacing)
 	}
-	f.lines[key] = lines
+	f.lines.put(key, lines)
 	return lines, shaped
 }
 
@@ -266,21 +259,10 @@ func (f *Font) Shape(text string, opts TextOptions) []Glyph {
 	return out
 }
 
-// byteIndex maps a rune index in text to a byte index.
-func byteIndex(text string, runeIndex int) int {
-	i := 0
-	for b := range text {
-		if i == runeIndex {
-			return b
-		}
-		i++
-	}
-	return len(text)
-}
-
 // endsSoftHyphen reports whether a line's last glyph sits on a soft
-// hyphen, so a hyphen will be drawn after it.
-func (f *Font) endsSoftHyphen(text string, line shaping.Line) bool {
+// hyphen, so a hyphen will be drawn after it. index must already be
+// pointed at the line's text.
+func endsSoftHyphen(index *runeIndex, line shaping.Line) bool {
 	if len(line) == 0 {
 		return false
 	}
@@ -288,7 +270,8 @@ func (f *Font) endsSoftHyphen(text string, line shaping.Line) bool {
 	if len(run.Glyphs) == 0 {
 		return false
 	}
-	i := byteIndex(text, run.Glyphs[len(run.Glyphs)-1].TextIndex())
+	text := index.text
+	i := index.at(run.Glyphs[len(run.Glyphs)-1].TextIndex())
 	return i < len(text) && strings.HasPrefix(text[i:], "­")
 }
 
@@ -302,13 +285,13 @@ func (f *Font) hyphenAdvance() float32 {
 	return ff.face.HorizontalAdvance(gid) * f.pxPerEm / ff.upem / f.scale
 }
 
-// spaceCount counts the spaces in a line, for justification.
-func spaceCount(text string, line shaping.Line) int {
-	rs := []rune(text)
+// spaceCount counts the spaces in a line, for justification. index must
+// already be pointed at the line's text.
+func spaceCount(index *runeIndex, line shaping.Line) int {
 	n := 0
 	for _, run := range line {
 		for _, sg := range run.Glyphs {
-			if i := sg.TextIndex(); i < len(rs) && rs[i] == ' ' {
+			if index.isSpace(sg.TextIndex()) {
 				n++
 			}
 		}
@@ -322,29 +305,25 @@ func spaceCount(text string, line shaping.Line) int {
 // hyphen gets a hyphen drawn after it.
 func (f *Font) appendLine(out []Glyph, text string, line shaping.Line, origin lin.Vec2, spaceExtra float32) []Glyph {
 	pen := origin
+	start := len(out) // this line's first glyph, since out may hold earlier lines
 	vertical := len(line) > 0 && line[0].Direction.IsVertical()
-	var runes []rune
-	if spaceExtra != 0 {
-		runes = []rune(text)
-	}
+	index := &f.scratch.index
+	index.reset(text)
 	// Runs come in logical order; draw them in visual order.
-	ordered := make([]*shaping.Output, len(line))
+	ordered := f.scratch.ordered[:0]
 	for i := range line {
-		ordered[i] = &line[i]
+		ordered = append(ordered, &line[i])
 	}
-	for i := range ordered {
-		for j := i + 1; j < len(ordered); j++ {
-			if ordered[j].VisualIndex < ordered[i].VisualIndex {
-				ordered[i], ordered[j] = ordered[j], ordered[i]
-			}
-		}
-	}
+	f.scratch.ordered = ordered
+	slices.SortStableFunc(ordered, func(a, b *shaping.Output) int {
+		return cmp.Compare(a.VisualIndex, b.VisualIndex)
+	})
 	for _, run := range ordered {
 		face := f.faceIndex(run.Face)
 		ff := f.faces[face]
 		for _, sg := range run.Glyphs {
 			gl := f.glyph(face, sg.GlyphID)
-			g := Glyph{Index: byteIndex(text, sg.TextIndex()), Empty: gl.empty}
+			g := Glyph{Index: index.at(sg.TextIndex()), Empty: gl.empty}
 			if vertical {
 				// Few fonts carry vertical metrics, so vertical text stacks
 				// em boxes on the line height, each glyph centred on the
@@ -369,15 +348,13 @@ func (f *Font) appendLine(out []Glyph, text string, line shaping.Line, origin li
 			}
 			out = append(out, g)
 			pen.X += fixedToFloat(sg.Advance) / f.scale
-			if spaceExtra != 0 {
-				if i := sg.TextIndex(); i < len(runes) && runes[i] == ' ' {
-					pen.X += spaceExtra
-				}
+			if spaceExtra != 0 && index.isSpace(sg.TextIndex()) {
+				pen.X += spaceExtra
 			}
 		}
 	}
 	// A line that wrapped at a soft hyphen shows the hyphen.
-	if !vertical && len(out) > 0 && len(ordered) > 0 {
+	if !vertical && len(out) > start && len(ordered) > 0 {
 		if last := out[len(out)-1]; last.Index < len(text) && strings.HasPrefix(text[last.Index:], "­") {
 			face := f.faceIndex(ordered[len(ordered)-1].Face)
 			ff := f.faces[face]
@@ -420,15 +397,21 @@ func (g *Graphics) DrawGlyphs(f *Font, glyphs []Glyph, x, y, scale float32, c Co
 }
 
 // Layout splits text into the lines DrawTextBlock would draw, breaking
-// by the Unicode line-breaking rules at the options' width.
+// by the Unicode line-breaking rules at the options' width. A line
+// broken by a Hyphenator is given without the soft hyphens the
+// hyphenator inserted and without the hyphen drawn at the break.
 func (f *Font) Layout(text string, opts TextOptions) []string {
 	var out []string
-	for _, para := range splitParagraphs(text) {
-		lines := f.wrap(para, opts, opts.Width)
+	for para := range strings.SplitSeq(text, "\n") {
+		// The lines index the shaped text, which carries the soft hyphens
+		// hyphenation inserted, so they are cut from that and the soft
+		// hyphens taken back out.
+		lines, shaped := f.wrapText(para, opts, opts.Width)
 		if len(lines) == 0 {
 			out = append(out, "")
 			continue
 		}
+		var runes []rune
 		for _, line := range lines {
 			lo, hi := -1, 0
 			for _, run := range line {
@@ -441,39 +424,39 @@ func (f *Font) Layout(text string, opts TextOptions) []string {
 				out = append(out, "")
 				continue
 			}
-			runes := []rune(para)
-			s := string(runes[lo:hi])
+			if runes == nil {
+				runes = []rune(shaped)
+			}
+			s := string(runes[lo:min(hi, len(runes))])
 			for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
 				s = s[:len(s)-1]
 			}
-			out = append(out, s)
+			out = append(out, strings.ReplaceAll(s, "­", ""))
 		}
 	}
 	return out
 }
 
-func splitParagraphs(text string) []string {
-	var out []string
-	start := 0
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			out = append(out, text[start:i])
-			start = i + 1
-		}
-	}
-	return append(out, text[start:])
-}
-
 // Measure returns the size text takes when drawn with the options: one
 // line with the zero options, or wrapped, spaced and sized as they say.
+// The result is cached, so measuring the same static label every frame
+// costs a map lookup.
 func (f *Font) Measure(text string, opts TextOptions) (w, h float32) {
+	key := measureKey{
+		text: text, lang: opts.Language, hyph: opts.Hyphenate,
+		width: opts.Width, size: opts.Size, lineSpacing: opts.LineSpacing,
+		letterSpacing: opts.LetterSpacing, dir: opts.Direction,
+	}
+	if size, ok := f.measures.get(key); ok {
+		return size.X, size.Y
+	}
 	scale := f.sizeScale(opts.Size)
 	spacing := opts.LineSpacing
 	if spacing == 0 {
 		spacing = 1
 	}
 	n := 0
-	for _, para := range splitParagraphs(text) {
+	for para := range strings.SplitSeq(text, "\n") {
 		lines := f.wrap(para, opts, opts.Width)
 		for _, line := range lines {
 			w = max(w, f.advance(line)*scale)
@@ -481,9 +464,12 @@ func (f *Font) Measure(text string, opts TextOptions) (w, h float32) {
 		n += max(len(lines), 1)
 	}
 	if opts.Direction == DirectionTTB {
-		return float32(n) * f.LineHeight * scale * spacing, w
+		w, h = float32(n)*f.LineHeight*scale*spacing, w
+	} else {
+		h = float32(n) * f.LineHeight * scale * spacing
 	}
-	return w, float32(n) * f.LineHeight * scale * spacing
+	f.measures.put(key, lin.V2(w, h))
+	return w, h
 }
 
 // DrawTextBlock draws wrapped, aligned text with its top-left at (x, y),
@@ -503,6 +489,38 @@ func (g *Graphics) DrawTextBlock(f *Font, text string, x, y float32, opts TextOp
 
 // drawLines shapes, wraps, aligns and draws text.
 func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOptions, c Color) {
+	g.DrawGlyphs(f, f.blockGlyphs(text, opts), x, y, f.sizeScale(opts.Size), c)
+	if f.dirty {
+		// New glyphs were rasterised this frame; the atlas uploads for the
+		// next one. Losing one frame of a rare glyph beats stalling.
+		_ = f.flush()
+	}
+}
+
+// blockGlyphs returns a block's glyphs positioned relative to its origin
+// at the font's own size, cached by the text and the options that move a
+// glyph. Drawing the same string again is then a walk of the cached
+// glyphs; nothing is shaped, wrapped or aligned a second time. The
+// returned slice belongs to the font and must not be modified.
+func (f *Font) blockGlyphs(text string, opts TextOptions) []Glyph {
+	key := blockKey{
+		text: text, lang: opts.Language, hyph: opts.Hyphenate,
+		width: opts.Width, size: opts.Size, lineSpacing: opts.LineSpacing,
+		letterSpacing: opts.LetterSpacing, dir: opts.Direction,
+		align: opts.Align, baseline: opts.Baseline,
+	}
+	if glyphs, ok := f.blocks.get(key); ok {
+		return glyphs
+	}
+	glyphs := slices.Clone(f.layoutBlock(text, opts))
+	f.blocks.put(key, glyphs)
+	return glyphs
+}
+
+// layoutBlock shapes, wraps and aligns text into glyphs positioned
+// relative to the block's origin. The result is the font's scratch
+// storage, valid until the next layout.
+func (f *Font) layoutBlock(text string, opts TextOptions) []Glyph {
 	scale := f.sizeScale(opts.Size)
 	spacing := opts.LineSpacing
 	if spacing == 0 {
@@ -510,10 +528,9 @@ func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOption
 	}
 	step := f.LineHeight * scale * spacing
 	vertical := opts.Direction == DirectionTTB
-	var lines []shaping.Line
-	var paras []string // the shaped text behind each line
-	var last []bool    // whether a line ends its paragraph
-	for _, para := range splitParagraphs(text) {
+	s := &f.scratch
+	lines, paras, last := s.lines[:0], s.paras[:0], s.last[:0]
+	for para := range strings.SplitSeq(text, "\n") {
 		pl, shaped := f.wrapText(para, opts, opts.Width)
 		if len(pl) == 0 {
 			pl = []shaping.Line{nil}
@@ -524,13 +541,14 @@ func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOption
 		}
 		lines = append(lines, pl...)
 	}
+	s.lines, s.paras, s.last = lines, paras, last
 	width := opts.Width
 	if width <= 0 {
 		for _, line := range lines {
 			width = max(width, f.advance(line)*scale)
 		}
 	}
-	var glyphs []Glyph
+	glyphs := s.glyphs[:0]
 	for i, line := range lines {
 		lw := f.advance(line) * scale
 		offset, spaceExtra := float32(0), float32(0)
@@ -541,11 +559,12 @@ func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOption
 			offset = width - lw
 		case AlignJustify:
 			if !last[i] && !vertical && opts.Width > 0 {
+				s.index.reset(paras[i])
 				avail := width
-				if f.endsSoftHyphen(paras[i], line) {
+				if endsSoftHyphen(&s.index, line) {
 					avail -= f.hyphenAdvance() * scale // the hyphen drawn after the line
 				}
-				if n := spaceCount(paras[i], line); n > 0 {
+				if n := spaceCount(&s.index, line); n > 0 {
 					spaceExtra = (avail - lw) / float32(n) / scale
 				}
 			}
@@ -558,12 +577,8 @@ func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOption
 		} else {
 			origin = lin.V2(offset, float32(i)*step+f.Ascent*scale)
 		}
-		glyphs = f.appendLine(glyphs[:0], paras[i], line, origin.Mul(1/scale), spaceExtra)
-		g.DrawGlyphs(f, glyphs, x, y, scale, c)
+		glyphs = f.appendLine(glyphs, paras[i], line, origin.Mul(1/scale), spaceExtra)
 	}
-	if f.dirty {
-		// New glyphs were rasterised this frame; the atlas uploads for the
-		// next one. Losing one frame of a rare glyph beats stalling.
-		_ = f.flush()
-	}
+	s.glyphs = glyphs
+	return glyphs
 }

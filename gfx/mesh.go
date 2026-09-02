@@ -345,6 +345,7 @@ type meshDraw struct {
 	shader    *Shader // never nil once queued
 	uniform   int32   // arena offset of the shader's uniforms, -1 for none
 	depth     float32 // view-space distance for transparency sorting
+	blended   bool    // mat.blended(), resolved once by prepareDraws for the sort
 	culled    bool    // outside the camera's view; drawn only into shadows
 	skinned   bool
 	jointBase int // first joint matrix in the queue's joint list
@@ -365,5 +366,29 @@ type meshInstance struct {
 
 const meshInstanceSize = 176
 
-// blended reports whether a material draws after the opaque scene.
-func (m Material) blended() bool { return m.Blend || m.Transmission > 0 }
+// blended reports whether a material draws after the opaque scene. The
+// receiver is a pointer because Material is large and this sits in the
+// draw sort's comparator.
+func (m *Material) blended() bool { return m.Blend || m.Transmission > 0 }
+
+// drawList is a queue's mesh draws in the order they are drawn, held as
+// a permutation of the queue's draws. Ordering moves four-byte indices
+// rather than whole meshDraw records, and a draw's position in the order
+// is also its index in the instance stream, which is built in the same
+// order.
+type drawList struct {
+	draws []meshDraw
+	order []int32
+}
+
+// len is how many draws the list holds.
+func (l drawList) len() int { return len(l.order) }
+
+// at returns the i'th draw in order. The result points into the queue,
+// so it stays valid only until the queue is reset.
+func (l drawList) at(i int) *meshDraw { return &l.draws[l.order[i]] }
+
+// slice narrows the list to the draws from lo up to hi in order.
+func (l drawList) slice(lo, hi int) drawList {
+	return drawList{draws: l.draws, order: l.order[lo:hi]}
+}

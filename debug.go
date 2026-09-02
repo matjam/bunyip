@@ -35,15 +35,34 @@ type Scope struct {
 	MS   float64
 }
 
-// Profile times a section of game code until the returned function is
-// called; the result shows in Stats.Scopes and the debug overlay:
+// ProfileScope is a section being timed, returned by Context.Profile and
+// closed with End. It is a small value that costs no allocation, so a
+// game may profile a section that runs many times a frame.
+type ProfileScope struct {
+	c     *Context
+	name  string
+	start time.Time
+}
+
+// Profile starts timing a section of game code, until End is called on
+// what it returns; the result shows in Stats.Scopes and the debug
+// overlay:
 //
-//	defer ctx.Profile("pathfinding")()
-func (c *Context) Profile(name string) func() {
-	start := time.Now()
-	return func() {
-		c.scopes = append(c.scopes, Scope{Name: name, MS: float64(time.Since(start).Microseconds()) / 1000})
+//	defer ctx.Profile("pathfinding").End()
+//
+// Timing runs whether or not the overlay is shown, so the figures are
+// there the moment F3 opens it.
+func (c *Context) Profile(name string) ProfileScope {
+	return ProfileScope{c: c, name: name, start: time.Now()}
+}
+
+// End closes the scope and records how long it took. Ending a scope
+// twice records it twice; ending the zero ProfileScope does nothing.
+func (p ProfileScope) End() {
+	if p.c == nil {
+		return
 	}
+	p.c.scopes = append(p.c.scopes, Scope{Name: p.name, MS: float64(time.Since(p.start).Microseconds()) / 1000})
 }
 
 // overlay draws frame timings in the corner when enabled.

@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-
 	"github.com/matjam/bunyip/gfx"
 )
 
@@ -101,9 +99,8 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 		knob = Rect{X: knob.X - 3, Y: knob.Y - 3, W: 18, H: 24}
 	}
 	c.box(sk.Knob, knob, c.Theme.Text, gfx.Color{})
-	caption := fmt.Sprintf("%s: %.2f", label, *value)
-	c.text(caption, full.X, full.Y, c.Theme.TextDim)
-	c.note("slider", label, fmt.Sprintf("%.2f", *value), false)
+	c.text(c.labelFloat(label, *value, 2), full.X, full.Y, c.Theme.TextDim)
+	c.note("slider", label, c.formatFloat(*value, 2), false)
 	return changed
 }
 
@@ -111,7 +108,7 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 func (c *Context) Progress(label string, t float32) {
 	r := c.next(c.Theme.RowHeight)
 	c.lastRect = r
-	c.note("progress", label, fmt.Sprintf("%.0f%%", t*100), false)
+	c.note("progress", label, c.formatPercent(t*100), false)
 	sk := c.skin()
 	c.box(sk.Track, r, c.Theme.Track, gfx.Color{})
 	c.box(sk.Fill, Rect{X: r.X, Y: r.Y, W: r.W * max(0, min(1, t)), H: r.H}, c.Theme.Accent, gfx.Color{})

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -34,13 +35,43 @@ type Peer struct {
 	reg      *Registry
 	events   chan Event
 	mu       sync.Mutex // guards the fields below
-	links    map[string]*link
+	links    map[linkKey]*link
 	timeout  time.Duration
 	dropRate float64
 	activity func()
+	txBuf    []byte     // the packet being written, reused between sends
 	emitMu   sync.Mutex // keeps the read and tick goroutines' events in order
+	evs      []Event    // the events one receive or tick produced, reused
 	closed   chan struct{}
 	once     sync.Once
+}
+
+// linkKey names a remote address without the string net.UDPAddr.String
+// would allocate for every packet. IPv4 addresses are held in their
+// v4-in-v6 form so that the two spellings of one address agree.
+type linkKey struct {
+	ip   [16]byte
+	port uint16
+	zone string
+}
+
+func keyOf(a *Addr) linkKey {
+	var k linkKey
+	if ip4 := a.IP.To4(); ip4 != nil {
+		k.ip[10], k.ip[11] = 0xff, 0xff
+		copy(k.ip[12:], ip4)
+	} else {
+		copy(k.ip[:], a.IP)
+	}
+	k.port = uint16(a.Port)
+	k.zone = a.Zone
+	return k
+}
+
+// keyOfPort is keyOf for the address form the read loop receives. As16
+// gives an IPv4 address its v4-in-v6 form, which is what keyOf stores.
+func keyOfPort(ap netip.AddrPort) linkKey {
+	return linkKey{ip: ap.Addr().As16(), port: ap.Port(), zone: ap.Addr().Zone()}
 }
 
 // Stats describes one UDP link.
@@ -278,7 +309,7 @@ func ListenUDP(addr string, reg *Registry) (*Peer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("network: %w", err)
 	}
-	p := &Peer{conn: conn, reg: reg, events: make(chan Event, 4096), links: map[string]*link{},
+	p := &Peer{conn: conn, reg: reg, events: make(chan Event, 4096), links: map[linkKey]*link{},
 		timeout: defaultTimeout, closed: make(chan struct{})}
 	go p.readLoop()
 	go p.tick()
@@ -299,7 +330,7 @@ func Resolve(addr string) (*Addr, error) {
 
 // link finds or creates the state for an address. Call with mu held.
 func (p *Peer) link(to *Addr, now time.Time) *link {
-	key := to.String()
+	key := keyOf(to)
 	l := p.links[key]
 	if l == nil {
 		l = newLink(to, now)
@@ -323,9 +354,10 @@ func (p *Peer) Connect(to *Addr) error {
 func (p *Peer) Disconnect(to *Addr) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if l := p.links[to.String()]; l != nil {
+	key := keyOf(to)
+	if l := p.links[key]; l != nil {
 		p.transmit(l, flagBye, 0, nil, time.Now())
-		delete(p.links, to.String())
+		delete(p.links, key)
 	}
 }
 
@@ -338,29 +370,49 @@ func (p *Peer) Send(to *Addr, msg any) error { return p.send(to, msg, false) }
 func (p *Peer) SendReliable(to *Addr, msg any) error { return p.send(to, msg, true) }
 
 func (p *Peer) send(to *Addr, msg any, reliable bool) error {
-	data, err := p.reg.encode(msg)
+	if reliable {
+		// A reliable message is kept until it is acknowledged, so it
+		// needs a buffer of its own.
+		data, err := p.reg.encode(msg)
+		if err != nil {
+			return err
+		}
+		if size := headerSize + 4 + len(data); size > MaxDatagram {
+			return fmt.Errorf("network: datagram of %d bytes exceeds MaxDatagram", size)
+		}
+		now := time.Now()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		l := p.link(to, now)
+		rid := l.nextRid
+		l.nextRid++
+		l.pending[rid] = &pendingMsg{data: data}
+		return p.transmit(l, flagNeedAck|flagReliable, rid, data, now)
+	}
+	// An unreliable packet goes out before send returns and nothing
+	// keeps its payload, so it encodes into a borrowed buffer that
+	// transmit copies out of.
+	bp := sendBufs.Get().(*[]byte)
+	defer sendBufs.Put(bp)
+	data, err := p.reg.appendEncoded((*bp)[:0], msg)
+	*bp = data
 	if err != nil {
 		return err
 	}
-	size := headerSize + len(data)
-	if reliable {
-		size += 4
-	}
-	if size > MaxDatagram {
+	if size := headerSize + len(data); size > MaxDatagram {
 		return fmt.Errorf("network: datagram of %d bytes exceeds MaxDatagram", size)
 	}
 	now := time.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	l := p.link(to, now)
-	if !reliable {
-		return p.transmit(l, flagNeedAck, 0, data, now)
-	}
-	rid := l.nextRid
-	l.nextRid++
-	l.pending[rid] = &pendingMsg{data: data}
-	return p.transmit(l, flagNeedAck|flagReliable, rid, data, now)
+	return p.transmit(p.link(to, now), flagNeedAck, 0, data, now)
 }
+
+// sendBufs lends payload buffers to unreliable sends.
+var sendBufs = sync.Pool{New: func() any {
+	b := make([]byte, 0, 256)
+	return &b
+}}
 
 // transmit writes one packet to a link. Call with mu held.
 func (p *Peer) transmit(l *link, flags uint8, rid uint32, payload []byte, now time.Time) error {
@@ -370,7 +422,13 @@ func (p *Peer) transmit(l *link, flags uint8, rid uint32, payload []byte, now ti
 	if flags&flagReliable != 0 {
 		n += 4
 	}
-	buf := make([]byte, n+len(payload))
+	// WriteToUDP hands the bytes to the kernel before it returns, so
+	// one buffer serves every packet this peer sends.
+	total := n + len(payload)
+	if cap(p.txBuf) < total {
+		p.txBuf = make([]byte, total)
+	}
+	buf := p.txBuf[:total]
 	buf[0] = flags
 	binary.BigEndian.PutUint32(buf[1:], l.session)
 	binary.BigEndian.PutUint32(buf[5:], seq)
@@ -404,7 +462,9 @@ func (p *Peer) transmit(l *link, flags uint8, rid uint32, payload []byte, now ti
 func (p *Peer) readLoop() {
 	buf := make([]byte, 65536)
 	for {
-		n, from, err := p.conn.ReadFromUDP(buf)
+		// ReadFromUDPAddrPort reports the sender as a value, where
+		// ReadFromUDP allocates a *net.UDPAddr for every packet.
+		n, from, err := p.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			select {
 			case <-p.closed:
@@ -421,27 +481,28 @@ func (p *Peer) readLoop() {
 }
 
 // receive handles one packet: link bookkeeping, acknowledgements, then
-// the payload.
-func (p *Peer) receive(pkt []byte, from *Addr, now time.Time) {
+// the payload. The sender is a value, so a packet from a known address
+// allocates nothing to identify it.
+func (p *Peer) receive(pkt []byte, from netip.AddrPort, now time.Time) {
 	flags := pkt[0]
 	session := binary.BigEndian.Uint32(pkt[1:])
 	seq := binary.BigEndian.Uint32(pkt[5:])
 	ack := binary.BigEndian.Uint32(pkt[9:])
 	bits := binary.BigEndian.Uint32(pkt[13:])
 	payload := pkt[headerSize:]
-	key := from.String()
+	key := keyOfPort(from)
 
 	p.emitMu.Lock()
 	defer p.emitMu.Unlock()
 	p.mu.Lock()
-	var evs []Event
+	evs := p.evs[:0]
 	l := p.links[key]
 	if l == nil {
 		if flags&flagBye != 0 {
 			p.mu.Unlock()
 			return
 		}
-		l = newLink(from, now)
+		l = newLink(net.UDPAddrFromAddrPort(from), now)
 		p.links[key] = l
 	}
 	if l.remote != 0 && l.remote != session {
@@ -493,6 +554,7 @@ func (p *Peer) receive(pkt []byte, from *Addr, now time.Time) {
 		}
 	}
 	activity := p.activity
+	p.evs = evs // keep the grown slice for the next packet
 	p.mu.Unlock()
 	for _, ev := range evs {
 		p.emit(ev, ev.Kind != Message || flags&flagReliable != 0)
@@ -537,7 +599,7 @@ func (p *Peer) maintain(now time.Time) {
 	p.emitMu.Lock()
 	defer p.emitMu.Unlock()
 	p.mu.Lock()
-	var evs []Event
+	evs := p.evs[:0]
 	for key, l := range p.links {
 		since := l.lastRecv
 		if since.IsZero() {
@@ -561,6 +623,7 @@ func (p *Peer) maintain(now time.Time) {
 		}
 	}
 	activity := p.activity
+	p.evs = evs // keep the grown slice for the next tick
 	p.mu.Unlock()
 	for _, ev := range evs {
 		p.emit(ev, true)
@@ -591,7 +654,7 @@ func (p *Peer) Peers() []*Addr {
 func (p *Peer) Stats(addr *Addr) (Stats, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	l := p.links[addr.String()]
+	l := p.links[keyOf(addr)]
 	if l == nil {
 		return Stats{}, false
 	}
@@ -608,7 +671,7 @@ func (p *Peer) Close() error {
 		for _, l := range p.links {
 			p.transmit(l, flagBye, 0, nil, now)
 		}
-		p.links = map[string]*link{}
+		p.links = map[linkKey]*link{}
 		p.mu.Unlock()
 		err = p.conn.Close()
 	})

@@ -295,21 +295,44 @@ func (w *Window) updateGeometry() {
 	w.app.push(Event{Kind: EventResize, Window: w, Width: w.width, Height: w.height, PixelW: pw, PixelH: ph, Scale: w.scale})
 }
 
+// The message loop runs on every frame and once per message, so it calls
+// through addresses resolved on first use rather than through
+// LazyProc.Call, which allocates a slice for its variadic arguments and
+// takes a lock to check the procedure has been found.
+var (
+	addrPeekMessageW     uintptr
+	addrGetMessageW      uintptr
+	addrTranslateMessage uintptr
+	addrDispatchMessageW uintptr
+)
+
+// resolveMessageProcs looks the message-loop entry points up once.
+func resolveMessageProcs() {
+	if addrPeekMessageW != 0 {
+		return
+	}
+	addrPeekMessageW = procPeekMessageW.Addr()
+	addrGetMessageW = procGetMessageW.Addr()
+	addrTranslateMessage = procTranslateMessage.Addr()
+	addrDispatchMessageW = procDispatchMessageW.Addr()
+}
+
 // Poll drains the message queue into the returned slice, reused by the
 // next call. With wait set it blocks until a message arrives.
 func (a *App) Poll(wait bool) []Event {
+	resolveMessageProcs()
 	a.pending = a.pending[:0]
 	var m msg
 	if wait {
-		r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
+		r, _, _ := syscall.SyscallN(addrGetMessageW, uintptr(unsafe.Pointer(&m)), 0, 0, 0)
 		if r == 0 || int32(r) == -1 {
 			return a.pending
 		}
-		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
-		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+		syscall.SyscallN(addrTranslateMessage, uintptr(unsafe.Pointer(&m)))
+		syscall.SyscallN(addrDispatchMessageW, uintptr(unsafe.Pointer(&m)))
 	}
 	for {
-		r, _, _ := procPeekMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0, pmRemove)
+		r, _, _ := syscall.SyscallN(addrPeekMessageW, uintptr(unsafe.Pointer(&m)), 0, 0, 0, pmRemove)
 		if r == 0 {
 			break
 		}
@@ -319,8 +342,8 @@ func (a *App) Poll(wait bool) []Event {
 			}
 			break
 		}
-		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
-		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+		syscall.SyscallN(addrTranslateMessage, uintptr(unsafe.Pointer(&m)))
+		syscall.SyscallN(addrDispatchMessageW, uintptr(unsafe.Pointer(&m)))
 	}
 	return a.pending
 }

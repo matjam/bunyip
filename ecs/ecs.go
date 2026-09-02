@@ -159,6 +159,13 @@ type World struct {
 	events    map[reflect.Type]eventQueue
 	systems   []system
 	stats     []SystemStat
+
+	// oneOff memoises the queries Each, Each2, Each3, Each4 and Count
+	// build, one per component set in the order the call named it.
+	oneOff map[queryKey]any
+
+	updates uint64 // bumps at the start of every Update
+	wmat    worldMatrices
 }
 
 type system struct {
@@ -169,7 +176,8 @@ type system struct {
 // NewWorld makes an empty world.
 func NewWorld() *World {
 	w := &World{compIDs: map[reflect.Type]ComponentID{}, archByKey: map[mask]*archetype{},
-		resources: map[reflect.Type]any{}, events: map[reflect.Type]eventQueue{}}
+		resources: map[reflect.Type]any{}, events: map[reflect.Type]eventQueue{},
+		oneOff: map[queryKey]any{}}
 	w.empty = w.archetypeFor(mask{})
 	return w
 }
@@ -311,6 +319,7 @@ func (w *World) allocate() Entity {
 	m := &w.meta[slot]
 	m.alive = true
 	w.count++
+	w.wmat.valid = false // a new entity has no cached matrix
 	return Entity{id: slot + 1, gen: m.gen}
 }
 
@@ -379,6 +388,7 @@ func (w *World) Despawn(e Entity) {
 	m.arch = nil
 	w.free = append(w.free, e.id-1)
 	w.count--
+	w.wmat.valid = false
 }
 
 // Add attaches a component, or replaces it when already present.

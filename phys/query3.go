@@ -1,8 +1,9 @@
 package phys
 
 import (
+	"cmp"
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
@@ -72,12 +73,14 @@ func OverlapShape3(w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, mask uint
 
 func overlapShape3(w *ecs.World, s Shape3, pos lin.Vec3, r mat3, mask uint32, triggers bool, exclude ecs.Entity) []Hit3 {
 	lo, hi := s.bounds(pos, r)
+	st := stateOf3(w)
 	var out []Hit3
 	eachCollider3(w, lo, hi, mask, triggers, func(p placed3) {
 		if p.e == exclude {
 			return
 		}
-		cs := collide3(s, pos, r, p.c.Shape, p.pos, p.rot)
+		st.qs.contacts = collide3(&st.qs, st.qs.contacts[:0], s, pos, r, p.c.Shape, p.pos, p.rot)
+		cs := st.qs.contacts
 		if len(cs) == 0 {
 			return
 		}
@@ -170,19 +173,32 @@ func Nearest3(w *ecs.World, point lin.Vec3, radius float32, mask uint32) (Hit3, 
 }
 
 // RaycastAll3 returns every collider along the ray, nearest first,
-// ignoring triggers and colliders the mask excludes.
+// ignoring triggers and colliders the mask excludes. To cast repeatedly
+// without allocating a result each time, call RaycastAll3Into.
 func RaycastAll3(w *ecs.World, r Ray3, mask uint32) []Hit3 {
-	var out []Hit3
+	return RaycastAll3Into(nil, w, r, mask)
+}
+
+// RaycastAll3Into appends every collider along the ray to out, nearest
+// first, and returns out. Pass the previous result truncated with [:0]
+// to reuse its storage; pass nil for a fresh slice. The appended hits
+// are sorted among themselves, not against what out already held.
+func RaycastAll3Into(out []Hit3, w *ecs.World, r Ray3, mask uint32) []Hit3 {
+	start := len(out)
 	stateOf3(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
 		if c.Shape == nil || c.Trigger || !(Layers{Mask: mask}).collides(c.Layers) {
 			return
 		}
 		rot := mat3FromQuat(t.Rotation)
 		pos := t.Position.Add(rot.mulVec(c.Offset))
+		lo, hi := c.Shape.bounds(pos, rot)
+		if !raySlab3(r, lo, hi, 1) {
+			return
+		}
 		if tt, n, ok := rayShape3(r, c.Shape, pos, rot); ok {
 			out = append(out, Hit3{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
 		}
 	})
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Distance < out[j].Distance })
+	slices.SortStableFunc(out[start:], func(a, b Hit3) int { return cmp.Compare(a.Distance, b.Distance) })
 	return out
 }

@@ -80,3 +80,44 @@ func TestBundle(t *testing.T) {
 		t.Error("a number parsed as a message")
 	}
 }
+
+// TestExpandArgs covers the argument forms T accepts now that expand
+// reads the arguments directly rather than a map built from them.
+func TestExpandArgs(t *testing.T) {
+	b := NewBundle()
+	tbl := NewTable("en")
+	tbl.Set("say", "{a} and {b}")
+	tbl.Set("kinds", "{s} {i} {i64} {f} {t} {p}")
+	b.Add(tbl)
+	en := b.For("en")
+
+	cases := []struct {
+		name string
+		args []any
+		want string
+	}{
+		{"both given", []any{"a", 1, "b", 2}, "1 and 2"},
+		{"one missing", []any{"a", 1}, "1 and {b}"},
+		{"none given", nil, "{a} and {b}"},
+		{"repeated name takes the last value", []any{"a", 1, "b", 2, "a", 3}, "3 and 2"},
+		{"trailing name without a value", []any{"a", 1, "b", 2, "c"}, "1 and 2"},
+		{"non-string name is skipped", []any{7, 8, "a", 1, "b", 2}, "1 and 2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := en.T("say", c.args...); got != c.want {
+				t.Errorf("T(say, %v) = %q, want %q", c.args, got, c.want)
+			}
+		})
+	}
+
+	// Values of every type a message is likely to carry.
+	got := en.T("kinds", "s", "text", "i", -12, "i64", int64(1<<40), "f", 1.5, "t", true, "p", Point{2, 3})
+	if want := "text -12 1099511627776 1.5 true {2 3}"; got != want {
+		t.Errorf("kinds = %q, want %q", got, want)
+	}
+}
+
+// Point is a value with no special case in writeValue, so it goes
+// through fmt.
+type Point struct{ X, Y int }

@@ -276,10 +276,10 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	if g.heroTimer > 5 {
 		g.heroTimer, g.heroDir = 0, -g.heroDir
 	}
-	done := ctx.Profile("physics")
+	step := ctx.Profile("physics")
 	g.ctrl.Move(g.world, g.hero, lin.V3(2.5*g.heroDir, -6, 0), float32(ctx.Delta))
 	g.world.Update(ctx.Delta)
-	done()
+	step.End()
 	g.contacts = append(g.contacts[:0], ecs.Events[phys.Collision3](g.world)...)
 	return nil
 }

@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"cmp"
 	"slices"
 	"unsafe"
 
@@ -52,14 +53,20 @@ type draw2D struct {
 // stream2D collects a queue's 2D vertices for a frame and turns them into
 // draw runs in layer order.
 type stream2D struct {
-	verts    []vertex2D // as submitted
-	items    []item2D
-	ordered  []vertex2D // in draw order
-	draws    []draw2D
-	buffers  [render.FramesInFlight]*render.Buffer
-	capacity int
-	projs    []lin.Mat4 // projections referenced this frame, at stable addresses
-	sorted   bool
+	verts   []vertex2D // as submitted
+	items   []item2D
+	ordered []vertex2D // in draw order, aliasing verts when the order already matches
+	// orderedBuf owns the reordered copy. ordered points at it only when
+	// the items had to be reordered, so a frame that draws in submission
+	// order uploads straight out of verts.
+	orderedBuf []vertex2D
+	sortBuf    []item2D // scratch for the counting sort
+	counts     []int32  // items per layer, then the start of each layer's run
+	draws      []draw2D
+	buffers    [render.FramesInFlight]*render.Buffer
+	capacity   int
+	projs      []lin.Mat4 // projections referenced this frame, at stable addresses
+	sorted     bool
 }
 
 const initialVertexCapacity = 6 * 4096
@@ -109,28 +116,102 @@ func (s *stream2D) add(st state2D, layer int32, verts []vertex2D) {
 func (s *stream2D) reset() {
 	s.verts = s.verts[:0]
 	s.items = s.items[:0]
-	s.ordered = s.ordered[:0]
+	s.ordered = nil // drop any alias of verts before verts is appended to again
+	s.orderedBuf = s.orderedBuf[:0]
 	s.draws = s.draws[:0]
 	s.projs = s.projs[:0]
 	s.sorted = true
 }
 
+// maxLayerSpread is how many layers wide a frame may be before the
+// counting sort's bucket array costs more than a comparison sort. Games
+// use a handful of layers; a frame that spreads them over millions falls
+// back to the stable sort.
+const maxLayerSpread = 1 << 16
+
+// sortItems puts the items in layer order, keeping submission order
+// within a layer. Layers are small integers, so a counting sort over the
+// layer range does it in two passes and is stable by construction.
+func (s *stream2D) sortItems() {
+	lo, hi := s.items[0].layer, s.items[0].layer
+	for i := range s.items {
+		lo = min(lo, s.items[i].layer)
+		hi = max(hi, s.items[i].layer)
+	}
+	span := int64(hi) - int64(lo) + 1
+	if span > maxLayerSpread || span > int64(4*len(s.items)+64) {
+		// cmp.Compare, not a subtraction: layers at opposite ends of int32
+		// would wrap.
+		slices.SortStableFunc(s.items, func(x, y item2D) int { return cmp.Compare(x.layer, y.layer) })
+		return
+	}
+	if cap(s.counts) < int(span) {
+		s.counts = make([]int32, span)
+	}
+	counts := s.counts[:span]
+	clear(counts)
+	for i := range s.items {
+		counts[s.items[i].layer-lo]++
+	}
+	// Prefix sums turn the counts into where each layer's run starts.
+	var start int32
+	for i := range counts {
+		n := counts[i]
+		counts[i] = start
+		start += n
+	}
+	if cap(s.sortBuf) < len(s.items) {
+		s.sortBuf = make([]item2D, len(s.items))
+	}
+	out := s.sortBuf[:len(s.items)]
+	for i := range s.items {
+		k := s.items[i].layer - lo
+		out[counts[k]] = s.items[i]
+		counts[k]++
+	}
+	s.items, s.sortBuf = out, s.items[:0]
+}
+
 // build orders items by layer (stable) and groups them into draw runs.
 func (s *stream2D) build() {
-	if !s.sorted {
-		slices.SortStableFunc(s.items, func(x, y item2D) int { return int(x.layer - y.layer) })
-		s.sorted = true
+	if !s.sorted && len(s.items) > 1 {
+		s.sortItems()
 	}
-	s.ordered = s.ordered[:0]
+	s.sorted = true
 	s.draws = s.draws[:0]
-	for _, it := range s.items {
+	// Items still in submission order cover verts end to end, so the
+	// upload can read verts directly instead of copying it.
+	inOrder, at := true, int32(0)
+	for i := range s.items {
+		if s.items[i].first != at {
+			inOrder = false
+			break
+		}
+		at += s.items[i].count
+	}
+	if inOrder && int(at) == len(s.verts) {
+		s.ordered = s.verts
+		for i := range s.items {
+			it := &s.items[i]
+			if n := len(s.draws); n > 0 && s.draws[n-1].state == it.state {
+				s.draws[n-1].count += uint32(it.count)
+			} else {
+				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count)})
+			}
+		}
+		return
+	}
+	s.orderedBuf = s.orderedBuf[:0]
+	for i := range s.items {
+		it := &s.items[i]
 		if n := len(s.draws); n > 0 && s.draws[n-1].state == it.state {
 			s.draws[n-1].count += uint32(it.count)
 		} else {
-			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.ordered)), count: uint32(it.count)})
+			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count)})
 		}
-		s.ordered = append(s.ordered, s.verts[it.first:it.first+it.count]...)
+		s.orderedBuf = append(s.orderedBuf, s.verts[it.first:it.first+it.count]...)
 	}
+	s.ordered = s.orderedBuf
 }
 
 // upload copies this frame's vertices into the slot's buffer, growing every

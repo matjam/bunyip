@@ -2,7 +2,6 @@ package phys
 
 import (
 	"math"
-	"sort"
 
 	"github.com/matjam/bunyip/lin"
 )
@@ -70,26 +69,28 @@ func pointsConvex(pts []lin.Vec3, center lin.Vec3) convex {
 	}
 }
 
-// face returns the core vertices furthest along dir: one for a vertex,
-// two for an edge, three or more for a flat face, ordered anticlockwise
-// around dir. Nil when the shape has no vertices.
-func (c *convex) face(dir lin.Vec3) []lin.Vec3 {
+// face appends the core vertices furthest along dir to dst: one for a
+// vertex, two for an edge, three or more for a flat face, ordered
+// anticlockwise around dir. Nothing is added when the shape has no
+// vertices. dst must not be the scratch's angle or index buffer.
+func (c *convex) face(sc *scratch3, dst []lin.Vec3, dir lin.Vec3) []lin.Vec3 {
 	if len(c.pts) == 0 {
-		return nil
+		return dst
 	}
 	best := float32(math.Inf(-1))
 	for _, p := range c.pts {
 		best = max(best, p.Dot(dir))
 	}
 	tol := 1e-3*c.size + 1e-6
-	var out []lin.Vec3
+	start := len(dst)
 	for _, p := range c.pts {
 		if p.Dot(dir) >= best-tol {
-			out = append(out, p)
+			dst = append(dst, p)
 		}
 	}
+	out := dst[start:]
 	if len(out) < 3 {
-		return out
+		return dst
 	}
 	var centroid lin.Vec3
 	for _, p := range out {
@@ -98,21 +99,29 @@ func (c *convex) face(dir lin.Vec3) []lin.Vec3 {
 	centroid = centroid.Mul(1 / float32(len(out)))
 	u := perpendicular(dir)
 	v := dir.Cross(u)
-	angles := make([]float64, len(out))
+	sc.angles = sc.angles[:0]
+	sc.idx = sc.idx[:0]
 	for i, p := range out {
 		d := p.Sub(centroid)
-		angles[i] = math.Atan2(float64(d.Dot(v)), float64(d.Dot(u)))
+		sc.angles = append(sc.angles, math.Atan2(float64(d.Dot(v)), float64(d.Dot(u))))
+		sc.idx = append(sc.idx, i)
 	}
-	idx := make([]int, len(out))
-	for i := range idx {
-		idx[i] = i
+	angles, idx := sc.angles, sc.idx
+	// Stable, to match the order a stable sort of equal angles gives.
+	for i := 1; i < len(idx); i++ {
+		vi := idx[i]
+		j := i - 1
+		for j >= 0 && angles[vi] < angles[idx[j]] {
+			idx[j+1] = idx[j]
+			j--
+		}
+		idx[j+1] = vi
 	}
-	sort.Slice(idx, func(a, b int) bool { return angles[idx[a]] < angles[idx[b]] })
-	sorted := make([]lin.Vec3, len(out))
+	sc.faceSort = append(sc.faceSort[:0], out...)
 	for i, j := range idx {
-		sorted[i] = out[j]
+		out[i] = sc.faceSort[j]
 	}
-	return sorted
+	return dst
 }
 
 func abs32(v float32) float32 { return float32(math.Abs(float64(v))) }
@@ -321,6 +330,9 @@ func gjk(a, b *convex) gjkResult {
 	return res
 }
 
+// epaEdge is one edge of the horizon left when faces are removed.
+type epaEdge struct{ a, b int }
+
 // epaFace is one triangle of the expanding polytope.
 type epaFace struct {
 	v [3]int
@@ -330,9 +342,9 @@ type epaFace struct {
 
 // epa finds the penetration of two overlapping cores: the shortest
 // translation of B that separates them, and the deepest points.
-func epa(a, b *convex, r gjkResult) (normal lin.Vec3, depth float32, pa, pb lin.Vec3, ok bool) {
-	verts := make([]gjkVert, 0, 32)
-	verts = append(verts, r.simplex[:r.n]...)
+func epa(sc *scratch3, a, b *convex, r gjkResult) (normal lin.Vec3, depth float32, pa, pb lin.Vec3, ok bool) {
+	verts := append(sc.epaVerts[:0], r.simplex[:r.n]...)
+	defer func() { sc.epaVerts = verts }()
 	csoSupport := func(dir lin.Vec3) gjkVert {
 		sa, sb := a.sup(dir), b.sup(dir.Neg())
 		return gjkVert{sa.Sub(sb), sa, sb}
@@ -341,18 +353,22 @@ func epa(a, b *convex, r gjkResult) (normal lin.Vec3, depth float32, pa, pb lin.
 	eps := 1e-4 * size
 	// Grow a degenerate simplex into a tetrahedron.
 	for len(verts) < 4 {
+		var buf [6]lin.Vec3
 		var dirs []lin.Vec3
 		switch len(verts) {
 		case 1:
-			dirs = []lin.Vec3{{X: 1}, {X: -1}, {Y: 1}, {Y: -1}, {Z: 1}, {Z: -1}}
+			buf = [6]lin.Vec3{{X: 1}, {X: -1}, {Y: 1}, {Y: -1}, {Z: 1}, {Z: -1}}
+			dirs = buf[:6]
 		case 2:
 			e := verts[1].w.Sub(verts[0].w)
 			p := perpendicular(e)
 			q := e.Cross(p).Norm()
-			dirs = []lin.Vec3{p, p.Neg(), q, q.Neg()}
+			buf[0], buf[1], buf[2], buf[3] = p, p.Neg(), q, q.Neg()
+			dirs = buf[:4]
 		default:
 			n := verts[1].w.Sub(verts[0].w).Cross(verts[2].w.Sub(verts[0].w)).Norm()
-			dirs = []lin.Vec3{n, n.Neg()}
+			buf[0], buf[1] = n, n.Neg()
+			dirs = buf[:2]
 		}
 		added := false
 		for _, d := range dirs {
@@ -388,7 +404,8 @@ func epa(a, b *convex, r gjkResult) (normal lin.Vec3, depth float32, pa, pb lin.
 		return f
 	}
 	// Orient each face of the tetrahedron away from the opposite vertex.
-	faces := make([]epaFace, 0, 64)
+	faces := sc.epaFaces[:0]
+	defer func() { sc.epaFaces = faces }()
 	for _, t := range [4][4]int{{0, 1, 2, 3}, {0, 3, 1, 2}, {0, 2, 3, 1}, {1, 3, 2, 0}} {
 		f := makeFace(t[0], t[1], t[2])
 		if f.n.Dot(verts[t[3]].w.Sub(verts[t[0]].w)) > 0 {
@@ -411,13 +428,12 @@ func epa(a, b *convex, r gjkResult) (normal lin.Vec3, depth float32, pa, pb lin.
 		}
 		// Remove the faces that see the new vertex and stitch it to the
 		// horizon edges left behind.
-		type edge struct{ a, b int }
-		var horizon []edge
+		horizon := sc.horizon[:0]
 		kept := faces[:0]
 		for _, f := range faces {
 			if f.n.Dot(w.w.Sub(verts[f.v[0]].w)) > 0 {
 				for k := range 3 {
-					e := edge{f.v[k], f.v[(k+1)%3]}
+					e := epaEdge{f.v[k], f.v[(k+1)%3]}
 					found := false
 					for i, h := range horizon {
 						if h.a == e.b && h.b == e.a {
@@ -434,6 +450,7 @@ func epa(a, b *convex, r gjkResult) (normal lin.Vec3, depth float32, pa, pb lin.
 				kept = append(kept, f)
 			}
 		}
+		sc.horizon = horizon
 		if len(horizon) == 0 {
 			break
 		}

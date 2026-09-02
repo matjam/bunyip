@@ -26,9 +26,13 @@ type Player struct {
 	rate  int
 	chans []channel
 	bg    []*voice // voices detached from their channel by a new-note action
-	mute  []bool   // per channel
-	solo  []bool   // per channel
-	solos int      // how many channels are soloed
+	// bgFree holds background voices that have faded out, so a new note
+	// on the audio thread takes one instead of allocating. A voice is
+	// overwritten whole when it is taken, so nothing carries over.
+	bgFree []*voice
+	mute   []bool // per channel
+	solo   []bool // per channel
+	solos  int    // how many channels are soloed
 
 	order, row    int
 	speed, tempo  int
@@ -230,7 +234,7 @@ func (p *Player) Seek(order, row int) {
 	p.patDelay, p.jumpOrder, p.breakRow = 0, -1, -1
 	p.loopRow, p.loopCount, p.loopJump = 0, 0, false
 	p.done, p.started = false, false
-	p.bg = p.bg[:0]
+	p.bg = p.recycle(p.bg)
 	for i := range p.chans {
 		ch := &p.chans[i]
 		ch.active = false

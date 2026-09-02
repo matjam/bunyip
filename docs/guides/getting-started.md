@@ -112,7 +112,26 @@ rebinding.
 
 F3 toggles an overlay with the frame time, the update and draw times,
 draw-call counts and any profile scopes the game recorded; `Config.Debug`
-shows it from the start. `Config.DrawBudget` turns the draw-call count
+shows it from the start.
+
+`ctx.Profile` times a section of game code. It returns a scope, and
+`End` closes it and records how long it took, into `ctx.Stats.Scopes`
+and the overlay:
+
+```go
+pathing := ctx.Profile("pathfinding")
+g.findPaths()
+pathing.End()
+
+// Or for a whole function:
+defer ctx.Profile("simulate").End()
+```
+
+The scope is a small value rather than a closure, so it allocates
+nothing and a section that runs many times a frame can be timed.
+Timing runs whether or not the overlay is shown.
+
+`Config.DrawBudget` turns the draw-call count
 into a warning when a frame exceeds it. `Config.Pprof` serves Go's
 profiler on an address. `Config.LogFile` writes the log to a file and
 appends a stack trace if the game panics. That file is the one to ask a

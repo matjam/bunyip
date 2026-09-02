@@ -139,8 +139,32 @@ type state3 struct {
 	fixed     *ecs.Query1[FixedJoint3]
 	entries   []entry3
 	dynamic   []bodyRec3
-	index     map[ecs.Entity]int
+	index     slotMap
 	parent    []int
+	// Scratch kept between steps so a step allocates nothing: ss serves
+	// the step and qs the queries, which the game may call while the
+	// step's buffers still hold contacts.
+	ss, qs          scratch3
+	sweep           sweepState
+	contacts        []contact3
+	arbiters        []arbiter3
+	events          []pending3
+	reported        pairSet
+	rest            []float32
+	joints          []jointSolver3
+	items           []jointItem3
+	distanceSolvers []distanceSolver3
+	hingeSolvers    []hingeSolver3
+	ballSolvers     []ballSolver3
+	springSolvers   []springSolver3
+	fixedSolvers    []fixedSolver3
+}
+
+// pending3 is a collision event waiting for the solver to say how hard
+// the hit was.
+type pending3 struct {
+	ev  Collision3
+	arb int
 }
 
 func stateOf3(w *ecs.World) *state3 {
@@ -154,7 +178,6 @@ func stateOf3(w *ecs.World) *state3 {
 			ball:      ecs.NewQuery1[BallJoint3](w),
 			spring:    ecs.NewQuery1[SpringJoint3](w),
 			fixed:     ecs.NewQuery1[FixedJoint3](w),
-			index:     map[ecs.Entity]int{},
 		})
 		s = ecs.Resource[state3](w)
 	}
@@ -180,9 +203,9 @@ func System3(w *ecs.World, dt float64) {
 	}
 	s := stateOf3(w)
 	h := float32(dt) / float32(substeps)
-	reported := map[pairKey]bool{}
+	s.reported.reset()
 	for range substeps {
-		s.step(w, settings, h, iterations, reported)
+		s.step(w, settings, h, iterations)
 	}
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform, b *Body3) {
 		b.force, b.torque = lin.Vec3{}, lin.Vec3{}
@@ -201,10 +224,10 @@ func active3(b *Body3) bool {
 	return b.invMass > 0
 }
 
-func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations int, reported map[pairKey]bool) {
+func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations int) {
 	// Integrate velocities.
 	s.dynamic = s.dynamic[:0]
-	clear(s.index)
+	s.index.reset()
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform, b *Body3) {
 		b.fraction = 1
 		if b.Sleeping {
@@ -215,7 +238,7 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 			b.invMass, b.invInertia = 0, mat3{}
 			return
 		}
-		s.index[e] = len(s.dynamic)
+		s.index.set(e, len(s.dynamic))
 		s.dynamic = append(s.dynamic, bodyRec3{e: e, t: t, b: b})
 		if b.asleep {
 			// The game may have pushed it.
@@ -261,7 +284,7 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		pos := t.Position.Add(rot.mulVec(c.Offset))
 		lo, hi := c.Shape.bounds(pos, rot)
 		bi := -1
-		if i, ok := s.index[e]; ok {
+		if i, ok := s.index.get(e); ok {
 			bi = i
 		}
 		s.entries = append(s.entries, entry3{e: e, t: t, b: b, c: c, pos: pos, rot: rot, lo: lo, hi: hi, bi: bi})
@@ -272,14 +295,14 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		s.parent = append(s.parent, i)
 	}
 	// Broadphase and contact generation.
-	var arbiters []arbiter3
-	type pending struct {
-		ev  Collision3
-		arb int
-	}
-	var events []pending
+	s.arbiters = s.arbiters[:0]
+	s.events = s.events[:0]
 	en := s.entries
-	sweepPairs(len(en), func(i int) float32 { return en[i].lo.X }, func(i int) float32 { return en[i].hi.X }, func(i, j int) {
+	slo, shi := s.sweep.begin(len(en))
+	for i := range en {
+		slo[i], shi[i] = en[i].lo.X, en[i].hi.X
+	}
+	s.sweep.pairs(func(i, j int) {
 		a, b := &en[i], &en[j]
 		if a.lo.Y > b.hi.Y || b.lo.Y > a.hi.Y || a.lo.Z > b.hi.Z || b.lo.Z > a.hi.Z {
 			return
@@ -291,14 +314,14 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		if !a.c.Layers.collides(b.c.Layers) {
 			return
 		}
-		contacts := collide3(a.c.Shape, a.pos, a.rot, b.c.Shape, b.pos, b.rot)
+		s.contacts = collide3(&s.ss, s.contacts[:0], a.c.Shape, a.pos, a.rot, b.c.Shape, b.pos, b.rot)
+		contacts := s.contacts
 		if len(contacts) == 0 {
 			return
 		}
 		key := keyOf(a.e, b.e)
 		if a.c.Trigger || b.c.Trigger {
-			if !reported[key] {
-				reported[key] = true
+			if !s.reported.add(key) {
 				if a.c.Trigger {
 					ecs.Emit(w, Trigger3{Trigger: a.e, Other: b.e})
 				}
@@ -318,24 +341,23 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		if a.bi >= 0 && b.bi >= 0 {
 			s.union(a.bi, b.bi)
 		}
-		if !reported[key] {
-			reported[key] = true
+		if !s.reported.add(key) {
 			c := contacts[0]
 			ev := Collision3{A: a.e, B: b.e, Point: c.point, Normal: c.normal, Depth: c.depth}
 			if key.a != a.e {
 				ev.A, ev.B, ev.Normal = b.e, a.e, c.normal.Mul(-1)
 			}
-			events = append(events, pending{ev, len(arbiters)})
+			s.events = append(s.events, pending3{ev, len(s.arbiters)})
 		}
-		arbiters = append(arbiters, newArbiter3(a, b, contacts, h))
+		initArbiter3(s.nextArbiter(), a, b, contacts, h)
 	})
 	// Joints.
 	joints := gatherJoints3(w, s)
 	for _, j := range joints {
 		j.prepare(h)
 		ja, jb := j.sides()
-		if ia, ok := s.index[ja]; ok {
-			if ib, ok := s.index[jb]; ok {
+		if ia, ok := s.index.get(ja); ok {
+			if ib, ok := s.index.get(jb); ok {
 				s.union(ia, ib)
 			}
 		}
@@ -345,12 +367,12 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		for _, j := range joints {
 			j.solve()
 		}
-		for i := range arbiters {
-			arbiters[i].solve()
+		for i := range s.arbiters {
+			s.arbiters[i].solve()
 		}
 	}
-	for _, p := range events {
-		for _, c := range arbiters[p.arb].contacts {
+	for _, p := range s.events {
+		for _, c := range s.arbiters[p.arb].contacts {
 			p.ev.Impulse += c.pn
 		}
 		ecs.Emit(w, p.ev)
@@ -427,7 +449,7 @@ func (s *state3) sleep(settings *Settings3, h float32) {
 	if thr <= 0 {
 		thr = 0.05
 	}
-	var rest []float32
+	rest := s.rest[:0]
 	for i, r := range s.dynamic {
 		b := r.b
 		if !b.asleep {
@@ -443,6 +465,7 @@ func (s *state3) sleep(settings *Settings3, h float32) {
 		}
 		rest[root] = min(rest[root], b.sleepTime)
 	}
+	s.rest = rest
 	for i, r := range s.dynamic {
 		b := r.b
 		if !b.asleep && rest[s.find(i)] >= after {
@@ -560,10 +583,25 @@ func inv(v float32) float32 {
 	return 1 / v
 }
 
+// arbiter3 holds a pair's contacts through the solver iterations. It
+// keeps the two bodies directly, because the solver reads their velocity
+// and inverse inertia three times per contact per iteration.
 type arbiter3 struct {
-	a, b     *entry3
+	ba, bb   *Body3 // nil for a static collider
 	contacts []solverContact3
 	friction float32
+}
+
+// nextArbiter extends the arbiter list by one, keeping the contact
+// buffer the reused element already holds.
+func (s *state3) nextArbiter() *arbiter3 {
+	n := len(s.arbiters)
+	if n < cap(s.arbiters) {
+		s.arbiters = s.arbiters[:n+1]
+	} else {
+		s.arbiters = append(s.arbiters, arbiter3{})
+	}
+	return &s.arbiters[n]
 }
 
 type solverContact3 struct {
@@ -577,13 +615,6 @@ type solverContact3 struct {
 	pn, pt1, pt2 float32
 }
 
-func bodyVel3(e *entry3) (lin.Vec3, lin.Vec3, float32, mat3) {
-	if e.b == nil {
-		return lin.Vec3{}, lin.Vec3{}, 0, mat3{}
-	}
-	return e.b.Vel, e.b.AngVel, e.b.invMass, e.b.invInertia
-}
-
 // effectiveMass is 1 / (imA + imB + n·((IinvA (rA×n))×rA + (IinvB (rB×n))×rB)).
 func effectiveMass(n, rA, rB lin.Vec3, ima float32, iia mat3, imb float32, iib mat3) float32 {
 	ra := iia.mulVec(rA.Cross(n)).Cross(rA)
@@ -595,8 +626,11 @@ func effectiveMass(n, rA, rB lin.Vec3, ima float32, iia mat3, imb float32, iib m
 	return 1 / k
 }
 
-func newArbiter3(a, b *entry3, contacts []contact3, h float32) arbiter3 {
-	arb := arbiter3{a: a, b: b}
+// initArbiter3 prepares one pair's contacts in place, reusing whatever
+// contact storage arb already holds.
+func initArbiter3(arb *arbiter3, a, b *entry3, contacts []contact3, h float32) {
+	arb.ba, arb.bb = a.b, b.b
+	arb.contacts = arb.contacts[:0]
 	var fa, fb, ra, rb float32 = 0.5, 0.5, 0, 0
 	if a.b != nil {
 		fa, ra = a.b.Friction, a.b.Restitution
@@ -606,8 +640,15 @@ func newArbiter3(a, b *entry3, contacts []contact3, h float32) arbiter3 {
 	}
 	arb.friction = float32(math.Sqrt(float64(fa * fb)))
 	restitution := max(ra, rb)
-	va, wa, ima, iia := bodyVel3(a)
-	vb, wb, imb, iib := bodyVel3(b)
+	var va, wa, vb, wb lin.Vec3
+	var ima, imb float32
+	var iia, iib mat3
+	if a.b != nil {
+		va, wa, ima, iia = a.b.Vel, a.b.AngVel, a.b.invMass, a.b.invInertia
+	}
+	if b.b != nil {
+		vb, wb, imb, iib = b.b.Vel, b.b.AngVel, b.b.invMass, b.b.invInertia
+	}
 	for _, c := range contacts {
 		sc := solverContact3{normal: c.normal}
 		sc.rA = c.point.Sub(a.t.Position)
@@ -629,24 +670,28 @@ func newArbiter3(a, b *entry3, contacts []contact3, h float32) arbiter3 {
 		}
 		arb.contacts = append(arb.contacts, sc)
 	}
-	return arb
 }
 
 func (arb *arbiter3) applyImpulse(c *solverContact3, p lin.Vec3) {
-	if arb.a.b != nil && arb.a.b.invMass > 0 {
-		arb.a.b.Vel = arb.a.b.Vel.Sub(p.Mul(arb.a.b.invMass))
-		arb.a.b.AngVel = arb.a.b.AngVel.Sub(arb.a.b.invInertia.mulVec(c.rA.Cross(p)))
+	if a := arb.ba; a != nil && a.invMass > 0 {
+		a.Vel = a.Vel.Sub(p.Mul(a.invMass))
+		a.AngVel = a.AngVel.Sub(a.invInertia.mulVec(c.rA.Cross(p)))
 	}
-	if arb.b.b != nil && arb.b.b.invMass > 0 {
-		arb.b.b.Vel = arb.b.b.Vel.Add(p.Mul(arb.b.b.invMass))
-		arb.b.b.AngVel = arb.b.b.AngVel.Add(arb.b.b.invInertia.mulVec(c.rB.Cross(p)))
+	if b := arb.bb; b != nil && b.invMass > 0 {
+		b.Vel = b.Vel.Add(p.Mul(b.invMass))
+		b.AngVel = b.AngVel.Add(b.invInertia.mulVec(c.rB.Cross(p)))
 	}
 }
 
 func (arb *arbiter3) relativeVelocity(c *solverContact3) lin.Vec3 {
-	va, wa, _, _ := bodyVel3(arb.a)
-	vb, wb, _, _ := bodyVel3(arb.b)
-	return vb.Add(wb.Cross(c.rB)).Sub(va).Sub(wa.Cross(c.rA))
+	var v lin.Vec3
+	if b := arb.bb; b != nil {
+		v = b.Vel.Add(b.AngVel.Cross(c.rB))
+	}
+	if a := arb.ba; a != nil {
+		v = v.Sub(a.Vel).Sub(a.AngVel.Cross(c.rA))
+	}
+	return v
 }
 
 func (arb *arbiter3) solve() {
@@ -697,10 +742,37 @@ func raycast3(w *ecs.World, r Ray3, mask uint32, exclude ecs.Entity) (Hit3, bool
 		}
 		rot := mat3FromQuat(t.Rotation)
 		pos := t.Position.Add(rot.mulVec(c.Offset))
+		lo, hi := c.Shape.bounds(pos, rot)
+		if !raySlab3(r, lo, hi, min(best.Distance, 1)) {
+			return
+		}
 		if tt, n, ok := rayShape3(r, c.Shape, pos, rot); ok && tt < best.Distance {
 			best = Hit3{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
 			found = true
 		}
 	})
 	return best, found
+}
+
+// raySlab3 reports whether the ray reaches the box within maxT, as a
+// cheap reject before the shape's own test. The ray's parameter runs
+// from 0 to 1 over Dir, as the shape tests use it.
+func raySlab3(r Ray3, lo, hi lin.Vec3, maxT float32) bool {
+	tmin, tmax := float32(0), maxT
+	return slabAxis(r.Origin.X, r.Dir.X, lo.X, hi.X, &tmin, &tmax) &&
+		slabAxis(r.Origin.Y, r.Dir.Y, lo.Y, hi.Y, &tmin, &tmax) &&
+		slabAxis(r.Origin.Z, r.Dir.Z, lo.Z, hi.Z, &tmin, &tmax)
+}
+
+func slabAxis(o, d, lo, hi float32, tmin, tmax *float32) bool {
+	if d > -1e-20 && d < 1e-20 {
+		return o >= lo && o <= hi
+	}
+	t1, t2 := (lo-o)/d, (hi-o)/d
+	if t1 > t2 {
+		t1, t2 = t2, t1
+	}
+	*tmin = max(*tmin, t1)
+	*tmax = min(*tmax, t2)
+	return *tmin <= *tmax
 }

@@ -141,28 +141,53 @@ BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
 
 ## What each platform supports
 
-macOS is the tested platform. The Windows and X11 layers cross-compile
-and pass their unit tests, but they have not yet run on real hardware.
-`docs/design/gaps.md` in the repository keeps the current list of what is
-missing.
+macOS is the tested platform. The Windows, Wayland and X11 layers
+cross-compile and pass their unit tests, but they have not yet run on
+real hardware. `docs/design/gaps.md` in the repository keeps the current
+list of what is missing.
 
-| Control | macOS | Windows | X11 |
-|---|---|---|---|
-| `SetTitle` | yes | yes | yes |
-| `SetIcon` | yes | yes | yes |
-| `SetSizeLimits` | yes | yes | yes |
-| `SetCursor`, `SetCursorVisible` | yes | yes | yes |
-| `SetCursorCaptured` | yes | yes | yes |
-| `SetFullscreen`, `Fullscreen` | yes | yes | yes |
-| `SetTextInputRect` | yes | recorded, no IME yet | recorded, no IME yet |
-| `SetPosition`, `Position` | yes | no-op | no-op |
-| `SetAlwaysOnTop` | yes | no-op | no-op |
-| `SetCursorImage` | yes | no-op | no-op |
-| `Clipboard`, `SetClipboard` | yes | yes | error |
-| DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | always 1 |
+Linux has two window systems, so the layer picks one when the process
+starts. It uses Wayland when `WAYLAND_DISPLAY` is set (or the default
+socket exists under `XDG_RUNTIME_DIR`), `libwayland-client.so.0` loads
+and the connection succeeds, and X11 otherwise. Set `BUNYIP_X11=1` to
+force X11, which is how a run under XWayland is compared against a
+native one. The choice is logged at debug level as `bunyip: window
+backend`.
+
+| Control | macOS | Windows | Wayland | X11 |
+|---|---|---|---|---|
+| `SetTitle` | yes | yes | yes | yes |
+| `SetIcon` | yes | yes | no-op | yes |
+| `SetSizeLimits` | yes | yes | yes | yes |
+| `SetCursor`, `SetCursorVisible` | yes | yes | yes | yes |
+| `SetCursorCaptured` | yes | yes | yes | yes |
+| `SetFullscreen`, `Fullscreen` | yes | yes | yes | yes |
+| `SetTextInputRect` | yes | recorded, no IME yet | recorded, no IME yet | recorded, no IME yet |
+| `SetPosition`, `Position` | yes | no-op | no-op | no-op |
+| `SetAlwaysOnTop` | yes | no-op | no-op | no-op |
+| `SetCursorImage` | yes | no-op | no-op | no-op |
+| `Clipboard`, `SetClipboard` | yes | yes | error | error |
+| DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | the output's integer scale | always 1 |
 
 Where a control is a no-op, the call returns and nothing happens.
 `Position` returns (0, 0) where it is not implemented.
+
+Three things behave differently under Wayland. The title bar is the
+compositor's: the layer asks for server-side decorations through
+`zxdg_decoration_manager_v1`, and a compositor that does not offer that
+protocol shows the window with no frame, because drawing one is the
+client's job and this layer does not draw. `SetIcon` does nothing,
+because the protocol has no request for it; the icon comes from the
+desktop entry whose name matches the app id, which the layer derives
+from `Config.Title`. `SetCursorCaptured` uses
+`zwp_pointer_constraints_v1` and `zwp_relative_pointer_v1` where the
+compositor has them, and where it does not the pointer is only hidden
+and the deltas come from absolute motion, so it can leave the window.
+
+Scale under Wayland is an integer buffer scale. The layer follows
+`wl_surface.preferred_buffer_scale` where the compositor sends it and
+falls back to the largest scale among the outputs the surface is on. A
+change of scale arrives as a resize event, the same as a change of size.
 
 ## Lifecycle
 

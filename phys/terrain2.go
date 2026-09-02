@@ -108,27 +108,30 @@ const (
 	primSegment
 )
 
-// prims2 breaks a placed shape into primitives; lo and hi are the other
-// shape's bounds, used to skip chain edges that cannot touch it.
-func prims2(s Shape2, pos lin.Vec2, rot float32, lo, hi lin.Vec2) []prim2 {
+// prims2 appends the primitives a placed shape breaks into to out; lo
+// and hi are the other shape's bounds, used to skip chain edges that
+// cannot touch it. A polygon's world points are appended to pts, which
+// the caller keeps between calls so the split allocates nothing.
+func prims2(out []prim2, pts *[]lin.Vec2, s Shape2, pos lin.Vec2, rot float32, lo, hi lin.Vec2) []prim2 {
 	switch sh := s.(type) {
 	case Circle:
-		return []prim2{{kind: primCircle, c: pos, r: sh.Radius}}
+		return append(out, prim2{kind: primCircle, c: pos, r: sh.Radius})
 	case Box2:
-		return []prim2{{kind: primPolygon, pts: worldPolygon(sh.polygon(), pos, rot)}}
+		*pts = worldPolygon((*pts)[:0], sh.polygon(), pos, rot)
+		return append(out, prim2{kind: primPolygon, pts: *pts})
 	case Polygon2:
 		if len(sh.Points) < 3 {
-			return nil
+			return out
 		}
-		return []prim2{{kind: primPolygon, pts: worldPolygon(sh, pos, rot)}}
+		*pts = worldPolygon((*pts)[:0], sh, pos, rot)
+		return append(out, prim2{kind: primPolygon, pts: *pts})
 	case Capsule2:
 		a, b := sh.segment(pos, rot)
-		return []prim2{{kind: primCapsule, a: a, b: b, r: sh.Radius}}
+		return append(out, prim2{kind: primCapsule, a: a, b: b, r: sh.Radius})
 	case Edge2:
 		cs, sn := cosSin(rot)
-		return []prim2{{kind: primSegment, a: rotate2(sh.A, cs, sn).Add(pos), b: rotate2(sh.B, cs, sn).Add(pos)}}
+		return append(out, prim2{kind: primSegment, a: rotate2(sh.A, cs, sn).Add(pos), b: rotate2(sh.B, cs, sn).Add(pos)})
 	case Chain2:
-		var out []prim2
 		for _, seg := range sh.segments(pos, rot) {
 			slo, shi := seg[0].Min(seg[1]), seg[0].Max(seg[1])
 			if slo.X > hi.X || lo.X > shi.X || slo.Y > hi.Y || lo.Y > shi.Y {
@@ -138,7 +141,7 @@ func prims2(s Shape2, pos lin.Vec2, rot float32, lo, hi lin.Vec2) []prim2 {
 		}
 		return out
 	}
-	return nil
+	return out
 }
 
 // closestOnSegment2 is the point of segment ab nearest p.
@@ -188,79 +191,94 @@ func closestOnSegments2(a0, a1, b0, b1 lin.Vec2) (lin.Vec2, lin.Vec2) {
 	return pa, pb
 }
 
-// segmentQuad thickens a segment into a thin rectangle.
-func segmentQuad(a, b lin.Vec2) []lin.Vec2 {
+// segmentQuad appends a segment thickened into a thin rectangle to dst.
+func segmentQuad(dst []lin.Vec2, a, b lin.Vec2) []lin.Vec2 {
 	n := b.Sub(a).Norm().Perp().Mul(edgeThickness)
-	return []lin.Vec2{a.Sub(n), b.Sub(n), b.Add(n), a.Add(n)}
+	return append(dst, a.Sub(n), b.Sub(n), b.Add(n), a.Add(n))
 }
 
-func flip2(cs []contact2) []contact2 {
-	for i := range cs {
+// flip2 reverses the normals of the contacts added from start onwards.
+func flip2(cs []contact2, start int) {
+	for i := start; i < len(cs); i++ {
 		cs[i].normal = cs[i].normal.Neg()
 	}
-	return cs
 }
 
-// spot is a contact between two circles at the given centres.
-func spot(pa lin.Vec2, ra float32, pb lin.Vec2, rb float32) []contact2 {
-	return circleCircle(Circle{ra}, pa, Circle{rb}, pb)
+// spot appends a contact between two circles at the given centres.
+func spot(out []contact2, pa lin.Vec2, ra float32, pb lin.Vec2, rb float32) []contact2 {
+	return circleCircle(out, Circle{ra}, pa, Circle{rb}, pb)
 }
 
-// collidePrims generates contacts between two primitives with normals
-// from a to b.
-func collidePrims(a, b prim2) []contact2 {
+// collidePrims appends the contacts between two primitives to out, with
+// normals from a to b.
+func collidePrims(sc *scratch2, out []contact2, a, b prim2) []contact2 {
 	if a.kind > b.kind {
-		return flip2(collidePrims(b, a))
+		start := len(out)
+		out = collidePrims(sc, out, b, a)
+		flip2(out, start)
+		return out
 	}
 	switch a.kind {
 	case primCircle:
 		switch b.kind {
 		case primCircle:
-			return spot(a.c, a.r, b.c, b.r)
+			return spot(out, a.c, a.r, b.c, b.r)
 		case primPolygon:
-			return circlePolygon(Circle{a.r}, a.c, b.pts)
+			return circlePolygon(sc, out, Circle{a.r}, a.c, b.pts)
 		case primCapsule:
-			return spot(a.c, a.r, closestOnSegment2(a.c, b.a, b.b), b.r)
+			return spot(out, a.c, a.r, closestOnSegment2(a.c, b.a, b.b), b.r)
 		case primSegment:
-			return spot(a.c, a.r, closestOnSegment2(a.c, b.a, b.b), 0)
+			return spot(out, a.c, a.r, closestOnSegment2(a.c, b.a, b.b), 0)
 		}
 	case primPolygon:
 		switch b.kind {
 		case primPolygon:
-			return polygonPolygon(a.pts, b.pts)
+			return polygonPolygon(sc, out, a.pts, b.pts)
 		case primCapsule:
-			return polygonCapsule(a.pts, b)
+			return polygonCapsule(sc, out, a.pts, b)
 		case primSegment:
-			return polygonPolygon(a.pts, segmentQuad(b.a, b.b))
+			sc.quad = segmentQuad(sc.quad[:0], b.a, b.b)
+			return polygonPolygon(sc, out, a.pts, sc.quad)
 		}
 	case primCapsule:
 		switch b.kind {
 		case primCapsule:
+			start := len(out)
 			pa, pb := closestOnSegments2(a.a, a.b, b.a, b.b)
-			out := spot(pa, a.r, pb, b.r)
-			for _, e := range [][2]lin.Vec2{{a.a, closestOnSegment2(a.a, b.a, b.b)}, {a.b, closestOnSegment2(a.b, b.a, b.b)}} {
-				out = appendUnique2(out, spot(e[0], a.r, e[1], b.r))
-			}
-			for _, e := range [][2]lin.Vec2{{closestOnSegment2(b.a, a.a, a.b), b.a}, {closestOnSegment2(b.b, a.a, a.b), b.b}} {
-				out = appendUnique2(out, spot(e[0], a.r, e[1], b.r))
+			out = spot(out, pa, a.r, pb, b.r)
+			for _, e := range [4][2]lin.Vec2{
+				{a.a, closestOnSegment2(a.a, b.a, b.b)},
+				{a.b, closestOnSegment2(a.b, b.a, b.b)},
+				{closestOnSegment2(b.a, a.a, a.b), b.a},
+				{closestOnSegment2(b.b, a.a, a.b), b.b},
+			} {
+				sc.tmp = spot(sc.tmp[:0], e[0], a.r, e[1], b.r)
+				out = appendUnique2(out, start, sc.tmp)
 			}
 			return out
 		case primSegment:
+			start := len(out)
 			pa, pb := closestOnSegments2(a.a, a.b, b.a, b.b)
-			out := spot(pa, a.r, pb, 0)
-			out = appendUnique2(out, spot(a.a, a.r, closestOnSegment2(a.a, b.a, b.b), 0))
-			out = appendUnique2(out, spot(a.b, a.r, closestOnSegment2(a.b, b.a, b.b), 0))
+			out = spot(out, pa, a.r, pb, 0)
+			for _, e := range [2][2]lin.Vec2{
+				{a.a, closestOnSegment2(a.a, b.a, b.b)},
+				{a.b, closestOnSegment2(a.b, b.a, b.b)},
+			} {
+				sc.tmp = spot(sc.tmp[:0], e[0], a.r, e[1], 0)
+				out = appendUnique2(out, start, sc.tmp)
+			}
 			return out
 		}
 	}
-	return nil
+	return out
 }
 
-// appendUnique2 adds contacts whose points are not already present.
-func appendUnique2(out, cs []contact2) []contact2 {
+// appendUnique2 adds contacts whose points are not already present from
+// start onwards.
+func appendUnique2(out []contact2, start int, cs []contact2) []contact2 {
 	for _, c := range cs {
 		dup := false
-		for _, o := range out {
+		for _, o := range out[start:] {
 			if o.point.Sub(c.point).Len() < 1e-4 {
 				dup = true
 				break
@@ -276,10 +294,12 @@ func appendUnique2(out, cs []contact2) []contact2 {
 // polygonCapsule collides a polygon with a capsule: the capsule's round
 // ends against the polygon, and the polygon's corners against the
 // capsule's side.
-func polygonCapsule(poly []lin.Vec2, c prim2) []contact2 {
-	var out []contact2
-	for _, end := range []lin.Vec2{c.a, c.b} {
-		out = appendUnique2(out, flip2(circlePolygon(Circle{c.r}, end, poly)))
+func polygonCapsule(sc *scratch2, out []contact2, poly []lin.Vec2, c prim2) []contact2 {
+	start := len(out)
+	for _, end := range [2]lin.Vec2{c.a, c.b} {
+		sc.tmp = circlePolygon(sc, sc.tmp[:0], Circle{c.r}, end, poly)
+		flip2(sc.tmp, 0)
+		out = appendUnique2(out, start, sc.tmp)
 	}
 	for _, v := range poly {
 		q := closestOnSegment2(v, c.a, c.b)
@@ -289,7 +309,8 @@ func polygonCapsule(poly []lin.Vec2, c prim2) []contact2 {
 			continue
 		}
 		n := d.Mul(1 / dist) // from the polygon corner into the capsule
-		out = appendUnique2(out, []contact2{{point: v, normal: n, depth: c.r - dist}})
+		sc.tmp = append(sc.tmp[:0], contact2{point: v, normal: n, depth: c.r - dist})
+		out = appendUnique2(out, start, sc.tmp)
 	}
 	return out
 }
@@ -338,7 +359,8 @@ func closestPoint2(s Shape2, pos lin.Vec2, rot float32, p lin.Vec2) (lin.Vec2, f
 	best := float32(math.Inf(1))
 	var bestP lin.Vec2
 	r := lin.V2(best, best)
-	for _, pr := range prims2(s, pos, rot, r.Neg(), r) {
+	var pts []lin.Vec2
+	for _, pr := range prims2(nil, &pts, s, pos, rot, r.Neg(), r) {
 		var q lin.Vec2
 		var d float32
 		switch pr.kind {
@@ -378,7 +400,8 @@ func closestPoint2(s Shape2, pos lin.Vec2, rot float32, p lin.Vec2) (lin.Vec2, f
 // closestPointPolygon is the polygon point nearest p, or p itself with
 // distance zero when p is inside.
 func closestPointPolygon(p lin.Vec2, poly []lin.Vec2) (lin.Vec2, float32) {
-	normals := polygonNormals(poly)
+	var nbuf [8]lin.Vec2
+	normals := polygonNormals(nbuf[:0], poly)
 	inside := true
 	best := float32(math.Inf(1))
 	var bestP lin.Vec2

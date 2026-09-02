@@ -212,7 +212,10 @@ func (p *Player) applyNNA(ch *channel, inst *Instrument, sample *Sample, note in
 	if action == NNACut {
 		return
 	}
-	bg := new(voice)
+	if len(p.bg) >= 64 {
+		return // the background is full; the oldest notes simply cut
+	}
+	bg := p.takeVoice()
 	*bg = ch.voice
 	switch action {
 	case NNAOff:
@@ -220,9 +223,7 @@ func (p *Player) applyNNA(ch *channel, inst *Instrument, sample *Sample, note in
 	case NNAFade:
 		bg.fading = true
 	}
-	if len(p.bg) < 64 {
-		p.bg = append(p.bg, bg)
-	}
+	p.bg = append(p.bg, bg)
 }
 
 // volumeColumnRow applies the tick-0 part of an XM/IT volume column.

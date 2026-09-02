@@ -1,8 +1,9 @@
 package phys
 
 import (
+	"cmp"
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
@@ -247,54 +248,91 @@ type jointSolver3 interface {
 	sides() (ecs.Entity, ecs.Entity)
 }
 
+// jointItem3 is one prepared joint waiting to be put in entity order.
+// kind and at name the solver slice and the row in it, because the
+// slices may still grow while the joints are being gathered.
+type jointItem3 struct {
+	id   uint64
+	kind uint8
+	at   int32
+}
+
+const (
+	jointDistance3 = iota
+	jointHinge3
+	jointBall3
+	jointSpring3
+	jointFixed3
+)
+
 // gatherJoints3 collects every joint in a stable order (by entity id).
+// The solvers are stored by value in the state's slices and the returned
+// interfaces point into them, so a step allocates nothing once the
+// slices have grown to fit.
 func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
-	type item struct {
-		id uint64
-		j  jointSolver3
-	}
-	var items []item
+	s.items = s.items[:0]
+	s.distanceSolvers = s.distanceSolvers[:0]
+	s.hingeSolvers = s.hingeSolvers[:0]
+	s.ballSolvers = s.ballSolvers[:0]
+	s.springSolvers = s.springSolvers[:0]
+	s.fixedSolvers = s.fixedSolvers[:0]
 	s.distance.Each(func(e ecs.Entity, j *DistanceJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
 		if oka && okb && (a.b != nil || b.b != nil) {
-			items = append(items, item{e.ID(), &distanceSolver3{j: j, a: a, b: b}})
+			s.items = append(s.items, jointItem3{e.ID(), jointDistance3, int32(len(s.distanceSolvers))})
+			s.distanceSolvers = append(s.distanceSolvers, distanceSolver3{j: j, a: a, b: b})
 		}
 	})
 	s.hinge.Each(func(e ecs.Entity, j *HingeJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
 		if oka && okb && (a.b != nil || b.b != nil) {
-			items = append(items, item{e.ID(), &hingeSolver3{j: j, a: a, b: b}})
+			s.items = append(s.items, jointItem3{e.ID(), jointHinge3, int32(len(s.hingeSolvers))})
+			s.hingeSolvers = append(s.hingeSolvers, hingeSolver3{j: j, a: a, b: b})
 		}
 	})
 	s.ball.Each(func(e ecs.Entity, j *BallJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
 		if oka && okb && (a.b != nil || b.b != nil) {
-			items = append(items, item{e.ID(), &ballSolver3{j: j, a: a, b: b}})
+			s.items = append(s.items, jointItem3{e.ID(), jointBall3, int32(len(s.ballSolvers))})
+			s.ballSolvers = append(s.ballSolvers, ballSolver3{j: j, a: a, b: b})
 		}
 	})
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
 		if oka && okb && (a.b != nil || b.b != nil) {
-			items = append(items, item{e.ID(), &springSolver3{j: j, a: a, b: b}})
+			s.items = append(s.items, jointItem3{e.ID(), jointSpring3, int32(len(s.springSolvers))})
+			s.springSolvers = append(s.springSolvers, springSolver3{j: j, a: a, b: b})
 		}
 	})
 	s.fixed.Each(func(e ecs.Entity, j *FixedJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
 		if oka && okb && (a.b != nil || b.b != nil) {
-			items = append(items, item{e.ID(), &fixedSolver3{j: j, a: a, b: b}})
+			s.items = append(s.items, jointItem3{e.ID(), jointFixed3, int32(len(s.fixedSolvers))})
+			s.fixedSolvers = append(s.fixedSolvers, fixedSolver3{j: j, a: a, b: b})
 		}
 	})
-	sort.Slice(items, func(i, k int) bool { return items[i].id < items[k].id })
-	out := make([]jointSolver3, len(items))
-	for i, it := range items {
-		out[i] = it.j
+	slices.SortFunc(s.items, func(a, b jointItem3) int { return cmp.Compare(a.id, b.id) })
+	s.joints = s.joints[:0]
+	for _, it := range s.items {
+		switch it.kind {
+		case jointDistance3:
+			s.joints = append(s.joints, &s.distanceSolvers[it.at])
+		case jointHinge3:
+			s.joints = append(s.joints, &s.hingeSolvers[it.at])
+		case jointBall3:
+			s.joints = append(s.joints, &s.ballSolvers[it.at])
+		case jointSpring3:
+			s.joints = append(s.joints, &s.springSolvers[it.at])
+		default:
+			s.joints = append(s.joints, &s.fixedSolvers[it.at])
+		}
 	}
-	return out
+	return s.joints
 }
 
 type distanceSolver3 struct {

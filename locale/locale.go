@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -384,10 +385,8 @@ func (t *Translator) Lang() string { return t.lang }
 // A missing key returns "[key]".
 func (t *Translator) T(key string, args ...any) string {
 	n, hasN := float64(0), false
-	values := map[string]any{}
 	for i := 0; i+1 < len(args); i += 2 {
 		name, _ := args[i].(string)
-		values[name] = args[i+1]
 		if f, ok := toFloat(args[i+1]); ok && (name == "n" || !hasN) {
 			n, hasN = f, true
 		}
@@ -398,7 +397,7 @@ func (t *Translator) T(key string, args ...any) string {
 			continue
 		}
 		if msg, ok := tbl.lookup(key, n, hasN); ok {
-			return expand(msg, values)
+			return expand(msg, args)
 		}
 	}
 	return "[" + key + "]"
@@ -425,13 +424,62 @@ func toFloat(v any) (float64, bool) {
 	return 0, false
 }
 
+// argValue finds the value given for a placeholder name in args, which
+// are alternating names and values. The args are scanned from the end
+// so that a name given twice takes its last value. Scanning costs less
+// than building a map for the handful of arguments a message has.
+func argValue(args []any, name string) (any, bool) {
+	last := len(args) - 2
+	if last%2 != 0 {
+		last-- // the pairs start at even positions; a trailing odd value is ignored
+	}
+	for i := last; i >= 0; i -= 2 {
+		if s, _ := args[i].(string); s == name {
+			return args[i+1], true
+		}
+	}
+	return nil, false
+}
+
+// writeValue writes a placeholder's value, avoiding the string fmt.Sprint
+// would allocate for the types a game usually passes.
+func writeValue(sb *strings.Builder, v any) {
+	switch x := v.(type) {
+	case string:
+		sb.WriteString(x)
+	case int:
+		writeInt(sb, int64(x))
+	case int32:
+		writeInt(sb, int64(x))
+	case int64:
+		writeInt(sb, x)
+	case uint:
+		writeInt(sb, int64(x))
+	case bool:
+		if x {
+			sb.WriteString("true")
+		} else {
+			sb.WriteString("false")
+		}
+	default:
+		sb.WriteString(fmt.Sprint(v))
+	}
+}
+
+func writeInt(sb *strings.Builder, v int64) {
+	var buf [20]byte
+	sb.Write(strconv.AppendInt(buf[:0], v, 10))
+}
+
 // expand replaces {name} with the value's text; unknown names are left
-// as written, and "{{" and "}}" write a brace each.
-func expand(msg string, values map[string]any) string {
+// as written, and "{{" and "}}" write a brace each. args are the
+// alternating names and values T was given.
+func expand(msg string, args []any) string {
 	if !strings.Contains(msg, "{") {
 		return msg
 	}
 	var sb strings.Builder
+	sb.Grow(len(msg) + 8)
 	for i := 0; i < len(msg); i++ {
 		c := msg[i]
 		if c == '}' && i+1 < len(msg) && msg[i+1] == '}' {
@@ -454,8 +502,8 @@ func expand(msg string, values map[string]any) string {
 			break
 		}
 		name := msg[i+1 : i+end]
-		if v, ok := values[name]; ok {
-			sb.WriteString(fmt.Sprint(v))
+		if v, ok := argValue(args, name); ok {
+			writeValue(&sb, v)
 		} else {
 			sb.WriteString(msg[i : i+end+1])
 		}

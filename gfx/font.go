@@ -45,8 +45,11 @@ type Font struct {
 	shaper   shaping.HarfbuzzShaper
 	seg      shaping.Segmenter
 	wrapper  shaping.LineWrapper
-	runs     map[runKey][]shaping.Output
-	lines    map[lineKey][]shaping.Line
+	runs     genCache[runKey, []shaping.Output]
+	lines    genCache[lineKey, []shaping.Line]
+	blocks   genCache[blockKey, []Glyph]
+	measures genCache[measureKey, lin.Vec2]
+	scratch  textScratch
 	rast     *vector.Rasterizer
 }
 
@@ -112,9 +115,11 @@ func (g *Graphics) newFont(ttf []byte, size float32, opts FontOptions, scale, px
 		packer:  shelfPacker{width: side, height: side, pad: 1},
 		pix:     image.NewRGBA(image.Rect(0, 0, side, side)),
 		g:       g,
-		runs:    map[runKey][]shaping.Output{},
-		lines:   map[lineKey][]shaping.Line{},
 	}
+	// A cached block is one glyph per character, so the glyph cache is
+	// bounded by the glyphs it holds rather than by how many blocks.
+	f.blocks.weigh = func(glyphs []Glyph) int { return len(glyphs) + 1 }
+	f.blocks.limit = textBlockGlyphs
 	for i, data := range append([][]byte{ttf}, opts.Fallbacks...) {
 		face, err := font.ParseTTF(bytes.NewReader(data))
 		if err != nil {

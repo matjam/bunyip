@@ -207,14 +207,28 @@ type subpath struct {
 }
 
 // flatten turns the path into polylines, approximating curves to within
-// tol view units.
-func (p *Path) flatten(tol float32) []subpath {
+// tol view units, in storage of its own.
+func (p *Path) flatten(tol float32) []subpath { return p.flattenInto(tol, nil) }
+
+// flattenInto is flatten writing into out, reusing out's sub-paths and
+// their point slices. The result aliases out, so a caller that keeps it
+// across another call must copy it first.
+func (p *Path) flattenInto(tol float32, out []subpath) []subpath {
 	tol = max(tol, 1e-3)
-	var out []subpath
+	kept := out[:cap(out)]
+	out = out[:0]
 	var cur *subpath
 	begin := func(at lin.Vec2) {
-		out = append(out, subpath{pts: []lin.Vec2{at}})
-		cur = &out[len(out)-1]
+		n := len(out)
+		if n < len(kept) {
+			// Reuse the point slice this position held last time.
+			out = out[:n+1]
+			out[n] = subpath{pts: append(kept[n].pts[:0], at)}
+		} else {
+			out = append(out, subpath{pts: []lin.Vec2{at}})
+			kept = out[:cap(out)]
+		}
+		cur = &out[n]
 	}
 	last := func() lin.Vec2 {
 		if cur == nil || len(cur.pts) == 0 {
@@ -361,11 +375,17 @@ func (g *Graphics) fringe() float32 {
 // FillPath fills the path's interior with a colour.
 func (g *Graphics) FillPath(p *Path, c Color, opts FillOptions) {
 	fr := g.fringe()
-	subs := p.flatten(fr * 0.25)
-	var b filler
+	g.pathSubs = p.flattenInto(fr*0.25, g.pathSubs)
+	subs := g.pathSubs
+	// The filler is kept on Graphics so a frame of paths reuses its
+	// vertex, edge and scanline storage instead of allocating per call.
+	b := &g.pathFill
 	b.rule = opts.Rule
 	b.color = c.premultiplied()
 	b.fringe = fr
+	b.tex, b.grad = nil, nil
+	b.uvOrigin, b.uvSize = lin.Vec2{}, lin.Vec2{}
+	b.verts = b.verts[:0]
 	if opts.NoAntiAlias {
 		b.fringe = 0
 	}
@@ -581,8 +601,15 @@ func (b *filler) run(subs []subpath) {
 // StrokePath outlines the path with a colour.
 func (g *Graphics) StrokePath(p *Path, c Color, opts StrokeOptions) {
 	fr := g.fringe()
-	subs := p.flatten(fr * 0.25)
-	s := stroker{color: c.premultiplied(), fringe: fr, opts: opts}
+	g.pathSubs = p.flattenInto(fr*0.25, g.pathSubs)
+	subs := g.pathSubs
+	// The stroker is kept on Graphics so its vertex storage is reused.
+	s := &g.pathStroke
+	s.color = c.premultiplied()
+	s.fringe = fr
+	s.opts = opts
+	s.grad = nil
+	s.verts = s.verts[:0]
 	if opts.NoAntiAlias {
 		s.fringe = 0
 	}

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"math"
 	"strings"
 
@@ -76,7 +75,7 @@ func (c *Context) IntSlider(label string, value *int, lo, hi int) bool {
 		}
 		f = float32(*value)
 	}
-	c.note("slider", label, fmt.Sprint(*value), false)
+	c.note("slider", label, c.formatInt(*value), false)
 	sk := c.skin()
 	track := Rect{X: r.X, Y: r.Y + r.H/2 - 3, W: r.W, H: 6}
 	c.box(sk.Track, track, c.Theme.Track, gfx.Color{})
@@ -87,7 +86,7 @@ func (c *Context) IntSlider(label string, value *int, lo, hi int) bool {
 	c.box(sk.Fill, Rect{X: r.X, Y: track.Y, W: r.W * t, H: track.H}, c.Theme.Accent, gfx.Color{})
 	knob := Rect{X: r.X + r.W*t - 6, Y: r.Y + r.H/2 - 9, W: 12, H: 18}
 	c.box(sk.Knob, knob, c.Theme.Text, gfx.Color{})
-	c.text(fmt.Sprintf("%s: %d", label, *value), full.X, full.Y, c.Theme.TextDim)
+	c.text(c.labelInt(label, *value), full.X, full.Y, c.Theme.TextDim)
 	return changed
 }
 
@@ -110,7 +109,7 @@ func (c *Context) Spinner(label string, value *int, lo, hi, step int) bool {
 		v := c.next(c.Theme.RowHeight)
 		c.interact(id, v)
 		c.box(c.skin().Field, v, c.Theme.Field, c.Theme.FieldBorder)
-		c.textCentred(fmt.Sprint(*value), v, c.Theme.Text)
+		c.textCentred(c.formatInt(*value), v, c.Theme.Text)
 		c.noFocus = true
 		plus := c.Button("+")
 		c.noFocus = false
@@ -124,7 +123,7 @@ func (c *Context) Spinner(label string, value *int, lo, hi, step int) bool {
 			changed = true
 		}
 	})
-	c.note("spinner", label, fmt.Sprint(*value), false)
+	c.note("spinner", label, c.formatInt(*value), false)
 	return changed
 }
 
@@ -227,7 +226,7 @@ func (c *Context) ColorPicker(label string, col *gfx.Color) bool {
 	c.fill(swatch, *col)
 	c.border(swatch, c.Theme.FieldBorder)
 	r8, g8, b8 := toSRGB8(col.R), toSRGB8(col.G), toSRGB8(col.B)
-	hex := fmt.Sprintf("#%02x%02x%02x", r8, g8, b8)
+	hex := c.formatHex(r8, g8, b8)
 	c.text(hex, swatch.X, swatch.Y+swatch.H+c.Theme.Spacing, c.Theme.Text)
 	c.note("colorpicker", label, hex, false)
 	return changed
@@ -305,14 +304,20 @@ func (c *Context) IconButton(icon gfx.Region, label string) bool {
 
 // RichLabel draws markup (see gfx.ParseRich) wrapped to the width
 // available, in the theme's regular, bold and italic fonts, and returns
-// the name of a link clicked this frame, or "".
+// the name of a link clicked this frame, or "". The markup is parsed
+// and measured once and kept for as long as the interface keeps drawing
+// it, so the same label every frame costs a map lookup.
 func (c *Context) RichLabel(markup string) string {
-	rt := gfx.ParseRich(markup)
+	e := c.richText(markup)
 	fonts := gfx.RichFonts{Regular: c.Theme.Font, Bold: c.Theme.BoldFont, Italic: c.Theme.ItalicFont, BoldItalic: c.Theme.BoldItalicFont}
 	opts := gfx.TextOptions{Width: c.nextWidth()}
-	_, h := fonts.MeasureRich(rt, opts)
+	if !e.sized || e.fonts != fonts || e.opts != opts {
+		e.w, e.h = fonts.MeasureRich(e.rt, opts)
+		e.fonts, e.opts, e.sized = fonts, opts, true
+	}
+	h := e.h
 	r := c.next(h)
-	links := c.g.DrawRichText(fonts, rt, r.X, r.Y+(r.H-h)/2, opts, c.Theme.Text)
+	links := c.g.DrawRichText(fonts, e.rt, r.X, r.Y+(r.H-h)/2, opts, c.Theme.Text)
 	clicked := ""
 	for _, l := range links {
 		if l.Rect.Contains(lin.V2(c.mouseX, c.mouseY)) {
@@ -322,6 +327,6 @@ func (c *Context) RichLabel(markup string) string {
 			}
 		}
 	}
-	c.note("label", rt.Plain(), "", false)
+	c.note("label", e.plain, "", false)
 	return clicked
 }

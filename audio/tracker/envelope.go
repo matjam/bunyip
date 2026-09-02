@@ -62,9 +62,37 @@ func (p *Player) updateVoices() {
 		p.updateVoice(v)
 		if v.active {
 			live = append(live, v)
+		} else {
+			p.bgFree = append(p.bgFree, v)
 		}
 	}
+	// Clear the tail so the compacted slice does not keep dead voices,
+	// and their samples and instruments, alive behind its length.
+	for i := len(live); i < len(p.bg); i++ {
+		p.bg[i] = nil
+	}
 	p.bg = live
+}
+
+// takeVoice returns a background voice to fill in, from the free list
+// when one is waiting. The caller overwrites every field.
+func (p *Player) takeVoice() *voice {
+	if n := len(p.bgFree); n > 0 {
+		v := p.bgFree[n-1]
+		p.bgFree = p.bgFree[:n-1]
+		return v
+	}
+	return new(voice)
+}
+
+// recycle empties a background voice list onto the free list and returns
+// it truncated, so a seek or a restart reuses what it was holding.
+func (p *Player) recycle(bg []*voice) []*voice {
+	for i, v := range bg {
+		p.bgFree = append(p.bgFree, v)
+		bg[i] = nil
+	}
+	return bg[:0]
 }
 
 func (p *Player) updateVoice(v *voice) {

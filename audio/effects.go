@@ -6,41 +6,64 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
-// lowPass is a second-order Butterworth low-pass filter on stereo frames.
-type lowPass struct {
+// biquad holds a second-order Butterworth low-pass filter's coefficients.
+// It is separate from the filter's state because the two are reached from
+// different threads: the game loop sets coefficients under the mixer's
+// lock, and the mixer runs the state over a block without it.
+type biquad struct {
 	b0, b1, b2, a1, a2 float32
-	z                  [2][2]float32 // per-channel state, transposed direct form II
 }
 
-func newLowPass(cutoff float32, rate int) *lowPass {
-	f := &lowPass{}
-	f.set(cutoff, rate)
-	return f
-}
-
-func (f *lowPass) set(cutoff float32, rate int) {
+// set computes the coefficients for a cutoff in Hz at the given rate.
+func (c *biquad) set(cutoff float32, rate int) {
 	cutoff = min(cutoff, float32(rate)*0.49)
 	w0 := 2 * math.Pi * float64(cutoff) / float64(rate)
 	cs, sn := math.Cos(w0), math.Sin(w0)
 	alpha := sn / (2 * math.Sqrt2 / 2)
 	a0 := 1 + alpha
-	f.b0 = float32((1 - cs) / 2 / a0)
-	f.b1 = float32((1 - cs) / a0)
-	f.b2 = f.b0
-	f.a1 = float32(-2 * cs / a0)
-	f.a2 = float32((1 - alpha) / a0)
+	c.b0 = float32((1 - cs) / 2 / a0)
+	c.b1 = float32((1 - cs) / a0)
+	c.b2 = c.b0
+	c.a1 = float32(-2 * cs / a0)
+	c.a2 = float32((1 - alpha) / a0)
 }
 
-func (f *lowPass) process(buf []float32) {
+// newBiquad returns the coefficients for a cutoff in Hz at the given rate.
+func newBiquad(cutoff float32, rate int) biquad {
+	var c biquad
+	c.set(cutoff, rate)
+	return c
+}
+
+// lowPass is the running state of a biquad over stereo frames, in
+// transposed direct form II: two delays per channel. It belongs to the
+// mixer's thread and outlives coefficient changes, so retuning a filter
+// while it runs never resets it and never clicks.
+type lowPass struct {
+	l0, l1 float32 // left channel delays
+	r0, r1 float32 // right channel delays
+}
+
+// process filters a block of interleaved stereo in place. The two
+// channels are unrolled and every coefficient and delay is held in a
+// local, so the inner loop touches no memory but the buffer.
+func (f *lowPass) process(c biquad, buf []float32) {
+	b0, b1, b2, a1, a2 := c.b0, c.b1, c.b2, c.a1, c.a2
+	l0, l1, r0, r1 := f.l0, f.l1, f.r0, f.r1
 	for i := 0; i+1 < len(buf); i += 2 {
-		for c := range 2 {
-			x := buf[i+c]
-			y := f.b0*x + f.z[c][0]
-			f.z[c][0] = f.b1*x - f.a1*y + f.z[c][1]
-			f.z[c][1] = f.b2*x - f.a2*y
-			buf[i+c] = y
-		}
+		x := buf[i]
+		y := b0*x + l0
+		l0 = b1*x - a1*y + l1
+		l1 = b2*x - a2*y
+		buf[i] = y
+
+		x = buf[i+1]
+		y = b0*x + r0
+		r0 = b1*x - a1*y + r1
+		r1 = b2*x - a2*y
+		buf[i+1] = y
 	}
+	f.l0, f.l1, f.r0, f.r1 = l0, l1, r0, r1
 }
 
 // ReverbSettings describe a reverb, which voices feed through their Reverb
@@ -161,27 +184,32 @@ func (m *Mixer) effectiveReverb() ReverbSettings {
 	return base.lerp(zone, weight)
 }
 
-// updateReverb applies the effective settings, allocating or dropping the
-// reverb as needed. Callers hold the lock.
+// updateReverb settles the effective settings, allocating or dropping the
+// reverb as needed. The settings reach the reverb itself at the start of
+// the next mixed block, because the reverb runs on the mixer's thread
+// without the lock. Callers hold the lock.
 func (m *Mixer) updateReverb() {
 	s := m.effectiveReverb()
 	if s.Wet <= 0 && len(m.zones) == 0 {
 		m.reverb = nil
 		m.applied = ReverbSettings{}
+		m.pending = false
 		return
 	}
 	if m.reverb == nil {
 		m.reverb = newReverb(m.rate)
+		m.pending = true
 	}
 	if s != m.applied {
-		m.reverb.set(s)
 		m.applied = s
+		m.pending = true
 	}
 }
 
 // SetReverb gives the bus a reverb of its own. Voices on the bus send to
 // it instead of the mixer's shared reverb, so a cave's effects can ring
 // while the music stays dry, or the reverse. The zero value removes it.
+// The settings reach the reverb at the start of the next mixed block.
 func (b *Bus) SetReverb(s ReverbSettings) {
 	b.m.mu.Lock()
 	defer b.m.mu.Unlock()
@@ -192,7 +220,7 @@ func (b *Bus) SetReverb(s ReverbSettings) {
 	if b.reverb == nil {
 		b.reverb = newReverb(b.m.rate)
 	}
-	b.reverb.set(s.withDefaults())
+	b.applied, b.pending = s.withDefaults(), true
 }
 
 // occlusionGain is the level an occluded voice keeps: 0 leaves it alone,

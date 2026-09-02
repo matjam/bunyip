@@ -131,14 +131,25 @@ func (s *State) KeyHeld(k Key) float32 { return s.held[k] }
 
 // KeysDown returns every key currently held, in key order: for
 // rebinding screens and combos.
-func (s *State) KeysDown() []Key {
-	var keys []Key
+//
+// It allocates the slice it returns, so it is for a settings screen or a
+// combo check that runs on demand, not for every frame of play. To ask
+// every frame, keep a slice and use AppendKeysDown, or ask about the keys
+// the game cares about with KeyDown.
+func (s *State) KeysDown() []Key { return s.AppendKeysDown(nil) }
+
+// AppendKeysDown appends every key currently held to dst, in key order,
+// and returns the extended slice. Pass a slice kept between frames,
+// truncated to zero length, and the scan allocates nothing:
+//
+//	g.held = in.AppendKeysDown(g.held[:0])
+func (s *State) AppendKeysDown(dst []Key) []Key {
 	for k, down := range s.down {
 		if down {
-			keys = append(keys, Key(k))
+			dst = append(dst, Key(k))
 		}
 	}
-	return keys
+	return dst
 }
 
 // SetStep tells the state how many seconds each update covers, for

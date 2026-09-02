@@ -32,6 +32,7 @@ type Renderer struct {
 	onResize  func(vk.VkExtent2D) error
 	readback  *Buffer
 	depth     *Image
+	scratch   frameScratch
 	// DepthFormat is the format of the depth attachment every frame carries;
 	// pipelines must declare it.
 	DepthFormat vk.VkFormat
@@ -41,6 +42,25 @@ type frame struct {
 	cb             vk.VkCommandBuffer
 	fence          vk.VkFence
 	imageAvailable vk.VkSemaphore
+	pub            Frame // handed to the caller, refilled each frame
+}
+
+// frameScratch holds the structures the per-frame calls take by pointer.
+// A fresh local for each would be forced onto the heap once per frame, so
+// they live with the renderer and are filled in place. A frame is begun,
+// recorded and ended from the goroutine that owns the device.
+type frameScratch struct {
+	begin    vk.VkCommandBufferBeginInfo
+	color    vk.VkRenderingAttachmentInfo
+	depth    vk.VkRenderingAttachmentInfo
+	stencil  vk.VkRenderingAttachmentInfo
+	renderin vk.VkRenderingInfo
+	wait     vk.VkSemaphoreSubmitInfo
+	signal   vk.VkSemaphoreSubmitInfo
+	cbInfo   vk.VkCommandBufferSubmitInfo
+	submit   vk.VkSubmitInfo2
+	present  vk.VkPresentInfoKHR
+	index    uint32
 }
 
 // Frame is what a caller records into between BeginFrame and EndFrame.
@@ -134,11 +154,12 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	}
 	d := r.Device
 	f := &r.frames[r.current]
-	if err := vk.Check("vkWaitForFences", vk.VkWaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
+	sc := &r.scratch
+	if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
 		return nil, false, deviceLostOr(err)
 	}
-	var index uint32
-	res := vk.VkAcquireNextImageKHR(d.Handle, r.Swapchain.Handle, ^uint64(0), f.imageAvailable, 0, &index)
+	sc.index = 0
+	res := vk.AcquireNextImageKHR(d.Handle, r.Swapchain.Handle, ^uint64(0), f.imageAvailable, 0, &sc.index)
 	if res == vk.VK_ERROR_OUT_OF_DATE_KHR {
 		r.resize = true
 		return nil, false, nil
@@ -148,16 +169,17 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 			return nil, false, err
 		}
 	}
-	if err := vk.Check("vkResetFences", vk.VkResetFences(d.Handle, 1, &f.fence)); err != nil {
+	if err := vk.Check("vkResetFences", vk.ResetFences(d.Handle, 1, &f.fence)); err != nil {
 		return nil, false, err
 	}
-	begin := vk.VkCommandBufferBeginInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, Flags: vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}
-	if err := vk.Check("vkBeginCommandBuffer", vk.VkBeginCommandBuffer(f.cb, &begin)); err != nil {
+	sc.begin = vk.VkCommandBufferBeginInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, Flags: vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}
+	if err := vk.Check("vkBeginCommandBuffer", vk.BeginCommandBuffer(f.cb, &sc.begin)); err != nil {
 		return nil, false, err
 	}
 	r.inFrame = true
 	r.inPass = false
-	return &Frame{CB: f.cb, ImageIndex: index, Slot: r.current, Extent: r.Swapchain.Extent}, true, nil
+	f.pub = Frame{CB: f.cb, ImageIndex: sc.index, Slot: r.current, Extent: r.Swapchain.Extent}
+	return &f.pub, true, nil
 }
 
 // OnResize registers a callback run after the swapchain is rebuilt, for
@@ -182,7 +204,8 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 	*clearValue.Color().Float32() = clear
 	var depthClear vk.VkClearValue
 	*depthClear.DepthStencil() = vk.VkClearDepthStencilValue{Depth: 1}
-	depthAttachment := vk.VkRenderingAttachmentInfo{
+	sc := &r.scratch
+	sc.depth = vk.VkRenderingAttachmentInfo{
 		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		ImageView:   r.depth.AttachView,
 		ImageLayout: depthLayout(r.DepthFormat),
@@ -190,8 +213,8 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 		StoreOp:     vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
 		ClearValue:  depthClear,
 	}
-	stencilAttachment := depthAttachment
-	color := vk.VkRenderingAttachmentInfo{
+	sc.stencil = sc.depth
+	sc.color = vk.VkRenderingAttachmentInfo{
 		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		ImageView:   r.Swapchain.Views[fr.ImageIndex],
 		ImageLayout: vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -199,18 +222,18 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 		StoreOp:     vk.VK_ATTACHMENT_STORE_OP_STORE,
 		ClearValue:  clearValue,
 	}
-	rendering := vk.VkRenderingInfo{
+	sc.renderin = vk.VkRenderingInfo{
 		SType:                vk.VK_STRUCTURE_TYPE_RENDERING_INFO,
 		RenderArea:           vk.VkRect2D{Extent: r.Swapchain.Extent},
 		LayerCount:           1,
 		ColorAttachmentCount: 1,
-		PColorAttachments:    &color,
-		PDepthAttachment:     &depthAttachment,
+		PColorAttachments:    &sc.color,
+		PDepthAttachment:     &sc.depth,
 	}
 	if HasStencil(r.DepthFormat) {
-		rendering.PStencilAttachment = &stencilAttachment
+		sc.renderin.PStencilAttachment = &sc.stencil
 	}
-	vk.VkCmdBeginRendering(f.cb, &rendering)
+	vk.CmdBeginRendering(f.cb, &sc.renderin)
 	SetViewport(f.cb, r.Swapchain.Extent)
 	r.inPass = true
 }
@@ -230,7 +253,7 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 		r.BeginSwapchainPass(fr, [4]float32{0, 0, 0, 1})
 	}
 	r.inPass = false
-	vk.VkCmdEndRendering(f.cb)
+	vk.CmdEndRendering(f.cb)
 	var readback *Buffer
 	if capture {
 		var err error
@@ -246,25 +269,26 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 		srcLayout, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vk.VK_ACCESS_2_MEMORY_WRITE_BIT,
 		vk.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0)
-	if err := vk.Check("vkEndCommandBuffer", vk.VkEndCommandBuffer(f.cb)); err != nil {
+	if err := vk.Check("vkEndCommandBuffer", vk.EndCommandBuffer(f.cb)); err != nil {
 		return nil, err
 	}
-	wait := vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: f.imageAvailable, StageMask: vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT}
-	signal := vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: r.Swapchain.renderDone[fr.ImageIndex], StageMask: vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}
-	cbInfo := vk.VkCommandBufferSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, CommandBuffer: f.cb}
-	submit := vk.VkSubmitInfo2{
+	sc := &r.scratch
+	sc.wait = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: f.imageAvailable, StageMask: vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT}
+	sc.signal = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: r.Swapchain.renderDone[fr.ImageIndex], StageMask: vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}
+	sc.cbInfo = vk.VkCommandBufferSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, CommandBuffer: f.cb}
+	sc.submit = vk.VkSubmitInfo2{
 		SType:                    vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
 		WaitSemaphoreInfoCount:   1,
-		PWaitSemaphoreInfos:      &wait,
+		PWaitSemaphoreInfos:      &sc.wait,
 		CommandBufferInfoCount:   1,
-		PCommandBufferInfos:      &cbInfo,
+		PCommandBufferInfos:      &sc.cbInfo,
 		SignalSemaphoreInfoCount: 1,
-		PSignalSemaphoreInfos:    &signal,
+		PSignalSemaphoreInfos:    &sc.signal,
 	}
-	if err := vk.Check("vkQueueSubmit2", vk.VkQueueSubmit2(d.Queue, 1, &submit, f.fence)); err != nil {
+	if err := vk.Check("vkQueueSubmit2", vk.QueueSubmit2(d.Queue, 1, &sc.submit, f.fence)); err != nil {
 		return nil, deviceLostOr(err)
 	}
-	present := vk.VkPresentInfoKHR{
+	sc.present = vk.VkPresentInfoKHR{
 		SType:              vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 		WaitSemaphoreCount: 1,
 		PWaitSemaphores:    &r.Swapchain.renderDone[fr.ImageIndex],
@@ -272,7 +296,7 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 		PSwapchains:        &r.Swapchain.Handle,
 		PImageIndices:      &fr.ImageIndex,
 	}
-	res := vk.VkQueuePresentKHR(d.Queue, &present)
+	res := vk.QueuePresentKHR(d.Queue, &sc.present)
 	switch res {
 	case vk.VK_ERROR_OUT_OF_DATE_KHR, vk.VK_SUBOPTIMAL_KHR:
 		r.resize = true
@@ -285,7 +309,7 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 	if !capture {
 		return nil, nil
 	}
-	if err := vk.Check("vkWaitForFences", vk.VkWaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
+	if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
 		return nil, err
 	}
 	return r.decodeReadback(readback), nil

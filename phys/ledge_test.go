@@ -60,7 +60,7 @@ func TestLedgeManifold3D(t *testing.T) {
 	// A flat cube sunk 0.05 into the top, overhanging the side by 0.9:
 	// the top face is the reference and only the strip over the ledge
 	// (x from 0.4 to 0.5) may contribute points.
-	cs := collide3(ledge, lin.V3(0, 0, 0), identity, cube, lin.V3(0.9, 1.95, 0), identity)
+	cs := collide3(new(scratch3), nil, ledge, lin.V3(0, 0, 0), identity, cube, lin.V3(0.9, 1.95, 0), identity)
 	if len(cs) != 4 {
 		t.Fatalf("flat overhang: got %d contacts, want 4", len(cs))
 	}
@@ -77,7 +77,7 @@ func TestLedgeManifold3D(t *testing.T) {
 	// ledge's edge clipped to the cube's width gives its two ends), not at
 	// the far end of the 24-unit ledge.
 	rot := mat3FromQuat(lin.AxisAngle(lin.V3(0, 0, 1), -0.1))
-	cs = collide3(ledge, lin.V3(0, 0, 0), identity, cube, lin.V3(0.9, 1.95, 0), rot)
+	cs = collide3(new(scratch3), nil, ledge, lin.V3(0, 0, 0), identity, cube, lin.V3(0.9, 1.95, 0), rot)
 	if len(cs) < 1 || len(cs) > 2 {
 		t.Fatalf("tilted on corner: got %d contacts, want 1 or 2: %+v", len(cs), cs)
 	}

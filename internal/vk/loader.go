@@ -84,10 +84,15 @@ func libraryCandidates() []string {
 }
 
 // bind registers a command variable when the driver exposes the entry point,
-// and leaves it nil otherwise so callers can test for support.
+// and leaves it nil otherwise so callers can test for support. Commands that
+// have an allocation-free wrapper in fastcall.go also get their raw address
+// recorded.
 func bind(fptr any, addr uintptr) {
 	if addr == 0 {
 		return
 	}
 	purego.RegisterFunc(fptr, addr)
+	if slot, ok := fastAddrs[fptr]; ok {
+		*slot = addr
+	}
 }

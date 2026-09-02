@@ -140,27 +140,28 @@ func component(v lin.Vec3, axis int) float32 {
 }
 
 // query calls fn for every triangle whose bounds overlap the box, in
-// the mesh's frame.
+// the mesh's frame. It walks the tree by recursion, whose depth is the
+// tree's, so a query allocates nothing.
 func (t *meshTree) query(lo, hi lin.Vec3, fn func(tri int)) {
 	if len(t.nodes) == 0 {
 		return
 	}
-	stack := []int{0}
-	for len(stack) > 0 {
-		id := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		n := &t.nodes[id]
-		if n.lo.X > hi.X || lo.X > n.hi.X || n.lo.Y > hi.Y || lo.Y > n.hi.Y || n.lo.Z > hi.Z || lo.Z > n.hi.Z {
-			continue
-		}
-		if n.left < 0 {
-			for _, ti := range t.tris[n.start : n.start+n.count] {
-				fn(ti)
-			}
-			continue
-		}
-		stack = append(stack, n.left, n.right)
+	t.queryNode(0, lo, hi, fn)
+}
+
+func (t *meshTree) queryNode(id int, lo, hi lin.Vec3, fn func(tri int)) {
+	n := &t.nodes[id]
+	if n.lo.X > hi.X || lo.X > n.hi.X || n.lo.Y > hi.Y || lo.Y > n.hi.Y || n.lo.Z > hi.Z || lo.Z > n.hi.Z {
+		return
 	}
+	if n.left < 0 {
+		for _, ti := range t.tris[n.start : n.start+n.count] {
+			fn(ti)
+		}
+		return
+	}
+	t.queryNode(n.right, lo, hi, fn)
+	t.queryNode(n.left, lo, hi, fn)
 }
 
 func (m MeshShape) bounds(pos lin.Vec3, rot mat3) (lin.Vec3, lin.Vec3) {
@@ -185,14 +186,13 @@ func localBounds(lo, hi, pos lin.Vec3, rot mat3) (lin.Vec3, lin.Vec3) {
 
 // meshContacts collides a placed shape with the mesh's triangles; normals
 // point from the shape into the mesh.
-func meshContacts(m MeshShape, mpos lin.Vec3, mrot mat3, s Shape3, spos lin.Vec3, srot mat3) []contact3 {
+func meshContacts(sc *scratch3, out []contact3, m MeshShape, mpos lin.Vec3, mrot mat3, s Shape3, spos lin.Vec3, srot mat3) []contact3 {
 	a, ok := placeConvex(s, spos, srot)
 	if !ok {
-		return nil
+		return out
 	}
 	slo, shi := s.bounds(spos, srot)
 	lo, hi := localBounds(slo, shi, mpos, mrot)
-	var out []contact3
 	m.treeOf().query(lo, hi, func(ti int) {
 		p, q, r := m.triangle(ti)
 		p, q, r = mpos.Add(mrot.mulVec(p)), mpos.Add(mrot.mulVec(q)), mpos.Add(mrot.mulVec(r))
@@ -206,7 +206,7 @@ func meshContacts(m MeshShape, mpos lin.Vec3, mrot mat3, s Shape3, spos lin.Vec3
 		}
 		tri := triangleConvex(p, q, r)
 		into := tn.Neg()
-		out = append(out, pairContacts(&a, &tri, &into, p)...)
+		out = pairContacts(sc, out, &a, &tri, &into, p)
 	})
 	return out
 }

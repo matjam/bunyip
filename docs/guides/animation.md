@@ -65,6 +65,14 @@ The same clip type animates a sprite: swap `Position` for `Position2`
 and the vectors for 2D ones. A clip built once can play on any number of
 entities.
 
+To add tracks to a clip after it is built, call `AddTrack`. A clip works
+out its duration and groups its tracks by the component they write once
+and keeps both, so playing it costs one component lookup per component
+rather than one per track; `AddTrack` throws that away and works it out
+again. Assigning to `Tracks` directly works too as long as the number of
+tracks changes, and replacing a track in place needs `AddTrack()` with
+no arguments for the change to be seen.
+
 ## Playing
 
 Give an entity a `Player` component (or let `PlayerOf` add one), play a

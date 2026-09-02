@@ -274,7 +274,11 @@ in, an `Align` (`AlignLeft`, `AlignCenter`, `AlignRight`,
 `AlignJustify`), `LineSpacing`, a `Size`, an `Angle`, `LetterSpacing`,
 `Baseline`, a `Hyphenate` hyphenator (`EnglishHyphenator` is built in),
 a `Direction` and a `Language`. `Font.Measure` sizes text without
-drawing it and `Font.Layout` returns the wrapped lines.
+drawing it and `Font.Layout` returns the wrapped lines, without the soft
+hyphens a hyphenator inserted. A font caches what it shapes, wraps,
+measures and lays out, keyed by the text and the options, so drawing or
+measuring the same string every frame costs a map lookup and the entries
+a frame uses stay resident however many one-off strings pass through.
 
 ```go
 g.font, err = asset.Font(ctx.Gfx, g.fs, "fonts/body.ttf", 18, gfx.FontOptions{

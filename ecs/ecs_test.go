@@ -192,6 +192,21 @@ func TestHierarchy(t *testing.T) {
 	if math.Abs(float64(p.X-12)) > 1e-5 || math.Abs(float64(p.Y-5)) > 1e-5 {
 		t.Fatalf("world position %v", p)
 	}
+	// The cached pass agrees with the walk, entity for entity, and a
+	// later Update drops it back to the walk.
+	UpdateWorldMatrices(w)
+	for _, e := range []Entity{root, child, grandchild} {
+		want := WorldMatrix(w, e)
+		w.wmat.valid = false
+		if got := WorldMatrix(w, e); got != want {
+			t.Fatalf("cached matrix for %v: %v, walked %v", e, want, got)
+		}
+		w.wmat.valid = true
+	}
+	w.Update(0)
+	if w.wmat.valid && w.wmat.stamp == w.updates {
+		t.Fatal("cache survived an Update")
+	}
 	if ch := ChildrenOf(w, root); len(ch) != 1 || ch[0] != child {
 		t.Fatal("children wrong")
 	}

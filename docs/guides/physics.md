@@ -125,6 +125,14 @@ sweep a shape along a direction and report the first collider it would
 hit and how far along the sweep it got. `Nearest2` and `Nearest3` find
 the closest collider to a point within a radius.
 
+A game that casts the same ray every frame can avoid the result slice by
+calling `RaycastAll2Into` or `RaycastAll3Into`, which append to a slice
+the caller keeps and hands back truncated with `[:0]`:
+
+```go
+g.hits = phys.RaycastAll3Into(g.hits[:0], w, ray, 0)
+```
+
 ```go
 // The body under the pointer.
 ray := gr.ScreenRay(mx, my)
@@ -304,9 +312,9 @@ hundred or so of each other, as with every impulse solver.
 ecs.SetResource(w, phys.Settings2{Gravity: lin.V2(0, 900), Substeps: 6, Iterations: 12})
 
 // Measure the cost of the step.
-done := ctx.Profile("physics")
+step := ctx.Profile("physics")
 w.Update(ctx.Delta)
-done()
+step.End()
 ```
 
 ## Orbital mechanics
