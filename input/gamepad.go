@@ -46,6 +46,8 @@ type Gamepad struct {
 	Axes      [GamepadAxisCount]float32
 	pressed   [GamepadButtonCount]bool
 	released  [GamepadButtonCount]bool
+
+	framePressed, frameReleased [GamepadButtonCount]bool // latched for Draw
 }
 
 // Pressed reports whether the button went down since the last update.
@@ -66,12 +68,21 @@ func (g *Gamepad) Axis(a GamepadAxis) float32 {
 	return v
 }
 
-// Gamepad returns controller i (0..MaxGamepads-1); a disconnected one reads as idle.
+// Gamepad returns a snapshot of controller i (0..MaxGamepads-1); a
+// disconnected one reads as idle. During Draw the edges cover the whole
+// frame, as for keys and mouse buttons.
 func (s *State) Gamepad(i int) *Gamepad {
 	if i < 0 || i >= MaxGamepads {
 		return &Gamepad{}
 	}
-	return &s.gamepads[i]
+	g := s.gamepads[i]
+	if s.drawing {
+		for b := range g.pressed {
+			g.pressed[b] = g.pressed[b] || g.framePressed[b]
+			g.released[b] = g.released[b] || g.frameReleased[b]
+		}
+	}
+	return &g
 }
 
 // FeedGamepad replaces controller i's state, deriving press and release edges.
@@ -93,7 +104,12 @@ func (s *State) FeedGamepad(i int, connected bool, name string, buttons [Gamepad
 
 // MouseDelta returns pointer movement since the last update, in view units;
 // it keeps reporting while the cursor is captured.
-func (s *State) MouseDelta() (dx, dy float64) { return s.mouseDX, s.mouseDY }
+func (s *State) MouseDelta() (dx, dy float64) {
+	if s.drawing {
+		return s.mouseDX + s.frame.mouseDX, s.mouseDY + s.frame.mouseDY
+	}
+	return s.mouseDX, s.mouseDY
+}
 
 // FeedMouseDelta accumulates relative pointer movement.
 func (s *State) FeedMouseDelta(dx, dy float64) { s.mouseDX += dx; s.mouseDY += dy }

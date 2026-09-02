@@ -3,14 +3,16 @@ package ui
 import (
 	"fmt"
 
+	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
 
-// Label draws a line of text.
+// Label draws text, wrapped to the width available to it.
 func (c *Context) Label(text string) {
-	_, h := c.Theme.Font.Measure(text)
+	opts := gfx.TextOptions{Width: c.nextWidth()}
+	_, h := c.Theme.Font.MeasureBlock(text, opts)
 	r := c.next(h)
-	c.text(text, r.X, r.Y+(r.H-h)/2, c.Theme.Text)
+	c.g.DrawTextBlock(c.Theme.Font, text, r.X, r.Y+(r.H-h)/2, opts, c.Theme.Text)
 }
 
 // Button draws a push button and reports a click.
@@ -18,15 +20,15 @@ func (c *Context) Button(label string) bool {
 	id := c.id(label)
 	r := c.next(c.Theme.RowHeight)
 	hover, held, clicked := c.interact(id, r)
-	col := c.Theme.Button
+	sk := c.skin()
+	col, slice := c.Theme.Button, sk.Button
 	switch {
 	case held:
-		col = c.Theme.ButtonActive
+		col, slice = c.Theme.ButtonActive, or(sk.ButtonActive, sk.ButtonHover, sk.Button)
 	case hover:
-		col = c.Theme.ButtonHover
+		col, slice = c.Theme.ButtonHover, or(sk.ButtonHover, sk.Button)
 	}
-	c.fill(r, col)
-	c.border(r, c.Theme.PanelBorder)
+	c.box(slice, r, col, c.Theme.PanelBorder)
 	c.textCentred(label, r, c.Theme.Text)
 	return clicked
 }
@@ -44,9 +46,13 @@ func (c *Context) Checkbox(label string, value *bool) bool {
 	if hover {
 		col = c.Theme.ButtonHover
 	}
-	c.fill(box, col)
-	c.border(box, c.Theme.FieldBorder)
+	sk := c.skin()
+	slice := sk.Check
 	if *value {
+		slice = or(sk.CheckOn, sk.Check)
+	}
+	c.box(slice, box, col, c.Theme.FieldBorder)
+	if *value && (slice == nil || sk.CheckOn == nil) {
 		c.fill(Rect{X: box.X + 4, Y: box.Y + 4, W: 10, H: 10}, c.Theme.Accent)
 	}
 	_, h := c.Theme.Font.Measure(label)
@@ -68,12 +74,16 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 			changed = true
 		}
 	}
+	sk := c.skin()
 	track := Rect{X: r.X, Y: r.Y + r.H/2 - 3, W: r.W, H: 6}
-	c.fill(track, c.Theme.Track)
+	c.box(sk.Track, track, c.Theme.Track, gfx.Color{})
 	t := (*value - lo) / (hi - lo)
-	c.fill(Rect{X: r.X, Y: track.Y, W: r.W * max(0, min(1, t)), H: track.H}, c.Theme.Accent)
+	c.box(sk.Fill, Rect{X: r.X, Y: track.Y, W: r.W * max(0, min(1, t)), H: track.H}, c.Theme.Accent, gfx.Color{})
 	knob := Rect{X: r.X + r.W*max(0, min(1, t)) - 6, Y: r.Y + r.H/2 - 9, W: 12, H: 18}
-	c.fill(knob, c.Theme.Text)
+	if sk.Knob != nil {
+		knob = Rect{X: knob.X - 3, Y: knob.Y - 3, W: 18, H: 24}
+	}
+	c.box(sk.Knob, knob, c.Theme.Text, gfx.Color{})
 	caption := fmt.Sprintf("%s: %.2f", label, *value)
 	_, h := c.Theme.Font.Measure(caption)
 	c.text(caption, r.X, r.Y-h+4, c.Theme.TextDim)
@@ -105,12 +115,12 @@ func (c *Context) TextField(label string, value *string) bool {
 			c.focus = 0
 		}
 	}
-	c.fill(r, c.Theme.Field)
-	border := c.Theme.FieldBorder
+	sk := c.skin()
+	border, slice := c.Theme.FieldBorder, sk.Field
 	if c.focus == id {
-		border = c.Theme.Accent
+		border, slice = c.Theme.Accent, or(sk.FieldFocus, sk.Field)
 	}
-	c.border(r, border)
+	c.box(slice, r, c.Theme.Field, border)
 	shown := *value
 	composing := ""
 	if c.focus == id {
@@ -146,8 +156,11 @@ func (c *Context) TextField(label string, value *string) bool {
 // Progress draws a bar filled to t in [0,1].
 func (c *Context) Progress(label string, t float32) {
 	r := c.next(c.Theme.RowHeight)
-	c.fill(r, c.Theme.Track)
-	c.fill(Rect{X: r.X, Y: r.Y, W: r.W * max(0, min(1, t)), H: r.H}, c.Theme.Accent)
-	c.border(r, c.Theme.PanelBorder)
+	sk := c.skin()
+	c.box(sk.Track, r, c.Theme.Track, gfx.Color{})
+	c.box(sk.Fill, Rect{X: r.X, Y: r.Y, W: r.W * max(0, min(1, t)), H: r.H}, c.Theme.Accent, gfx.Color{})
+	if sk.Track == nil {
+		c.border(r, c.Theme.PanelBorder)
+	}
 	c.textCentred(label, r, c.Theme.Text)
 }

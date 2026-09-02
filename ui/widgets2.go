@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
 
@@ -36,12 +37,13 @@ func (c *Context) ScrollArea(label string, r Rect, contentHeight float32, conten
 		} else {
 			st.dragging = false
 		}
-		c.fill(track, c.Theme.Track)
+		sk := c.skin()
+		c.box(sk.Track, track, c.Theme.Track, gfx.Color{})
 		col := c.Theme.Button
 		if hover || held {
 			col = c.Theme.ButtonHover
 		}
-		c.fill(thumb, col)
+		c.box(or(sk.Thumb, sk.Knob), thumb, col, gfx.Color{})
 	}
 	st.offset = max(0, min(st.offset, maxScroll))
 	inner := Rect{X: r.X, Y: r.Y, W: r.W - barW - c.Theme.Spacing, H: r.H}
@@ -80,8 +82,7 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 	if hover {
 		col = c.Theme.ButtonHover
 	}
-	c.fill(r, col)
-	c.border(r, c.Theme.FieldBorder)
+	c.box(c.skin().Field, r, col, c.Theme.FieldBorder)
 	text := label
 	if *selected >= 0 && *selected < len(options) {
 		text = options[*selected]
@@ -98,8 +99,7 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 		listH := float32(len(options)) * c.Theme.RowHeight
 		list := Rect{X: r.X, Y: r.Y + r.H, W: r.W, H: listH}
 		c.frameRects = append(c.frameRects, list)
-		c.fill(list, c.Theme.Panel)
-		c.border(list, c.Theme.PanelBorder)
+		c.box(c.skin().Panel, list, c.Theme.Panel, c.Theme.PanelBorder)
 		for i, opt := range options {
 			row := Rect{X: list.X, Y: list.Y + float32(i)*c.Theme.RowHeight, W: list.W, H: c.Theme.RowHeight}
 			over := row.contains(c.mouseX, c.mouseY)

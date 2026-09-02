@@ -35,10 +35,17 @@ func newContext(t *testing.T) *Context {
 	return New(g, DarkTheme(font))
 }
 
-// frame runs one interface frame: a panel with a button, a checkbox and a
-// text field, returning what the button reported.
+// frame runs one interface frame the way the engine does: an Update
+// consumes the input edges first, then Draw builds a panel with a button,
+// a checkbox and a text field, returning what the button reported.
 func frame(t *testing.T, c *Context, in *input.State, checked *bool, text *string) bool {
 	t.Helper()
+	in.EndUpdate() // the game's Update ran and its edges were cleared
+	in.SetDrawing(true)
+	defer func() {
+		in.SetDrawing(false)
+		in.EndFrame()
+	}()
 	ok, err := c.g.Begin(gfx.Black)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +63,6 @@ func frame(t *testing.T, c *Context, in *input.State, checked *bool, text *strin
 	if _, err := c.g.End(false); err != nil {
 		t.Fatal(err)
 	}
-	in.EndUpdate()
 	return clicked
 }
 

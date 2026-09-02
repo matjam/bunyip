@@ -193,6 +193,13 @@ func (l *loop) beginFrame(now time.Time) {
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 
 func (l *loop) draw() error {
+	// Draw sees every input edge since the last frame, so an interface
+	// built here reacts to clicks that Update already consumed.
+	l.ctx.Input.SetDrawing(true)
+	defer func() {
+		l.ctx.Input.SetDrawing(false)
+		l.ctx.Input.EndFrame()
+	}()
 	ok, err := l.ctx.Gfx.Begin(l.ctx.Clear)
 	if err != nil || !ok {
 		return err

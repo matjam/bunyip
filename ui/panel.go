@@ -30,8 +30,7 @@ func (c *Context) Panel(title string, r Rect) {
 	p := &panel{id: c.id("panel:" + title), rect: r, cursor: r.Y + c.Theme.Padding}
 	c.panels = append(c.panels, p)
 	c.frameRects = append(c.frameRects, r)
-	c.fill(r, c.Theme.Panel)
-	c.border(r, c.Theme.PanelBorder)
+	c.box(c.skin().Panel, r, c.Theme.Panel, c.Theme.PanelBorder)
 	if title != "" {
 		_, h := c.Theme.Font.Measure(title)
 		c.text(title, r.X+c.Theme.Padding, p.cursor, c.Theme.Title)
@@ -54,6 +53,23 @@ func (c *Context) Row(n int) {
 	}
 	inner := p.rect.W - 2*c.Theme.Padding
 	p.row = &row{x: p.rect.X + c.Theme.Padding, y: p.cursor, count: n, width: (inner - float32(n-1)*c.Theme.Spacing) / float32(n)}
+}
+
+// nextWidth is the width the next widget will be given, so text can be
+// wrapped to it before the rectangle is reserved.
+func (c *Context) nextWidth() float32 {
+	p := c.currentPanel()
+	if p == nil {
+		return 0
+	}
+	if r := p.row; r != nil {
+		if r.weights != nil {
+			i := len(r.weights) - r.count
+			return r.inner * r.weights[i] / r.total
+		}
+		return r.width
+	}
+	return p.rect.W - 2*c.Theme.Padding
 }
 
 // next reserves the next widget rectangle of height h.
