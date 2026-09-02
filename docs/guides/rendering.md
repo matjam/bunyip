@@ -76,6 +76,19 @@ field of view); `OrbitCamera` builds one from yaw, pitch and distance.
 optional cascaded shadow maps; `AddPointLight` adds up to eight local
 lights per frame.
 
+**Environments.** `NewEnvironment` turns an equirectangular panorama
+into image-based lighting, and `NewSkyEnvironment` makes one from a
+zenith, horizon and ground colour. Set it as `Light.Environment` and
+metals reflect it, rough surfaces take its tint from every direction
+(nine spherical harmonics for the diffuse part, a prefiltered cube map
+for the specular part), and `Light.Background` draws it as the sky.
+
+**Material features.** Beyond textures and factors, a `Material` has
+`AlphaCutoff` for hard-edged cutouts that cut their shadows too,
+`OcclusionTexture` for baked ambient occlusion, `Unlit`, `DoubleSided`,
+`NoDepthTest` and `NoDepthWrite`, and a `Shader` hook; the
+[Shaders](shaders.html) guide covers the hook.
+
 **Instancing and sorting.** Draws sharing a mesh and material are
 batched into one instanced call automatically, so hundreds of asteroids
 cost one draw. Blended materials are sorted back to front.

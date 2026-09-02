@@ -38,8 +38,11 @@ var (
 //go:generate glslangValidator -V -o fxaa.frag.spv fxaa.frag
 //go:generate glslangValidator -V -o ssao.frag.spv ssao.frag
 //go:generate glslangValidator -V -o aoblur.frag.spv aoblur.frag
+//go:generate glslangValidator -V -o sky.frag.spv sky.frag
 
 var (
+	//go:embed sky.frag.spv
+	SkyFrag []byte
 	//go:embed pbr.frag.spv
 	PBRFrag []byte
 	//go:embed pbr.vert.spv

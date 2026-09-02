@@ -27,6 +27,8 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 radii;        // half-size of each cascade's orthographic box
     vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
+    vec4 sh[9];        // environment irradiance as spherical harmonics
+    vec4 env;          // x intensity, y mip count, z = 1 when an environment is set
 } frame;
 
 // Per-instance stream: model matrix columns, base colour and material params.
@@ -49,6 +51,7 @@ layout(set = 0, binding = 5) uniform sampler2D image0;
 layout(set = 0, binding = 6) uniform sampler2D image1;
 layout(set = 0, binding = 7) uniform sampler2D image2;
 layout(set = 0, binding = 8) uniform sampler2D image3;
+layout(set = 0, binding = 9) uniform samplerCube envMap;
 
 #define UNIFORMS layout(set = 4, binding = 0)
 

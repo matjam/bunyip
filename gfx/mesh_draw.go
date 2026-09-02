@@ -27,10 +27,12 @@ type meshPass struct {
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
-	materials     *render.DescriptorSets // five material textures plus a shader's image0..3
-	matSets       map[[9]*Texture]vk.VkDescriptorSet
+	materials     *render.DescriptorSets // five material textures, a shader's image0..3, the environment cube
+	matSets       map[materialKey]vk.VkDescriptorSet
 	flatNormal    *Texture
 	black         *Texture
+	blackCube     *render.Image // stands in for the environment when none is set
+	skyPipe       *render.Pipeline
 }
 
 const meshStages = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT
@@ -62,11 +64,20 @@ type frameUniforms struct {
 	radii         lin.Vec4
 	pointPos      [maxPointLights]lin.Vec4
 	pointColor    [maxPointLights]lin.Vec4
+	sh            [9]lin.Vec4 // environment irradiance
+	env           lin.Vec4    // intensity, mip count, has environment
+}
+
+// materialKey identifies a material descriptor set: its textures, the
+// shader's images and the frame's environment map.
+type materialKey struct {
+	tex [9]*Texture
+	env *Environment
 }
 
 func (g *Graphics) initMeshPass() error {
 	mp := &g.meshes
-	mp.matSets = map[[9]*Texture]vk.VkDescriptorSet{}
+	mp.matSets = map[materialKey]vk.VkDescriptorSet{}
 	dev := g.r.Device
 	var err error
 	layout, err := dev.NewUniformSets(frameUniformsSize, meshStages)
@@ -77,7 +88,22 @@ func (g *Graphics) initMeshPass() error {
 	if mp.jointLayout, err = dev.NewStorageSets(64, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
 		return err
 	}
-	if mp.materials, err = dev.NewSamplerDescriptors(9, 1024); err != nil {
+	if mp.materials, err = dev.NewSamplerDescriptors(10, 1024); err != nil {
+		return err
+	}
+	var blackFace [6][]byte
+	for i := range blackFace {
+		blackFace[i] = make([]byte, 8)
+	}
+	if mp.blackCube, err = dev.NewCubemapImage(1, vk.VK_FORMAT_R16G16B16A16_SFLOAT, 8, [][6][]byte{blackFace}); err != nil {
+		return err
+	}
+	if mp.skyPipe, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.PostVert, Frag: shaders.SkyFrag,
+		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
+		PushConstantSize: push2DSize,
+		SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout},
+	}); err != nil {
 		return err
 	}
 	if mp.shadowSamp, err = dev.NewShadowSampler(); err != nil {
@@ -211,32 +237,49 @@ func (g *Graphics) queueMesh(d meshDraw) {
 	g.cur.draws = append(g.cur.draws, d)
 }
 
-// materialSet returns the descriptor set for a material's textures and
-// its shader's images.
-func (g *Graphics) materialSet(mat Material) (vk.VkDescriptorSet, error) {
+// materialSet returns the descriptor set for a material's textures, its
+// shader's images and the environment map in use.
+func (g *Graphics) materialSet(mat Material, env *Environment) (vk.VkDescriptorSet, error) {
 	mp := &g.meshes
-	key := [9]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
+	key := materialKey{env: env}
+	key.tex = [9]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
 	if mat.Shader != nil {
 		for i, t := range mat.Shader.images {
-			key[5+i] = t
+			key.tex[5+i] = t
 		}
 	}
 	if set, ok := mp.matSets[key]; ok {
 		return set, nil
 	}
-	bindings := make([]render.SamplerBinding, len(key))
-	for i, t := range key {
+	bindings := make([]render.SamplerBinding, len(key.tex)+1)
+	for i, t := range key.tex {
 		if t == nil {
 			t = g.white
 		}
 		bindings[i] = render.SamplerBinding{View: t.img.View, Sampler: g.sampler(!t.nearest, t.repeat)}
 	}
+	cube := mp.blackCube
+	if env != nil {
+		cube = env.cube
+	}
+	bindings[len(key.tex)] = render.SamplerBinding{View: cube.View, Sampler: g.linear}
 	set, err := mp.materials.AllocateMany(bindings)
 	if err != nil {
 		return 0, err
 	}
 	mp.matSets[key] = set
 	return set, nil
+}
+
+// forgetEnvironment drops cached material sets that reference a destroyed
+// environment.
+func (g *Graphics) forgetEnvironment(env *Environment) {
+	for key, set := range g.meshes.matSets {
+		if key.env == env {
+			g.meshes.materials.Free(set)
+			delete(g.meshes.matSets, key)
+		}
+	}
 }
 
 func orTex(t, fallback *Texture) *Texture {
@@ -249,7 +292,7 @@ func orTex(t, fallback *Texture) *Texture {
 // forgetTexture drops cached descriptor sets that reference a destroyed texture.
 func (g *Graphics) forgetTexture(t *Texture) {
 	for key, set := range g.meshes.matSets {
-		if slices.Contains(key[:], t) {
+		if slices.Contains(key.tex[:], t) {
 			g.meshes.materials.Free(set)
 			delete(g.meshes.matSets, key)
 		}
@@ -379,6 +422,10 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
 		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 1)
 	}
+	if env := l.Environment; env != nil && env.cube != nil {
+		u.sh = env.sh
+		u.env = lin.V4(env.scale, float32(env.mips), 1, 0)
+	}
 	return q.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u)))
 }
 
@@ -393,9 +440,13 @@ func boolFloat(b bool) float32 {
 // blended draws back to front, and uploads the instance stream.
 func (g *Graphics) prepareDraws(q *drawQueue, slot int) (opaque, blended []meshDraw, err error) {
 	view := q.camera.viewMatrix()
+	env := q.light.Environment
+	if env != nil && env.cube == nil {
+		env = nil
+	}
 	for i := range q.draws {
 		d := &q.draws[i]
-		if d.set, err = g.materialSet(d.mat); err != nil {
+		if d.set, err = g.materialSet(d.mat, env); err != nil {
 			return nil, nil, err
 		}
 		pos := d.model.MulPoint(d.mesh.Min.Add(d.mesh.Max).Mul(0.5))
@@ -568,6 +619,15 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	}
 	c := q.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
+	if env := q.light.Environment; env != nil && env.cube != nil && q.light.Background {
+		// The sky first, under everything: it neither tests nor writes depth.
+		render.SetViewport(cb, t.extent)
+		push := push2D{proj: q.camera.ViewProj(aspect).Inverse(), frame: lin.V4(env.scale, 0, 0, 0)}
+		vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.skyPipe.Handle)
+		vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.skyPipe.Layout, 0, 1, &env.set, 0, nil)
+		vk.VkCmdPushConstants(cb, mp.skyPipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&push))
+		vk.VkCmdDraw(cb, 3, 1, 0, 0)
+	}
 	if err := g.drawRuns(cb, fr, q, opaque, 0, nil); err != nil {
 		return err
 	}
@@ -582,6 +642,12 @@ func (mp *meshPass) destroy(g *Graphics) {
 	dev := g.r.Device.Handle
 	if mp.defaultShader != nil {
 		mp.defaultShader.Destroy()
+	}
+	if mp.skyPipe != nil {
+		mp.skyPipe.Destroy()
+	}
+	if mp.blackCube != nil {
+		mp.blackCube.Destroy()
 	}
 	if mp.flatNormal != nil {
 		mp.flatNormal.Destroy()

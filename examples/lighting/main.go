@@ -8,6 +8,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"math"
 	"os"
 
@@ -41,6 +44,9 @@ type game struct {
 	clip     int
 	post     gfx.PostSettings
 	shadows  bool
+	env      *gfx.Environment
+	useEnv   bool
+	envPath  string
 	yaw      float32
 	shotDone bool
 }
@@ -77,6 +83,25 @@ func (g *game) Init(ctx *bunyip.Context) error {
 			ctx.Log.Info("lighting: clips", "names", clips)
 		}
 	}
+	// An environment for image-based lighting: a panorama when given,
+	// otherwise a graded sky.
+	if g.envPath != "" {
+		f, err := os.Open(g.envPath)
+		if err != nil {
+			return err
+		}
+		pano, _, err := image.Decode(f)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("decode %s: %w", g.envPath, err)
+		}
+		if g.env, err = ctx.Gfx.NewEnvironment(pano, gfx.EnvironmentOptions{Intensity: 1.5}); err != nil {
+			return err
+		}
+	} else if g.env, err = ctx.Gfx.NewSkyEnvironment(gfx.RGB(70, 120, 210), gfx.RGB(200, 215, 235), gfx.RGB(80, 70, 60), gfx.EnvironmentOptions{Intensity: 1.2}); err != nil {
+		return err
+	}
+	g.useEnv = true
 	g.post = gfx.DefaultPost()
 	g.post.Vignette = 0.3
 	g.shadows = true
@@ -85,6 +110,9 @@ func (g *game) Init(ctx *bunyip.Context) error {
 }
 
 func (g *game) Shutdown(ctx *bunyip.Context) {
+	if g.env != nil {
+		g.env.Destroy()
+	}
 	if g.model != nil {
 		g.model.Destroy()
 	}
@@ -123,9 +151,15 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	gr.SetPost(g.post)
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 1.5, 0), g.yaw, 0.35, 11))
-	gr.SetLight(gfx.Light{Direction: lin.V3(-0.5, -1, -0.4), Color: gfx.Color{R: 2.5, G: 2.3, B: 2, A: 1},
+	light := gfx.Light{Direction: lin.V3(-0.5, -1, -0.4), Color: gfx.Color{R: 2.5, G: 2.3, B: 2, A: 1},
 		Sky: gfx.Color{R: 0.25, G: 0.3, B: 0.45, A: 1}, Ground: gfx.Color{R: 0.12, G: 0.1, B: 0.08, A: 1},
-		Shadows: g.shadows, ShadowDistance: 30})
+		Shadows: g.shadows, ShadowDistance: 30}
+	if g.useEnv {
+		// Image-based lighting: the environment replaces the sky and
+		// ground colours and is drawn behind the scene.
+		light.Environment, light.Background = g.env, true
+	}
+	gr.SetLight(light)
 	t := float32(ctx.Time)
 	for i := range 3 {
 		a := t*0.7 + float32(i)*2.1
@@ -164,6 +198,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				g.post.NoAntiAlias = !fxaa
 			}
 			u.Checkbox("Shadows", &g.shadows)
+			u.Checkbox("Environment (image-based lighting)", &g.useEnv)
 			if g.model != nil {
 				u.Label(fmt.Sprintf("Clip %d/%d, Space cycles", g.clip+1, len(g.model.Clips())))
 			} else {
@@ -227,9 +262,10 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	model := flag.String("model", "", "glTF file with animation clips to play")
+	env := flag.String("env", "", "equirectangular panorama (PNG or JPEG) to light the scene with")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip lighting", Width: 1024, Height: 640, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, modelPath: *model})
+		&game{seconds: *seconds, shot: *shot, modelPath: *model, envPath: *env})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lighting:", err)
 		os.Exit(1)

@@ -34,7 +34,10 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 radii;        // half-size of each cascade's orthographic box
     vec4 pointPos[8];  // xyz, w = range
     vec4 pointColor[8];
+    vec4 sh[9];        // environment irradiance as spherical harmonics
+    vec4 env;          // x intensity, y mip count, z = 1 when an environment is set
 } frame;
+layout(set = 0, binding = 9) uniform samplerCube envMap; // prefiltered environment, one level per roughness
 
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap0;
 layout(set = 2, binding = 1) uniform sampler2DShadow shadowMap1;
@@ -143,6 +146,8 @@ vec3 F_Schlick(float VoH, vec3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - VoH, 5.0);
 }
 
+vec3 ambient(Surface s, vec3 n, vec3 v);
+
 // shade is one light's contribution to a surface.
 vec3 shade(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metallic, float roughness) {
     vec3 h = normalize(l + v);
@@ -178,16 +183,49 @@ vec3 light(Surface s) {
         color += shade(n, v, d / dist, frame.pointColor[i].rgb * att, s.albedo, s.metallic, s.roughness);
     }
 
-    // Hemisphere ambient: sky from above, ground from below, plus a
-    // Fresnel-weighted specular from the reflected direction's sky.
+    return color + ambient(s, n, v) * s.occlusion;
+}
+
+// irradiance evaluates the environment's spherical harmonics for a
+// normal: the diffuse radiance an albedo of 1 would reflect.
+vec3 irradiance(vec3 n) {
+    float x = n.x, y = n.y, z = n.z;
+    return frame.sh[0].rgb * 0.282095
+         + frame.sh[1].rgb * (0.488603 * y) + frame.sh[2].rgb * (0.488603 * z) + frame.sh[3].rgb * (0.488603 * x)
+         + frame.sh[4].rgb * (1.092548 * x * y) + frame.sh[5].rgb * (1.092548 * y * z)
+         + frame.sh[6].rgb * (0.315392 * (3.0 * z * z - 1.0)) + frame.sh[7].rgb * (1.092548 * x * z)
+         + frame.sh[8].rgb * (0.546274 * (x * x - y * y));
+}
+
+// envBRDF approximates the split-sum specular scale and bias for a
+// Fresnel colour, roughness and view angle (Karis, mobile form).
+vec3 envBRDF(vec3 f0, float roughness, float NoV) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
+}
+
+// ambient is light from everywhere: the environment map when one is set
+// (image-based lighting), otherwise the sky and ground hemisphere.
+vec3 ambient(Surface s, vec3 n, vec3 v) {
     float NoV = max(dot(n, v), 1e-4);
     vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
     vec3 kS = f0 + (max(vec3(1.0 - s.roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
-    vec3 ambientDiffuse = (1.0 - kS) * (1.0 - s.metallic) * s.albedo * mix(frame.ground.rgb, frame.sky.rgb, n.y * 0.5 + 0.5);
+    vec3 kD = (1.0 - kS) * (1.0 - s.metallic);
     vec3 r = reflect(-v, n);
+    if (frame.env.z > 0.5) {
+        vec3 diffuse = kD * s.albedo * irradiance(n) * frame.env.x;
+        vec3 prefiltered = textureLod(envMap, r, s.roughness * (frame.env.y - 1.0)).rgb * frame.env.x;
+        vec3 specular = prefiltered * envBRDF(f0, s.roughness, NoV);
+        return diffuse + specular;
+    }
+    vec3 ambientDiffuse = kD * s.albedo * mix(frame.ground.rgb, frame.sky.rgb, n.y * 0.5 + 0.5);
     vec3 env = mix(frame.ground.rgb, frame.sky.rgb, r.y * 0.5 + 0.5);
     vec3 ambientSpec = kS * env * (1.0 - s.roughness * 0.8);
-    return color + (ambientDiffuse + ambientSpec) * s.occlusion;
+    return ambientDiffuse + ambientSpec;
 }
 
 void surface(inout Surface s);

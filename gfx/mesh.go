@@ -164,6 +164,13 @@ type Light struct {
 	Shadows        bool    // render cascaded shadow maps for the directional light
 	ShadowDistance float32 // how far from the camera shadows reach; default 60
 	ShadowStrength float32 // 0..1 how dark shadows are; zero means 1
+
+	// Environment lights the scene from every direction with an image:
+	// reflections in metals, tinted ambient on everything. It replaces
+	// Ambient, Sky and Ground when set.
+	Environment *Environment
+	// Background draws the environment as the sky behind the scene.
+	Background bool
 }
 
 type meshDraw struct {
