@@ -14,6 +14,13 @@ type Settings2 struct {
 	Gravity    lin.Vec2
 	Substeps   int // integration steps per update; more is stabler
 	Iterations int // solver passes per step; more is stiffer
+	// SleepTime is how long a body and everything touching it must rest
+	// before they sleep and drop out of the simulation until touched;
+	// zero means bodies never sleep. Half a second suits most games.
+	SleepTime float32
+	// SleepThreshold is the speed (units and radians per second) below
+	// which a body counts as resting; zero means 0.05.
+	SleepThreshold float32
 }
 
 // Body2 makes a 2D entity move. Mass zero is static; Kinematic bodies
@@ -32,11 +39,20 @@ type Body2 struct {
 	Kinematic    bool
 	LockRotation bool
 	Sleeping     bool // set by the game to freeze a body
+	// CCD sweeps the body against static colliders every substep and
+	// stops it at the first one, so a fast small body cannot pass
+	// through a thin wall.
+	CCD bool
 
 	force  lin.Vec2
 	torque float32
 	// Derived each step from the mass and collider.
 	invMass, invInertia float32
+	// Sleeping bookkeeping and the fraction of this substep's motion
+	// CCD allows.
+	asleep    bool
+	sleepTime float32
+	fraction  float32
 }
 
 // Dynamic2 returns a moving body with sensible defaults.
@@ -49,17 +65,25 @@ func Kinematic2() Body2 { return Body2{Kinematic: true, Friction: 0.5, GravitySc
 
 // AddForce accumulates a force (units of mass·distance/s²) until the
 // next update.
-func (b *Body2) AddForce(f lin.Vec2) { b.force = b.force.Add(f) }
+func (b *Body2) AddForce(f lin.Vec2) { b.force = b.force.Add(f); b.Wake() }
 
 // AddTorque accumulates a torque until the next update.
-func (b *Body2) AddTorque(t float32) { b.torque += t }
+func (b *Body2) AddTorque(t float32) { b.torque += t; b.Wake() }
 
 // AddImpulse changes velocity at once by impulse/mass.
 func (b *Body2) AddImpulse(i lin.Vec2) {
 	if b.Mass > 0 && !b.Kinematic {
 		b.Vel = b.Vel.Add(i.Mul(1 / b.Mass))
+		b.Wake()
 	}
 }
+
+// Asleep reports that the body has come to rest and is skipped by the
+// simulation until something touches or pushes it.
+func (b *Body2) Asleep() bool { return b.asleep }
+
+// Wake puts a sleeping body back in the simulation.
+func (b *Body2) Wake() { b.asleep, b.sleepTime = false, 0 }
 
 // Collider2 gives an entity a shape. An entity with a Collider2 and no
 // Body2 is a static obstacle.
@@ -71,12 +95,15 @@ type Collider2 struct {
 }
 
 // Collision2 is emitted for each pair of colliders that touched this
-// update; A and B are ordered by entity id.
+// update; A and B are ordered by entity id. Impulse is the total normal
+// impulse the contact applied in the first substep it was seen, a
+// measure of how hard the hit was.
 type Collision2 struct {
-	A, B   ecs.Entity
-	Point  lin.Vec2
-	Normal lin.Vec2 // from A to B
-	Depth  float32
+	A, B    ecs.Entity
+	Point   lin.Vec2
+	Normal  lin.Vec2 // from A to B
+	Depth   float32
+	Impulse float32
 }
 
 // Trigger2 is emitted while a trigger collider overlaps another collider.
@@ -92,18 +119,40 @@ type entry2 struct {
 	c      *Collider2
 	pos    lin.Vec2
 	lo, hi lin.Vec2
+	bi     int
+}
+
+type bodyRec2 struct {
+	e ecs.Entity
+	t *gfx.Transform2
+	b *Body2
 }
 
 type state2 struct {
 	bodies    *ecs.Query2[gfx.Transform2, Body2]
 	colliders *ecs.Query2[gfx.Transform2, Collider2]
+	distance  *ecs.Query1[DistanceJoint2]
+	revolute  *ecs.Query1[RevoluteJoint2]
+	spring    *ecs.Query1[SpringJoint2]
+	fixed     *ecs.Query1[FixedJoint2]
 	entries   []entry2
+	dynamic   []bodyRec2
+	index     map[ecs.Entity]int
+	parent    []int
 }
 
 func stateOf2(w *ecs.World) *state2 {
 	s := ecs.Resource[state2](w)
 	if s == nil {
-		ecs.SetResource(w, state2{bodies: ecs.NewQuery2[gfx.Transform2, Body2](w), colliders: ecs.NewQuery2[gfx.Transform2, Collider2](w)})
+		ecs.SetResource(w, state2{
+			bodies:    ecs.NewQuery2[gfx.Transform2, Body2](w),
+			colliders: ecs.NewQuery2[gfx.Transform2, Collider2](w),
+			distance:  ecs.NewQuery1[DistanceJoint2](w),
+			revolute:  ecs.NewQuery1[RevoluteJoint2](w),
+			spring:    ecs.NewQuery1[SpringJoint2](w),
+			fixed:     ecs.NewQuery1[FixedJoint2](w),
+			index:     map[ecs.Entity]int{},
+		})
 		s = ecs.Resource[state2](w)
 	}
 	return s
@@ -137,15 +186,37 @@ func System2(w *ecs.World, dt float64) {
 	})
 }
 
+// active2 reports a body that can move others this step: an awake
+// dynamic body or a kinematic one that is moving.
+func active2(b *Body2) bool {
+	if b == nil {
+		return false
+	}
+	if b.Kinematic {
+		return !b.Sleeping && (b.Vel != (lin.Vec2{}) || b.AngVel != 0)
+	}
+	return b.invMass > 0
+}
+
 func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations int, reported map[pairKey]bool) {
 	// Integrate velocities.
+	s.dynamic = s.dynamic[:0]
+	clear(s.index)
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform2, b *Body2) {
-		if b.Sleeping {
-			return
-		}
-		if b.Kinematic || b.Mass <= 0 {
+		b.fraction = 1
+		if b.Sleeping || b.Kinematic || b.Mass <= 0 {
 			b.invMass, b.invInertia = 0, 0
 			return
+		}
+		s.index[e] = len(s.dynamic)
+		s.dynamic = append(s.dynamic, bodyRec2{e: e, t: t, b: b})
+		if b.asleep {
+			if b.Vel != (lin.Vec2{}) || b.AngVel != 0 || b.force != (lin.Vec2{}) || b.torque != 0 {
+				b.Wake()
+			} else {
+				b.invMass, b.invInertia = 0, 0
+				return
+			}
 		}
 		b.invMass = 1 / b.Mass
 		b.invInertia = 0
@@ -180,19 +251,31 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		cs, sn := cosSin(t.Rotation)
 		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
 		lo, hi := c.Shape.bounds(pos, t.Rotation)
-		s.entries = append(s.entries, entry2{e: e, t: t, b: b, c: c, pos: pos, lo: lo, hi: hi})
+		bi := -1
+		if i, ok := s.index[e]; ok {
+			bi = i
+		}
+		s.entries = append(s.entries, entry2{e: e, t: t, b: b, c: c, pos: pos, lo: lo, hi: hi, bi: bi})
 	})
+	s.parent = s.parent[:0]
+	for i := range s.dynamic {
+		s.parent = append(s.parent, i)
+	}
 	// Broadphase and contact generation.
 	var arbiters []arbiter2
+	type pending struct {
+		ev  Collision2
+		arb int
+	}
+	var events []pending
 	en := s.entries
 	sweepPairs(len(en), func(i int) float32 { return en[i].lo.X }, func(i int) float32 { return en[i].hi.X }, func(i, j int) {
 		a, b := &en[i], &en[j]
 		if a.lo.Y > b.hi.Y || b.lo.Y > a.hi.Y {
 			return
 		}
-		aStatic := a.b == nil || a.b.invMass == 0
-		bStatic := b.b == nil || b.b.invMass == 0
-		if aStatic && bStatic && !a.c.Trigger && !b.c.Trigger {
+		aActive, bActive := active2(a.b), active2(b.b)
+		if !aActive && !bActive && !a.c.Trigger && !b.c.Trigger {
 			return
 		}
 		if !a.c.Layers.collides(b.c.Layers) {
@@ -202,8 +285,8 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		if len(contacts) == 0 {
 			return
 		}
+		key := keyOf(a.e, b.e)
 		if a.c.Trigger || b.c.Trigger {
-			key := keyOf(a.e, b.e)
 			if !reported[key] {
 				reported[key] = true
 				if a.c.Trigger {
@@ -215,7 +298,15 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			}
 			return
 		}
-		key := keyOf(a.e, b.e)
+		if a.b != nil && a.b.asleep && bActive {
+			a.b.Wake()
+		}
+		if b.b != nil && b.b.asleep && aActive {
+			b.b.Wake()
+		}
+		if a.bi >= 0 && b.bi >= 0 {
+			s.union(a.bi, b.bi)
+		}
 		if !reported[key] {
 			reported[key] = true
 			c := contacts[0]
@@ -223,26 +314,142 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			if key.a != a.e {
 				ev.A, ev.B, ev.Normal = b.e, a.e, c.normal.Mul(-1)
 			}
-			ecs.Emit(w, ev)
+			events = append(events, pending{ev, len(arbiters)})
 		}
 		arbiters = append(arbiters, newArbiter2(a, b, contacts, h))
 	})
+	// Joints.
+	joints := gatherJoints2(w, s)
+	for _, j := range joints {
+		j.prepare(h)
+		ja, jb := j.sides()
+		if ia, ok := s.index[ja]; ok {
+			if ib, ok := s.index[jb]; ok {
+				s.union(ia, ib)
+			}
+		}
+	}
 	// Solve.
 	for range iterations {
+		for _, j := range joints {
+			j.solve()
+		}
 		for i := range arbiters {
 			arbiters[i].solve()
 		}
 	}
-	// Integrate positions.
-	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform2, b *Body2) {
-		if b.Sleeping || (b.Mass <= 0 && !b.Kinematic) {
-			return
+	for _, p := range events {
+		for _, c := range arbiters[p.arb].contacts {
+			p.ev.Impulse += c.pn
 		}
-		t.Position = t.Position.Add(b.Vel.Mul(h))
-		if !b.LockRotation || b.Kinematic {
+		ecs.Emit(w, p.ev)
+	}
+	// Continuous collision: clamp fast bodies to their first static hit.
+	for i := range en {
+		e := &en[i]
+		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
+			continue
+		}
+		delta := e.b.Vel.Mul(h)
+		length := delta.Len()
+		if length < 1e-6 {
+			continue
+		}
+		if f, ok := s.sweepStatic(e, delta); ok {
+			e.b.fraction = min(e.b.fraction, min(1, f+0.5*slop/length))
+		}
+	}
+	// Integrate positions.
+	for _, r := range s.dynamic {
+		b, t := r.b, r.t
+		if b.invMass == 0 {
+			continue
+		}
+		t.Position = t.Position.Add(b.Vel.Mul(h * b.fraction))
+		if !b.LockRotation {
+			t.Rotation += b.AngVel * h * b.fraction
+		}
+	}
+	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform2, b *Body2) {
+		if b.Kinematic && !b.Sleeping {
+			t.Position = t.Position.Add(b.Vel.Mul(h))
 			t.Rotation += b.AngVel * h
 		}
 	})
+	s.sleep(settings, h)
+}
+
+func (s *state2) find(i int) int {
+	for s.parent[i] != i {
+		s.parent[i] = s.parent[s.parent[i]]
+		i = s.parent[i]
+	}
+	return i
+}
+
+func (s *state2) union(a, b int) {
+	ra, rb := s.find(a), s.find(b)
+	if ra != rb {
+		s.parent[rb] = ra
+	}
+}
+
+// sleep puts islands that have rested long enough to sleep.
+func (s *state2) sleep(settings *Settings2, h float32) {
+	thr, after := settings.SleepThreshold, settings.SleepTime
+	if after <= 0 {
+		return
+	}
+	if thr <= 0 {
+		thr = 0.05
+	}
+	var rest []float32
+	for i, r := range s.dynamic {
+		b := r.b
+		if !b.asleep {
+			if b.Vel.Len() < thr && abs32(b.AngVel) < thr {
+				b.sleepTime += h
+			} else {
+				b.sleepTime = 0
+			}
+		}
+		root := s.find(i)
+		for len(rest) <= root {
+			rest = append(rest, float32(math.Inf(1)))
+		}
+		rest[root] = min(rest[root], b.sleepTime)
+	}
+	for i, r := range s.dynamic {
+		b := r.b
+		if !b.asleep && rest[s.find(i)] >= after {
+			b.asleep = true
+			b.Vel, b.AngVel = lin.Vec2{}, 0
+		}
+	}
+}
+
+// sweepStatic sweeps a body's collider along delta against colliders
+// that cannot move this step and returns the fraction at which it first
+// touches one.
+func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
+	slo, shi := e.lo.Min(e.lo.Add(delta)), e.hi.Max(e.hi.Add(delta))
+	ext := e.hi.Sub(e.lo)
+	minHalf := min(ext.X, ext.Y) / 2
+	best, found := float32(1), false
+	for i := range s.entries {
+		o := &s.entries[i]
+		if o == e || o.c.Trigger || active2(o.b) || !e.c.Layers.collides(o.c.Layers) {
+			continue
+		}
+		if o.lo.X > shi.X || slo.X > o.hi.X || o.lo.Y > shi.Y || slo.Y > o.hi.Y {
+			continue
+		}
+		oext := o.hi.Sub(o.lo)
+		if t, _, ok := marchSweep2(e.c.Shape, e.pos, e.t.Rotation, delta, minHalf, o.c.Shape, o.pos, o.t.Rotation, min(oext.X, oext.Y)/2, best); ok && t < best {
+			best, found = t, true
+		}
+	}
+	return best, found
 }
 
 // arbiter2 holds a pair's contacts through the solver iterations.
@@ -351,21 +558,27 @@ func (arb *arbiter2) solve() {
 	}
 }
 
-// Hit2 is what a raycast found.
+// Hit2 is what a query found. Distance is the fraction along the ray or
+// sweep for casts, the penetration depth for overlaps and the gap for
+// Nearest2.
 type Hit2 struct {
 	Entity   ecs.Entity
 	Point    lin.Vec2
 	Normal   lin.Vec2
-	Distance float32 // along the ray, as a fraction of Dir's length
+	Distance float32
 }
 
 // Raycast2 finds the nearest collider along the ray, ignoring triggers
 // and colliders the mask excludes.
 func Raycast2(w *ecs.World, r Ray2, mask uint32) (Hit2, bool) {
+	return raycast2(w, r, mask, ecs.None)
+}
+
+func raycast2(w *ecs.World, r Ray2, mask uint32, exclude ecs.Entity) (Hit2, bool) {
 	best := Hit2{Distance: float32(math.Inf(1))}
 	found := false
 	stateOf2(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
-		if c.Shape == nil || c.Trigger || !(Layers{Mask: mask}).collides(c.Layers) {
+		if c.Shape == nil || c.Trigger || e == exclude || !(Layers{Mask: mask}).collides(c.Layers) {
 			return
 		}
 		cs, sn := cosSin(t.Rotation)

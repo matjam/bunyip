@@ -178,16 +178,22 @@ remains:
 
 ## Physics
 
-- 3D shapes beyond spheres and boxes: capsules, convex hulls, triangle
-  meshes for static geometry, compound colliders.
-- Spatial queries: overlap tests against a shape, shape casts (sweeps),
-  nearest collider; only rays exist.
-- Joints and constraints (hinges, springs, ragdolls) in both 2D and 3D.
-- Continuous collision detection for fast small bodies; sleeping bodies.
-- Character controllers (capsule with step and slope handling).
-- Debug visualisation of colliders and contacts (needs 3D debug lines).
+Capsules, convex hulls, triangle meshes, compounds, 2D capsules, edges
+and chains, overlap, shape-cast, nearest and raycast-all queries,
+distance, hinge, revolute, spring and fixed joints, continuous
+collision for fast bodies, sleeping, and character controllers are in;
+the physics-lab example draws colliders and contacts with the 3D debug
+lines. What remains:
+
+- Ragdolls as a built-in (the joints exist; a ragdoll is a game's
+  arrangement of them with limits, which hinges do not have yet).
+- Joint limits and motors.
+- Dynamic bodies against each other with continuous collision; CCD
+  sweeps against static colliders only.
 - Soft bodies, cloth simulation, fluids.
-- 2D: chain shapes and edge colliders for terrain.
+- A stack of four boxes at the default solver quality jitters just
+  above the sleep threshold; raise `Substeps` and `Iterations` for
+  stacks that should sleep.
 
 ## Entities, data and scripting
 

@@ -41,10 +41,18 @@ freezes a body until you wake it.
 
 ## Shapes
 
-2D: `Circle`, `Box2` and convex `Polygon2`. 3D: `Sphere` and `Box3`.
-Each collider has an `Offset` from the transform, a `Trigger` flag, and
-`Layers`: two colliders meet when each one's `Layer` bits appear in the
-other's `Mask`, so bullets can pass through their own team.
+2D: `Circle`, `Box2`, convex `Polygon2`, `Capsule2`, and for terrain
+`Edge2` and `Chain2` (a polyline of edges, optionally a loop). 3D:
+`Sphere`, `Box3`, `Capsule`, `ConvexHull` from any point cloud,
+`MeshShape` for static triangle geometry (a level, a heightfield; build
+it with `NewMeshShape` so the triangle tree is made once, and pair it
+with the same vertices drawn as a `gfx` mesh), and `Compound3` of parts
+with their own offsets and rotations. Every pair collides: spheres,
+capsules, boxes and hulls go through support functions, and any of
+them lands on a mesh. Each collider has an `Offset` from the transform,
+a `Trigger` flag, and `Layers`: two colliders meet when each one's
+`Layer` bits appear in the other's `Mask`, so bullets can pass through
+their own team.
 
 ## What touched what
 
@@ -62,8 +70,43 @@ w.AddSystem("damage", func(w *ecs.World, dt float64) {
 ```
 
 `Raycast2` and `Raycast3` find the nearest collider along a ray, for
-picking, line of sight and ground checks. Pair `gfx.ScreenRay` with
-`Raycast3` to find the body under the pointer.
+picking, line of sight and ground checks; `RaycastAll` returns every
+hit in order. Pair `gfx.ScreenRay` with `Raycast3` to find the body
+under the pointer. `OverlapSphere3`, `OverlapBox3`, `OverlapShape3` and
+their 2D twins list what a volume touches (an explosion's victims, a
+selection box); `ShapeCast` sweeps a shape along a direction and
+reports the first thing it would hit, with the fraction of the way it
+got; `Nearest` finds the closest collider to a point within a radius.
+
+## Joints
+
+Joints are components on their own entities that tie two bodies (or a
+body and a world anchor, with `B` left as `ecs.None`): `DistanceJoint`
+for rods and ropes with optional slack, `RevoluteJoint2` and
+`HingeJoint3` for pins and doors, `SpringJoint` with stiffness and
+damping, and `FixedJoint` to weld. They are solved in the same
+iterations as the contacts, so a chain of hinges hangs and swings
+without drifting apart.
+
+## Fast bodies and sleeping ones
+
+A small fast body can pass through a thin wall between two steps. Set
+`Body.CCD` on bullets and the like: the body is swept against the
+static colliders each substep and stopped at the first thing it would
+have crossed. Bodies that come to rest go to sleep when
+`Settings.SleepTime` is set, which skips their integration and the
+pairs between sleeping bodies; a touch or an impulse wakes them.
+`Body.Asleep` and `Wake` read and override it.
+
+## Characters
+
+`CharacterController3` (and `CharacterController2`) moves a capsule the
+way players expect rather than the way physics dictates: `Move` sweeps
+it along a velocity, slides it along whatever it meets, steps it up
+ledges no taller than `StepHeight`, refuses slopes steeper than
+`MaxSlope`, and reports `Grounded` and the `GroundNormal`. It is
+kinematic, so it pushes nothing and nothing pushes it; give the
+character a trigger collider for the things that should notice it.
 
 ## How it works, and how to tune it
 

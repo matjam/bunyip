@@ -123,35 +123,24 @@ func polygonNormals(pts []lin.Vec2) []lin.Vec2 {
 }
 
 // collide2 generates contacts between two placed shapes; normals point
-// from A to B.
+// from A to B. Each shape becomes circles, polygons, capsules and
+// segments (a chain contributes only the edges near the other shape)
+// and every pair of those is tested.
 func collide2(sa Shape2, pa lin.Vec2, ra float32, sb Shape2, pb lin.Vec2, rb float32) []contact2 {
-	switch a := sa.(type) {
-	case Circle:
-		switch b := sb.(type) {
-		case Circle:
-			return circleCircle(a, pa, b, pb)
-		case Box2:
-			return circlePolygon(a, pa, worldPolygon(b.polygon(), pb, rb))
-		case Polygon2:
-			return circlePolygon(a, pa, worldPolygon(b, pb, rb))
-		}
-	case Box2:
-		return collide2(a.polygon(), pa, ra, sb, pb, rb)
-	case Polygon2:
-		switch b := sb.(type) {
-		case Circle:
-			cs := circlePolygon(b, pb, worldPolygon(a, pa, ra))
-			for i := range cs {
-				cs[i].normal = cs[i].normal.Mul(-1)
-			}
-			return cs
-		case Box2:
-			return polygonPolygon(worldPolygon(a, pa, ra), worldPolygon(b.polygon(), pb, rb))
-		case Polygon2:
-			return polygonPolygon(worldPolygon(a, pa, ra), worldPolygon(b, pb, rb))
+	alo, ahi := sa.bounds(pa, ra)
+	blo, bhi := sb.bounds(pb, rb)
+	pa2 := prims2(sa, pa, ra, blo, bhi)
+	pb2 := prims2(sb, pb, rb, alo, ahi)
+	if len(pa2) == 1 && len(pb2) == 1 {
+		return collidePrims(pa2[0], pb2[0])
+	}
+	var out []contact2
+	for _, a := range pa2 {
+		for _, b := range pb2 {
+			out = append(out, collidePrims(a, b)...)
 		}
 	}
-	return nil
+	return out
 }
 
 func circleCircle(a Circle, pa lin.Vec2, b Circle, pb lin.Vec2) []contact2 {
@@ -317,6 +306,21 @@ func rayShape2(r Ray2, s Shape2, pos lin.Vec2, rot float32) (t float32, normal l
 		return rayPolygon(r, worldPolygon(sh.polygon(), pos, rot))
 	case Polygon2:
 		return rayPolygon(r, worldPolygon(sh, pos, rot))
+	case Capsule2:
+		a, b := sh.segment(pos, rot)
+		return rayCapsule2(r, a, b, sh.Radius)
+	case Edge2:
+		cs, sn := cosSin(rot)
+		return raySegment(r, rotate2(sh.A, cs, sn).Add(pos), rotate2(sh.B, cs, sn).Add(pos))
+	case Chain2:
+		best, found := float32(math.Inf(1)), false
+		var bestN lin.Vec2
+		for _, seg := range sh.segments(pos, rot) {
+			if t, n, ok := raySegment(r, seg[0], seg[1]); ok && t < best {
+				best, bestN, found = t, n, true
+			}
+		}
+		return best, bestN, found
 	}
 	return 0, lin.Vec2{}, false
 }

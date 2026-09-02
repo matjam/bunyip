@@ -96,8 +96,42 @@ type obb struct {
 }
 
 // collide3 generates contacts between two placed shapes; normals point
-// from A to B.
+// from A to B. Compounds split into their parts, meshes into the
+// triangles near the other shape; sphere and box pairs have exact
+// tests and every other pair goes through the support functions.
 func collide3(sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) []contact3 {
+	if c, ok := sa.(Compound3); ok {
+		var out []contact3
+		for _, p := range c.Parts {
+			if p.Shape == nil {
+				continue
+			}
+			pp, pr := p.place(pa, ra)
+			out = append(out, collide3(p.Shape, pp, pr, sb, pb, rb)...)
+		}
+		return out
+	}
+	if c, ok := sb.(Compound3); ok {
+		var out []contact3
+		for _, p := range c.Parts {
+			if p.Shape == nil {
+				continue
+			}
+			pp, pr := p.place(pb, rb)
+			out = append(out, collide3(sa, pa, ra, p.Shape, pp, pr)...)
+		}
+		return out
+	}
+	if m, ok := sa.(MeshShape); ok {
+		cs := meshContacts(m, pa, ra, sb, pb, rb)
+		for i := range cs {
+			cs[i].normal = cs[i].normal.Neg()
+		}
+		return cs
+	}
+	if m, ok := sb.(MeshShape); ok {
+		return meshContacts(m, pb, rb, sa, pa, ra)
+	}
 	switch a := sa.(type) {
 	case Sphere:
 		switch b := sb.(type) {
@@ -118,7 +152,7 @@ func collide3(sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) 
 			return boxBox(obb{pa, ra, a.Half}, obb{pb, rb, b.Half})
 		}
 	}
-	return nil
+	return convexPair(sa, pa, ra, sb, pb, rb)
 }
 
 func sphereSphere(a Sphere, pa lin.Vec3, b Sphere, pb lin.Vec3) []contact3 {
@@ -443,6 +477,24 @@ func rayShape3(r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.
 			nLocal = lin.V3(0, 0, enterSign)
 		}
 		return tEnter, rot.mulVec(nLocal), true
+	case MeshShape:
+		return rayMesh(r, sh, pos, rot)
+	case Compound3:
+		best, found := float32(math.Inf(1)), false
+		var bestN lin.Vec3
+		for _, p := range sh.Parts {
+			if p.Shape == nil {
+				continue
+			}
+			pp, pr := p.place(pos, rot)
+			if t, n, ok := rayShape3(r, p.Shape, pp, pr); ok && t < best {
+				best, bestN, found = t, n, true
+			}
+		}
+		return best, bestN, found
+	}
+	if c, ok := placeConvex(s, pos, rot); ok {
+		return rayConvex(r, &c)
 	}
 	return 0, lin.Vec3{}, false
 }

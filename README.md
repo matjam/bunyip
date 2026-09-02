@@ -65,7 +65,7 @@ output.
 | `lin` | vectors, matrices, quaternions |
 | `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs |
 | `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons |
-| `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, spheres; impulse solver with friction and restitution; triggers, layers, raycasts |
+| `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps and shape casts |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
 | `asset` | files from directories and pack files, async loading, hot reload |
 | `save` | JSON saves and settings in the platform's data directory |
@@ -129,6 +129,7 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/animation` | keyframe clips on 2D sprites and 3D transforms, a flipbook walker, crossfades between a hero's clips, Finished events chaining back to idle |
 | `go run ./examples/physics3d` | five hundred cubes of plastic, metal, gold, car paint, velvet, glass and glowing materials dropped into a pile, with a raycast highlighting the one under the pointer |
 | `go run ./examples/physics2d` | balls, boxes and triangles in a pit with a ramp, a kinematic paddle, a trigger zone and a raycast |
+| `go run ./examples/physics-lab` | capsules, hulls and spheres tumbling onto a mesh terrain, a hinge chain, a character controller climbing stairs, colliders and contacts drawn with debug lines |
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |

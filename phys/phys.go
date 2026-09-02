@@ -21,6 +21,35 @@
 // the systems and the settings); shapes that exist in one dimension only
 // are plain words (Circle, Polygon2 for the 2D polygon, Sphere).
 //
+// Shapes in 3D are Sphere, Box3, Capsule, ConvexHull, Compound3 (parts
+// placed on one body) and MeshShape (a static triangle mesh for terrain
+// and levels, with a triangle tree built by NewMeshShape). Sphere and
+// box pairs have exact tests; every other pair collides through support
+// functions (GJK for distance, EPA for penetration) with face manifolds
+// clipped like the box test's. Shapes in 2D are Circle, Box2, Polygon2,
+// Capsule2, and for terrain Edge2 and Chain2.
+//
+// Queries answer questions about the world between updates: Raycast2
+// and Raycast3 return the nearest collider along a ray and RaycastAll2
+// and RaycastAll3 every one in order; OverlapShape2 and OverlapShape3
+// (with OverlapCircle2, OverlapBox2, OverlapSphere3 and OverlapBox3)
+// return everything a placed shape touches; ShapeCast2 and ShapeCast3
+// sweep a shape and return the first thing in its way; Nearest2 and
+// Nearest3 find the closest collider to a point.
+//
+// Joints are components on their own entities that name the bodies they
+// connect: DistanceJoint2 and DistanceJoint3 (rods and ropes),
+// RevoluteJoint2 and HingeJoint3 (pins), SpringJoint2 and SpringJoint3
+// (damped springs) and FixedJoint2 and FixedJoint3 (welds). They are
+// solved with the contacts, in entity order. A body with CCD set is
+// swept against static geometry every substep so it cannot tunnel, and
+// with Settings.SleepTime set, bodies that rest for that long sleep
+// until touched or pushed (Body.Asleep, Body.Wake).
+//
+// CharacterController2 and CharacterController3 move an upright capsule
+// by sweeps rather than dynamics: sliding along walls, climbing steps up
+// to StepHeight, walking slopes up to MaxSlope and reporting Grounded.
+//
 // For orbits and spaceflight, see the orbit package; it works with the
 // same transforms at astronomical scale.
 package phys
