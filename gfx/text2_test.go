@@ -88,6 +88,18 @@ func TestLetterSpacingJustifyRich(t *testing.T) {
 	if len(lines) < 2 {
 		t.Errorf("hyphenated wrap gave %d lines: %q", len(lines), lines)
 	}
+	// A justified, hyphenated paragraph keeps its hyphens inside the width.
+	hopts := TextOptions{Width: 100, Align: AlignJustify, Hyphenate: EnglishHyphenator()}
+	img = frame2D(t, g, func() {
+		g.DrawTextBlock(f, "an extraordinarily wonderful demonstration of hyphenation", 4, 4, hopts, White)
+	})
+	for y := 4; y < 90; y++ {
+		for x := 106; x < 128; x++ {
+			if bright(img, x, y) {
+				t.Fatalf("ink at %d,%d beyond the justified width", x, y)
+			}
+		}
+	}
 	// Rich text: bold run, link rectangle.
 	b, err := g.NewFont(gobold.TTF, 12, FontOptions{})
 	if err != nil {

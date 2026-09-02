@@ -153,9 +153,7 @@ func (f *Font) wrapText(text string, opts TextOptions, width float32) ([]shaping
 		shaped = opts.Hyphenate.SoftHyphens(text)
 		// The wrapper does not count the hyphen a break will add, so
 		// leave room for one on every line.
-		if gid, ok := f.faces[0].face.NominalGlyph('-'); ok {
-			px -= int(f.faces[0].face.HorizontalAdvance(gid) * f.pxPerEm / f.faces[0].upem)
-		}
+		px -= int(f.hyphenAdvance() * f.scale)
 	}
 	if lines, ok := f.lines[key]; ok {
 		return lines, shaped
@@ -278,6 +276,30 @@ func byteIndex(text string, runeIndex int) int {
 		i++
 	}
 	return len(text)
+}
+
+// endsSoftHyphen reports whether a line's last glyph sits on a soft
+// hyphen, so a hyphen will be drawn after it.
+func (f *Font) endsSoftHyphen(text string, line shaping.Line) bool {
+	if len(line) == 0 {
+		return false
+	}
+	run := line[len(line)-1]
+	if len(run.Glyphs) == 0 {
+		return false
+	}
+	i := byteIndex(text, run.Glyphs[len(run.Glyphs)-1].TextIndex())
+	return i < len(text) && strings.HasPrefix(text[i:], "­")
+}
+
+// hyphenAdvance is the width of the main face's hyphen in view units.
+func (f *Font) hyphenAdvance() float32 {
+	ff := f.faces[0]
+	gid, ok := ff.face.NominalGlyph('-')
+	if !ok {
+		return 0
+	}
+	return ff.face.HorizontalAdvance(gid) * f.pxPerEm / ff.upem / f.scale
 }
 
 // spaceCount counts the spaces in a line, for justification.
@@ -519,8 +541,12 @@ func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOption
 			offset = width - lw
 		case AlignJustify:
 			if !last[i] && !vertical && opts.Width > 0 {
+				avail := width
+				if f.endsSoftHyphen(paras[i], line) {
+					avail -= f.hyphenAdvance() * scale // the hyphen drawn after the line
+				}
 				if n := spaceCount(paras[i], line); n > 0 {
-					spaceExtra = (width - lw) / float32(n) / scale
+					spaceExtra = (avail - lw) / float32(n) / scale
 				}
 			}
 		}
