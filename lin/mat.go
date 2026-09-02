@@ -49,12 +49,14 @@ func (m Mat4) Transpose() Mat4 {
 	return out
 }
 
+// Translate is the matrix that moves points by v.
 func Translate(v Vec3) Mat4 {
 	m := Identity()
 	m[12], m[13], m[14] = v.X, v.Y, v.Z
 	return m
 }
 
+// Scale is the matrix that scales each axis by the matching component of v.
 func Scale(v Vec3) Mat4 {
 	m := Identity()
 	m[0], m[5], m[10] = v.X, v.Y, v.Z

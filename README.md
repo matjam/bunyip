@@ -26,6 +26,13 @@ through xcb, ALSA, joystick devices) layers exist behind the same
 `internal/platform` and `internal/audioout` interfaces; they cross-compile
 and vet but have not yet run on hardware. Wayland desktops use XWayland.
 
+## Documentation
+
+Browsable API documentation for every package, with runnable examples,
+is published at https://matjam.github.io/bunyip/ by the Docs workflow on
+each push to `main`. Locally, `go doc ./gfx` and friends show the same
+text, and `go test ./...` runs every example that prints output.
+
 ## Packages
 
 | Package | What |

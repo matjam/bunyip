@@ -44,6 +44,7 @@ const (
 	FormatIT
 )
 
+// String names the format, as in "MOD" or "IT".
 func (f Format) String() string {
 	return [...]string{"MOD", "S3M", "XM", "IT"}[f]
 }

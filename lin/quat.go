@@ -5,6 +5,7 @@ import "math"
 // Quat is a unit quaternion (X, Y, Z, W) representing a rotation.
 type Quat struct{ X, Y, Z, W float32 }
 
+// QuatIdentity is the rotation that leaves vectors unchanged.
 func QuatIdentity() Quat { return Quat{0, 0, 0, 1} }
 
 // AxisAngle builds a rotation of angle radians about axis.
@@ -24,6 +25,8 @@ func (q Quat) Mul(p Quat) Quat {
 	}
 }
 
+// Norm returns the unit quaternion, which rotations must be to stay
+// rigid after repeated multiplication.
 func (q Quat) Norm() Quat {
 	l := float32(math.Sqrt(float64(q.X*q.X + q.Y*q.Y + q.Z*q.Z + q.W*q.W)))
 	if l == 0 {

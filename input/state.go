@@ -105,10 +105,16 @@ func (s *State) Mods() Mods { return s.mods }
 // Mouse returns the pointer position in view units.
 func (s *State) Mouse() (x, y float64) { return s.mouseX, s.mouseY }
 
+// MouseDown reports whether the button is held.
 func (s *State) MouseDown(b MouseButton) bool { return s.buttons[b] }
+
+// MousePressed reports whether the button went down since the last
+// update (or, during Draw, since the last frame).
 func (s *State) MousePressed(b MouseButton) bool {
 	return s.buttonsPressed[b] || s.drawing && s.frame.buttonsPressed[b]
 }
+
+// MouseReleased reports whether the button went up since the last update.
 func (s *State) MouseReleased(b MouseButton) bool {
 	return s.buttonsReleased[b] || s.drawing && s.frame.buttonsReleased[b]
 }
@@ -134,8 +140,9 @@ func (s *State) Chars() []rune {
 // after the committed text; it is empty when nothing is being composed.
 func (s *State) Composition() string { return s.composition }
 
-// Feed methods, called by the engine as events arrive.
-
+// FeedKey records a key going down or up; the engine calls the Feed
+// methods as platform events arrive, and a test can call them to script
+// input.
 func (s *State) FeedKey(k Key, down, repeat bool, mods Mods) {
 	s.mods = mods
 	if k == KeyUnknown {
@@ -152,12 +159,16 @@ func (s *State) FeedKey(k Key, down, repeat bool, mods Mods) {
 	s.released[k] = true
 }
 
+// FeedChar records a typed character.
 func (s *State) FeedChar(r rune) { s.chars = append(s.chars, r) }
 
+// FeedComposition records the input method's uncommitted text.
 func (s *State) FeedComposition(text string) { s.composition = text }
 
+// FeedMouseMove records the pointer position in view units.
 func (s *State) FeedMouseMove(x, y float64) { s.mouseX, s.mouseY = x, y }
 
+// FeedMouseButton records a button going down or up at a position.
 func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float64) {
 	s.mouseX, s.mouseY = x, y
 	if int(b) >= len(s.buttons) {
@@ -171,6 +182,7 @@ func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float64) {
 	}
 }
 
+// FeedScroll accumulates wheel movement in lines.
 func (s *State) FeedScroll(dx, dy float64) { s.scrollX += dx; s.scrollY += dy }
 
 // FeedFocusLost releases everything, since key-up events stop arriving.
