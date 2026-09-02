@@ -1,8 +1,8 @@
 name: Docs
 
-# Generates browsable API documentation for every package and publishes
-# it with GitHub Pages. The repository's Pages source must be set to
-# "GitHub Actions" (Settings, Pages).
+# Renders the guides in docs/guides and every package's godoc into a
+# static site with cmd/bunyip-docs and publishes it with GitHub Pages.
+# The repository's Pages source must be set to "GitHub Actions".
 
 on:
   push:
@@ -26,8 +26,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Generate static docs with golds
-        run: go run go101.org/golds@v0.8.7 -gen -dir=site -silent -nouses -only-list-exporteds -source-code-reading=plain -wdpkgs-listing=solo ./...
+      - name: Generate the site
+        run: go run ./cmd/bunyip-docs -out site
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

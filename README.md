@@ -28,10 +28,13 @@ and vet but have not yet run on hardware. Wayland desktops use XWayland.
 
 ## Documentation
 
-Browsable API documentation for every package, with runnable examples,
-is published at https://matjam.github.io/bunyip/ by the Docs workflow on
-each push to `main`. Locally, `go doc ./gfx` and friends show the same
-text, and `go test ./...` runs every example that prints output.
+Guides (including a step-by-step Tetris) and the API reference for every
+package, with runnable examples and symbol search, are published at
+https://matjam.github.io/bunyip/ by the Docs workflow on each push to
+`main`. The site is built by `go run ./cmd/bunyip-docs -out site` from
+the Markdown in `docs/guides` and the packages' godoc, so `go doc ./gfx`
+shows the same text and `go test ./...` runs every example that prints
+output.
 
 ## Packages
 
@@ -104,6 +107,8 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic |
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |
 | `go run ./examples/inputs` | keys, mouse, wheel, cursor capture, fullscreen, typed text with IME composition, gamepads |
+| `go run ./examples/tetris` | the complete game the Tetris guide builds: timers, tweens, UI panel, synthesised sounds |
+| `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |
 | `go run ./cmd/bunyip-pack -o assets.pak assets/` | bundles an asset directory into a pack file |
