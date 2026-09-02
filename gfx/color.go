@@ -27,7 +27,9 @@
 // Model loaded with LoadModel; Mesh.Update replaces geometry that
 // changes. A Material is metallic-roughness PBR with textures, clearcoat,
 // sheen, subsurface, transmission, outlines and x-ray, or a game's own
-// mesh Shader. DrawMesh, DrawModel and DrawSkinned queue draws that are
+// mesh Shader. A Model's clips play through an AnimPlayer with
+// crossfades, layers and masks, events, root motion, morph targets and
+// node overrides for IK. DrawMesh, DrawModel and DrawSkinned queue draws that are
 // instanced when they share a mesh and material, culled against the
 // camera's Frustum, sorted for blending and lit by SetLight's
 // directional light with cascaded shadows, AddPointLight and

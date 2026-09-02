@@ -1,7 +1,17 @@
 // Package gltf loads glTF 2.0 models (.gltf with external or embedded
-// buffers, and .glb) into plain Go slices: positions, normals, UVs, indices,
-// materials, decoded images and the flattened node hierarchy with world
-// matrices. It has no GPU dependency; gfx.LoadModel uploads a Document.
+// buffers, and .glb) into plain Go slices: positions, normals, UVs,
+// vertex colours, joints and weights, indices, materials with their
+// textures and the KHR extensions the renderer supports (clearcoat,
+// sheen, transmission, volume, emissive strength, texture transforms),
+// decoded images, morph targets with their default weights, skins,
+// animation clips (node transforms and morph weights) and the flattened
+// node hierarchy with world matrices.
+//
+// Load reads a file, Parse a byte slice; both return a Document. The
+// package has no GPU dependency, so a tool or a server can read models
+// too; gfx.LoadModel uploads a Document into meshes and materials, and
+// phys can take a mesh's triangles as a static collider. Parse errors
+// name the offending buffer, accessor or image.
 package gltf
 
 import (
@@ -31,6 +41,9 @@ type Node struct {
 	Scale       lin.Vec3
 	Mesh        int // -1 none
 	Skin        int // -1 none
+	// Weights are the node's own morph target weights, overriding the
+	// mesh's defaults; nil means the mesh's.
+	Weights []float32
 }
 
 // Local returns the node's rest-pose local matrix.
@@ -57,6 +70,7 @@ const (
 	PathTranslation ChannelPath = iota
 	PathRotation
 	PathScale
+	PathWeights // the morph target weights of the node's mesh
 )
 
 // Channel is one animated node property with keyframes.
@@ -64,14 +78,48 @@ type Channel struct {
 	Node   int
 	Path   ChannelPath
 	Times  []float32
-	Values []lin.Vec4 // xyz for translation and scale, xyzw for rotation
-	Step   bool       // STEP interpolation; otherwise linear (cubic falls back to linear)
+	Values []lin.Vec4 // xyz for translation and scale, xyzw for rotation; nil for weights
+	// Weights holds a PathWeights channel's keys: one weight per morph
+	// target for each time, in time order.
+	Weights []float32
+	Step    bool // STEP interpolation; otherwise linear (cubic falls back to linear)
+}
+
+// WeightCount is the number of morph target weights per key of a
+// PathWeights channel; zero for other paths.
+func (c *Channel) WeightCount() int {
+	if len(c.Times) == 0 {
+		return 0
+	}
+	return len(c.Weights) / len(c.Times)
 }
 
 // Mesh is one glTF mesh: a set of primitives drawn together.
 type Mesh struct {
 	Name       string
 	Primitives []Primitive
+	// Weights are the default morph target weights, one per target; nil
+	// means every target at zero.
+	Weights []float32
+	// TargetNames names the morph targets when the file carries them in
+	// the mesh's extras; nil otherwise.
+	TargetNames []string
+}
+
+// TargetCount is the number of morph targets, from the first primitive.
+func (m *Mesh) TargetCount() int {
+	if len(m.Primitives) == 0 {
+		return 0
+	}
+	return len(m.Primitives[0].Targets)
+}
+
+// MorphTarget is one blend shape of a primitive: offsets added to each
+// vertex's position, and to its normal when the target has normals,
+// scaled by the target's weight.
+type MorphTarget struct {
+	Positions []lin.Vec3 // one per vertex
+	Normals   []lin.Vec3 // nil when the target has none
 }
 
 // Primitive is a triangle list with one material.
@@ -85,6 +133,7 @@ type Primitive struct {
 	Weights   [][4]float32
 	Colors    []lin.Vec4 // COLOR_0, linear RGBA; nil when the file has none
 	UVs2      []lin.Vec2 // TEXCOORD_1; nil when the file has none
+	Targets   []MorphTarget
 }
 
 // Skinned reports whether the primitive carries joint weights.

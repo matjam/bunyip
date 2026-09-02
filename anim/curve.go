@@ -5,7 +5,9 @@
 // moves a 2D sprite's position and tint, a 3D transform's rotation and
 // scale, or any field of your own component, and one System drives
 // every player, sprite-sheet Flipbook and skeletal Skeleton in the
-// world.
+// world. For skeletons, TwoBoneIK and LookAt are the solvers behind
+// SolveTwoBoneIK and LookAtNode, which plant feet and turn heads on a
+// gfx.AnimPlayer's pose.
 //
 //	bounce := anim.NewClip("bounce", anim.Loop,
 //		anim.Position2(anim.Vec2s(

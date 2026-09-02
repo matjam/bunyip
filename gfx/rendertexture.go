@@ -19,11 +19,34 @@ type RenderTexture struct {
 	g             *Graphics
 }
 
+// RenderTextureOptions says how a render texture samples when it is
+// drawn: Nearest keeps a low-resolution scene's pixels sharp when it is
+// scaled up (a pixel-art game rendering at 320 by 180), Repeat tiles it.
+type RenderTextureOptions struct {
+	Nearest bool
+	Repeat  bool
+}
+
 // NewRenderTexture creates an offscreen surface in pixels. It has the
-// full 3D pipeline (shadows, bloom, post) but no anti-aliasing pass.
+// full 3D pipeline (shadows, bloom, post) but no anti-aliasing pass, and
+// samples with linear filtering; NewRenderTextureOptions chooses.
 func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
+	return g.NewRenderTextureOptions(width, height, RenderTextureOptions{})
+}
+
+// NewRenderTextureOptions is NewRenderTexture with sampling options.
+func (g *Graphics) NewRenderTextureOptions(width, height int, opts RenderTextureOptions) (*RenderTexture, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("gfx: render texture needs a positive size")
+	}
+	sampler := g.linear
+	switch {
+	case opts.Nearest && opts.Repeat:
+		sampler = g.nearestRep
+	case opts.Nearest:
+		sampler = g.nearest
+	case opts.Repeat:
+		sampler = g.linearRep
 	}
 	extent := vk.VkExtent2D{Width: uint32(width), Height: uint32(height)}
 	rt := &RenderTexture{Width: width, Height: height, g: g}
@@ -39,7 +62,7 @@ func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
 		rt.Destroy()
 		return nil, err
 	}
-	set, err := g.textureSet(rt.target.Color.View, g.linear)
+	set, err := g.textureSet(rt.target.Color.View, sampler)
 	if err != nil {
 		rt.Destroy()
 		return nil, err

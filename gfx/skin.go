@@ -34,18 +34,49 @@ func (g *Graphics) NewSkinnedMesh(verts []SkinVertex, indices []uint32) (*Mesh, 
 	if len(verts) == 0 || len(indices) == 0 || len(indices)%3 != 0 {
 		return nil, fmt.Errorf("gfx: skinned mesh needs vertices and a whole number of triangles")
 	}
+	plain, packed := packSkin(verts)
+	m, err := g.newMesh(plain, indices, packed)
+	if err != nil {
+		return nil, err
+	}
+	m.skinned = true
+	return m, nil
+}
+
+// UpdateSkinned replaces a skinned mesh's geometry, as Update does for a
+// plain mesh: draws already queued this frame keep the old geometry. It
+// is what morph targets on a skinned model go through.
+func (m *Mesh) UpdateSkinned(verts []SkinVertex, indices []uint32) error {
+	if !m.skinned {
+		return fmt.Errorf("gfx: UpdateSkinned on a mesh that is not skinned")
+	}
+	if m.vbuf == nil {
+		return fmt.Errorf("gfx: update of a destroyed mesh")
+	}
+	if len(verts) == 0 {
+		return fmt.Errorf("gfx: mesh needs vertices")
+	}
+	plain, packed := packSkin(verts)
+	fresh, err := m.g.newMesh(plain, indices, packed)
+	if err != nil {
+		return err
+	}
+	m.g.retireBuffers(m.vbuf, m.ibuf)
+	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
+	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
+	return nil
+}
+
+// packSkin splits skinned vertices into the plain vertices kept for
+// picking and the bytes the GPU reads.
+func packSkin(verts []SkinVertex) ([]Vertex, []byte) {
 	plain := make([]Vertex, len(verts))
 	packed := make([]gpuSkinVertex, len(verts))
 	for i, v := range verts {
 		plain[i] = Vertex{Pos: v.Pos, Normal: v.Normal, UV: v.UV, UV2: v.UV2, Color: v.Color}
 		packed[i] = gpuSkinVertex{gpuVertex: plain[i].gpu(), joints: v.Joints, weights: v.Weights}
 	}
-	m, err := g.newMesh(plain, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*skinVertexSize))
-	if err != nil {
-		return nil, err
-	}
-	m.skinned = true
-	return m, nil
+	return plain, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*skinVertexSize)
 }
 
 // skinVertexLayout is the skinned binding 0 plus the shared instance binding.

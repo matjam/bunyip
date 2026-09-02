@@ -146,6 +146,9 @@ func (l *loader) nodes() []Node {
 		if n.Skin != nil {
 			node.Skin = *n.Skin
 		}
+		if len(n.Weights) > 0 {
+			node.Weights = n.Weights
+		}
 		out[i] = node
 	}
 	for i, n := range out {
@@ -199,6 +202,7 @@ func (l *loader) animations() ([]Animation, error) {
 				return nil, fmt.Errorf("animation %d: output: %v", ai, err)
 			}
 			c := Channel{Node: *ch.Target.Node, Step: sm.Interpolation == "STEP"}
+			cubic := sm.Interpolation == "CUBICSPLINE"
 			switch ch.Target.Path {
 			case "translation":
 				c.Path = PathTranslation
@@ -206,12 +210,41 @@ func (l *loader) animations() ([]Animation, error) {
 				c.Path = PathRotation
 			case "scale":
 				c.Path = PathScale
+			case "weights":
+				c.Path = PathWeights
 			default:
-				continue // weights (morph targets) are not supported
+				continue
+			}
+			if c.Path == PathWeights {
+				// The output holds one scalar per target per key (three
+				// per key for cubic splines: in-tangent, value, out-tangent).
+				per := len(vals) / max(len(times), 1)
+				if cubic {
+					per /= 3
+				}
+				if width != 1 || per == 0 {
+					continue
+				}
+				for i := range times {
+					base := i * per
+					if cubic {
+						base = i*per*3 + per
+					}
+					if base+per > len(vals) {
+						break
+					}
+					c.Weights = append(c.Weights, vals[base:base+per]...)
+				}
+				c.Times = times[:len(c.Weights)/per]
+				if len(c.Times) > 0 {
+					anim.Duration = max(anim.Duration, c.Times[len(c.Times)-1])
+				}
+				anim.Channels = append(anim.Channels, c)
+				continue
 			}
 			stride := width
 			offset := 0
-			if sm.Interpolation == "CUBICSPLINE" {
+			if cubic {
 				stride, offset = width*3, width // keep the middle value of each triple
 			}
 			for i := range times {

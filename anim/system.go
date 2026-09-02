@@ -3,6 +3,7 @@ package anim
 import (
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
+	"github.com/matjam/bunyip/lin"
 )
 
 // Player is the component that plays clips on an entity. Add an empty
@@ -107,10 +108,23 @@ func (f *Flipbook) length() float64 {
 func (f *Flipbook) Restart() { f.Time, f.Done = 0, false }
 
 // Skeleton plays a glTF model's animation clips through a
-// gfx.AnimPlayer; draw the entity with gfx.DrawModelAnimated.
+// gfx.AnimPlayer; draw the entity with gfx.DrawModelAnimated. Events
+// the player crosses are emitted as SkeletonEvent, and with root motion
+// on the player, the movement is applied to the entity's gfx.Transform
+// when it has one.
 type Skeleton struct {
 	Player *gfx.AnimPlayer
 	Speed  float64 // zero means 1
+	// KeepRootMotion leaves the transform alone so the game reads
+	// Player.RootMotion itself, for a physics-driven body.
+	KeepRootMotion bool
+}
+
+// SkeletonEvent is emitted when a Skeleton's player crosses an event
+// added with AnimPlayer.AddEvent.
+type SkeletonEvent struct {
+	Entity ecs.Entity
+	Event  gfx.AnimEvent
 }
 
 // queries are cached per world.
@@ -182,5 +196,18 @@ func System(w *ecs.World, dt float64) {
 			speed = 1
 		}
 		s.Player.Advance(dt * speed)
+		for _, ev := range s.Player.Events() {
+			ecs.Emit(w, SkeletonEvent{Entity: e, Event: ev})
+		}
+		if delta, yaw := s.Player.RootMotion(); !s.KeepRootMotion && (delta != (lin.Vec3{}) || yaw != 0) {
+			if tr, ok := ecs.Get[gfx.Transform](w, e); ok {
+				rot := tr.Rotation
+				if rot == (lin.Quat{}) {
+					rot = lin.QuatIdentity()
+				}
+				tr.Position = tr.Position.Add(rot.Rotate(delta))
+				tr.Rotation = lin.AxisAngle(lin.V3(0, 1, 0), yaw).Mul(rot).Norm()
+			}
+		}
 	})
 }

@@ -124,8 +124,8 @@ meshes, and dynamic mesh updates are in. What remains:
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
 - Depth of field, motion blur, colour grading LUTs, lens effects.
 - Order-independent transparency; blended draws are sorted per mesh.
-- Render texture options: colour format, no depth, multisampling, and
-  reading its depth.
+- Render texture options beyond nearest and repeat sampling: colour
+  format, no depth, multisampling, and reading its depth.
 - Culling uses each mesh's bind-pose bounds (doubled for skinned
   meshes) and skips meshes whose shader moves vertices; a shader that
   moves them far can still be culled when it should not be.
@@ -146,10 +146,17 @@ meshes, and dynamic mesh updates are in. What remains:
 
 ## Animation
 
-- Blend trees, layered animation and masks; inverse kinematics; root
-  motion extraction; animation events at keyframes.
-- Morph targets from glTF.
-- Sprite animation authoring from Aseprite or similar.
+Animation events, root motion, layers with masks (override and
+additive), two-bone IK and look-at through node overrides, and morph
+targets from glTF (blended on the CPU and uploaded when weights change)
+are in. What remains:
+
+- Blend trees as data (a 2D blend space of walk, run and strafe); the
+  layers and weights exist to build one in code.
+- GPU morph targets; the CPU blend is fine for a few characters with a
+  few thousand vertices each.
+- Sprite animation authoring from Aseprite or similar beyond the atlas
+  frame tags `ParseAtlas` reads.
 
 ## Audio
 

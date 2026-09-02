@@ -1,6 +1,9 @@
 package gfx
 
 import (
+	"fmt"
+	"slices"
+
 	"github.com/matjam/bunyip/gltf"
 	"github.com/matjam/bunyip/lin"
 )
@@ -16,6 +19,171 @@ type Model struct {
 	skins    []gltf.Skin
 	clips    []gltf.Animation
 	order    []int // node indices, parents before children
+	morphs   []*morphMesh
+}
+
+// morphMesh is a primitive with morph targets: the rest geometry stays on
+// the CPU and a weighted blend of the targets is uploaded when the
+// weights change.
+type morphMesh struct {
+	mesh    *Mesh
+	node    int
+	names   []string
+	targets []gltf.MorphTarget
+	base    []Vertex     // rest vertices of a plain mesh
+	skin    []SkinVertex // rest vertices of a skinned mesh
+	indices []uint32
+	rest    []float32 // the file's default weights
+	weights []float32 // the weights last uploaded
+}
+
+// apply blends the targets by the weights and uploads the result when
+// the weights differ from the last upload.
+func (mm *morphMesh) apply(weights []float32) error {
+	if len(weights) == len(mm.weights) && slices.Equal(weights, mm.weights) {
+		return nil
+	}
+	mm.weights = append(mm.weights[:0], weights...)
+	blend := func(i int, pos, normal lin.Vec3) (lin.Vec3, lin.Vec3) {
+		for ti, w := range weights {
+			if ti >= len(mm.targets) || w == 0 {
+				continue
+			}
+			t := mm.targets[ti]
+			pos = pos.Add(t.Positions[i].Mul(w))
+			if t.Normals != nil {
+				normal = normal.Add(t.Normals[i].Mul(w))
+			}
+		}
+		return pos, normal.Norm()
+	}
+	if mm.skin != nil {
+		verts := make([]SkinVertex, len(mm.skin))
+		for i, v := range mm.skin {
+			v.Pos, v.Normal = blend(i, v.Pos, v.Normal)
+			verts[i] = v
+		}
+		return mm.mesh.UpdateSkinned(verts, mm.indices)
+	}
+	verts := make([]Vertex, len(mm.base))
+	for i, v := range mm.base {
+		v.Pos, v.Normal = blend(i, v.Pos, v.Normal)
+		verts[i] = v
+	}
+	return mm.mesh.Update(verts, mm.indices)
+}
+
+// NodeCount is the number of nodes in the model's hierarchy.
+func (m *Model) NodeCount() int { return len(m.nodes) }
+
+// NodeName returns a node's name; an unknown index gives "".
+func (m *Model) NodeName(node int) string {
+	if node < 0 || node >= len(m.nodes) {
+		return ""
+	}
+	return m.nodes[node].Name
+}
+
+// NodeIndex returns the index of the first node with the name, or -1.
+func (m *Model) NodeIndex(name string) int {
+	for i, n := range m.nodes {
+		if n.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// NodeParent returns a node's parent index, or -1 for a root.
+func (m *Model) NodeParent(node int) int {
+	if node < 0 || node >= len(m.nodes) {
+		return -1
+	}
+	return m.nodes[node].Parent
+}
+
+// AnimMask is the set of nodes an animation layer affects, one flag per
+// node; nil means every node. Build one with MaskNodes or MaskSubtree.
+type AnimMask []bool
+
+// MaskNodes makes a mask of exactly the named nodes; unknown names are
+// ignored.
+func (m *Model) MaskNodes(names ...string) AnimMask {
+	mask := make(AnimMask, len(m.nodes))
+	for _, name := range names {
+		if i := m.NodeIndex(name); i >= 0 {
+			mask[i] = true
+		}
+	}
+	return mask
+}
+
+// MaskSubtree makes a mask of the named nodes and everything under them:
+// "Spine1" for the upper body, "Head" for the head and its children.
+func (m *Model) MaskSubtree(names ...string) AnimMask {
+	mask := make(AnimMask, len(m.nodes))
+	for _, name := range names {
+		if i := m.NodeIndex(name); i >= 0 {
+			m.markSubtree(mask, i, 0)
+		}
+	}
+	return mask
+}
+
+func (m *Model) markSubtree(mask AnimMask, node, depth int) {
+	if node < 0 || node >= len(m.nodes) || depth > 64 {
+		return
+	}
+	mask[node] = true
+	for _, c := range m.nodes[node].Children {
+		m.markSubtree(mask, c, depth+1)
+	}
+}
+
+// MorphTargets names the morph targets of the node's mesh, blank where
+// the file names none; nil when the node has no morph targets.
+func (m *Model) MorphTargets(node int) []string {
+	for _, mm := range m.morphs {
+		if mm.node == node {
+			return mm.names
+		}
+	}
+	return nil
+}
+
+// MorphWeights returns the morph target weights the node's mesh was last
+// uploaded with; nil when the node has no morph targets.
+func (m *Model) MorphWeights(node int) []float32 {
+	for _, mm := range m.morphs {
+		if mm.node == node {
+			return mm.weights
+		}
+	}
+	return nil
+}
+
+// SetMorphWeights blends the node's morph targets by the weights (one per
+// target, 0 for none and 1 for the full shape) and uploads the result:
+// a facial expression, a wind-bent plant. A player's weights channels do
+// the same through DrawModelAnimated. Blending runs on the CPU and
+// costs one pass over the mesh's vertices per target with a non-zero
+// weight, plus the upload, each time the weights change; unchanged
+// weights cost nothing.
+func (m *Model) SetMorphWeights(node int, weights []float32) error {
+	found := false
+	for _, mm := range m.morphs {
+		if mm.node != node {
+			continue
+		}
+		found = true
+		if err := mm.apply(weights); err != nil {
+			return err
+		}
+	}
+	if !found {
+		return fmt.Errorf("gfx: node %d has no morph targets", node)
+	}
+	return nil
 }
 
 // ModelPart is one primitive placed by one node.
@@ -43,10 +211,13 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 	type key struct{ mesh, prim int }
 	uploaded := map[key]*Mesh{}
 	for _, inst := range doc.Instances {
-		for pi, p := range doc.Meshes[inst.Mesh].Primitives {
+		src := doc.Meshes[inst.Mesh]
+		for pi, p := range src.Primitives {
 			k := key{inst.Mesh, pi}
 			mesh, ok := uploaded[k]
-			if !ok {
+			// A primitive with morph targets is uploaded once per instance,
+			// since each instance blends its own copy.
+			if !ok || len(p.Targets) > 0 {
 				var err error
 				vertex := func(i int) Vertex {
 					v := Vertex{Pos: p.Positions[i], Normal: p.Normals[i], UV: p.UVs[i]}
@@ -59,6 +230,11 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 					}
 					return v
 				}
+				var mm *morphMesh
+				if len(p.Targets) > 0 {
+					mm = &morphMesh{node: inst.Node, targets: p.Targets, indices: p.Indices, names: make([]string, len(p.Targets))}
+					copy(mm.names, src.TargetNames)
+				}
 				if p.Skinned() && inst.Skin >= 0 {
 					verts := make([]SkinVertex, len(p.Positions))
 					for i := range verts {
@@ -66,12 +242,18 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 						verts[i] = SkinVertex{Pos: v.Pos, Normal: v.Normal, UV: v.UV, UV2: v.UV2, Color: v.Color, Joints: p.Joints[i], Weights: p.Weights[i]}
 					}
 					mesh, err = g.NewSkinnedMesh(verts, p.Indices)
+					if mm != nil {
+						mm.skin = verts
+					}
 				} else {
 					verts := make([]Vertex, len(p.Positions))
 					for i := range verts {
 						verts[i] = vertex(i)
 					}
 					mesh, err = g.NewMesh(verts, p.Indices)
+					if mm != nil {
+						mm.base = verts
+					}
 				}
 				if err != nil {
 					m.Destroy()
@@ -79,6 +261,17 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				}
 				uploaded[k] = mesh
 				m.meshes = append(m.meshes, mesh)
+				if mm != nil {
+					mm.mesh = mesh
+					m.morphs = append(m.morphs, mm)
+					// The upload is the rest geometry: every weight zero.
+					mm.rest = m.restWeights(inst.Node, src)
+					mm.weights = make([]float32, len(mm.rest))
+					if err := mm.apply(mm.rest); err != nil {
+						m.Destroy()
+						return nil, err
+					}
+				}
 			}
 			mat := Material{BaseColor: White, Roughness: 0.6}
 			if p.Material >= 0 {
@@ -121,6 +314,18 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 		}
 	}
 	return m, nil
+}
+
+// restWeights returns the morph weights a node starts with: its own,
+// else its mesh's defaults, else zeros, one per target.
+func (m *Model) restWeights(node int, mesh gltf.Mesh) []float32 {
+	w := make([]float32, mesh.TargetCount())
+	if node >= 0 && node < len(m.nodes) && len(m.nodes[node].Weights) > 0 {
+		copy(w, m.nodes[node].Weights)
+	} else {
+		copy(w, mesh.Weights)
+	}
+	return w
 }
 
 func (m *Model) texture(i int) *Texture {
@@ -166,5 +371,5 @@ func (m *Model) Destroy() {
 	for _, t := range m.textures {
 		t.Destroy()
 	}
-	m.meshes, m.textures, m.Parts = nil, nil, nil
+	m.meshes, m.textures, m.Parts, m.morphs = nil, nil, nil, nil
 }

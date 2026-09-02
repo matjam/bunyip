@@ -117,7 +117,7 @@ func (l *loader) indices(index int) ([]uint32, error) {
 }
 
 func (l *loader) mesh(m jsonMesh) (Mesh, error) {
-	mesh := Mesh{Name: m.Name}
+	mesh := Mesh{Name: m.Name, Weights: m.Weights, TargetNames: m.Extras.TargetNames}
 	for pi, p := range m.Primitives {
 		if p.Mode != nil && *p.Mode != 4 {
 			continue // only triangle lists; points, lines and strips are skipped
@@ -223,10 +223,46 @@ func (l *loader) primitive(p jsonPrimitive) (Primitive, error) {
 			}
 		}
 	}
+	for ti, target := range p.Targets {
+		mt, err := l.morphTarget(target, count)
+		if err != nil {
+			return prim, fmt.Errorf("target %d: %w", ti, err)
+		}
+		prim.Targets = append(prim.Targets, mt)
+	}
 	if p.Material != nil && *p.Material >= 0 && *p.Material < len(l.j.Materials) {
 		prim.Material = *p.Material
 	}
 	return prim, nil
+}
+
+// morphTarget reads one primitive target's position and normal deltas.
+func (l *loader) morphTarget(attrs map[string]int, count int) (MorphTarget, error) {
+	var mt MorphTarget
+	read := func(name string) ([]lin.Vec3, error) {
+		idx, ok := attrs[name]
+		if !ok {
+			return nil, nil
+		}
+		v, n, err := l.floats(idx)
+		if err != nil || n != 3 || len(v) != count*3 {
+			return nil, fmt.Errorf("%s: %v", name, err)
+		}
+		out := make([]lin.Vec3, count)
+		for i := range out {
+			out[i] = lin.V3(v[i*3], v[i*3+1], v[i*3+2])
+		}
+		return out, nil
+	}
+	var err error
+	if mt.Positions, err = read("POSITION"); err != nil {
+		return mt, err
+	}
+	if mt.Positions == nil {
+		mt.Positions = make([]lin.Vec3, count)
+	}
+	mt.Normals, err = read("NORMAL")
+	return mt, err
 }
 
 // smoothNormals averages face normals at shared vertices.

@@ -139,13 +139,18 @@ type jsonMaterial struct {
 type jsonMesh struct {
 	Name       string          `json:"name"`
 	Primitives []jsonPrimitive `json:"primitives"`
+	Weights    []float32       `json:"weights"`
+	Extras     struct {
+		TargetNames []string `json:"targetNames"`
+	} `json:"extras"`
 }
 
 type jsonPrimitive struct {
-	Attributes map[string]int `json:"attributes"`
-	Indices    *int           `json:"indices"`
-	Material   *int           `json:"material"`
-	Mode       *int           `json:"mode"`
+	Attributes map[string]int   `json:"attributes"`
+	Indices    *int             `json:"indices"`
+	Material   *int             `json:"material"`
+	Mode       *int             `json:"mode"`
+	Targets    []map[string]int `json:"targets"`
 }
 
 type jsonNode struct {
@@ -157,6 +162,7 @@ type jsonNode struct {
 	Translation []float32 `json:"translation"`
 	Rotation    []float32 `json:"rotation"`
 	Scale       []float32 `json:"scale"`
+	Weights     []float32 `json:"weights"`
 }
 
 type jsonScene struct {

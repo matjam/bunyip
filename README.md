@@ -64,7 +64,7 @@ output.
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
 | `lin` | vectors, matrices, quaternions |
 | `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs |
-| `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons |
+| `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons with layers, events, root motion, IK and morph targets |
 | `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps and shape casts |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
 | `asset` | files from directories and pack files, async loading, hot reload |
@@ -126,7 +126,7 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic |
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |
 | `go run ./examples/inputs` | keys, mouse, wheel, cursor capture, fullscreen, typed text with IME composition, gamepads |
-| `go run ./examples/animation` | keyframe clips on 2D sprites and 3D transforms, a flipbook walker, crossfades between a hero's clips, Finished events chaining back to idle |
+| `go run ./examples/animation` | keyframe clips on 2D sprites and 3D transforms, a flipbook walker, crossfades between a hero's clips, Finished events chaining back to idle, a robot arm firing an animation event and another reaching a target by two-bone IK |
 | `go run ./examples/physics3d` | five hundred cubes of plastic, metal, gold, car paint, velvet, glass and glowing materials dropped into a pile, with a raycast highlighting the one under the pointer |
 | `go run ./examples/physics2d` | balls, boxes and triangles in a pit with a ramp, a kinematic paddle, a trigger zone and a raycast |
 | `go run ./examples/physics-lab` | capsules, hulls and spheres tumbling onto a mesh terrain, a hinge chain, a character controller climbing stairs, colliders and contacts drawn with debug lines |
