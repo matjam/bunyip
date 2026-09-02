@@ -70,7 +70,8 @@ output.
 | `asset` | files from directories and pack files, async loading, hot reload |
 | `save` | JSON saves and settings in the platform's data directory |
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
-| `timer`, `tween` | game-time timers; eased value animation |
+| `timer`, `tween` | game-time timers and step sequences for cutscenes; eased value animation |
+| `locale` | string tables with placeholders, plural rules and fallbacks |
 | `grid` | cell grids, A*, Dijkstra maps, lines, field of view, flood fill |
 | `network` | typed messages over TCP (ordered) and UDP (fast); interpolation, prediction, lag compensation and clock sync helpers |
 | `internal/vk` | generated Vulkan binding plus hand-written loader |

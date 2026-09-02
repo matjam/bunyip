@@ -191,13 +191,16 @@ remains:
 
 ## Entities, data and scripting
 
-- Serialisation of ECS worlds for saves and networking.
-- Prefabs and spawning from data files.
-- A scene format and a scene editor.
+World saves and loads, prefabs with children, cloning, the `locale`
+package (string tables, placeholders, plural rules, fallbacks) and
+`timer.Sequence` for cutscene-style sequencing are in. What remains:
+
+- A scene format and a scene editor; a prefab's JSON is the data format
+  for now.
 - Scripting for game logic in something other than Go (Lua or similar),
   or hot code reload.
-- Localisation: string tables, plural rules, right-to-left layout of UI.
-- Coroutine-style sequencing for cutscenes beyond timer and tween.
+- Right-to-left layout of the interface; the text itself shapes
+  correctly.
 
 ## Networking
 
