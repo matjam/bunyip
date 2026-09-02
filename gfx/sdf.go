@@ -165,35 +165,3 @@ func edt(inside []bool, w, h int, invert bool) []float64 {
 	}
 	return out
 }
-
-// DrawTextSized draws one line of an SDF font at size view units per em,
-// rotated by angle radians about the text's top-left corner.
-func (g *Graphics) DrawTextSized(f *Font, text string, x, y, size, angle float32, c Color) {
-	k := size / f.Size
-	glyphs := f.Shape(text, TextOptions{})
-	if angle == 0 {
-		g.DrawGlyphs(f, glyphs, x, y, k, c)
-		return
-	}
-	sin, cos := sin32(angle), cos32(angle)
-	for _, gl := range glyphs {
-		if gl.Empty {
-			continue
-		}
-		lx, ly := gl.Pos.X*k, gl.Pos.Y*k
-		g.Draw(f.atlas, Sprite{
-			Pos:  lin.V2(x+lx*cos-ly*sin, y+lx*sin+ly*cos),
-			Size: gl.Size.Mul(k),
-			UV0:  gl.UV0, UV1: gl.UV1,
-			Color:    c,
-			Rotation: angle,
-		})
-	}
-}
-
-// MeasureSized measures one line at the given em size.
-func (f *Font) MeasureSized(text string, size float32) (w, h float32) {
-	w, h = f.Measure(text)
-	k := size / f.Size
-	return w * k, h * k
-}

@@ -185,7 +185,9 @@ type Material struct {
 	Shader *Shader
 }
 
-// Camera is a perspective camera looking from Position at Target.
+// Camera looks from Position at Target: perspective with FovY, or
+// orthographic when Ortho is set, for isometric and strategy views where
+// distance does not shrink things.
 type Camera struct {
 	Position lin.Vec3
 	Target   lin.Vec3
@@ -193,6 +195,9 @@ type Camera struct {
 	FovY     float32  // radians; zero means 60 degrees
 	Near     float32  // zero means 0.1
 	Far      float32  // zero means 1000
+	// Ortho is half the view's height in world units for an orthographic
+	// camera; zero means perspective.
+	Ortho float32
 }
 
 func (c Camera) defaults() (up lin.Vec3, fov, near, far float32) {
@@ -217,9 +222,12 @@ func (c Camera) ViewProj(aspect float32) lin.Mat4 {
 	return c.Projection(aspect).Mul(c.viewMatrix())
 }
 
-// Projection returns the perspective matrix alone.
+// Projection returns the projection matrix alone.
 func (c Camera) Projection(aspect float32) lin.Mat4 {
 	_, fov, near, far := c.defaults()
+	if c.Ortho > 0 {
+		return lin.Ortho(-c.Ortho*aspect, c.Ortho*aspect, -c.Ortho, c.Ortho, near, far)
+	}
 	return lin.Perspective(fov, aspect, near, far)
 }
 

@@ -137,7 +137,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 }
 
 func (g *game) cell(gr *gfx.Graphics, x, y int, s string, c gfx.Color) {
-	w, _ := g.font.Measure(s)
+	w, _ := g.font.Measure(s, gfx.TextOptions{})
 	gr.DrawText(g.font, s, float32(x*cellSize)+(cellSize-w)/2, float32(y*cellSize), c)
 }
 

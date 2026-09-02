@@ -96,8 +96,8 @@ type game struct {
 	yaw      float32
 	pitch    float32
 	dist     float32
-	lastX    float64
-	lastY    float64
+	lastX    float32
+	lastY    float32
 	dragging bool
 	shotDone bool
 	stars    []lin.Vec3 // unit directions of a background starfield
@@ -208,12 +208,12 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		g.dragging = false
 	}
 	if g.dragging {
-		g.yaw -= float32(x-g.lastX) * 0.01
-		g.pitch = lin.Clamp(g.pitch+float32(y-g.lastY)*0.01, -1.5, 1.5)
+		g.yaw -= (x - g.lastX) * 0.01
+		g.pitch = lin.Clamp(g.pitch+(y-g.lastY)*0.01, -1.5, 1.5)
 	}
 	g.lastX, g.lastY = x, y
 	if _, dy := in.Scroll(); dy != 0 {
-		g.dist = lin.Clamp(g.dist*float32(math.Pow(0.88, dy)), 1, 3000)
+		g.dist = lin.Clamp(g.dist*float32(math.Pow(0.88, float64(dy))), 1, 3000)
 	}
 	w := g.world
 	settings := ecs.Resource[orbit.Settings](w)

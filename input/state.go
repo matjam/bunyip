@@ -1,5 +1,7 @@
 package input
 
+import "github.com/matjam/bunyip/lin"
+
 // State is the keyboard and mouse as a game sees them each update: what is
 // held, what changed since the last update, where the pointer is and what
 // text was typed. The engine feeds it from platform events.
@@ -9,12 +11,13 @@ type State struct {
 	released [KeyCount]bool
 	mods     Mods
 
-	mouseX, mouseY   float64
+	mouseX, mouseY   float32
 	buttons          [MouseButtonCount]bool
 	buttonsPressed   [MouseButtonCount]bool
 	buttonsReleased  [MouseButtonCount]bool
-	scrollX, scrollY float64
-	mouseDX, mouseDY float64
+	scrollX, scrollY float32
+	mouseDX, mouseDY float32
+	repeated         [KeyCount]bool
 	chars            []rune
 	composition      string
 	gamepads         [MaxGamepads]Gamepad
@@ -31,9 +34,10 @@ type State struct {
 type frameTransients struct {
 	pressed, released               [KeyCount]bool
 	buttonsPressed, buttonsReleased [MouseButtonCount]bool
-	scrollX, scrollY                float64
-	mouseDX, mouseDY                float64
+	scrollX, scrollY                float32
+	mouseDX, mouseDY                float32
 	chars                           []rune
+	repeated                        [KeyCount]bool
 }
 
 // EndUpdate clears the per-update transients (pressed, released, scroll,
@@ -44,7 +48,9 @@ func (s *State) EndUpdate() {
 	for k := range s.pressed {
 		f.pressed[k] = f.pressed[k] || s.pressed[k]
 		f.released[k] = f.released[k] || s.released[k]
+		f.repeated[k] = f.repeated[k] || s.repeated[k]
 	}
+	s.repeated = [KeyCount]bool{}
 	for b := range s.buttonsPressed {
 		f.buttonsPressed[b] = f.buttonsPressed[b] || s.buttonsPressed[b]
 		f.buttonsReleased[b] = f.buttonsReleased[b] || s.buttonsReleased[b]
@@ -103,7 +109,16 @@ func (s *State) KeyReleased(k Key) bool { return s.released[k] || s.drawing && s
 func (s *State) Mods() Mods { return s.mods }
 
 // Mouse returns the pointer position in view units.
-func (s *State) Mouse() (x, y float64) { return s.mouseX, s.mouseY }
+func (s *State) Mouse() (x, y float32) { return s.mouseX, s.mouseY }
+
+// MousePos returns the pointer position as a vector.
+func (s *State) MousePos() lin.Vec2 { return lin.V2(s.mouseX, s.mouseY) }
+
+// KeyRepeated reports whether the key produced an operating-system
+// repeat since the last update: a held key in a menu or a text field.
+// KeyPressed already counts repeats; use KeyPressed and not KeyRepeated
+// for the first press alone.
+func (s *State) KeyRepeated(k Key) bool { return s.repeated[k] || s.drawing && s.frame.repeated[k] }
 
 // MouseDown reports whether the button is held.
 func (s *State) MouseDown(b MouseButton) bool { return s.buttons[b] }
@@ -120,7 +135,7 @@ func (s *State) MouseReleased(b MouseButton) bool {
 }
 
 // Scroll returns wheel movement since the last update, in lines.
-func (s *State) Scroll() (dx, dy float64) {
+func (s *State) Scroll() (dx, dy float32) {
 	if s.drawing {
 		return s.scrollX + s.frame.scrollX, s.scrollY + s.frame.scrollY
 	}
@@ -150,7 +165,9 @@ func (s *State) FeedKey(k Key, down, repeat bool, mods Mods) {
 	}
 	if down {
 		s.pressed[k] = true
-		if !repeat {
+		if repeat {
+			s.repeated[k] = true
+		} else {
 			s.down[k] = true
 		}
 		return
@@ -166,10 +183,10 @@ func (s *State) FeedChar(r rune) { s.chars = append(s.chars, r) }
 func (s *State) FeedComposition(text string) { s.composition = text }
 
 // FeedMouseMove records the pointer position in view units.
-func (s *State) FeedMouseMove(x, y float64) { s.mouseX, s.mouseY = x, y }
+func (s *State) FeedMouseMove(x, y float32) { s.mouseX, s.mouseY = x, y }
 
 // FeedMouseButton records a button going down or up at a position.
-func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float64) {
+func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float32) {
 	s.mouseX, s.mouseY = x, y
 	if int(b) >= len(s.buttons) {
 		return
@@ -183,7 +200,7 @@ func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float64) {
 }
 
 // FeedScroll accumulates wheel movement in lines.
-func (s *State) FeedScroll(dx, dy float64) { s.scrollX += dx; s.scrollY += dy }
+func (s *State) FeedScroll(dx, dy float32) { s.scrollX += dx; s.scrollY += dy }
 
 // FeedFocusLost releases everything, since key-up events stop arriving.
 func (s *State) FeedFocusLost() {

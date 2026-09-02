@@ -160,9 +160,8 @@ type Vertex2D struct {
 
 // PushClip limits later sprite drawing to a view-space rectangle,
 // intersected with any enclosing clip. Pair with PopClip.
-func (g *Graphics) PushClip(x, y, w, h float32) {
+func (g *Graphics) PushClip(r lin.Rect) {
 	q := g.cur
-	r := ClipRect{x, y, w, h}
 	if n := len(q.clips); n > 0 {
 		r = intersectClip(q.clips[n-1], r)
 	}
@@ -171,8 +170,8 @@ func (g *Graphics) PushClip(x, y, w, h float32) {
 
 // Clip runs draw with sprites clipped to the rectangle, the closure form
 // of PushClip and PopClip.
-func (g *Graphics) Clip(x, y, w, h float32, draw func()) {
-	g.PushClip(x, y, w, h)
+func (g *Graphics) Clip(r lin.Rect, draw func()) {
+	g.PushClip(r)
 	draw()
 	g.PopClip()
 }
@@ -185,13 +184,14 @@ func (g *Graphics) PopClip() {
 	}
 }
 
-func intersectClip(a, b ClipRect) ClipRect {
-	x0, y0 := max(a.X, b.X), max(a.Y, b.Y)
-	x1, y1 := min(a.X+a.W, b.X+b.W), min(a.Y+a.H, b.Y+b.H)
-	if x1 <= x0 || y1 <= y0 {
-		return ClipRect{X: x0, Y: y0, W: 0.001, H: 0.001} // fully clipped, but not "no clip"
+// intersectClip narrows a clip by another; a disjoint pair clips
+// everything, which must stay distinct from the zero "no clip" rect.
+func intersectClip(a, b lin.Rect) lin.Rect {
+	r := a.Intersect(b)
+	if r.Empty() {
+		return lin.Rect{X: r.X, Y: r.Y, W: 0.001, H: 0.001}
 	}
-	return ClipRect{x0, y0, x1 - x0, y1 - y0}
+	return r
 }
 
 // FillRect queues a solid rectangle.
@@ -295,7 +295,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, extent vk.VkExtent2D)
 	vk.VkCmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &offset)
 	var bound *render.Pipeline
 	var boundProj *lin.Mat4
-	var boundClip ClipRect
+	var boundClip lin.Rect
 	boundUniform := int32(-2)
 	scaleX, scaleY := float32(extent.Width)/q.viewW, float32(extent.Height)/q.viewH
 	push := push2D{frame: lin.V4(g.time, q.viewW, q.viewH, scaleX)}
@@ -304,7 +304,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, extent vk.VkExtent2D)
 		if s.clip != boundClip {
 			boundClip = s.clip
 			render.SetScissor(cb, extent, int32(s.clip.X*scaleX), int32(s.clip.Y*scaleY),
-				uint32(max(s.clip.W*scaleX, 0)), uint32(max(s.clip.H*scaleY, 0)), s.clip == ClipRect{})
+				uint32(max(s.clip.W*scaleX, 0)), uint32(max(s.clip.H*scaleY, 0)), s.clip == (lin.Rect{}))
 		}
 		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend})
 		if err != nil {

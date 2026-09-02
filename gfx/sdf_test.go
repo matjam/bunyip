@@ -26,8 +26,8 @@ func TestSDFText(t *testing.T) {
 		if !ok {
 			continue
 		}
-		g.DrawTextSized(f, "Bunyip", 10, 10, 16, 0, White)
-		g.DrawTextSized(f, "Bunyip", 10, 60, 96, 0, White)
+		g.DrawTextBlock(f, "Bunyip", 10, 10, TextOptions{Size: 16}, White)
+		g.DrawTextBlock(f, "Bunyip", 10, 60, TextOptions{Size: 96}, White)
 		if img, err = g.End(true); err != nil {
 			t.Fatal(err)
 		}
@@ -43,8 +43,8 @@ func TestSDFText(t *testing.T) {
 		}
 		return n
 	}
-	sw, sh := f.MeasureSized("Bunyip", 16)
-	lw, lh := f.MeasureSized("Bunyip", 96)
+	sw, sh := f.Measure("Bunyip", TextOptions{Size: 16})
+	lw, lh := f.Measure("Bunyip", TextOptions{Size: 96})
 	small := count(10, 10, 10+int(sw)+2, 10+int(sh)+2)
 	large := count(10, 60, 10+int(lw)+2, 60+int(lh)+2)
 	if small < 20 || large < small*10 {

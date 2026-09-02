@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -53,6 +54,83 @@ func TestPackAndPrecedence(t *testing.T) {
 	}
 	if fs.Path("a.txt") == "" || fs.Path("sub/b.txt") != "" {
 		t.Fatal("Path should name loose files only")
+	}
+}
+
+func TestFSSource(t *testing.T) {
+	embedded := fstest.MapFS{
+		"a.txt":     {Data: []byte("embedded a")},
+		"sub/b.txt": {Data: []byte("embedded b")},
+		"sub/d.txt": {Data: []byte("embedded d")},
+	}
+	loose := tree(t, map[string]string{"a.txt": "loose a", "c.txt": "loose c"})
+	packed := tree(t, map[string]string{"sub/b.txt": "packed b", "e.txt": "packed e"})
+	pak := filepath.Join(t.TempDir(), "assets.pak")
+	if err := Pack(packed, pak); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := OpenFS(Dir(loose), FSSource(embedded), PackFile(pak))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	for name, want := range map[string]string{
+		"a.txt":     "loose a",
+		"c.txt":     "loose c",
+		"sub/b.txt": "embedded b",
+		"sub/d.txt": "embedded d",
+		"e.txt":     "packed e",
+	} {
+		data, err := fs.Read(name)
+		if err != nil || string(data) != want {
+			t.Fatalf("%s: %q %v", name, data, err)
+		}
+	}
+	if _, err := fs.Read("sub"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("directory read: %v", err)
+	}
+	if _, err := fs.Read("missing.txt"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+	if !fs.Exists("sub/d.txt") || fs.Exists("sub") || fs.Exists("nope") {
+		t.Fatal("Exists wrong")
+	}
+	if fs.Path("a.txt") == "" || fs.Path("sub/d.txt") != "" || fs.Path("e.txt") != "" {
+		t.Fatal("Path should name loose files only")
+	}
+	if got := strings.Join(fs.List(""), ","); got != "a.txt,c.txt,e.txt,sub/b.txt,sub/d.txt" {
+		t.Fatalf("list %s", got)
+	}
+	if got := strings.Join(fs.List("sub"), ","); got != "sub/b.txt,sub/d.txt" {
+		t.Fatalf("list sub %s", got)
+	}
+
+	// A watcher has nothing to poll for embedded names.
+	w := NewWatcher(fs, 10*time.Millisecond)
+	defer w.Close()
+	w.Add("sub/d.txt")
+	time.Sleep(30 * time.Millisecond)
+	if c := w.Changed(); len(c) != 0 {
+		t.Fatalf("spurious change %v", c)
+	}
+}
+
+func TestOpenFSErrors(t *testing.T) {
+	if _, err := OpenFS(Dir(filepath.Join(t.TempDir(), "nope"))); err == nil {
+		t.Fatal("missing directory accepted")
+	}
+	file := filepath.Join(tree(t, map[string]string{"f": "x"}), "f")
+	if _, err := OpenFS(Dir(file)); err == nil {
+		t.Fatal("file accepted as directory")
+	}
+	if _, err := OpenFS(PackFile(file)); err == nil {
+		t.Fatal("non-zip accepted as pack")
+	}
+	if _, err := OpenFS(Source{}); err == nil {
+		t.Fatal("empty source accepted")
+	}
+	if _, err := Open(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Fatal("Open accepted a missing source")
 	}
 }
 

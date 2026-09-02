@@ -24,9 +24,9 @@ type game struct {
 
 	font     *gfx.Font
 	typed    []rune
-	scroll   float64
-	deltaX   float64
-	deltaY   float64
+	scroll   float32
+	deltaX   float32
+	deltaY   float32
 	shotDone bool
 }
 

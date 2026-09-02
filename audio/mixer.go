@@ -3,11 +3,17 @@
 // rate; Play starts a Voice that can be adjusted or stopped while it runs.
 // Music streams from a decoder instead of being held in memory. Voices
 // can be placed in the listener's world, filtered, sent to a shared reverb,
-// faded, pitched and prioritised. Mixing happens on the audio device's
-// thread, so every method is safe to call from the game loop.
+// faded, pitched and prioritised, and grouped on a Bus to be turned down
+// or paused together. Mixing happens on the audio device's thread, so
+// every method is safe to call from the game loop.
+//
+// Decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole file
+// as bytes; streams (OpenMusic) take readers, because they seek while
+// they play.
 package audio
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/matjam/bunyip/lin"
@@ -19,17 +25,26 @@ type Mixer struct {
 	rate      int
 	voices    []*Voice
 	master    float32
+	paused    bool
 	maxVoices int
 	scratch   []float32
 	sendBuf   []float32
 	listener  Listener
 	reverb    *reverb
+	finished  []func() // OnDone callbacks to run once the lock is released
+
+	buses                    map[string]*Bus
+	music, effects, dialogue *Bus
 }
 
 // NewMixer makes a mixer for the given output sample rate.
 func NewMixer(rate int) *Mixer {
-	return &Mixer{rate: rate, master: 1, maxVoices: 64,
+	m := &Mixer{rate: rate, master: 1, maxVoices: 64, buses: map[string]*Bus{},
 		listener: Listener{Forward: lin.Vec3{Z: -1}, Up: lin.Vec3{Y: 1}}}
+	m.music = m.NewBus("music")
+	m.effects = m.NewBus("effects")
+	m.dialogue = m.NewBus("dialogue")
+	return m
 }
 
 // Rate is the sample rate sounds are stored and mixed at.
@@ -61,6 +76,7 @@ type PlayOptions struct {
 	FadeIn   float32 // seconds to rise from silence
 	Reverb   float32 // 0..1 send into the mixer's reverb (see SetReverb)
 	LowPass  float32 // low-pass cutoff in Hz; 0 leaves the sound unfiltered
+	Bus      *Bus    // bus the voice plays through; nil is the master alone
 
 	// Positional voices are heard from Position relative to the listener:
 	// full volume within MinDistance (1), fading to silence at
@@ -91,7 +107,7 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 	if opts.MaxDistance == 0 {
 		opts.MaxDistance = 100
 	}
-	v := &Voice{m: m, vol: opts.Volume, pan: opts.Pan, loop: opts.Loop, pitch: opts.Pitch,
+	v := &Voice{m: m, bus: opts.Bus, vol: opts.Volume, pan: opts.Pan, loop: opts.Loop, pitch: opts.Pitch,
 		priority: opts.Priority, reverb: opts.Reverb, positional: opts.Positional,
 		position: opts.Position, minDist: opts.MinDistance, maxDist: opts.MaxDistance}
 	if opts.LowPass > 0 {
@@ -109,9 +125,9 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 // callers need not check.
 func (m *Mixer) add(v *Voice) *Voice {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if len(m.voices) < m.maxVoices {
 		m.voices = append(m.voices, v)
+		m.mu.Unlock()
 		return v
 	}
 	victim := -1
@@ -126,10 +142,13 @@ func (m *Mixer) add(v *Voice) *Voice {
 	}
 	if victim < 0 {
 		v.done = true
-		return v
+	} else {
+		m.finish(m.voices[victim])
+		m.voices[victim] = v
 	}
-	m.voices[victim].done = true
-	m.voices[victim] = v
+	done := m.takeFinished()
+	m.mu.Unlock()
+	run(done)
 	return v
 }
 
@@ -137,10 +156,33 @@ func (m *Mixer) add(v *Voice) *Voice {
 func (m *Mixer) StopAll() {
 	m.mu.Lock()
 	for _, v := range m.voices {
-		v.done = true
+		m.finish(v)
 	}
 	m.voices = m.voices[:0]
+	done := m.takeFinished()
 	m.mu.Unlock()
+	run(done)
+}
+
+// finish ends a voice under the lock, queueing its OnDone callback.
+func (m *Mixer) finish(v *Voice) {
+	v.done = true
+	if v.onDone != nil {
+		m.finished = append(m.finished, v.onDone)
+	}
+}
+
+// takeFinished hands over the queued callbacks, to run once unlocked.
+func (m *Mixer) takeFinished() []func() {
+	done := m.finished
+	m.finished = nil
+	return done
+}
+
+func run(fns []func()) {
+	for _, fn := range fns {
+		fn()
+	}
 }
 
 // Playing counts active voices.
@@ -154,7 +196,6 @@ func (m *Mixer) Playing() int {
 func (m *Mixer) Mix(out []float32) {
 	clear(out)
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	frames := len(out) / 2
 	if len(m.scratch) < len(out) {
 		m.scratch = make([]float32, len(out))
@@ -167,7 +208,7 @@ func (m *Mixer) Mix(out []float32) {
 		if v.render(m, out, send, scratch, frames) {
 			live = append(live, v)
 		} else {
-			v.done = true
+			m.finish(v)
 		}
 	}
 	for i := len(live); i < len(m.voices); i++ {
@@ -180,14 +221,20 @@ func (m *Mixer) Mix(out []float32) {
 	for i, s := range out {
 		out[i] = max(-1, min(1, s))
 	}
+	done := m.takeFinished()
+	m.mu.Unlock()
+	run(done)
 }
 
 // Voice is one playing sound or stream.
 type Voice struct {
 	m        *Mixer
+	bus      *Bus
 	snd      *Sound
 	stream   Stream
 	pos      float64 // frames into the sound, fractional under pitch
+	played   int64   // frames taken from a stream since it started or last sought
+	onDone   func()
 	vol      float32
 	pan      float32
 	pitch    float32
@@ -290,13 +337,79 @@ func (v *Voice) Playing() bool {
 	return !v.done
 }
 
+// Position is how far into the sound the voice is, in seconds. For a
+// stream it counts the frames taken since the voice started or last
+// sought, which for Music is what the listener has heard.
+func (v *Voice) Position() float64 {
+	v.m.mu.Lock()
+	defer v.m.mu.Unlock()
+	if v.stream != nil {
+		return float64(v.played) / float64(v.m.rate)
+	}
+	return v.pos / float64(v.m.rate)
+}
+
+// ErrNotSeekable is returned by Voice.Seek for a stream that cannot seek.
+var ErrNotSeekable = errors.New("audio: stream cannot seek")
+
+// Seeker is a Stream that can jump to a time, as Music can.
+type Seeker interface {
+	Stream
+	// Seek moves playback to seconds from the start.
+	Seek(seconds float64) error
+}
+
+// Seek moves a sound voice to seconds from the start, clamped to the
+// sound's length. A stream voice is moved when its stream is a Seeker;
+// otherwise it stays put and ErrNotSeekable is returned. The stream
+// itself is asked to seek while the mixer is locked, so a Seeker must
+// not call back into the mixer.
+func (v *Voice) Seek(seconds float64) error {
+	v.m.mu.Lock()
+	defer v.m.mu.Unlock()
+	seconds = max(seconds, 0)
+	if v.stream != nil {
+		s, ok := v.stream.(Seeker)
+		if !ok {
+			return ErrNotSeekable
+		}
+		if err := s.Seek(seconds); err != nil {
+			return err
+		}
+		v.played = int64(seconds * float64(v.m.rate))
+		return nil
+	}
+	if v.snd != nil {
+		v.pos = min(seconds*float64(v.m.rate), float64(v.snd.Frames()))
+	}
+	return nil
+}
+
+// OnDone registers fn to run when the voice ends, whether it played out,
+// was stopped, faded out, or lost its slot to a higher priority voice. It
+// is called on the mixer's thread, usually the audio device's, after the
+// mixer has released its lock, so it may start another voice, but it must
+// return quickly and must not block. A voice that has already ended runs
+// fn at once on the calling goroutine. Only the last fn registered runs.
+func (v *Voice) OnDone(fn func()) {
+	v.m.mu.Lock()
+	done := v.done
+	if !done {
+		v.onDone = fn
+	}
+	v.m.mu.Unlock()
+	if done && fn != nil {
+		fn()
+	}
+}
+
 // render accumulates the voice into out (and its reverb send into send),
 // using scratch for the dry signal, and reports whether it continues.
 func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool {
 	if v.stop || v.done {
 		return false
 	}
-	if v.paused {
+	if v.paused || m.paused || (v.bus != nil && v.bus.paused) {
 		v.curL, v.curR = 0, 0
 		return true
 	}
@@ -305,6 +418,7 @@ func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool 
 	if v.stream != nil {
 		n = v.stream.Read(scratch[:frames*2])
 		more = n == frames
+		v.played += int64(n)
 	} else {
 		n, more = v.readSound(scratch[:frames*2])
 	}
@@ -320,6 +434,9 @@ func (v *Voice) render(m *Mixer, out, send, scratch []float32, frames int) bool 
 		v.fade.left = max(v.fade.left-n, 0)
 	}
 	gain := vol * m.master
+	if v.bus != nil {
+		gain *= v.bus.vol
+	}
 	pan := v.pan
 	if v.positional {
 		att, p := m.listener.attenuate(v.position, v.minDist, v.maxDist)

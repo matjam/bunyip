@@ -23,9 +23,10 @@ import (
 // framebuffer's pixel density and drawn in view units, so text is crisp
 // on high-DPI displays.
 type Font struct {
-	Size       float32 // in view units
-	LineHeight float32
-	Ascent     float32
+	Size       float32 // em size in view units
+	LineHeight float32 // baseline to baseline
+	Ascent     float32 // baseline to the top of the tallest glyph
+	Descent    float32 // baseline to the bottom of the deepest glyph, positive
 
 	faces    []*fontFace // the main face first, then fallbacks
 	features []shaping.FontFeature
@@ -143,9 +144,11 @@ func (g *Graphics) newFont(ttf []byte, size float32, opts FontOptions, scale, px
 	k := pxPerEm / main.upem / scale // view units per font unit
 	if ext, ok := main.face.FontHExtents(); ok {
 		f.Ascent = ext.Ascender * k
+		f.Descent = -ext.Descender * k
 		f.LineHeight = (ext.Ascender - ext.Descender + ext.LineGap) * k
 	} else {
 		f.Ascent = size * 0.8
+		f.Descent = size * 0.2
 		f.LineHeight = size * 1.2
 	}
 	for r := rune(32); r < 127; r++ {

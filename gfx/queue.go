@@ -29,7 +29,7 @@ type drawQueue struct {
 	cam2D      Camera2D
 	hasCam2D   bool
 	layer      int32
-	clips      []ClipRect // clip stack; the last entry applies
+	clips      []lin.Rect // clip stack; the last entry applies
 	shader     *Shader    // 2D shader in force, nil for the default
 	blend      Blend
 	xform      lin.Affine   // composed 2D transform in force

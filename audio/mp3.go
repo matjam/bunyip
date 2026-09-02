@@ -9,12 +9,12 @@ import (
 	"github.com/hajimehoshi/go-mp3"
 )
 
-// DecodeMP3 reads an MP3 stream entirely into memory as stereo PCM.
+// DecodeMP3 decodes a whole MP3 file into memory as stereo PCM.
 //
 // Encode game audio at 44.1 or 48 kHz: the decoder reproduces MPEG-2
 // low-sample-rate files (22.05 kHz and below) with an uneven level.
-func DecodeMP3(r io.Reader) (PCM, error) {
-	dec, err := mp3.NewDecoder(r)
+func DecodeMP3(data []byte) (PCM, error) {
+	dec, err := mp3.NewDecoder(bytes.NewReader(data))
 	if err != nil {
 		return PCM{}, fmt.Errorf("audio: mp3: %w", err)
 	}

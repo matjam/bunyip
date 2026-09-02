@@ -40,8 +40,16 @@ type TextOptions struct {
 	Width       float32 // wrap width in view units (column height for vertical text); zero means no wrapping
 	Align       Align
 	LineSpacing float32 // multiplier; zero means 1
-	Size        float32 // SDF fonts only: em size; zero means the font's size
-	Direction   Direction
+	// Size is the em size to draw at; zero means the font's own. SDF fonts
+	// stay crisp at any size; bitmap fonts resample their atlas.
+	Size float32
+	// Angle rotates the text about its origin, in radians, clockwise on
+	// screen.
+	Angle float32
+	// Baseline puts the first line's baseline at the origin's y instead of
+	// the block's top, so text of different sizes lines up.
+	Baseline  bool
+	Direction Direction
 	// Language is a BCP 47 tag ("tr", "zh-Hant") that picks language-specific
 	// glyph forms; empty means the font's default.
 	Language string
@@ -173,9 +181,10 @@ func (f *Font) advance(line shaping.Line) float32 {
 	return fixedToFloat(a) / f.scale
 }
 
-// sizeScale is the draw scale for an SDF font at an em size.
+// sizeScale is the draw scale for a font at an em size: exact for SDF
+// fonts, a resampling of the atlas for bitmap ones.
 func (f *Font) sizeScale(size float32) float32 {
-	if size <= 0 || !f.sdf {
+	if size <= 0 {
 		return 1
 	}
 	return size / f.Size
@@ -269,14 +278,6 @@ func (f *Font) appendLine(out []Glyph, text string, line shaping.Line, origin li
 	return out
 }
 
-// Measure returns the width and height of text as one line.
-func (f *Font) Measure(text string) (w, h float32) {
-	for _, line := range f.wrap(text, TextOptions{}, 0) {
-		w = max(w, f.advance(line))
-	}
-	return w, f.LineHeight
-}
-
 // DrawText draws one line with its top-left corner at (x, y).
 func (g *Graphics) DrawText(f *Font, text string, x, y float32, c Color) {
 	g.drawLines(f, text, x, y, TextOptions{}, c)
@@ -342,8 +343,9 @@ func splitParagraphs(text string) []string {
 	return append(out, text[start:])
 }
 
-// MeasureBlock returns the size of laid-out text.
-func (f *Font) MeasureBlock(text string, opts TextOptions) (w, h float32) {
+// Measure returns the size text takes when drawn with the options: one
+// line with the zero options, or wrapped, spaced and sized as they say.
+func (f *Font) Measure(text string, opts TextOptions) (w, h float32) {
 	scale := f.sizeScale(opts.Size)
 	spacing := opts.LineSpacing
 	if spacing == 0 {
@@ -363,11 +365,18 @@ func (f *Font) MeasureBlock(text string, opts TextOptions) (w, h float32) {
 	return w, float32(n) * f.LineHeight * scale * spacing
 }
 
-// DrawTextBlock draws wrapped, aligned text with its top-left at (x, y).
-// With a Width, alignment is within that width; without, lines align to x.
-// Vertical text runs down from (x, y) in columns stepping left, so x is
-// the right edge.
+// DrawTextBlock draws wrapped, aligned text with its top-left at (x, y),
+// or its first baseline there with Baseline set. With a Width, alignment
+// is within that width; without, lines align to x. Size scales the text
+// and Angle rotates it about (x, y). Vertical text runs down from (x, y)
+// in columns stepping left, so x is the right edge.
 func (g *Graphics) DrawTextBlock(f *Font, text string, x, y float32, opts TextOptions, c Color) {
+	if opts.Angle != 0 {
+		g.Transformed(lin.Translate2(x, y).Mul(lin.Rotate2(opts.Angle)).Mul(lin.Translate2(-x, -y)), func() {
+			g.drawLines(f, text, x, y, opts, c)
+		})
+		return
+	}
 	g.drawLines(f, text, x, y, opts, c)
 }
 
@@ -407,6 +416,8 @@ func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOption
 		var origin lin.Vec2
 		if vertical {
 			origin = lin.V2(-float32(i)*step-f.LineHeight*scale/2, offset)
+		} else if opts.Baseline {
+			origin = lin.V2(offset, float32(i)*step)
 		} else {
 			origin = lin.V2(offset, float32(i)*step+f.Ascent*scale)
 		}

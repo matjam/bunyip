@@ -115,3 +115,62 @@ func Radians(deg float32) float32 { return deg * math.Pi / 180 }
 
 // Clamp limits v to [lo, hi].
 func Clamp(v, lo, hi float32) float32 { return min(max(v, lo), hi) }
+
+// Neg returns -a.
+func (a Vec2) Neg() Vec2 { return Vec2{-a.X, -a.Y} }
+
+// Perp returns a turned a quarter turn anticlockwise in a y-up space
+// (clockwise on a y-down screen): (-y, x).
+func (a Vec2) Perp() Vec2 { return Vec2{-a.Y, a.X} }
+
+// Angle is the direction of a in radians, measured from +X towards +Y.
+func (a Vec2) Angle() float32 { return float32(math.Atan2(float64(a.Y), float64(a.X))) }
+
+// Rotate turns a by angle radians, from +X towards +Y.
+func (a Vec2) Rotate(angle float32) Vec2 {
+	s, c := math.Sincos(float64(angle))
+	return Vec2{a.X*float32(c) - a.Y*float32(s), a.X*float32(s) + a.Y*float32(c)}
+}
+
+// Distance is the length of b - a.
+func (a Vec2) Distance(b Vec2) float32 { return b.Sub(a).Len() }
+
+// Abs takes each component's magnitude.
+func (a Vec2) Abs() Vec2 { return Vec2{abs(a.X), abs(a.Y)} }
+
+// Min takes the smaller of each component.
+func (a Vec2) Min(b Vec2) Vec2 { return Vec2{min(a.X, b.X), min(a.Y, b.Y)} }
+
+// Max takes the larger of each component.
+func (a Vec2) Max(b Vec2) Vec2 { return Vec2{max(a.X, b.X), max(a.Y, b.Y)} }
+
+// Distance is the length of b - a.
+func (a Vec3) Distance(b Vec3) float32 { return b.Sub(a).Len() }
+
+// Abs takes each component's magnitude.
+func (a Vec3) Abs() Vec3 { return Vec3{abs(a.X), abs(a.Y), abs(a.Z)} }
+
+// Min takes the smaller of each component.
+func (a Vec3) Min(b Vec3) Vec3 { return Vec3{min(a.X, b.X), min(a.Y, b.Y), min(a.Z, b.Z)} }
+
+// Max takes the larger of each component.
+func (a Vec3) Max(b Vec3) Vec3 { return Vec3{max(a.X, b.X), max(a.Y, b.Y), max(a.Z, b.Z)} }
+
+// Project returns the part of a that lies along b; a zero b gives zero.
+func (a Vec3) Project(b Vec3) Vec3 {
+	d := b.Dot(b)
+	if d == 0 {
+		return Vec3{}
+	}
+	return b.Mul(a.Dot(b) / d)
+}
+
+// Reflect bounces a off a surface with unit normal n.
+func (a Vec3) Reflect(n Vec3) Vec3 { return a.Sub(n.Mul(2 * a.Dot(n))) }
+
+func abs(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}

@@ -73,24 +73,24 @@ func TestWidgets(t *testing.T) {
 	var checked bool
 	var text string
 	// Layout: panel padding 8, title line, then rows of 28 with 6 spacing.
-	_, titleH := c.Theme.Font.Measure("Test")
+	_, titleH := c.Theme.Font.Measure("Test", gfx.TextOptions{})
 	buttonY := 10 + 8 + titleH + 6 + 14
 	checkboxY := buttonY + 28 + 6
 	fieldY := checkboxY + 28 + 6
 
 	frame(t, c, in, &checked, &text) // settle hot state
-	in.FeedMouseMove(60, float64(buttonY))
+	in.FeedMouseMove(60, float32(buttonY))
 	frame(t, c, in, &checked, &text)
-	in.FeedMouseButton(input.MouseLeft, true, 60, float64(buttonY))
+	in.FeedMouseButton(input.MouseLeft, true, 60, float32(buttonY))
 	if frame(t, c, in, &checked, &text) {
 		t.Error("button reported a click on press; it should wait for release")
 	}
-	in.FeedMouseButton(input.MouseLeft, false, 60, float64(buttonY))
+	in.FeedMouseButton(input.MouseLeft, false, 60, float32(buttonY))
 	if !frame(t, c, in, &checked, &text) {
 		t.Error("button did not report the click on release")
 	}
 	// Press on the button, drag off, release: no click.
-	in.FeedMouseButton(input.MouseLeft, true, 60, float64(buttonY))
+	in.FeedMouseButton(input.MouseLeft, true, 60, float32(buttonY))
 	frame(t, c, in, &checked, &text)
 	in.FeedMouseMove(300, 300)
 	in.FeedMouseButton(input.MouseLeft, false, 300, 300)
@@ -98,21 +98,21 @@ func TestWidgets(t *testing.T) {
 		t.Error("click reported after releasing outside the button")
 	}
 	// Checkbox toggles.
-	in.FeedMouseMove(20, float64(checkboxY))
+	in.FeedMouseMove(20, float32(checkboxY))
 	frame(t, c, in, &checked, &text)
-	in.FeedMouseButton(input.MouseLeft, true, 20, float64(checkboxY))
+	in.FeedMouseButton(input.MouseLeft, true, 20, float32(checkboxY))
 	frame(t, c, in, &checked, &text)
-	in.FeedMouseButton(input.MouseLeft, false, 20, float64(checkboxY))
+	in.FeedMouseButton(input.MouseLeft, false, 20, float32(checkboxY))
 	frame(t, c, in, &checked, &text)
 	if !checked {
 		t.Error("checkbox did not toggle")
 	}
 	// Text field takes focus and text.
-	in.FeedMouseMove(60, float64(fieldY))
+	in.FeedMouseMove(60, float32(fieldY))
 	frame(t, c, in, &checked, &text)
-	in.FeedMouseButton(input.MouseLeft, true, 60, float64(fieldY))
+	in.FeedMouseButton(input.MouseLeft, true, 60, float32(fieldY))
 	frame(t, c, in, &checked, &text)
-	in.FeedMouseButton(input.MouseLeft, false, 60, float64(fieldY))
+	in.FeedMouseButton(input.MouseLeft, false, 60, float32(fieldY))
 	frame(t, c, in, &checked, &text)
 	if !c.WantsKeyboard() {
 		t.Fatal("text field did not take focus")

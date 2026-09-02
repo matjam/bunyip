@@ -272,16 +272,16 @@ func (l *loop) handleEvents(events []platform.Event) {
 		case platform.EventCompose:
 			in.FeedComposition(e.Text)
 		case platform.EventMouseMove:
-			in.FeedMouseDelta(e.DX, e.DY)
+			in.FeedMouseDelta(float32(e.DX), float32(e.DY))
 			if !l.win.CursorCaptured() {
-				in.FeedMouseMove(e.X, e.Y)
+				in.FeedMouseMove(float32(e.X), float32(e.Y))
 			}
 		case platform.EventMouseDown:
-			in.FeedMouseButton(e.Button, true, e.X, e.Y)
+			in.FeedMouseButton(e.Button, true, float32(e.X), float32(e.Y))
 		case platform.EventMouseUp:
-			in.FeedMouseButton(e.Button, false, e.X, e.Y)
+			in.FeedMouseButton(e.Button, false, float32(e.X), float32(e.Y))
 		case platform.EventScroll:
-			in.FeedScroll(e.DX, e.DY)
+			in.FeedScroll(float32(e.DX), float32(e.DY))
 		}
 	}
 }

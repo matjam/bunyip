@@ -35,8 +35,8 @@ type viewer struct {
 	distance float32
 	center   lin.Vec3
 	dragging bool
-	lastX    float64
-	lastY    float64
+	lastX    float32
+	lastY    float32
 	shotDone bool
 }
 
@@ -95,12 +95,12 @@ func (v *viewer) Update(ctx *bunyip.Context) error {
 		v.dragging = false
 	}
 	if v.dragging && in.MouseDown(input.MouseLeft) {
-		v.yaw += float32(x-v.lastX) * 0.01
-		v.pitch = lin.Clamp(v.pitch+float32(y-v.lastY)*0.01, -1.5, 1.5)
+		v.yaw += (x - v.lastX) * 0.01
+		v.pitch = lin.Clamp(v.pitch+(y-v.lastY)*0.01, -1.5, 1.5)
 	}
 	v.lastX, v.lastY = x, y
 	_, dy := in.Scroll()
-	v.distance = lin.Clamp(v.distance*float32(math.Pow(0.9, dy)), 0.5, 500)
+	v.distance = lin.Clamp(v.distance*float32(math.Pow(0.9, float64(dy))), 0.5, 500)
 	if v.model == nil {
 		v.yaw += float32(ctx.Delta) * 0.3 // idle spin so a screenshot shows motion
 	}

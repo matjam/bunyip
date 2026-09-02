@@ -5,13 +5,14 @@ import (
 
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/lin"
 )
 
-// Rect is an axis-aligned box in view units.
-type Rect struct{ X, Y, W, H float32 }
+// Rect is an axis-aligned box in view units: lin.Rect under a short name.
+type Rect = lin.Rect
 
-func (r Rect) contains(x, y float32) bool {
-	return x >= r.X && y >= r.Y && x < r.X+r.W && y < r.Y+r.H
+func contains(r Rect, x, y float32) bool {
+	return r.Contains(lin.V2(x, y))
 }
 
 type widgetID uint64
@@ -115,7 +116,7 @@ func (c *Context) end() {
 // ignore clicks the interface consumed.
 func (c *Context) WantsMouse() bool {
 	for _, r := range c.frameRects {
-		if r.contains(c.mouseX, c.mouseY) {
+		if r.Contains(lin.V2(c.mouseX, c.mouseY)) {
 			return true
 		}
 	}
@@ -156,7 +157,7 @@ func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
 			clicked = true
 		}
 	}
-	over := r.contains(c.mouseX, c.mouseY)
+	over := r.Contains(lin.V2(c.mouseX, c.mouseY))
 	if c.open != 0 && c.open != id {
 		over = false // an open dropdown list owns the pointer
 	}
@@ -194,6 +195,6 @@ func (c *Context) text(s string, x, y float32, col gfx.Color) {
 
 // textCentred draws s centred in r.
 func (c *Context) textCentred(s string, r Rect, col gfx.Color) {
-	w, h := c.Theme.Font.Measure(s)
+	w, h := c.Theme.Font.Measure(s, gfx.TextOptions{})
 	c.text(s, r.X+(r.W-w)/2, r.Y+(r.H-h)/2, col)
 }

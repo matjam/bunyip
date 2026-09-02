@@ -104,7 +104,7 @@ func (s *State) FeedGamepad(i int, connected bool, name string, buttons [Gamepad
 
 // MouseDelta returns pointer movement since the last update, in view units;
 // it keeps reporting while the cursor is captured.
-func (s *State) MouseDelta() (dx, dy float64) {
+func (s *State) MouseDelta() (dx, dy float32) {
 	if s.drawing {
 		return s.mouseDX + s.frame.mouseDX, s.mouseDY + s.frame.mouseDY
 	}
@@ -112,4 +112,4 @@ func (s *State) MouseDelta() (dx, dy float64) {
 }
 
 // FeedMouseDelta accumulates relative pointer movement.
-func (s *State) FeedMouseDelta(dx, dy float64) { s.mouseDX += dx; s.mouseDY += dy }
+func (s *State) FeedMouseDelta(dx, dy float32) { s.mouseDX += dx; s.mouseDY += dy }

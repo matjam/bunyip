@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"math"
 
 	"github.com/jfreymuth/oggvorbis"
@@ -69,9 +68,9 @@ func DecodeWAV(data []byte) (PCM, error) {
 	return PCM{Samples: out, Channels: channels, Rate: rate}, nil
 }
 
-// DecodeOGG reads an Ogg Vorbis stream entirely into memory.
-func DecodeOGG(r io.Reader) (PCM, error) {
-	samples, format, err := oggvorbis.ReadAll(r)
+// DecodeOGG decodes a whole Ogg Vorbis file into memory.
+func DecodeOGG(data []byte) (PCM, error) {
+	samples, format, err := oggvorbis.ReadAll(bytes.NewReader(data))
 	if err != nil {
 		return PCM{}, fmt.Errorf("audio: ogg: %w", err)
 	}
@@ -85,9 +84,9 @@ func Decode(data []byte) (PCM, error) {
 	case bytes.HasPrefix(data, []byte("RIFF")):
 		return DecodeWAV(data)
 	case bytes.HasPrefix(data, []byte("OggS")):
-		return DecodeOGG(bytes.NewReader(data))
+		return DecodeOGG(data)
 	case isMP3(data):
-		return DecodeMP3(bytes.NewReader(data))
+		return DecodeMP3(data)
 	}
 	return PCM{}, fmt.Errorf("audio: unrecognised format")
 }

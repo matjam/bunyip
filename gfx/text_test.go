@@ -27,10 +27,10 @@ func TestShapeKerning(t *testing.T) {
 	defer f.Destroy()
 	// HarfBuzz applies the font's kern pairs: "AV" is narrower than "AA"
 	// less the difference between V and A alone.
-	av, _ := f.Measure("AV")
-	aa, _ := f.Measure("AA")
-	a, _ := f.Measure("A")
-	v, _ := f.Measure("V")
+	av, _ := f.Measure("AV", TextOptions{})
+	aa, _ := f.Measure("AA", TextOptions{})
+	a, _ := f.Measure("A", TextOptions{})
+	v, _ := f.Measure("V", TextOptions{})
 	if av >= aa-a+v-0.01 {
 		t.Errorf("AV %.2f is not kerned tighter than AA %.2f adjusted %.2f", av, aa, aa-a+v)
 	}
@@ -82,7 +82,7 @@ func TestShapeRightToLeft(t *testing.T) {
 	if len(hebrew) != 4 || hebrew[0].Index < hebrew[3].Index {
 		t.Errorf("Hebrew run is not reversed within Latin text: %+v", hebrew)
 	}
-	if w, _ := f.Measure(text); w <= 0 {
+	if w, _ := f.Measure(text, TextOptions{}); w <= 0 {
 		t.Errorf("measure of RTL text is %.1f", w)
 	}
 }
@@ -116,13 +116,13 @@ func TestLayoutWrapsByUnicodeRules(t *testing.T) {
 	}
 	defer f.Destroy()
 	text := "the quick brown fox jumps over the lazy dog"
-	full, _ := f.Measure(text)
+	full, _ := f.Measure(text, TextOptions{})
 	lines := f.Layout(text, TextOptions{Width: full / 3})
 	if len(lines) < 3 {
 		t.Fatalf("wrapped into %d lines at a third of the width: %q", len(lines), lines)
 	}
 	for _, l := range lines {
-		if w, _ := f.Measure(l); w > full/3+1 {
+		if w, _ := f.Measure(l, TextOptions{}); w > full/3+1 {
 			t.Errorf("line %q is %.1f wide, over the limit %.1f", l, w, full/3)
 		}
 	}
@@ -136,7 +136,7 @@ func TestLayoutWrapsByUnicodeRules(t *testing.T) {
 	if joined != text {
 		t.Errorf("lines do not reassemble the text: %q", joined)
 	}
-	w, h := f.MeasureBlock(text, TextOptions{Width: full / 3})
+	w, h := f.Measure(text, TextOptions{Width: full / 3})
 	if w > full/3+1 || h < float32(len(lines))*f.LineHeight-0.01 {
 		t.Errorf("block %.1fx%.1f for %d lines of %.1f", w, h, len(lines), f.LineHeight)
 	}

@@ -45,8 +45,8 @@ type game struct {
 	yaw      float32
 	pitch    float32
 	dist     float32
-	lastX    float64
-	lastY    float64
+	lastX    float32
+	lastY    float32
 	dragging bool
 	shotDone bool
 	xray     bool
@@ -152,8 +152,8 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		g.dragging = false
 	}
 	if g.dragging {
-		g.yaw += float32(x-g.lastX) * 0.01
-		g.pitch = lin.Clamp(g.pitch+float32(y-g.lastY)*0.01, 0.05, 1.4)
+		g.yaw += (x - g.lastX) * 0.01
+		g.pitch = lin.Clamp(g.pitch+(y-g.lastY)*0.01, 0.05, 1.4)
 	}
 	g.lastX, g.lastY = x, y
 	if _, dy := in.Scroll(); dy != 0 {

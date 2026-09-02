@@ -15,10 +15,14 @@ type PCM struct {
 // Sound is a PCM clip converted to the mixer's stereo rate.
 type Sound struct {
 	samples []float32
+	rate    int
 }
 
 // Frames is the sound's length in frames.
 func (s *Sound) Frames() int { return len(s.samples) / 2 }
+
+// Duration is the sound's length in seconds.
+func (s *Sound) Duration() float64 { return float64(s.Frames()) / float64(s.rate) }
 
 // NewSound converts decoded PCM to the mixer's format: stereo at the mixer
 // rate, resampled linearly when the rates differ.
@@ -38,7 +42,7 @@ func (m *Mixer) NewSound(p PCM) (*Sound, error) {
 	if p.Rate != m.rate {
 		stereo = resample(stereo, p.Rate, m.rate)
 	}
-	return &Sound{samples: stereo}, nil
+	return &Sound{samples: stereo, rate: m.rate}, nil
 }
 
 // resample converts interleaved stereo from one rate to another with

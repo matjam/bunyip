@@ -3,6 +3,7 @@ package ui
 import (
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/lin"
 )
 
 // ScrollArea lays out its contents inside r with a vertical scrollbar,
@@ -16,7 +17,7 @@ func (c *Context) ScrollArea(label string, r Rect, contentHeight float32, conten
 		c.scroll[id] = st
 	}
 	maxScroll := max(contentHeight-r.H, 0)
-	over := r.contains(c.mouseX, c.mouseY)
+	over := r.Contains(lin.V2(c.mouseX, c.mouseY))
 	if over {
 		_, dy := c.in.Scroll()
 		st.offset -= float32(dy) * 24
@@ -47,7 +48,7 @@ func (c *Context) ScrollArea(label string, r Rect, contentHeight float32, conten
 	}
 	st.offset = max(0, min(st.offset, maxScroll))
 	inner := Rect{X: r.X, Y: r.Y, W: r.W - barW - c.Theme.Spacing, H: r.H}
-	c.g.PushClip(inner.X, inner.Y, inner.W, inner.H)
+	c.g.PushClip(inner)
 	c.frameRects = append(c.frameRects, r)
 	p := &panel{id: id, rect: Rect{X: inner.X, Y: inner.Y - st.offset, W: inner.W, H: contentHeight}, cursor: inner.Y - st.offset}
 	c.panels = append(c.panels, p)
@@ -87,7 +88,7 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 	if *selected >= 0 && *selected < len(options) {
 		text = options[*selected]
 	}
-	_, h := c.Theme.Font.Measure(text)
+	_, h := c.Theme.Font.Measure(text, gfx.TextOptions{})
 	c.text(text, r.X+c.Theme.Padding, r.Y+(r.H-h)/2, c.Theme.Text)
 	c.text("v", r.X+r.W-c.Theme.Padding-8, r.Y+(r.H-h)/2, c.Theme.TextDim)
 	if c.open != id {
@@ -102,7 +103,7 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 		c.box(c.skin().Panel, list, c.Theme.Panel, c.Theme.PanelBorder)
 		for i, opt := range options {
 			row := Rect{X: list.X, Y: list.Y + float32(i)*c.Theme.RowHeight, W: list.W, H: c.Theme.RowHeight}
-			over := row.contains(c.mouseX, c.mouseY)
+			over := row.Contains(lin.V2(c.mouseX, c.mouseY))
 			if over {
 				c.fill(row, c.Theme.ButtonHover)
 				c.nextHot = 0
@@ -112,10 +113,10 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 					changed = true
 				}
 			}
-			_, oh := c.Theme.Font.Measure(opt)
+			_, oh := c.Theme.Font.Measure(opt, gfx.TextOptions{})
 			c.text(opt, row.X+c.Theme.Padding, row.Y+(row.H-oh)/2, c.Theme.Text)
 		}
-		if c.pressed && !list.contains(c.mouseX, c.mouseY) && !r.contains(c.mouseX, c.mouseY) {
+		if c.pressed && !list.Contains(lin.V2(c.mouseX, c.mouseY)) && !r.Contains(lin.V2(c.mouseX, c.mouseY)) {
 			c.open = 0
 		}
 	})
@@ -126,7 +127,7 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 // widget for a moment.
 func (c *Context) Tooltip(text string) {
 	r := c.lastRect
-	if !r.contains(c.mouseX, c.mouseY) {
+	if !r.Contains(lin.V2(c.mouseX, c.mouseY)) {
 		return
 	}
 	if c.hoverID != c.lastID {
@@ -137,7 +138,7 @@ func (c *Context) Tooltip(text string) {
 		return
 	}
 	c.deferred = append(c.deferred, func() {
-		w, h := c.Theme.Font.Measure(text)
+		w, h := c.Theme.Font.Measure(text, gfx.TextOptions{})
 		box := Rect{X: c.mouseX + 12, Y: c.mouseY + 16, W: w + 2*c.Theme.Padding, H: h + 2*c.Theme.Padding}
 		c.fill(box, c.Theme.Panel)
 		c.border(box, c.Theme.PanelBorder)

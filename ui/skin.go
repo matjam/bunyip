@@ -4,12 +4,9 @@ import "github.com/matjam/bunyip/gfx"
 
 // Slice is a nine-slice texture: the corners keep their size, the edges
 // stretch along one axis and the centre fills the rest, so one small
-// image skins boxes of any size.
-type Slice struct {
-	Tex                      *gfx.Texture
-	Left, Top, Right, Bottom float32   // border sizes in texture pixels
-	Tint                     gfx.Color // zero means untinted
-}
+// image skins boxes of any size. It is gfx.NineSlice, so the same value
+// draws outside the interface too.
+type Slice = gfx.NineSlice
 
 // Skin holds the art for each widget part. Any nil slice falls back to
 // the theme's flat colours, so a skin can start with just a button.
@@ -41,11 +38,7 @@ func (c *Context) skin() *Skin {
 // and, when border is not the zero colour, a border.
 func (c *Context) box(s *Slice, r Rect, fill, border gfx.Color) {
 	if s != nil && s.Tex != nil {
-		tint := s.Tint
-		if tint == (gfx.Color{}) {
-			tint = gfx.White
-		}
-		c.g.DrawNineSlice(s.Tex, r.X, r.Y, r.W, r.H, s.Left, s.Top, s.Right, s.Bottom, tint)
+		c.g.DrawNineSlice(*s, r, gfx.White)
 		return
 	}
 	c.fill(r, fill)

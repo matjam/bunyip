@@ -33,7 +33,7 @@ type state2D struct {
 	shader  *Shader
 	uniform int32 // arena offset of the shader's uniforms, -1 for none
 	blend   Blend
-	clip    ClipRect
+	clip    lin.Rect
 	proj    *lin.Mat4
 }
 

@@ -84,7 +84,7 @@ func (o *overlay) draw(ctx *Context) error {
 	const pad, lineH = 6, 16
 	w := float32(0)
 	for _, l := range lines {
-		lw, _ := o.font.Measure(l)
+		lw, _ := o.font.Measure(l, gfx.TextOptions{})
 		w = max(w, lw)
 	}
 	g.FillRect(4, 4, w+2*pad, float32(len(lines))*lineH+2*pad, gfx.RGBA(0, 0, 0, 160))

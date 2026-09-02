@@ -17,9 +17,11 @@ import (
 // never sits in memory. Open one with Mixer.OpenMusic, start it with
 // Mixer.PlayStream, and Close it when the game is done with it.
 type Music struct {
-	dec  decoder
-	loop bool
-	rs   resampler
+	dec    decoder
+	loop   bool
+	rs     resampler
+	rate   int   // the mixer's
+	length int64 // source frames, 0 when unknown
 
 	mu    sync.Mutex
 	cond  *sync.Cond
@@ -29,12 +31,17 @@ type Music struct {
 	ended bool
 	close bool
 	err   error
+	seek  float64 // pending Seek target in seconds; negative when none
+	gen   int     // bumped by Seek so fill drops what it decoded before
 }
 
 // decoder yields interleaved samples at its own rate and channel count.
 type decoder interface {
 	Read(buf []float32) (int, error)
-	Rewind() error
+	// SeekFrame moves to the given frame; 0 rewinds.
+	SeekFrame(frame int64) error
+	// Length is the total frames, or 0 when the container does not say.
+	Length() int64
 	Channels() int
 	Rate() int
 }
@@ -67,7 +74,8 @@ func (m *Mixer) OpenMusic(r io.ReadSeeker, loop bool) (*Music, error) {
 	if dec.Channels() < 1 || dec.Channels() > 2 || dec.Rate() <= 0 {
 		return nil, fmt.Errorf("audio: music: unsupported %d channels at %d Hz", dec.Channels(), dec.Rate())
 	}
-	mu := &Music{dec: dec, loop: loop, ring: make([]float32, m.rate*2*2)} // two seconds
+	mu := &Music{dec: dec, loop: loop, rate: m.rate, length: dec.Length(), seek: -1,
+		ring: make([]float32, m.rate*2*2)} // two seconds
 	mu.cond = sync.NewCond(&mu.mu)
 	mu.rs = resampler{step: float64(dec.Rate()) / float64(m.rate)}
 	go mu.fill()
@@ -82,6 +90,40 @@ func (mu *Music) Buffered() float64 {
 	mu.mu.Lock()
 	defer mu.mu.Unlock()
 	return float64(mu.count/2) / float64(len(mu.ring)/4)
+}
+
+// Duration is the track's length in seconds, or 0 when unknown. WAV
+// always knows it. Ogg Vorbis reads it from the last page at open; MP3
+// scans the frame headers at open. Either reports 0 when its reader could
+// not seek to find out.
+func (mu *Music) Duration() float64 {
+	return float64(mu.length) / float64(mu.dec.Rate())
+}
+
+// Seek moves playback to seconds from the start. It returns at once and
+// the decoder catches up on its goroutine, so a few milliseconds of
+// silence can precede the new position; anything buffered from the old
+// position is dropped. Seeking past the end ends the music, or starts it
+// over when it loops. A decoder that fails to seek ends the music and
+// reports through Err. WAV and Ogg Vorbis seek exactly; MP3 decodes from
+// the previous frame boundary. Prefer Voice.Seek on a playing voice so
+// its Position follows. Music whose voice has already ended can be sought
+// and played again with PlayStream.
+func (mu *Music) Seek(seconds float64) error {
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+	if mu.close {
+		return errors.New("audio: music: closed")
+	}
+	if mu.err != nil {
+		return mu.err
+	}
+	mu.seek = max(seconds, 0)
+	mu.gen++
+	mu.rd, mu.count = 0, 0
+	mu.ended = false
+	mu.cond.Broadcast()
+	return nil
 }
 
 // wait blocks until cond holds, the music ends, or it is closed.
@@ -135,18 +177,24 @@ func (mu *Music) Read(out []float32) int {
 }
 
 // fill decodes on its own goroutine, waiting whenever the ring is full.
+// At the end of a track it parks until a Seek restarts it or Close ends
+// it; a decoding error ends it for good.
 func (mu *Music) fill() {
 	ch := mu.dec.Channels()
 	src := make([]float32, 4096*ch)
 	stereo := make([]float32, 4096*2)
 	var out []float32
 	for {
+		gen, ok := mu.applySeek()
+		if !ok {
+			return
+		}
 		n, err := mu.dec.Read(src)
 		if n > 0 {
 			n -= n % ch
 			stereo = toStereo(src[:n], ch, stereo[:0])
 			out = mu.rs.process(stereo, out[:0])
-			if !mu.push(out) {
+			if !mu.push(out, gen) {
 				return
 			}
 		}
@@ -154,7 +202,7 @@ func (mu *Music) fill() {
 			continue
 		}
 		if errors.Is(err, io.EOF) && mu.loop {
-			if rerr := mu.dec.Rewind(); rerr == nil {
+			if rerr := mu.dec.SeekFrame(0); rerr == nil {
 				mu.rs.reset()
 				continue
 			}
@@ -162,25 +210,64 @@ func (mu *Music) fill() {
 		mu.mu.Lock()
 		if !errors.Is(err, io.EOF) {
 			mu.err = err
+			mu.ended = true
+			mu.cond.Broadcast()
+			mu.mu.Unlock()
+			return
 		}
-		mu.ended = true
-		mu.cond.Broadcast()
+		if mu.gen == gen { // no Seek arrived while the tail was decoding
+			mu.ended = true
+			mu.cond.Broadcast()
+		}
+		for mu.seek < 0 && !mu.close {
+			mu.cond.Wait()
+		}
 		mu.mu.Unlock()
-		return
 	}
 }
 
+// applySeek performs a pending Seek, if any, and returns the generation
+// the next decoded samples belong to; false means the music is closed or
+// the decoder failed to seek.
+func (mu *Music) applySeek() (int, bool) {
+	mu.mu.Lock()
+	target, gen := mu.seek, mu.gen
+	mu.seek = -1
+	closed := mu.close
+	mu.mu.Unlock()
+	if closed {
+		return 0, false
+	}
+	if target < 0 {
+		return gen, true
+	}
+	if err := mu.dec.SeekFrame(int64(target * float64(mu.dec.Rate()))); err != nil {
+		mu.mu.Lock()
+		mu.err = fmt.Errorf("audio: music: seek: %w", err)
+		mu.ended = true
+		mu.cond.Broadcast()
+		mu.mu.Unlock()
+		return 0, false
+	}
+	mu.rs.reset()
+	return gen, true
+}
+
 // push appends stereo samples to the ring, blocking while it is full, and
-// reports false once the music is closed.
-func (mu *Music) push(samples []float32) bool {
+// reports false once the music is closed. Samples decoded before a Seek
+// (an older gen) are dropped instead.
+func (mu *Music) push(samples []float32, gen int) bool {
 	mu.mu.Lock()
 	defer mu.mu.Unlock()
 	for len(samples) > 0 {
-		for mu.count == len(mu.ring) && !mu.close {
+		for mu.count == len(mu.ring) && !mu.close && mu.gen == gen {
 			mu.cond.Wait()
 		}
 		if mu.close {
 			return false
+		}
+		if mu.gen != gen {
+			return true
 		}
 		wr := (mu.rd + mu.count) % len(mu.ring)
 		n := min(len(samples), len(mu.ring)-mu.count, len(mu.ring)-wr)
@@ -273,7 +360,11 @@ func (d *memoryDecoder) Read(buf []float32) (int, error) {
 	return n, nil
 }
 
-func (d *memoryDecoder) Rewind() error { d.pos = 0; return nil }
+func (d *memoryDecoder) SeekFrame(frame int64) error {
+	d.pos = int(min(frame, d.Length())) * d.pcm.Channels
+	return nil
+}
+func (d *memoryDecoder) Length() int64 { return int64(len(d.pcm.Samples) / d.pcm.Channels) }
 func (d *memoryDecoder) Channels() int { return d.pcm.Channels }
 func (d *memoryDecoder) Rate() int     { return d.pcm.Rate }
 
@@ -288,7 +379,8 @@ func newOggDecoder(r io.ReadSeeker) (decoder, error) {
 }
 
 func (d *oggDecoder) Read(buf []float32) (int, error) { return d.r.Read(buf) }
-func (d *oggDecoder) Rewind() error                   { return d.r.SetPosition(0) }
+func (d *oggDecoder) SeekFrame(frame int64) error     { return d.r.SetPosition(frame) }
+func (d *oggDecoder) Length() int64                   { return d.r.Length() }
 func (d *oggDecoder) Channels() int                   { return d.r.Channels() }
 func (d *oggDecoder) Rate() int                       { return d.r.SampleRate() }
 
@@ -325,9 +417,13 @@ func (d *mp3Decoder) Read(buf []float32) (int, error) {
 	return samples, err
 }
 
-func (d *mp3Decoder) Rewind() error {
-	_, err := d.d.Seek(0, io.SeekStart)
+// SeekFrame positions the decoder by output bytes: four per stereo frame.
+func (d *mp3Decoder) SeekFrame(frame int64) error {
+	_, err := d.d.Seek(frame*4, io.SeekStart)
 	return err
 }
+
+// Length is 0 when go-mp3 could not scan the file (it reports -1).
+func (d *mp3Decoder) Length() int64 { return max(d.d.Length(), 0) / 4 }
 func (d *mp3Decoder) Channels() int { return 2 }
 func (d *mp3Decoder) Rate() int     { return d.d.SampleRate() }

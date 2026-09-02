@@ -89,7 +89,7 @@ func TestTilemapAndNineSlice(t *testing.T) {
 			continue
 		}
 		g.DrawTilemap(tm, 0, 0, White)
-		g.DrawNineSlice(tex, 40, 0, 48, 32, 2, 1, 2, 1, White)
+		g.DrawNineSlice(NineSlice{Tex: tex, Left: 2, Top: 1, Right: 2, Bottom: 1}, lin.R(40, 0, 48, 32), White)
 		if img, err = g.End(true); err != nil {
 			t.Fatal(err)
 		}
@@ -145,14 +145,14 @@ func TestTextLayout(t *testing.T) {
 		t.Errorf("expected wrapping into several lines, got %q", lines)
 	}
 	for _, l := range lines {
-		if w, _ := f.Measure(l); w > 120 {
+		if w, _ := f.Measure(l, TextOptions{}); w > 120 {
 			t.Errorf("line %q is %.0f wide", l, w)
 		}
 	}
 	if got := f.Layout("a\nb", TextOptions{}); len(got) != 2 {
 		t.Errorf("newline split: %q", got)
 	}
-	w, h := f.MeasureBlock("hello\nworld", TextOptions{})
+	w, h := f.Measure("hello\nworld", TextOptions{})
 	if h < 2*f.LineHeight-0.01 || w <= 0 {
 		t.Errorf("block %v x %v", w, h)
 	}

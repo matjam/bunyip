@@ -10,7 +10,7 @@ import (
 // Label draws text, wrapped to the width available to it.
 func (c *Context) Label(text string) {
 	opts := gfx.TextOptions{Width: c.nextWidth()}
-	_, h := c.Theme.Font.MeasureBlock(text, opts)
+	_, h := c.Theme.Font.Measure(text, opts)
 	r := c.next(h)
 	c.g.DrawTextBlock(c.Theme.Font, text, r.X, r.Y+(r.H-h)/2, opts, c.Theme.Text)
 }
@@ -55,7 +55,7 @@ func (c *Context) Checkbox(label string, value *bool) bool {
 	if *value && (slice == nil || sk.CheckOn == nil) {
 		c.fill(Rect{X: box.X + 4, Y: box.Y + 4, W: 10, H: 10}, c.Theme.Accent)
 	}
-	_, h := c.Theme.Font.Measure(label)
+	_, h := c.Theme.Font.Measure(label, gfx.TextOptions{})
 	c.text(label, box.X+box.W+c.Theme.Spacing, r.Y+(r.H-h)/2, c.Theme.Text)
 	return clicked
 }
@@ -65,7 +65,7 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 	id := c.id(label)
 	// The caption sits above the track inside the widget's own space, so
 	// it never collides with the row before.
-	_, captionH := c.Theme.Font.Measure(label)
+	_, captionH := c.Theme.Font.Measure(label, gfx.TextOptions{})
 	full := c.next(c.Theme.RowHeight + captionH)
 	r := Rect{X: full.X, Y: full.Y + captionH, W: full.W, H: full.H - captionH}
 	_, held, _ := c.interact(id, r)
@@ -138,7 +138,7 @@ func (c *Context) TextField(label string, value *string) bool {
 	if shown == "" && composing == "" {
 		shown = label
 	}
-	_, h := c.Theme.Font.Measure(shown)
+	_, h := c.Theme.Font.Measure(shown, gfx.TextOptions{})
 	col := c.Theme.Text
 	if *value == "" && c.focus != id {
 		col = c.Theme.TextDim
@@ -147,9 +147,9 @@ func (c *Context) TextField(label string, value *string) bool {
 	if composing != "" {
 		// The input method's uncommitted text sits after the value with an
 		// underline, the way native fields show a word mid-conversion.
-		w, _ := c.Theme.Font.Measure(shown)
+		w, _ := c.Theme.Font.Measure(shown, gfx.TextOptions{})
 		x := r.X + c.Theme.Padding + w
-		cw, ch := c.Theme.Font.Measure(composing)
+		cw, ch := c.Theme.Font.Measure(composing, gfx.TextOptions{})
 		c.text(composing, x, r.Y+(r.H-h)/2, c.Theme.Accent)
 		c.fill(Rect{X: x, Y: r.Y + (r.H-h)/2 + ch, W: cw, H: 1}, c.Theme.Accent)
 	}

@@ -111,9 +111,9 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 		ctx.Gfx.FillRect(x-30, y-30, 60, 60, gfx.RGBA(uint8(80+i*12), 90, uint8(200-i*10), 120))
 	}
 	// Scalable text: one SDF atlas, drawn at three sizes and a slant.
-	ctx.Gfx.DrawTextSized(g.big, "Bunyip", 380, 40, 72+8*float32(math.Sin(float64(t))), -0.08, gfx.RGB(255, 220, 120))
-	ctx.Gfx.DrawTextSized(g.big, "scalable text from one atlas", 384, 130, 22, 0, gfx.RGB(200, 200, 215))
-	ctx.Gfx.DrawTextSized(g.big, "tiny", 384, 160, 11, 0, gfx.RGB(150, 150, 170))
+	ctx.Gfx.DrawTextBlock(g.big, "Bunyip", 380, 40, gfx.TextOptions{Size: 72 + 8*float32(math.Sin(float64(t))), Angle: -0.08}, gfx.RGB(255, 220, 120))
+	ctx.Gfx.DrawTextBlock(g.big, "scalable text from one atlas", 384, 130, gfx.TextOptions{Size: 22}, gfx.RGB(200, 200, 215))
+	ctx.Gfx.DrawTextBlock(g.big, "tiny", 384, 160, gfx.TextOptions{Size: 11}, gfx.RGB(150, 150, 170))
 	u := g.ui
 	u.Begin(ctx.Input, func() {
 		u.Panel("Bunyip UI gallery", ui.Rect{X: 24, Y: 24, W: 320, H: 520}, func() {

@@ -97,7 +97,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	y += 28
 	para := "Bunyip shapes text with HarfBuzz through go-text, so marks land on their bases, scripts that join do so, and lines break where they should, in any language the font covers."
 	gr.DrawTextBlock(g.body, para, 40, y, gfx.TextOptions{Width: 420, Align: gfx.AlignCenter}, white)
-	_, ph := g.body.MeasureBlock(para, gfx.TextOptions{Width: 420})
+	_, ph := g.body.Measure(para, gfx.TextOptions{Width: 420})
 	gr.StrokeRect(40, y-4, 420, ph+8, 1, gfx.RGB(70, 75, 95))
 
 	// Vertical text in a column on the right of the paragraph.
@@ -110,11 +110,11 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	y += 30
 	x := float32(40)
 	for _, size := range []float32{14, 22, 36, 56} {
-		gr.DrawTextSized(g.sdf, "Aa", x, y, size, 0, gfx.RGB(255, 200, 90))
-		w, _ := g.sdf.MeasureSized("Aa", size)
+		gr.DrawTextBlock(g.sdf, "Aa", x, y, gfx.TextOptions{Size: size}, gfx.RGB(255, 200, 90))
+		w, _ := g.sdf.Measure("Aa", gfx.TextOptions{Size: size})
 		x += w + 20
 	}
-	gr.DrawTextSized(g.sdf, "tilted", x+20, y+50, 30, -0.4, gfx.RGB(140, 210, 255))
+	gr.DrawTextBlock(g.sdf, "tilted", x+20, y+50, gfx.TextOptions{Size: 30, Angle: -0.4}, gfx.RGB(140, 210, 255))
 	return nil
 }
 

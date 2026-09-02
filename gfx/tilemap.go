@@ -90,11 +90,11 @@ func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
 	}
 	x0, y0, x1, y1 := 0, 0, t.Width, t.Height
 	if cam, ok := g.Camera2D(); ok {
-		minX, minY, maxX, maxY := cam.VisibleRect(g.cur.viewW, g.cur.viewH)
-		x0 = max(0, int((minX-x)/tw)-1)
-		y0 = max(0, int((minY-y)/th)-1)
-		x1 = min(t.Width, int((maxX-x)/tw)+2)
-		y1 = min(t.Height, int((maxY-y)/th)+2)
+		vis := cam.VisibleRect(g.cur.viewW, g.cur.viewH)
+		x0 = max(0, int((vis.X-x)/tw)-1)
+		y0 = max(0, int((vis.Y-y)/th)-1)
+		x1 = min(t.Width, int((vis.X+vis.W-x)/tw)+2)
+		y1 = min(t.Height, int((vis.Y+vis.H-y)/th)+2)
 	}
 	for ty := y0; ty < y1; ty++ {
 		for tx := x0; tx < x1; tx++ {
@@ -107,15 +107,22 @@ func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
 	}
 }
 
-// DrawNineSlice draws a texture stretched to w x h while keeping its
-// corners at their pixel size: borders are the pixel widths of the
-// unstretched left, top, right and bottom edges.
-func (g *Graphics) DrawNineSlice(tex *Texture, x, y, w, h float32, left, top, right, bottom float32, tint Color) {
+// DrawNineSlice draws a nine-slice stretched over r while keeping its
+// corners at their pixel size; a zero tint means white.
+func (g *Graphics) DrawNineSlice(ns NineSlice, r lin.Rect, tint Color) {
+	tex := ns.Tex
+	if tex == nil {
+		tex = g.white
+	}
+	if tint == (Color{}) {
+		tint = White
+	}
+	x, y, w, h := r.X, r.Y, r.W, r.H
 	tw, th := float32(tex.Width), float32(tex.Height)
-	xs := [4]float32{0, left, w - right, w}
-	ys := [4]float32{0, top, h - bottom, h}
-	us := [4]float32{0, left / tw, 1 - right/tw, 1}
-	vs := [4]float32{0, top / th, 1 - bottom/th, 1}
+	xs := [4]float32{0, ns.Left, w - ns.Right, w}
+	ys := [4]float32{0, ns.Top, h - ns.Bottom, h}
+	us := [4]float32{0, ns.Left / tw, 1 - ns.Right/tw, 1}
+	vs := [4]float32{0, ns.Top / th, 1 - ns.Bottom/th, 1}
 	for row := range 3 {
 		for col := range 3 {
 			sw, sh := xs[col+1]-xs[col], ys[row+1]-ys[row]

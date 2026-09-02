@@ -13,6 +13,22 @@ type Ray struct {
 
 // ScreenRay returns the world-space ray under a point in the current 2D
 // view (the same units the mouse reports), using the queue's camera.
+// Project maps a world point to the current 2D view: where a label or a
+// health bar for it belongs. ok is false when the point is behind the
+// camera; a point outside the view still projects, off the edges.
+func (g *Graphics) Project(p lin.Vec3) (x, y float32, ok bool) {
+	q := g.cur
+	cam := q.camera
+	if !q.hasCam {
+		cam = Camera{Position: lin.V3(0, 0, 5)}
+	}
+	clip := cam.ViewProj(q.viewW / q.viewH).MulVec4(p.Vec4(1))
+	if clip.W <= 0 {
+		return 0, 0, false
+	}
+	return (clip.X/clip.W*0.5 + 0.5) * q.viewW, (clip.Y/clip.W*0.5 + 0.5) * q.viewH, true
+}
+
 func (g *Graphics) ScreenRay(x, y float32) Ray {
 	q := g.cur
 	cam := q.camera

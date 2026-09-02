@@ -1,5 +1,7 @@
 package ui
 
+import "github.com/matjam/bunyip/gfx"
+
 // panel is a container laying widgets out top to bottom; a row inside it
 // lays them left to right.
 type panel struct {
@@ -33,7 +35,7 @@ func (c *Context) Panel(title string, r Rect, body func()) {
 	c.frameRects = append(c.frameRects, r)
 	c.box(c.skin().Panel, r, c.Theme.Panel, c.Theme.PanelBorder)
 	if title != "" {
-		_, h := c.Theme.Font.Measure(title)
+		_, h := c.Theme.Font.Measure(title, gfx.TextOptions{})
 		c.text(title, r.X+c.Theme.Padding, p.cursor, c.Theme.Title)
 		p.cursor += h + c.Theme.Spacing
 	}

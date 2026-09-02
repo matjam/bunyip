@@ -38,6 +38,32 @@ func ExampleMixer_SetListener2D() {
 	// true
 }
 
+func ExampleBus() {
+	// Voices play through a bus so a settings screen can turn music down
+	// without touching effects, and a pause menu can hold them all.
+	m := audio.NewMixer(48000)
+	m.Music().SetVolume(0.4)
+	footsteps := m.NewBus("footsteps") // buses beyond the three built in
+	step, _ := m.NewSound(audio.Sine(120, 0.05, 48000))
+	m.Play(step, audio.PlayOptions{Bus: footsteps})
+	m.SetPaused(true)
+	buf := make([]float32, 512*2)
+	m.Mix(buf)
+	fmt.Println(m.Playing(), buf[0])
+	// Output:
+	// 1 0
+}
+
+func ExampleVoice_OnDone() {
+	m := audio.NewMixer(48000)
+	beep, _ := m.NewSound(audio.Sine(440, 0.01, 48000))
+	v := m.Play(beep, audio.PlayOptions{})
+	v.OnDone(func() { fmt.Println("done at", v.Position() >= beep.Duration()) })
+	m.Mix(make([]float32, 1024*2))
+	// Output:
+	// done at true
+}
+
 func ExampleMixer_SetReverb() {
 	m := audio.NewMixer(48000)
 	m.SetReverb(audio.ReverbSettings{RoomSize: 0.7, Wet: 0.3})

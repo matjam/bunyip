@@ -42,7 +42,7 @@ func (c Camera2D) ViewToWorld(p lin.Vec2, viewW, viewH float32) lin.Vec2 {
 
 // VisibleRect is the world-space box the camera can see, conservatively
 // enlarged when rotated.
-func (c Camera2D) VisibleRect(viewW, viewH float32) (minX, minY, maxX, maxY float32) {
+func (c Camera2D) VisibleRect(viewW, viewH float32) lin.Rect {
 	zoom := c.Zoom
 	if zoom == 0 {
 		zoom = 1
@@ -52,7 +52,7 @@ func (c Camera2D) VisibleRect(viewW, viewH float32) (minX, minY, maxX, maxY floa
 		r := float32(math.Hypot(float64(hw), float64(hh)))
 		hw, hh = r, r
 	}
-	return c.Position.X - hw, c.Position.Y - hh, c.Position.X + hw, c.Position.Y + hh
+	return lin.RectAround(c.Position, 2*hw, 2*hh)
 }
 
 // SetCamera2D makes later sprite draws world-space under cam. Call

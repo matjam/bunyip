@@ -16,7 +16,7 @@ func TestText(t *testing.T) {
 		t.Fatalf("NewFont: %v", err)
 	}
 	defer f.Destroy()
-	w, h := f.Measure("Bunyip")
+	w, h := f.Measure("Bunyip", TextOptions{})
 	if w < 40 || w > 120 || h < 20 || h > 40 {
 		t.Fatalf("measure = %v x %v, implausible for 24px text", w, h)
 	}

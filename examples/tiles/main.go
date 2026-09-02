@@ -170,7 +170,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		g.cam.Rotation -= dt
 	}
 	_, dy := in.Scroll()
-	g.cam.Zoom = lin.Clamp(g.cam.Zoom*float32(math.Pow(1.1, dy)), 0.4, 4)
+	g.cam.Zoom = lin.Clamp(g.cam.Zoom*float32(math.Pow(1.1, float64(dy))), 0.4, 4)
 	// The camera eases toward the player.
 	g.cam.Position = g.cam.Position.Lerp(g.player.Add(lin.V2(tileDraw/2, tileDraw/2)), 1-float32(math.Pow(0.02, ctx.Delta)))
 	g.timers.Update(ctx.Delta)
@@ -224,7 +224,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	// The HUD is in screen space, above everything.
 	gr.ScreenSpace()
 	gr.SetLayer(10)
-	gr.DrawNineSlice(g.hudTex, 12, 12, 300, 92, 8, 8, 8, 8, gfx.White)
+	gr.DrawNineSlice(gfx.NineSlice{Tex: g.hudTex, Left: 8, Top: 8, Right: 8, Bottom: 8}, lin.R(12, 12, 300, 92), gfx.White)
 	text := fmt.Sprintf("WASD moves, Q/E rotate, scroll zooms. Camera zoom %.2f, %d particles, %d×%d tiles culled to the view.",
 		g.cam.Zoom, len(g.particles), mapW, mapH)
 	gr.DrawTextBlock(g.font, text, 22, 22, gfx.TextOptions{Width: 280, Align: gfx.AlignCenter}, gfx.RGB(240, 235, 220))

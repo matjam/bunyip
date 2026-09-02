@@ -204,5 +204,15 @@ func Each[T any](w *World, fn func(e Entity, t *T)) { NewQuery1[T](w).Each(fn) }
 // Each2 is a one-off iteration over entities with an A and a B.
 func Each2[A, B any](w *World, fn func(e Entity, a *A, b *B)) { NewQuery2[A, B](w).Each(fn) }
 
+// Each3 is a one-off iteration over entities with an A, a B and a C.
+func Each3[A, B, C any](w *World, fn func(e Entity, a *A, b *B, c *C)) {
+	NewQuery3[A, B, C](w).Each(fn)
+}
+
+// Each4 is a one-off iteration over entities with four components.
+func Each4[A, B, C, D any](w *World, fn func(e Entity, a *A, b *B, c *C, d *D)) {
+	NewQuery4[A, B, C, D](w).Each(fn)
+}
+
 // Count returns how many entities carry a T.
 func Count[T any](w *World) int { return NewQuery1[T](w).Count() }
