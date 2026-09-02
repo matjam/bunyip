@@ -139,49 +139,51 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr.DrawText(g.font, "listener", cx-24, cy+12, gfx.RGB(200, 200, 210))
 
 	u := g.ui
-	u.Begin(ctx.Input)
-	u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 420})
-	u.Label(fmt.Sprintf("%d voices playing (cap 12)", ctx.Audio.Playing()))
-	if u.Slider("Reverb wet", &g.reverb, 0, 1) || u.Slider("Room size", &g.room, 0, 1) {
-		ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: g.room, Wet: g.reverb})
-	}
-	if u.Slider("Pad low-pass Hz", &g.cutoff, 200, 8000) {
-		g.pad.SetLowPass(g.cutoff)
-	}
-	if u.Slider("Click pitch", &g.pitch, 0.5, 2) {
-	}
-	u.Columns(1, 1)
-	if u.Button("Click") {
-		ctx.Audio.Play(g.click, audio.PlayOptions{Volume: 0.6, Pitch: g.pitch, Reverb: g.reverb})
-	}
-	if u.Button("Burst 40") {
-		for i := range 40 {
-			// Low-priority voices; the cap makes the mixer steal the quietest.
-			ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: 0.2, Pitch: 0.8 + 0.02*float32(i), Pan: float32(i%5-2) / 2})
-		}
-	}
-	u.Columns(1, 1)
-	if u.Button("Fade pad out") {
-		g.pad.FadeTo(0, 1.5)
-	}
-	if u.Button("Fade pad in") {
-		g.pad.FadeTo(0.35, 1.5)
-	}
-	u.Columns(1, 1)
-	if u.Button("Pause music") {
-		g.stream.SetPaused(true)
-	}
-	if u.Button("Resume music") {
-		g.stream.SetPaused(false)
-	}
-	if g.music != nil {
-		u.Label(fmt.Sprintf("Streaming %s, %.1f s buffered", g.musicPath, g.music.Buffered()))
-	} else {
-		u.Label("Music is a synthesised Stream; pass -music file.ogg to stream a file.")
-	}
-	u.Label("Orbiting sources pan and fade with distance from the listener.")
-	u.EndPanel()
-	u.End()
+	u.Begin(ctx.Input, func() {
+		u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 420}, func() {
+			u.Label(fmt.Sprintf("%d voices playing (cap 12)", ctx.Audio.Playing()))
+			if u.Slider("Reverb wet", &g.reverb, 0, 1) || u.Slider("Room size", &g.room, 0, 1) {
+				ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: g.room, Wet: g.reverb})
+			}
+			if u.Slider("Pad low-pass Hz", &g.cutoff, 200, 8000) {
+				g.pad.SetLowPass(g.cutoff)
+			}
+			u.Slider("Click pitch", &g.pitch, 0.5, 2)
+			u.Row(2, func() {
+				if u.Button("Click") {
+					ctx.Audio.Play(g.click, audio.PlayOptions{Volume: 0.6, Pitch: g.pitch, Reverb: g.reverb})
+				}
+				if u.Button("Burst 40") {
+					for i := range 40 {
+						// Low-priority voices; the cap makes the mixer steal the quietest.
+						ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: 0.2, Pitch: 0.8 + 0.02*float32(i), Pan: float32(i%5-2) / 2})
+					}
+				}
+			})
+			u.Row(2, func() {
+				if u.Button("Fade pad out") {
+					g.pad.FadeTo(0, 1.5)
+				}
+				if u.Button("Fade pad in") {
+					g.pad.FadeTo(0.35, 1.5)
+				}
+			})
+			u.Row(2, func() {
+				if u.Button("Pause music") {
+					g.stream.SetPaused(true)
+				}
+				if u.Button("Resume music") {
+					g.stream.SetPaused(false)
+				}
+			})
+			if g.music != nil {
+				u.Label(fmt.Sprintf("Streaming %s, %.1f s buffered", g.musicPath, g.music.Buffered()))
+			} else {
+				u.Label("Music is a synthesised Stream; pass -music file.ogg to stream a file.")
+			}
+			u.Label("Orbiting sources pan and fade with distance from the listener.")
+		})
+	})
 	return nil
 }
 

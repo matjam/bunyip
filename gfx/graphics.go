@@ -152,7 +152,15 @@ func (g *Graphics) PushClip(x, y, w, h float32) {
 	q.clips = append(q.clips, r)
 }
 
-// PopClip restores the previous clip rectangle.
+// Clip runs draw with sprites clipped to the rectangle, the closure form
+// of PushClip and PopClip.
+func (g *Graphics) Clip(x, y, w, h float32, draw func()) {
+	g.PushClip(x, y, w, h)
+	draw()
+	g.PopClip()
+}
+
+// PopClip restores the clip rectangle in force before the matching PushClip.
 func (g *Graphics) PopClip() {
 	q := g.cur
 	if len(q.clips) > 0 {

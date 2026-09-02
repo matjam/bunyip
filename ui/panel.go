@@ -25,8 +25,9 @@ func (c *Context) currentPanel() *panel {
 	return c.panels[len(c.panels)-1]
 }
 
-// Panel opens a titled box at r; widgets until EndPanel stack inside it.
-func (c *Context) Panel(title string, r Rect) {
+// Panel draws a titled box at r and lays out the widgets body creates
+// inside it, top to bottom.
+func (c *Context) Panel(title string, r Rect, body func()) {
 	p := &panel{id: c.id("panel:" + title), rect: r, cursor: r.Y + c.Theme.Padding}
 	c.panels = append(c.panels, p)
 	c.frameRects = append(c.frameRects, r)
@@ -36,23 +37,29 @@ func (c *Context) Panel(title string, r Rect) {
 		c.text(title, r.X+c.Theme.Padding, p.cursor, c.Theme.Title)
 		p.cursor += h + c.Theme.Spacing
 	}
+	body()
+	c.panels = c.panels[:len(c.panels)-1]
 }
 
-// EndPanel closes the innermost panel.
-func (c *Context) EndPanel() {
-	if len(c.panels) > 0 {
-		c.panels = c.panels[:len(c.panels)-1]
-	}
-}
-
-// Row lays the next n widgets side by side with equal widths.
-func (c *Context) Row(n int) {
+// Row lays the widgets body creates side by side, n of equal width.
+func (c *Context) Row(n int, body func()) {
 	p := c.currentPanel()
 	if p == nil || n <= 0 {
+		body()
 		return
 	}
 	inner := p.rect.W - 2*c.Theme.Padding
 	p.row = &row{x: p.rect.X + c.Theme.Padding, y: p.cursor, count: n, width: (inner - float32(n-1)*c.Theme.Spacing) / float32(n)}
+	body()
+	c.endRow(p)
+}
+
+// endRow closes a row that body left partly filled.
+func (c *Context) endRow(p *panel) {
+	if r := p.row; r != nil {
+		p.cursor = r.y + max(r.h, c.Theme.RowHeight) + c.Theme.Spacing
+		p.row = nil
+	}
 }
 
 // nextWidth is the width the next widget will be given, so text can be

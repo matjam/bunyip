@@ -1,6 +1,7 @@
 // Package ui is an immediate-mode interface toolkit drawn with gfx. Every
-// frame the game rebuilds the interface by calling widget methods between
-// Begin and End; widgets return what happened (a click, a changed value)
+// frame the game rebuilds the interface by calling widget methods inside
+// Begin's closure, nesting containers (Panel, Row, Columns, ScrollArea)
+// the same way; widgets return what happened (a click, a changed value)
 // and keep no state of their own beyond what the Theme and the caller
 // provide. Colours, spacing and the font live in a Theme, so a game
 // restyles the toolkit by swapping one value; a Skin of textures inside

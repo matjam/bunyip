@@ -53,13 +53,14 @@ func frame(t *testing.T, c *Context, in *input.State, checked *bool, text *strin
 	if !ok {
 		return false
 	}
-	c.Begin(in)
-	c.Panel("Test", Rect{X: 10, Y: 10, W: 200, H: 200})
-	clicked := c.Button("Press")
-	c.Checkbox("Tick", checked)
-	c.TextField("name", text)
-	c.EndPanel()
-	c.End()
+	var clicked bool
+	c.Begin(in, func() {
+		c.Panel("Test", Rect{X: 10, Y: 10, W: 200, H: 200}, func() {
+			clicked = c.Button("Press")
+			c.Checkbox("Tick", checked)
+			c.TextField("name", text)
+		})
+	})
 	if _, err := c.g.End(false); err != nil {
 		t.Fatal(err)
 	}

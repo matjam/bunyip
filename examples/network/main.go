@@ -230,16 +230,16 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		gr.DrawText(g.font, name, p.X+8, p.Y-8, gfx.RGB(255, 220, 140))
 	}
 	u := g.ui
-	u.Begin(ctx.Input)
-	u.Panel("Chat", ui.Rect{X: 16, Y: 16, W: 480, H: 380})
-	for _, l := range g.lines {
-		u.Label(l)
-	}
-	u.EndPanel()
-	u.Panel("", ui.Rect{X: 16, Y: 404, W: 480, H: 52})
-	u.TextField("Type and press Enter", &g.draft)
-	u.EndPanel()
-	u.End()
+	u.Begin(ctx.Input, func() {
+		u.Panel("Chat", ui.Rect{X: 16, Y: 16, W: 480, H: 380}, func() {
+			for _, l := range g.lines {
+				u.Label(l)
+			}
+		})
+		u.Panel("", ui.Rect{X: 16, Y: 404, W: 480, H: 52}, func() {
+			u.TextField("Type and press Enter", &g.draft)
+		})
+	})
 	if ctx.Input.KeyPressed(input.KeyEnter) && g.draft != "" {
 		msg := chat{From: g.name, Text: g.draft}
 		g.draft = ""

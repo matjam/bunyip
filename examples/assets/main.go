@@ -246,18 +246,18 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		gr.DrawText(g.font, filepath.Base(it.name), x, y+100, gfx.RGB(170, 170, 190))
 	}
 	u := g.ui
-	u.Begin(ctx.Input)
-	u.Panel("Assets", ui.Rect{X: 16, Y: 16, W: 800, H: 100})
-	done, total := g.loader.Progress()
-	u.Progress(fmt.Sprintf("Loaded %d of %d", done, total), float32(done)/float32(max(total, 1)))
-	u.Label(g.status)
-	if g.packed != "" {
-		u.Label(g.packed)
-	} else {
-		u.Label("P packs the directory into assets.pak, read on the next run behind the loose files.")
-	}
-	u.EndPanel()
-	u.End()
+	u.Begin(ctx.Input, func() {
+		u.Panel("Assets", ui.Rect{X: 16, Y: 16, W: 800, H: 110}, func() {
+			done, total := g.loader.Progress()
+			u.Progress(fmt.Sprintf("Loaded %d of %d", done, total), float32(done)/float32(max(total, 1)))
+			u.Label(g.status)
+			if g.packed != "" {
+				u.Label(g.packed)
+			} else {
+				u.Label("P packs the directory into assets.pak, read on the next run behind the loose files.")
+			}
+		})
+	})
 	return nil
 }
 

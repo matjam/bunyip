@@ -115,41 +115,43 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 	ctx.Gfx.DrawTextSized(g.big, "scalable text from one atlas", 384, 130, 22, 0, gfx.RGB(200, 200, 215))
 	ctx.Gfx.DrawTextSized(g.big, "tiny", 384, 160, 11, 0, gfx.RGB(150, 150, 170))
 	u := g.ui
-	u.Begin(ctx.Input)
-	u.Panel("Bunyip UI gallery", ui.Rect{X: 24, Y: 24, W: 320, H: 520})
-	u.Label("Widgets rebuild every frame from Theme values; long labels wrap to the panel.")
-	u.Columns(2, 1)
-	if u.Dropdown("Theme", &g.themeIdx, ui.ThemeNames()) {
-		g.applyTheme()
-	}
-	if u.Checkbox("Skin", &g.useSkin) {
-		g.applyTheme()
-	}
-	u.Columns(1, 1)
-	if u.Button(fmt.Sprintf("Clicked %d times", g.clicks)) {
-		g.clicks++
-	}
-	u.Tooltip("Tab and Shift-Tab move focus; Enter activates.")
-	if u.Button("Beep") {
-		ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: g.volume, Pan: 0})
-	}
-	u.Tooltip("Plays a 440 Hz sine through the mixer.")
-	u.Checkbox("Show hints", &g.check)
-	u.Dropdown("Quality", &g.quality, []string{"Low", "Medium", "High", "Ultra"})
-	u.Separator()
-	u.Slider("Volume", &g.volume, 0, 1)
-	u.TextField("Type a name", &g.name)
-	u.Progress(fmt.Sprintf("Loading %d%%", int(50+50*math.Sin(float64(t)))), 0.75+0.25*float32(math.Sin(float64(t))))
-	if g.check {
-		u.Label("Escape quits; click a field and type.")
-	}
-	u.ScrollArea("log", ui.Rect{X: 36, Y: 420, W: 296, H: 110}, 20*28, func() {
-		for i := range 20 {
-			u.Label(fmt.Sprintf("Scrollable line %d", i+1))
-		}
+	u.Begin(ctx.Input, func() {
+		u.Panel("Bunyip UI gallery", ui.Rect{X: 24, Y: 24, W: 320, H: 520}, func() {
+			u.Label("Widgets rebuild every frame from Theme values; long labels wrap to the panel.")
+			u.Columns([]float32{2, 1}, func() {
+				if u.Dropdown("Theme", &g.themeIdx, ui.ThemeNames()) {
+					g.applyTheme()
+				}
+				if u.Checkbox("Skin", &g.useSkin) {
+					g.applyTheme()
+				}
+			})
+			u.Row(2, func() {
+				if u.Button(fmt.Sprintf("Clicked %d times", g.clicks)) {
+					g.clicks++
+				}
+				u.Tooltip("Tab and Shift-Tab move focus; Enter activates.")
+				if u.Button("Beep") {
+					ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: g.volume, Pan: 0})
+				}
+				u.Tooltip("Plays a 440 Hz sine through the mixer.")
+			})
+			u.Checkbox("Show hints", &g.check)
+			u.Dropdown("Quality", &g.quality, []string{"Low", "Medium", "High", "Ultra"})
+			u.Separator()
+			u.Slider("Volume", &g.volume, 0, 1)
+			u.TextField("Type a name", &g.name)
+			u.Progress(fmt.Sprintf("Loading %d%%", int(50+50*math.Sin(float64(t)))), 0.75+0.25*float32(math.Sin(float64(t))))
+			if g.check {
+				u.Label("Escape quits; click a field and type.")
+			}
+			u.ScrollArea("log", ui.Rect{X: 36, Y: 420, W: 296, H: 110}, 20*28, func() {
+				for i := range 20 {
+					u.Label(fmt.Sprintf("Scrollable line %d", i+1))
+				}
+			})
+		})
 	})
-	u.EndPanel()
-	u.End()
 	return nil
 }
 

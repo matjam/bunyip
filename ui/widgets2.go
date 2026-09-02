@@ -145,11 +145,14 @@ func (c *Context) Tooltip(text string) {
 	})
 }
 
-// Columns lays the next len(weights) widgets side by side with widths in
-// proportion to weights.
-func (c *Context) Columns(weights ...float32) {
+// Columns lays the widgets body creates side by side, one per weight,
+// with widths in proportion to the weights:
+//
+//	ui.Columns([]float32{2, 1}, func() { ui.Dropdown(...); ui.Checkbox(...) })
+func (c *Context) Columns(weights []float32, body func()) {
 	p := c.currentPanel()
 	if p == nil || len(weights) == 0 {
+		body()
 		return
 	}
 	var total float32
@@ -158,6 +161,8 @@ func (c *Context) Columns(weights ...float32) {
 	}
 	inner := p.rect.W - 2*c.Theme.Padding - float32(len(weights)-1)*c.Theme.Spacing
 	p.row = &row{x: p.rect.X + c.Theme.Padding, y: p.cursor, count: len(weights), weights: weights, total: total, inner: inner}
+	body()
+	c.endRow(p)
 }
 
 // Separator draws a thin line.

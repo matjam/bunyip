@@ -148,29 +148,29 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	}
 
 	u := g.ui
-	u.Begin(ctx.Input)
-	u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 470})
-	u.Slider("Exposure", &g.post.Exposure, 0.1, 4)
-	u.Slider("Bloom", &g.post.Bloom, 0, 1)
-	u.Slider("Bloom threshold", &g.post.BloomThreshold, 0.2, 3)
-	u.Slider("Vignette", &g.post.Vignette, 0, 1)
-	u.Slider("Saturation", &g.post.Saturation, 0, 2)
-	u.Slider("Contrast", &g.post.Contrast, 0.5, 1.5)
-	u.Slider("Ambient occlusion", &g.post.AmbientOcclusion, 0, 1)
-	u.Slider("Occlusion radius", &g.post.OcclusionRadius, 0.2, 3)
-	u.Checkbox("Show occlusion buffer", &g.post.ShowOcclusion)
-	fxaa := !g.post.NoAntiAlias
-	if u.Checkbox("Anti-alias (FXAA)", &fxaa) {
-		g.post.NoAntiAlias = !fxaa
-	}
-	u.Checkbox("Shadows", &g.shadows)
-	if g.model != nil {
-		u.Label(fmt.Sprintf("Clip %d/%d, Space cycles", g.clip+1, len(g.model.Clips())))
-	} else {
-		u.Label("Tentacles are skinned meshes; pass -model file.glb to animate a glTF.")
-	}
-	u.EndPanel()
-	u.End()
+	u.Begin(ctx.Input, func() {
+		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 470}, func() {
+			u.Slider("Exposure", &g.post.Exposure, 0.1, 4)
+			u.Slider("Bloom", &g.post.Bloom, 0, 1)
+			u.Slider("Bloom threshold", &g.post.BloomThreshold, 0.2, 3)
+			u.Slider("Vignette", &g.post.Vignette, 0, 1)
+			u.Slider("Saturation", &g.post.Saturation, 0, 2)
+			u.Slider("Contrast", &g.post.Contrast, 0.5, 1.5)
+			u.Slider("Ambient occlusion", &g.post.AmbientOcclusion, 0, 1)
+			u.Slider("Occlusion radius", &g.post.OcclusionRadius, 0.2, 3)
+			u.Checkbox("Show occlusion buffer", &g.post.ShowOcclusion)
+			fxaa := !g.post.NoAntiAlias
+			if u.Checkbox("Anti-alias (FXAA)", &fxaa) {
+				g.post.NoAntiAlias = !fxaa
+			}
+			u.Checkbox("Shadows", &g.shadows)
+			if g.model != nil {
+				u.Label(fmt.Sprintf("Clip %d/%d, Space cycles", g.clip+1, len(g.model.Clips())))
+			} else {
+				u.Label("Tentacles are skinned meshes; pass -model file.glb to animate a glTF.")
+			}
+		})
+	})
 	return nil
 }
 

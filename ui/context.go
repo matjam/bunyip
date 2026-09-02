@@ -67,8 +67,19 @@ func New(g *gfx.Graphics, theme Theme) *Context {
 	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}, scroll: map[widgetID]*scrollState{}}
 }
 
-// Begin starts a frame's interface from the current input.
-func (c *Context) Begin(in *input.State) {
+// Begin runs one frame of interface: body calls the widget methods, and
+// the frame is finished (overlays drawn, state settled) when it returns.
+//
+//	ui.Begin(ctx.Input, func() {
+//		ui.Panel("Menu", rect, func() { ... })
+//	})
+func (c *Context) Begin(in *input.State, body func()) {
+	c.begin(in)
+	body()
+	c.end()
+}
+
+func (c *Context) begin(in *input.State) {
 	c.in = in
 	mx, my := in.Mouse()
 	c.mouseX, c.mouseY = float32(mx), float32(my)
@@ -88,8 +99,9 @@ func (c *Context) Begin(in *input.State) {
 	c.focusables = c.focusables[:0]
 }
 
-// End finishes the frame. Call after the last widget.
-func (c *Context) End() {
+// end finishes the frame: deferred overlays draw above everything and
+// the press state settles.
+func (c *Context) end() {
 	for _, d := range c.deferred {
 		d()
 	}
