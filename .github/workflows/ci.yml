@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    name: Test on macOS (MoltenVK)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install Vulkan loader, MoltenVK, validation layers and glslang
+        run: brew install vulkan-loader molten-vk vulkan-validationlayers glslang
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+      - name: Generated shaders and Vulkan binding are current
+        run: |
+          go generate ./...
+          git diff --exit-code || (echo "generated files are stale: run go generate ./... and commit" && exit 1)
+
+  cross:
+    name: Cross-build (no cgo)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [linux/amd64, linux/arm64, windows/amd64, windows/arm64, darwin/arm64, darwin/amd64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build ${{ matrix.target }}
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          export GOOS=${TARGET%/*} GOARCH=${TARGET#*/}
+          go build ./...
+          go vet ./internal/platform/ ./internal/audioout/
+        shell: bash
+        # The matrix value is read through an environment variable so a
+        # future branch name cannot inject shell.
+        # yamllint disable-line
+      - name: Pure-Go packages test on Linux
+        if: matrix.target == 'linux/amd64'
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./rng/ ./tween/ ./timer/ ./grid/ ./save/ ./scene/ ./asset/ ./network/ ./audio/... ./lin/ ./gltf/ ./input/
+    env:
+      TARGET: ${{ matrix.target }}
