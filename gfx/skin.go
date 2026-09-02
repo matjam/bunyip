@@ -64,5 +64,5 @@ func (g *Graphics) DrawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []l
 	q := g.cur
 	base := len(q.joints)
 	q.joints = append(q.joints, joints...)
-	q.draws = append(q.draws, meshDraw{mesh: m, mat: mat, model: model, jointBase: base, skinned: true})
+	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, jointBase: base, skinned: true})
 }

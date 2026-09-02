@@ -9,7 +9,7 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	sprites    spriteBatch
+	stream     stream2D
 	draws      []meshDraw
 	camera     Camera
 	light      Light
@@ -22,16 +22,21 @@ type drawQueue struct {
 	clear      Color
 	viewW      float32
 	viewH      float32
+	pixelW     float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)
 	proj       lin.Mat4 // screen-space projection
 	spriteProj lin.Mat4 // projection for sprite draws right now
 	cam2D      Camera2D
 	hasCam2D   bool
 	layer      int32
 	clips      []ClipRect // clip stack; the last entry applies
+	shader     *Shader    // 2D shader in force, nil for the default
+	blend      Blend
+	xform      lin.Affine   // composed 2D transform in force
+	xforms     []lin.Affine // transform stack below it
 }
 
 func (q *drawQueue) reset() {
-	q.sprites.reset()
+	q.stream.reset()
 	q.draws = q.draws[:0]
 	q.points = q.points[:0]
 	q.joints = q.joints[:0]
@@ -40,10 +45,14 @@ func (q *drawQueue) reset() {
 	q.spriteProj = q.proj
 	q.layer = 0
 	q.clips = q.clips[:0]
+	q.shader = nil
+	q.blend = BlendAlpha
+	q.xform = lin.Identity2()
+	q.xforms = q.xforms[:0]
 }
 
 func (q *drawQueue) destroy() {
-	q.sprites.destroy()
+	q.stream.destroy()
 	q.inst.destroy()
 	if q.uniforms != nil {
 		q.uniforms.Destroy()
@@ -56,7 +65,7 @@ func (q *drawQueue) destroy() {
 }
 
 func (g *Graphics) newQueue(w, h float32) (*drawQueue, error) {
-	q := &drawQueue{light: defaultLight()}
+	q := &drawQueue{light: defaultLight(), xform: lin.Identity2(), pixelW: w}
 	var err error
 	if q.uniforms, err = g.r.Device.NewUniformSets(frameUniformsSize, meshStages); err != nil {
 		return nil, err

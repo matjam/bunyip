@@ -196,6 +196,7 @@ func (l *loop) draw() error {
 	// Draw sees every input edge since the last frame, so an interface
 	// built here reacts to clicks that Update already consumed.
 	l.ctx.Input.SetDrawing(true)
+	l.ctx.Gfx.SetTime(l.ctx.Time)
 	defer func() {
 		l.ctx.Input.SetDrawing(false)
 		l.ctx.Input.EndFrame()

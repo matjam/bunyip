@@ -1,12 +1,23 @@
 #version 450
 
-// Metallic-roughness PBR: Cook-Torrance with GGX distribution, Schlick
-// Fresnel and Smith-GGX visibility; one shadowed directional light, up to
-// eight point lights, and a roughness-aware ambient term.
+// Prelude for mesh (surface) shaders. bunyip-shader puts this before the
+// game's code and the lighting main after it; the game defines
+//
+//     void surface(inout Surface s)          // adjust inputs before lighting
+//     vec4 finish(vec4 lit, Surface s)       // optional: post-process the lit colour
+//
+// Lighting is metallic-roughness PBR: Cook-Torrance with GGX
+// distribution, Schlick Fresnel and Smith-GGX visibility; one shadowed
+// directional light, up to eight point lights, and a roughness-aware
+// hemisphere ambient term.
 layout(set = 0, binding = 0) uniform sampler2D albedoTex;
 layout(set = 0, binding = 1) uniform sampler2D metalRoughTex; // G roughness, B metallic (glTF)
 layout(set = 0, binding = 2) uniform sampler2D normalTex;
 layout(set = 0, binding = 3) uniform sampler2D emissiveTex;
+layout(set = 0, binding = 4) uniform sampler2D image0;
+layout(set = 0, binding = 5) uniform sampler2D image1;
+layout(set = 0, binding = 6) uniform sampler2D image2;
+layout(set = 0, binding = 7) uniform sampler2D image3;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -17,7 +28,7 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 lightColor;   // rgb, w = shadow strength
     vec4 sky;          // rgb ambient from above
     vec4 ground;       // rgb ambient from below
-    vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count
+    vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count, w = time
     vec4 splits;       // view-space distances where cascades end
     vec4 radii;        // half-size of each cascade's orthographic box
     vec4 pointPos[8];  // xyz, w = range
@@ -28,6 +39,7 @@ layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap0;
 layout(set = 2, binding = 1) uniform sampler2DShadow shadowMap1;
 layout(set = 2, binding = 2) uniform sampler2DShadow shadowMap2;
 
+#define UNIFORMS layout(set = 4, binding = 0)
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -36,6 +48,24 @@ layout(location = 3) in float vViewDepth;
 layout(location = 4) flat in vec4 vBaseColor;
 layout(location = 5) flat in vec4 vMaterial;
 layout(location = 0) out vec4 outColor;
+
+// Surface is what the lighting sees. surface() may change any field:
+// albedo and alpha (linear, not premultiplied), normal (world space),
+// metallic, roughness, emissive (linear radiance added after lighting).
+struct Surface {
+    vec3 albedo;
+    float alpha;
+    vec3 normal;
+    float metallic;
+    float roughness;
+    vec3 emissive;
+    vec2 uv;
+    vec3 worldPos;
+    vec3 viewDir;   // towards the camera
+};
+
+// time is seconds since the game started.
+float time() { return frame.params.w; }
 
 const float PI = 3.14159265359;
 
@@ -62,6 +92,7 @@ float sampleCascade(int c, vec3 uvz, vec2 texel) {
     return lit / 9.0;
 }
 
+// shadowFactor is 1 where the directional light reaches, 0 in shadow.
 float shadowFactor(vec3 n, vec3 l) {
     if (frame.params.y < 0.5) return 1.0;
     int c = vViewDepth < frame.splits.x ? 0 : (vViewDepth < frame.splits.y ? 1 : 2);
@@ -98,6 +129,7 @@ vec3 F_Schlick(float VoH, vec3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - VoH, 5.0);
 }
 
+// shade is one light's contribution to a surface.
 vec3 shade(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metallic, float roughness) {
     vec3 h = normalize(l + v);
     float NoL = max(dot(n, l), 0.0);
@@ -113,42 +145,36 @@ vec3 shade(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metallic, f
     return (kd * albedo / PI + spec) * radiance * NoL;
 }
 
-void main() {
-    vec4 albedoSample = texture(albedoTex, vUV) * vBaseColor;
-    vec3 albedo = albedoSample.rgb;
-    vec3 mr = texture(metalRoughTex, vUV).rgb;
-    float metallic = clamp(vMaterial.x * mr.b, 0.0, 1.0);
-    float roughness = clamp(vMaterial.y * mr.g, 0.04, 1.0);
-    vec3 n = normalize(vNormal);
-    if (!gl_FrontFacing) n = -n;
-    if (vMaterial.w > 0.5) n = perturbNormal(n, vWorldPos, vUV);
-    vec3 v = normalize(frame.camPos.xyz - vWorldPos);
-
+// light runs the engine's lighting over a surface: the shadowed
+// directional light, the point lights and the hemisphere ambient.
+vec3 light(Surface s) {
+    vec3 n = normalize(s.normal);
+    vec3 v = s.viewDir;
     vec3 l = normalize(-frame.lightDir.xyz);
     float shadow = mix(1.0, shadowFactor(n, l), frame.lightColor.w);
-    vec3 color = shade(n, v, l, frame.lightColor.rgb * shadow, albedo, metallic, roughness);
+    vec3 color = shade(n, v, l, frame.lightColor.rgb * shadow, s.albedo, s.metallic, s.roughness);
 
     int count = int(frame.params.z);
     for (int i = 0; i < count; i++) {
-        vec3 d = frame.pointPos[i].xyz - vWorldPos;
+        vec3 d = frame.pointPos[i].xyz - s.worldPos;
         float dist = length(d);
         float range = max(frame.pointPos[i].w, 1e-3);
         float att = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
         att *= att / max(dist * dist, 1e-3);
-        color += shade(n, v, d / dist, frame.pointColor[i].rgb * att, albedo, metallic, roughness);
+        color += shade(n, v, d / dist, frame.pointColor[i].rgb * att, s.albedo, s.metallic, s.roughness);
     }
 
     // Hemisphere ambient: sky from above, ground from below, plus a
     // Fresnel-weighted specular from the reflected direction's sky.
     float NoV = max(dot(n, v), 1e-4);
-    vec3 f0 = mix(vec3(0.04), albedo, metallic);
-    vec3 kS = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
-    vec3 ambientDiffuse = (1.0 - kS) * (1.0 - metallic) * albedo * mix(frame.ground.rgb, frame.sky.rgb, n.y * 0.5 + 0.5);
+    vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
+    vec3 kS = f0 + (max(vec3(1.0 - s.roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
+    vec3 ambientDiffuse = (1.0 - kS) * (1.0 - s.metallic) * s.albedo * mix(frame.ground.rgb, frame.sky.rgb, n.y * 0.5 + 0.5);
     vec3 r = reflect(-v, n);
     vec3 env = mix(frame.ground.rgb, frame.sky.rgb, r.y * 0.5 + 0.5);
-    vec3 ambientSpec = kS * env * (1.0 - roughness * 0.8);
-    color += ambientDiffuse + ambientSpec;
-
-    color += texture(emissiveTex, vUV).rgb * vMaterial.z;
-    outColor = vec4(color, albedoSample.a);
+    vec3 ambientSpec = kS * env * (1.0 - s.roughness * 0.8);
+    return color + ambientDiffuse + ambientSpec;
 }
+
+void surface(inout Surface s);
+vec4 finish(vec4 lit, Surface s);

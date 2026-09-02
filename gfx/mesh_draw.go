@@ -20,11 +20,8 @@ const (
 
 // meshPass owns the 3D pipelines, targets and per-frame uniforms.
 type meshPass struct {
-	pbrPipe       *render.Pipeline
-	blendPipe     *render.Pipeline
+	defaultShader *Shader // the standard material, whose pipelines are its variants
 	shadowPipe    *render.Pipeline
-	skinPipe      *render.Pipeline
-	skinBlendPipe *render.Pipeline
 	skinShadow    *render.Pipeline
 	jointLayout   *render.StorageSets
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
@@ -32,8 +29,8 @@ type meshPass struct {
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
-	materials     *render.DescriptorSets
-	matSets       map[[4]*Texture]vk.VkDescriptorSet
+	materials     *render.DescriptorSets // four material textures plus a shader's image0..3
+	matSets       map[[8]*Texture]vk.VkDescriptorSet
 	flatNormal    *Texture
 	black         *Texture
 }
@@ -71,7 +68,7 @@ type frameUniforms struct {
 
 func (g *Graphics) initMeshPass() error {
 	mp := &g.meshes
-	mp.matSets = map[[4]*Texture]vk.VkDescriptorSet{}
+	mp.matSets = map[[8]*Texture]vk.VkDescriptorSet{}
 	dev := g.r.Device
 	var err error
 	layout, err := dev.NewUniformSets(frameUniformsSize, meshStages)
@@ -82,7 +79,7 @@ func (g *Graphics) initMeshPass() error {
 	if mp.jointLayout, err = dev.NewStorageSets(64, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
 		return err
 	}
-	if mp.materials, err = dev.NewSamplerDescriptors(4, 1024); err != nil {
+	if mp.materials, err = dev.NewSamplerDescriptors(8, 1024); err != nil {
 		return err
 	}
 	if mp.shadowSamp, err = dev.NewShadowSampler(); err != nil {
@@ -112,21 +109,6 @@ func (g *Graphics) initMeshPass() error {
 		return err
 	}
 	bindings, attrs := meshVertexLayout()
-	common := render.PipelineDesc{
-		Vert: shaders.PBRVert, Frag: shaders.PBRFrag,
-		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
-		Bindings: bindings, Attributes: attrs[:9], // static meshes have no joint base
-		CullMode: vk.VK_CULL_MODE_BACK_BIT, DepthTest: true, DepthWrite: true,
-		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout},
-	}
-	if mp.pbrPipe, err = dev.NewPipeline(common); err != nil {
-		return err
-	}
-	blend := common
-	blend.Blend, blend.DepthWrite, blend.CullMode = true, false, vk.VK_CULL_MODE_NONE
-	if mp.blendPipe, err = dev.NewPipeline(blend); err != nil {
-		return err
-	}
 	shadow := render.PipelineDesc{
 		Vert: shaders.ShadowVert, Frag: shaders.ShadowFrag,
 		NoColor: true, DepthFormat: g.r.DepthFormat,
@@ -142,23 +124,39 @@ func (g *Graphics) initMeshPass() error {
 	// Skinned variants read joints and weights from binding 0 and joint
 	// matrices from a storage buffer in set 3.
 	sbind, sattrs := skinVertexLayout()
-	skinSets := []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout}
-	skin := common
-	skin.Vert, skin.Bindings, skin.Attributes, skin.SetLayouts = shaders.PBRSkinVert, sbind, sattrs, skinSets
-	if mp.skinPipe, err = dev.NewPipeline(skin); err != nil {
-		return err
-	}
-	skinBlend := blend
-	skinBlend.Vert, skinBlend.Bindings, skinBlend.Attributes, skinBlend.SetLayouts = shaders.PBRSkinVert, sbind, sattrs, skinSets
-	if mp.skinBlendPipe, err = dev.NewPipeline(skinBlend); err != nil {
-		return err
-	}
 	skinShadow := shadow
 	skinShadow.Vert, skinShadow.Bindings = shaders.ShadowSkinVert, sbind
 	skinShadow.Attributes = append(append([]vk.VkVertexInputAttributeDescription{}, sattrs[:7]...), sattrs[9:]...)
-	skinShadow.SetLayouts = skinSets
-	mp.skinShadow, err = dev.NewPipeline(skinShadow)
-	return err
+	skinShadow.SetLayouts = []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout}
+	if mp.skinShadow, err = dev.NewPipeline(skinShadow); err != nil {
+		return err
+	}
+	mp.defaultShader = &Shader{g: g, frag: shaders.PBRFrag, mesh: true, pipes: map[pipeKey]*render.Pipeline{}}
+	for _, key := range []pipeKey{{blend: BlendReplace}, {blend: BlendAlpha}} {
+		if _, err := mp.defaultShader.pipeline(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pipelineDesc is the lit pass pipeline for static or skinned meshes,
+// without a fragment program: each mesh shader supplies its own.
+func (mp *meshPass) pipelineDesc(skinned bool) render.PipelineDesc {
+	g := mp.defaultShader.g
+	bindings, attrs := meshVertexLayout()
+	desc := render.PipelineDesc{
+		Vert:        shaders.PBRVert,
+		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
+		Bindings: bindings, Attributes: attrs[:9], // static meshes have no joint base
+		CullMode: vk.VK_CULL_MODE_BACK_BIT, DepthTest: true, DepthWrite: true,
+		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout},
+	}
+	if skinned {
+		desc.Vert = shaders.PBRSkinVert
+		desc.Bindings, desc.Attributes = skinVertexLayout()
+	}
+	return desc
 }
 
 // meshVertexLayout is the per-vertex binding 0 and per-instance binding 1.
@@ -199,24 +197,46 @@ func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
 // share a mesh and material become one instanced draw call; blended
 // materials draw after everything opaque, farthest first.
 func (g *Graphics) DrawMesh(m *Mesh, mat Material, model lin.Mat4) {
-	if mat.BaseColor == (Color{}) {
-		mat.BaseColor = White
-	}
-	if mat.Roughness == 0 {
-		mat.Roughness = 0.6
-	}
-	g.cur.draws = append(g.cur.draws, meshDraw{mesh: m, mat: mat, model: model})
+	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model})
 }
 
-// materialSet returns the descriptor set for a material's textures.
+// queueMesh fills a draw's defaults, captures its shader's uniforms, and
+// adds it to the current queue.
+func (g *Graphics) queueMesh(d meshDraw) {
+	if d.mat.BaseColor == (Color{}) {
+		d.mat.BaseColor = White
+	}
+	if d.mat.Roughness == 0 {
+		d.mat.Roughness = 0.6
+	}
+	d.shader = d.mat.Shader
+	if d.shader == nil {
+		d.shader = g.meshes.defaultShader
+	} else if !d.shader.mesh {
+		panic("gfx: Material.Shader wants a mesh shader from NewMeshShader")
+	}
+	d.uniform = d.shader.uniformOffset()
+	g.cur.draws = append(g.cur.draws, d)
+}
+
+// materialSet returns the descriptor set for a material's textures and
+// its shader's images.
 func (g *Graphics) materialSet(mat Material) (vk.VkDescriptorSet, error) {
 	mp := &g.meshes
-	key := [4]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black)}
+	key := [8]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black)}
+	if mat.Shader != nil {
+		for i, t := range mat.Shader.images {
+			key[4+i] = t
+		}
+	}
 	if set, ok := mp.matSets[key]; ok {
 		return set, nil
 	}
-	bindings := make([]render.SamplerBinding, 4)
+	bindings := make([]render.SamplerBinding, len(key))
 	for i, t := range key {
+		if t == nil {
+			t = g.white
+		}
 		bindings[i] = render.SamplerBinding{View: t.img.View, Sampler: g.sampler(!t.nearest, t.repeat)}
 	}
 	set, err := mp.materials.AllocateMany(bindings)
@@ -234,12 +254,18 @@ func orTex(t, fallback *Texture) *Texture {
 	return t
 }
 
-// forgetTexture drops cached material sets that reference a destroyed texture.
+// forgetTexture drops cached descriptor sets that reference a destroyed texture.
 func (g *Graphics) forgetTexture(t *Texture) {
 	for key, set := range g.meshes.matSets {
-		if key[0] == t || key[1] == t || key[2] == t || key[3] == t {
+		if slices.Contains(key[:], t) {
 			g.meshes.materials.Free(set)
 			delete(g.meshes.matSets, key)
+		}
+	}
+	for key, set := range g.imageSets {
+		if slices.Contains(key[:], t) {
+			g.descriptors.Free(set)
+			delete(g.imageSets, key)
 		}
 	}
 }
@@ -257,8 +283,7 @@ func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4
 	if far <= 0 {
 		far = 60
 	}
-	up, _, near, _ := q.camera.defaults()
-	_ = up
+	_, _, near, _ := q.camera.defaults()
 	dir := q.light.Direction.Norm()
 	lightUp := lin.V3(0, 1, 0)
 	if abs32(dir.Y) > 0.95 {
@@ -331,7 +356,7 @@ func abs32(v float32) float32 {
 }
 
 // writeUniforms fills the queue's frame block for the slot.
-func (q *drawQueue) writeUniforms(slot int, aspect float32) error {
+func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	if !q.hasCam {
 		q.camera = Camera{Position: lin.V3(0, 0, 5)}
 	}
@@ -357,7 +382,7 @@ func (q *drawQueue) writeUniforms(slot int, aspect float32) error {
 		lightColor:    lin.V4(l.Color.R, l.Color.G, l.Color.B, strength),
 		sky:           lin.V4(sky.R, sky.G, sky.B, 1),
 		ground:        lin.V4(ground.R, ground.G, ground.B, 1),
-		params:        lin.V4(shadowMapSize, boolFloat(l.Shadows), float32(len(q.points)), 0),
+		params:        lin.V4(shadowMapSize, boolFloat(l.Shadows), float32(len(q.points)), time),
 		splits:        splits,
 		radii:         radii,
 	}
@@ -407,6 +432,13 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int) (opaque, blended []meshD
 				return 1
 			}
 			return -1
+		case a.shader != b.shader:
+			if uintptr(unsafe.Pointer(a.shader)) < uintptr(unsafe.Pointer(b.shader)) {
+				return -1
+			}
+			return 1
+		case a.uniform != b.uniform:
+			return int(a.uniform - b.uniform)
 		case a.set != b.set:
 			if a.set < b.set {
 				return -1
@@ -458,48 +490,73 @@ func orOne(metallic float32, hasTexture bool) float32 {
 	return metallic
 }
 
-// drawRuns records draws as instanced runs of identical mesh and material.
-// first is the index of draws[0] in the instance stream. Skinned draws use
-// the skinned variant of pipe and are never merged, since each has its own
-// joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, pipe, skinPipe *render.Pipeline, draws []meshDraw, first uint32, withMaterials bool, cascade *int32) {
+// drawRuns records draws as instanced runs of identical mesh, material
+// and shader state. first is the index of draws[0] in the instance
+// stream. In the shadow pass (cascade set) the depth-only pipelines are
+// used; otherwise each draw's shader picks its lit pipeline. Skinned
+// draws are never merged, since each has its own joint matrices.
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws []meshDraw, first uint32, cascade *int32) error {
+	mp := &g.meshes
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &offset)
 	var bound *render.Pipeline
+	boundUniform := int32(-2)
 	for i := 0; i < len(draws); {
 		d := draws[i]
 		run := 1
 		if !d.skinned {
-			for i+run < len(draws) && !draws[i+run].skinned && draws[i+run].mesh == d.mesh && draws[i+run].set == d.set {
+			for i+run < len(draws) {
+				n := draws[i+run]
+				if n.skinned || n.mesh != d.mesh || n.set != d.set || n.shader != d.shader || n.uniform != d.uniform {
+					break
+				}
 				run++
 			}
 		}
-		p := pipe
-		if d.skinned {
-			p = skinPipe
+		var p *render.Pipeline
+		if cascade != nil {
+			p = mp.shadowPipe
+			if d.skinned {
+				p = mp.skinShadow
+			}
+		} else {
+			key := pipeKey{blend: BlendReplace, skinned: d.skinned}
+			if d.mat.Blend {
+				key.blend = BlendAlpha
+			}
+			var err error
+			if p, err = d.shader.pipeline(key); err != nil {
+				return err
+			}
 		}
 		if p != bound {
 			bound = p
+			boundUniform = -2
 			vk.VkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
 			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
 			if cascade != nil {
 				vk.VkCmdPushConstants(cb, p.Layout, meshStages, 0, 4, unsafe.Pointer(cascade))
-			}
-			if withMaterials {
+			} else {
 				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 2, 1, &g.meshes.shadowSet, 0, nil)
 			}
 			if d.skinned {
 				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 3, 1, &q.jointBuf.Sets[fr.Slot], 0, nil)
 			}
 		}
-		if withMaterials {
+		if cascade == nil {
 			vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &d.set, 0, nil)
+			if d.uniform >= 0 && d.uniform != boundUniform {
+				boundUniform = d.uniform
+				dyn := uint32(d.uniform)
+				vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 4, 1, &g.uniforms.Sets[fr.Slot], 1, &dyn)
+			}
 		}
 		vk.VkCmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &offset)
 		vk.VkCmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
 		vk.VkCmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, first+uint32(i))
 		i += run
 	}
+	return nil
 }
 
 // renderScene runs the shadow and lit passes of a queue into the targets'
@@ -508,7 +565,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	mp := &g.meshes
 	cb := fr.CB
 	aspect := float32(t.extent.Width) / float32(t.extent.Height)
-	if err := q.writeUniforms(fr.Slot, aspect); err != nil {
+	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
 		return err
 	}
 	opaque, blended, err := g.prepareDraws(q, fr.Slot)
@@ -519,21 +576,30 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		for c := range mp.shadow {
 			render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow[c], ClearDepth: 1})
 			cascade := int32(c)
-			g.drawRuns(cb, fr, q, mp.shadowPipe, mp.skinShadow, opaque, 0, false, &cascade)
+			if err := g.drawRuns(cb, fr, q, opaque, 0, &cascade); err != nil {
+				return err
+			}
 			render.EndTargetPass(cb, mp.shadow[c])
 		}
 	}
 	c := q.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
-	g.drawRuns(cb, fr, q, mp.pbrPipe, mp.skinPipe, opaque, 0, true, nil)
-	g.drawRuns(cb, fr, q, mp.blendPipe, mp.skinBlendPipe, blended, uint32(len(opaque)), true, nil)
+	if err := g.drawRuns(cb, fr, q, opaque, 0, nil); err != nil {
+		return err
+	}
+	if err := g.drawRuns(cb, fr, q, blended, uint32(len(opaque)), nil); err != nil {
+		return err
+	}
 	render.EndTargetPass(cb, t.hdr)
 	return nil
 }
 
 func (mp *meshPass) destroy(g *Graphics) {
 	dev := g.r.Device.Handle
-	for _, p := range []*render.Pipeline{mp.pbrPipe, mp.blendPipe, mp.shadowPipe, mp.skinPipe, mp.skinBlendPipe, mp.skinShadow} {
+	if mp.defaultShader != nil {
+		mp.defaultShader.Destroy()
+	}
+	for _, p := range []*render.Pipeline{mp.shadowPipe, mp.skinShadow} {
 		if p != nil {
 			p.Destroy()
 		}

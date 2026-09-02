@@ -61,7 +61,7 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		return nil, err
 	}
 	sampler := g.sampler(opts.Linear, opts.Repeat)
-	set, err := g.descriptors.Allocate(img.View, sampler)
+	set, err := g.textureSet(img.View, sampler)
 	if err != nil {
 		img.Destroy()
 		return nil, err

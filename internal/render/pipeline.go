@@ -17,7 +17,8 @@ type PipelineDesc struct {
 	Attributes       []vk.VkVertexInputAttributeDescription
 	Topology         vk.VkPrimitiveTopology
 	CullMode         vk.VkCullModeFlags
-	Blend            bool // premultiplied alpha blending
+	Blend            bool          // blending on; premultiplied source-over unless Factors is set
+	Factors          *BlendFactors // blend equation when Blend is set
 	DepthTest        bool
 	DepthWrite       bool
 	PushConstantSize uint32 // bytes visible to all stages, 0 for none
@@ -26,6 +27,21 @@ type PipelineDesc struct {
 	DepthBias        float32 // constant depth bias, for shadow passes
 	DepthSlopeBias   float32
 	FrontFace        vk.VkFrontFace // zero means counter-clockwise
+}
+
+// BlendFactors is a fixed-function blend equation: colour and alpha are
+// each src·SrcFactor op dst·DstFactor.
+type BlendFactors struct {
+	SrcColor, DstColor vk.VkBlendFactor
+	ColorOp            vk.VkBlendOp
+	SrcAlpha, DstAlpha vk.VkBlendFactor
+	AlphaOp            vk.VkBlendOp
+}
+
+// PremultipliedOver is source-over blending for premultiplied colour.
+var PremultipliedOver = BlendFactors{
+	SrcColor: vk.VK_BLEND_FACTOR_ONE, DstColor: vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, ColorOp: vk.VK_BLEND_OP_ADD,
+	SrcAlpha: vk.VK_BLEND_FACTOR_ONE, DstAlpha: vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, AlphaOp: vk.VK_BLEND_OP_ADD,
 }
 
 // Pipeline is a graphics pipeline and its layout.
@@ -123,13 +139,17 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		ColorWriteMask: vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
 	}
 	if desc.Blend {
+		f := PremultipliedOver
+		if desc.Factors != nil {
+			f = *desc.Factors
+		}
 		blendAttachment.BlendEnable = vk.VK_TRUE
-		blendAttachment.SrcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE
-		blendAttachment.DstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-		blendAttachment.ColorBlendOp = vk.VK_BLEND_OP_ADD
-		blendAttachment.SrcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE
-		blendAttachment.DstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-		blendAttachment.AlphaBlendOp = vk.VK_BLEND_OP_ADD
+		blendAttachment.SrcColorBlendFactor = f.SrcColor
+		blendAttachment.DstColorBlendFactor = f.DstColor
+		blendAttachment.ColorBlendOp = f.ColorOp
+		blendAttachment.SrcAlphaBlendFactor = f.SrcAlpha
+		blendAttachment.DstAlphaBlendFactor = f.DstAlpha
+		blendAttachment.AlphaBlendOp = f.AlphaOp
 	}
 	blend := vk.VkPipelineColorBlendStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, AttachmentCount: 1, PAttachments: &blendAttachment}
 	if desc.NoColor {

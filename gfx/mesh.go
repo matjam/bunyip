@@ -92,6 +92,10 @@ type Material struct {
 
 	Blend       bool // alpha-blended, drawn after opaque geometry back to front
 	DoubleSided bool // no back-face culling
+
+	// Shader is a mesh shader from NewMeshShader that adjusts the surface
+	// before lighting; nil is the standard material.
+	Shader *Shader
 }
 
 // Camera is a perspective camera looking from Position at Target.
@@ -156,6 +160,8 @@ type meshDraw struct {
 	mat       Material
 	model     lin.Mat4
 	set       vk.VkDescriptorSet
+	shader    *Shader // never nil once queued
+	uniform   int32   // arena offset of the shader's uniforms, -1 for none
 	depth     float32 // view-space distance for transparency sorting
 	skinned   bool
 	jointBase int // first joint matrix in the queue's joint list

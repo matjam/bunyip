@@ -38,7 +38,7 @@ func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
 		rt.Destroy()
 		return nil, err
 	}
-	set, err := g.descriptors.Allocate(rt.target.Color.View, g.linear)
+	set, err := g.textureSet(rt.target.Color.View, g.linear)
 	if err != nil {
 		rt.Destroy()
 		return nil, err
