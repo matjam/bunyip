@@ -25,9 +25,11 @@ type game struct {
 	fontPath string
 
 	body     *gfx.Font // Go Regular with the world font behind it
+	bold     *gfx.Font
 	heading  *gfx.Font
 	sdf      *gfx.Font
 	world    []byte
+	emoji    []byte
 	shotDone bool
 }
 
@@ -38,12 +40,22 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if data, err := os.ReadFile(g.fontPath); err == nil {
 		g.world = data
 	}
+	// A bitmap emoji font as a further fallback draws emoji in colour.
+	if data, err := os.ReadFile("/System/Library/Fonts/Apple Color Emoji.ttc"); err == nil {
+		g.emoji = data
+	}
 	var err error
 	opts := gfx.FontOptions{}
 	if g.world != nil {
-		opts.Fallbacks = [][]byte{g.world}
+		opts.Fallbacks = append(opts.Fallbacks, g.world)
+	}
+	if g.emoji != nil {
+		opts.Fallbacks = append(opts.Fallbacks, g.emoji)
 	}
 	if g.body, err = ctx.Gfx.NewFont(goregular.TTF, 18, opts); err != nil {
+		return err
+	}
+	if g.bold, err = ctx.Gfx.NewFont(gobold.TTF, 18, gfx.FontOptions{}); err != nil {
 		return err
 	}
 	if g.heading, err = ctx.Gfx.NewFont(gobold.TTF, 26, gfx.FontOptions{}); err != nil {
@@ -58,6 +70,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.sdf.Destroy()
 	g.heading.Destroy()
+	g.bold.Destroy()
 	g.body.Destroy()
 }
 
@@ -93,17 +106,34 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		y += 40
 	}
 
-	gr.DrawText(g.body, "Wrapped by the Unicode line-breaking rules, centred in 420 units:", 40, y, dim)
+	gr.DrawText(g.body, "Wrapped by the Unicode rules, justified in 420 units, hyphenated:", 40, y, dim)
 	y += 28
-	para := "Bunyip shapes text with HarfBuzz through go-text, so marks land on their bases, scripts that join do so, and lines break where they should, in any language the font covers."
-	gr.DrawTextBlock(g.body, para, 40, y, gfx.TextOptions{Width: 420, Align: gfx.AlignCenter}, white)
-	_, ph := g.body.Measure(para, gfx.TextOptions{Width: 420})
+	para := "Bunyip shapes text with HarfBuzz through go-text, so marks land on their bases, scripts that join do so, and lines break where they should, in any language the font covers, with extraordinarily long words hyphenated."
+	popts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify, Hyphenate: gfx.EnglishHyphenator()}
+	gr.DrawTextBlock(g.body, para, 40, y, popts, white)
+	_, ph := g.body.Measure(para, popts)
 	gr.StrokeRect(40, y-4, 420, ph+8, 1, gfx.RGB(70, 75, 95))
 
-	// Vertical text in a column on the right of the paragraph.
+	// Vertical text in a column on the right of the paragraph, and a
+	// tracked-out heading beside it.
 	gr.DrawText(g.body, "vertical:", 520, y, dim)
 	gr.DrawTextBlock(g.body, "top to bottom", 700, y, gfx.TextOptions{Direction: gfx.DirectionTTB}, white)
-	y += ph + 40
+	gr.DrawTextBlock(g.heading, "TRACKED", 500, y+40, gfx.TextOptions{LetterSpacing: 4}, gfx.RGB(255, 200, 90))
+	y += ph + 16
+
+	// Rich text: styles and a link in one block, and colour emoji.
+	rich := gfx.ParseRich("Rich text mixes [b]bold[/b], [#ff8a5c]colour[/#], [u]underlines[/u] and a [link=docs]link[/link] in one block.")
+	links := gr.DrawRichText(gfx.RichFonts{Regular: g.body, Bold: g.bold}, rich, 40, y, gfx.TextOptions{Width: 700}, white)
+	for _, l := range links {
+		gr.StrokeRect(l.Rect.X-2, l.Rect.Y-2, l.Rect.W+4, l.Rect.H+4, 1, gfx.RGB(90, 160, 255))
+	}
+	y += 30
+	if g.emoji != nil {
+		gr.DrawText(g.body, "Colour emoji from the system font: \U0001F600 \U0001F389 \U0001F680", 40, y, white)
+	} else {
+		gr.DrawText(g.body, "No bitmap emoji font found; a fallback with sbix or CBDT strikes draws emoji in colour.", 40, y, dim)
+	}
+	y += 40
 
 	// Distance-field text at several sizes and a rotation.
 	gr.DrawText(g.body, "Distance-field text scales and rotates without blur:", 40, y, dim)

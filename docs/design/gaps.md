@@ -92,10 +92,16 @@ filtering, gradients, dashed strokes, text on paths, indexed draws, the
 
 ## Text
 
-- Colour and bitmap emoji glyphs (drawn as notdef today).
-- Text on a path, letter spacing, justification.
-- Rich text: inline colours, bold runs and links in one block.
-- Hyphenation.
+Bitmap colour emoji, letter spacing, justification, text on a path,
+rich text with links and hyphenation are in. What remains:
+
+- COLR and SVG colour glyphs; only bitmap strikes (sbix, CBDT) draw in
+  colour, which covers Apple and Google's emoji fonts.
+- Hyphenation patterns beyond American English; `ParseTeXPatterns`
+  loads any TeX pattern file a game ships.
+- Rich text shapes each word on its own, so ligatures and kerning do
+  not cross a style change; a glyph made new in a frame appears from
+  the next frame.
 
 ## 3D rendering
 

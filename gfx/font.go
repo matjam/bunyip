@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	_ "image/jpeg" // bitmap emoji strikes
+	_ "image/png"
 	"math"
 	"strings"
 
 	"github.com/go-text/typesetting/font"
 	ot "github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/shaping"
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/image/vector"
 
@@ -63,6 +66,7 @@ type glyph struct {
 	size     lin.Vec2 // in view units
 	bearing  lin.Vec2 // offset from the glyph origin to its top-left, view units
 	empty    bool
+	color    bool // a colour bitmap, drawn untinted
 }
 
 // FontOptions tunes a font.
@@ -114,11 +118,20 @@ func (g *Graphics) newFont(ttf []byte, size float32, opts FontOptions, scale, px
 	for i, data := range append([][]byte{ttf}, opts.Fallbacks...) {
 		face, err := font.ParseTTF(bytes.NewReader(data))
 		if err != nil {
+			// A collection (.ttc) holds several faces; take the first.
+			if faces, errC := font.ParseTTC(bytes.NewReader(data)); errC == nil && len(faces) > 0 {
+				face, err = faces[0], nil
+			}
+		}
+		if err != nil {
 			if i == 0 {
 				return nil, fmt.Errorf("gfx: parse font: %w", err)
 			}
 			return nil, fmt.Errorf("gfx: parse fallback font %d: %w", i, err)
 		}
+		// Bitmap fonts pick a strike by pixel size.
+		ppem := uint16(min(max(pxPerEm+0.5, 1), 65535))
+		face.SetPpem(ppem, ppem)
 		if len(opts.Variations) > 0 {
 			var vars []font.Variation
 			for tag, v := range opts.Variations {
@@ -304,6 +317,9 @@ func (f *Font) rasterise(face uint8, gid font.GID, k float32, pad int) (mask *im
 
 // add rasterises one glyph into the CPU atlas at the font's size.
 func (f *Font) add(face uint8, gid font.GID) glyph {
+	if bm, ok := f.faces[face].face.GlyphData(gid).(font.GlyphBitmap); ok && (bm.Format == font.PNG || bm.Format == font.JPG) {
+		return f.addBitmap(face, gid, bm)
+	}
 	k := f.pxPerEm / f.faces[face].upem
 	mask, ox, oy, ok := f.rasterise(face, gid, k, 0)
 	if !ok {
@@ -326,6 +342,58 @@ func (f *Font) add(face uint8, gid font.GID) glyph {
 		uv1:     lin.V2(float32(x+w)/side, float32(y+h)/side),
 		size:    lin.V2(float32(w)/f.scale, float32(h)/f.scale),
 		bearing: lin.V2(float32(ox)/f.scale, float32(oy)/f.scale),
+	}
+}
+
+// addBitmap puts a colour bitmap glyph (an emoji from an sbix or CBDT
+// strike) into the atlas, scaled to the font's size and sat on the em
+// box; it draws untinted.
+func (f *Font) addBitmap(face uint8, gid font.GID, bm font.GlyphBitmap) glyph {
+	src, _, err := image.Decode(bytes.NewReader(bm.Data))
+	if err != nil {
+		return glyph{empty: true}
+	}
+	b := src.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return glyph{empty: true}
+	}
+	// Strikes are drawn at about one em high; scale to our pixel size.
+	k := f.pxPerEm / float32(b.Dy())
+	w := max(1, int(float32(b.Dx())*k+0.5))
+	h := max(1, int(float32(b.Dy())*k+0.5))
+	x, y, placed := f.packer.place(w, h)
+	if !placed {
+		return glyph{empty: true}
+	}
+	dst := f.pix.SubImage(image.Rect(x, y, x+w, y+h)).(*image.RGBA)
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, b, xdraw.Src, nil)
+	// The atlas is sampled as data, so store linear light: undo the
+	// premultiplication, decode sRGB, premultiply again.
+	for yy := y; yy < y+h; yy++ {
+		for xx := x; xx < x+w; xx++ {
+			i := f.pix.PixOffset(xx, yy)
+			p := f.pix.Pix[i : i+4 : i+4]
+			a := float32(p[3]) / 255
+			if a == 0 {
+				continue
+			}
+			for k := range 3 {
+				straight := float32(p[k]) / 255 / a
+				p[k] = uint8(lin.Clamp(srgbToLinear(uint8(lin.Clamp(straight, 0, 1)*255+0.5))*a, 0, 1)*255 + 0.5)
+			}
+		}
+	}
+	// Sit the image in the line box, centred on the em's vertical middle.
+	box := (f.Ascent + f.Descent) * f.scale
+	oy := -f.Ascent*f.scale + (box-float32(h))/2
+	side := float32(f.packer.width)
+	f.dirty = true
+	return glyph{
+		uv0:     lin.V2(float32(x)/side, float32(y)/side),
+		uv1:     lin.V2(float32(x+w)/side, float32(y+h)/side),
+		size:    lin.V2(float32(w)/f.scale, float32(h)/f.scale),
+		bearing: lin.V2(0, oy/f.scale),
+		color:   true,
 	}
 }
 

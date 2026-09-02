@@ -57,12 +57,19 @@ HarfBuzz, so kerning, ligatures, mark placement and Arabic joining are
 right, right-to-left runs are reordered, and lines break by the Unicode
 rules. `FontOptions` adds fallback fonts for scripts the main one lacks,
 OpenType features (`"smcp"`, `"-liga"`) and variable-font axes;
-`TextOptions` sets the size, a rotation angle, baseline placement, the
-direction (automatic, left to right, right to left, or vertical) and
+`TextOptions` sets the size, a rotation angle, baseline placement,
+letter spacing, justification (`AlignJustify`), hyphenation through a
+`Hyphenator` (`EnglishHyphenator` is built in from the TeX patterns),
+the direction (automatic, left to right, right to left, or vertical) and
 language; `Font.Measure` takes the same options. `Font.Shape` returns
 positioned glyphs for custom drawing or hit-testing. `NewSDFFont` builds
 a signed-distance atlas that stays sharp at any size and angle, where a
-bitmap font resamples.
+bitmap font resamples. Colour emoji from a bitmap emoji font given as a
+fallback draw in their own colours. `ParseRich` reads a small markup
+(`[b]`, `[i]`, `[u]`, `[#ff8800]`, `[link=name]`) into a `RichText`
+that `DrawRichText` lays out across regular, bold and italic faces with
+per-run colours, underlines and links, returning each link's rectangle
+for clicks.
 
 **Paths.** A `Path` collects lines, Bézier curves and arcs, with `Rect`,
 `RoundRect`, `Circle`, `Ellipse` and `Polygon` helpers. `FillPath` fills
