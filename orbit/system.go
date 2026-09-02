@@ -49,6 +49,7 @@ type state struct {
 	bodies  *ecs.Query1[Body]
 	placed  *ecs.Query2[Body, gfx.Transform]
 	sim     Simulation
+	fixed   []Body
 	rel     []relState
 	index   map[ecs.Entity]int
 	solved  map[ecs.Entity]State
@@ -92,33 +93,44 @@ func System(w *ecs.World, dt float64) {
 	// Kepler bodies: exact states relative to their primaries, then
 	// absolute positions by walking each chain (star, planet, moon) so
 	// every body sees its primary at the same instant.
-	s.keplers.Each(func(e ecs.Entity, k *Kepler, _ *Body) { k.elapsed += sim })
-	s.keplerStates(w, g, 0, func(e ecs.Entity, st State, _ float64) {
-		if b, ok := ecs.Get[Body](w, e); ok {
-			b.Pos, b.Vel = st.Pos, st.Vel
-		}
-	})
-	// Free bodies: RK4 under the field of every massive body.
-	s.sim.Bodies = s.sim.Bodies[:0]
-	s.sim.G, s.sim.Softening = g, settings.Softening
-	s.bodies.Each(func(e ecs.Entity, b *Body) {
-		if b.Mass > 0 && !ecs.Has[Ship](w, e) {
-			s.sim.Bodies = append(s.sim.Bodies, *b)
-		}
-	})
+	// Free bodies first: integrated across this update under the field of
+	// every massive body, with the Kepler bodies moved along their orbits
+	// at each step, so a ship in a tight orbit stays accurate at high
+	// time warp.
 	substeps := settings.Substeps
 	if substeps <= 0 {
 		substeps = 8
 	}
-	h := sim / float64(substeps)
+	s.sim.G, s.sim.Softening = g, settings.Softening
+	fixed := s.fixed[:0]
+	s.bodies.Each(func(e ecs.Entity, b *Body) {
+		if b.Mass > 0 && !ecs.Has[Ship](w, e) && !ecs.Has[Kepler](w, e) {
+			fixed = append(fixed, *b)
+		}
+	})
+	s.fixed = fixed
+	place := func(t float64) {
+		s.sim.Bodies = append(s.sim.Bodies[:0], fixed...)
+		s.keplerStates(w, g, t, ecs.None, false, func(_ ecs.Entity, st State, mass float64) {
+			s.sim.Bodies = append(s.sim.Bodies, Body{Pos: st.Pos, Vel: st.Vel, Mass: mass})
+		})
+	}
 	s.ships.Each(func(e ecs.Entity, _ *Ship, b *Body) {
 		var thrust Vec3
 		if t, ok := ecs.Get[Thrust](w, e); ok {
 			thrust = t.Accel
 		}
 		accel := func(p, _ Vec3) Vec3 { return s.sim.FieldAt(p).Add(thrust) }
-		for range substeps {
-			b.Pos, b.Vel = RK4(b.Pos, b.Vel, h, accel)
+		place(0)
+		b.Pos, b.Vel = integrate(b.Pos, b.Vel, 0, sim, substeps, place, accel)
+	})
+	// Then the Kepler bodies: exact states relative to their primaries,
+	// with absolute positions by walking each chain (star, planet, moon)
+	// so every body sees its primary at the same instant.
+	s.keplers.Each(func(e ecs.Entity, k *Kepler, _ *Body) { k.elapsed += sim })
+	s.keplerStates(w, g, 0, ecs.None, true, func(e ecs.Entity, st State, _ float64) {
+		if b, ok := ecs.Get[Body](w, e); ok {
+			b.Pos, b.Vel = st.Pos, st.Vel
 		}
 	})
 	// Place everything that has a transform.
@@ -131,13 +143,43 @@ func System(w *ecs.World, dt float64) {
 	})
 }
 
+// integrate advances a free body from time t0 to t1 by RK4 in adaptive
+// steps: at least minSteps of them, and none longer than a small fraction
+// of the local orbital timescale |v|/|a|, so a tight orbit around a
+// fast-moving world is followed rather than spiralled out of. place is
+// called with each step's midpoint time so the massive bodies can be
+// moved along their own orbits first; the caller places them at t0.
+func integrate(pos, vel Vec3, t0, t1 float64, minSteps int, place func(t float64), accel func(p, v Vec3) Vec3) (Vec3, Vec3) {
+	if minSteps < 1 {
+		minSteps = 1
+	}
+	maxStep := (t1 - t0) / float64(minSteps)
+	t := t0
+	for t1-t > 1e-9 {
+		step := min(t1-t, maxStep)
+		a := accel(pos, vel).Len()
+		if v := vel.Len(); a > 0 && v > 0 {
+			step = min(step, max(0.01*v/a, maxStep/64))
+		}
+		place(t + step/2)
+		pos, vel = RK4(pos, vel, step, accel)
+		t += step
+	}
+	return pos, vel
+}
+
 // keplerStates computes every Kepler body's absolute state ahead seconds
 // past where it is now, resolving primary chains so a moon follows its
-// planet, and calls fn with each entity, its state and its mass. Bodies
+// planet, and calls fn with each entity, its state and its mass. With
+// all false only massive bodies (and ref) are reported, which keeps an
+// asteroid belt of massless bodies out of gravity calculations. Bodies
 // with no Kepler component stay where they are.
-func (s *state) keplerStates(w *ecs.World, g, ahead float64, fn func(e ecs.Entity, st State, mass float64)) {
+func (s *state) keplerStates(w *ecs.World, g, ahead float64, ref ecs.Entity, all bool, fn func(e ecs.Entity, st State, mass float64)) {
 	s.rel = s.rel[:0]
 	s.keplers.Each(func(e ecs.Entity, k *Kepler, b *Body) {
+		if !all && b.Mass <= 0 && e != ref {
+			return
+		}
 		mu := k.Mu
 		if mu == 0 {
 			if p, ok := ecs.Get[Body](w, k.Primary); ok {
@@ -231,10 +273,12 @@ func PredictRelative(w *ecs.World, ship, ref ecs.Entity, seconds float64, sample
 	h := seconds / float64(samples)
 	accel := func(p, _ Vec3) Vec3 { return sim.FieldAt(p).Add(thrust) }
 	out := make([]lin.Vec3, 0, samples)
-	for i := range samples {
+	// place moves every massive Kepler body to where it will be at time t
+	// and notes how far the reference body has moved by then.
+	var shift Vec3
+	place := func(t float64) {
 		sim.Bodies = append(sim.Bodies[:0], fixed...)
-		shift := Vec3{}
-		s.keplerStates(w, g, (float64(i)+0.5)*h, func(e ecs.Entity, st State, mass float64) {
+		s.keplerStates(w, g, t, ref, false, func(e ecs.Entity, st State, mass float64) {
 			if mass > 0 {
 				sim.Bodies = append(sim.Bodies, Body{Pos: st.Pos, Vel: st.Vel, Mass: mass})
 			}
@@ -242,7 +286,11 @@ func PredictRelative(w *ecs.World, ship, ref ecs.Entity, seconds float64, sample
 				shift = st.Pos.Sub(refNow)
 			}
 		})
-		pos, vel = RK4(pos, vel, h, accel)
+	}
+	place(0)
+	for i := range samples {
+		pos, vel = integrate(pos, vel, float64(i)*h, float64(i+1)*h, 1, place, accel)
+		place(float64(i+1) * h)
 		out = append(out, pos.Sub(shift).Sub(settings.Origin).Mul(unit).Lin())
 	}
 	return out

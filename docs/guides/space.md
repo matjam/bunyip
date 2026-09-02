@@ -75,6 +75,24 @@ rather than a streak across the sky. `Around` reports which body
 dominates a ship and its orbital elements relative to it, for a readout;
 pass its primary to `PredictRelative`.
 
+Ships are integrated with an adaptive step: never longer than a small
+fraction of the local orbital timescale, with the Kepler bodies moved
+along their orbits at each step. A ship in a twenty-second orbit stays
+on it at a time warp of two hundred.
+
+## The space example
+
+`examples/space` puts all of this together: a star, seven planets with
+a dozen moons, three hundred massless asteroids in a belt (they follow
+their orbits but pull on nothing, so they cost the ship's integration
+nothing), and a comet on a steep, eccentric orbit. Every body's orbit is
+drawn as a ring of dots from its elements, the ship's predicted path is
+drawn in the frame of whatever it orbits, Tab cycles the camera's focus
+(and the floating origin) through the bodies, and the scroll wheel zooms
+from the ship's hull to the whole system. With `G = 1` and a star of
+mass 175 the inner planet takes two minutes to go round and the outer
+one an hour, so the time warp slider is how you watch the system move.
+
 ## Choosing units
 
 Stay consistent and the equations do not care. With `G = 1`, a star of
