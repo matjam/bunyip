@@ -224,7 +224,7 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 }
 
 // Draw queues a sprite. A nil texture draws with a 1x1 white texture, so a
-// coloured rectangle is just a tinted sprite.
+// coloured rectangle is a tinted sprite.
 func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if tex == nil {
 		tex = g.white

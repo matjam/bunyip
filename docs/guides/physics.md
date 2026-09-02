@@ -6,9 +6,10 @@ summary: rigid bodies in 2D and 3D: shapes, collisions, queries, joints, ragdoll
 ---
 
 The [phys](../pkg/phys.html) package simulates rigid bodies on the
-[ECS](ecs.html) in two and three dimensions with the same ideas: a
-transform says where an entity is, a body says how it moves, a collider
-says what shape it has, and one system per dimension does the rest.
+[ECS](ecs.html) in two and three dimensions. Both dimensions use the
+same components. A transform holds the position and rotation, a body
+holds the mass and velocity, and a collider holds the shape. One system
+per dimension steps the simulation.
 
 ## Setting up
 
@@ -29,16 +30,18 @@ usually positive, in pixels per second squared.
 
 ## Bodies
 
-`Dynamic2` and `Dynamic3` return bodies with sensible defaults; set
+`Dynamic2` and `Dynamic3` return bodies with default values. Set
 `Restitution` for bounce, `Friction` for grip and `LinearDamping` to
-bleed off speed. `Kinematic2` and `Kinematic3` move by their velocity
-and push other bodies without being pushed: platforms, doors, paddles.
-A body with zero mass, or an entity with only a collider, is static.
+reduce speed over time. `Kinematic2` and `Kinematic3` move by their
+velocity and push other bodies without being pushed, which suits
+platforms, doors and paddles. A body with zero mass, or an entity with
+only a collider, is static.
 
-Apply forces between frames with `AddForce` and `AddTorque`, or change
-the velocity at once with `AddImpulse`. `GravityScale` makes a body
-float or sink, `LockRotation` keeps a character upright, and setting
-`Sleeping` freezes a body until the game clears it again.
+To apply a force between frames, call `AddForce` or `AddTorque`. To
+change the velocity at once, call `AddImpulse`. `GravityScale` scales
+how strongly gravity pulls on one body, `LockRotation` stops a body
+rotating, and setting `Sleeping` freezes a body until the game clears
+it again.
 
 ```go
 // 2D: a paddle that moves under the game's control and pushes what it meets.
@@ -73,9 +76,9 @@ tested through their support functions (GJK for distance, EPA for
 penetration depth), and any of them collides with a mesh's triangles.
 
 Each collider has an `Offset` from the transform, a `Trigger` flag and
-`Layers`. Two colliders meet only when each one's `Layer` bits appear
-in the other's `Mask`, which is how bullets pass through their own
-team.
+`Layers`. Two colliders collide only when each one's `Layer` bits
+appear in the other's `Mask`. Use this to let a bullet pass through
+bodies on its own team.
 
 ```go
 // 2D: a terrain outline and a triangle that lands on it.
@@ -111,16 +114,16 @@ w.AddSystem("damage", func(w *ecs.World, dt float64) {
 
 ## Queries
 
-`Raycast2` and `Raycast3` find the nearest collider along a ray, for
-picking, line of sight and ground checks; `RaycastAll2` and
-`RaycastAll3` return every hit in order of distance. Pair
-`gfx.ScreenRay` with `Raycast3` to find the body under the pointer.
-`OverlapSphere3`, `OverlapBox3` and `OverlapShape3`, with their 2D
-counterparts, list what a volume touches: an explosion's victims, a
-selection box. `ShapeCast2` and `ShapeCast3` sweep a shape along a
-direction and report the first thing it would hit and how far along the
-sweep it got. `Nearest2` and `Nearest3` find the closest collider to a
-point within a radius.
+`Raycast2` and `Raycast3` find the nearest collider along a ray, which
+covers picking, line of sight and ground checks. `RaycastAll2` and
+`RaycastAll3` return every hit in order of distance. Pass a
+`gfx.ScreenRay` to `Raycast3` to find the body under the pointer.
+`OverlapSphere3`, `OverlapBox3` and `OverlapShape3`, and their 2D
+counterparts, list every collider inside a volume, which covers
+explosion radii and selection boxes. `ShapeCast2` and `ShapeCast3`
+sweep a shape along a direction and report the first collider it would
+hit and how far along the sweep it got. `Nearest2` and `Nearest3` find
+the closest collider to a point within a radius.
 
 ```go
 // The body under the pointer.
@@ -142,15 +145,16 @@ _, grounded := phys.ShapeCast2(w, phys.Circle{Radius: 12}, pos, 0, lin.V2(0, 4),
 
 ## Joints
 
-A joint is a component on its own entity that ties two bodies together,
-or ties one body to a point in the world when the other side is left as
-`ecs.None`. `DistanceJoint2` and `DistanceJoint3` make rods, and ropes
-when given slack through `Min` and `Max`. `RevoluteJoint2` and
-`HingeJoint3` are pins and door hinges. `BallJoint3` is a shoulder or a
-hip. `SpringJoint2` and `SpringJoint3` have stiffness and damping.
-`FixedJoint2` and `FixedJoint3` weld. Joints are solved in the same
-iterations as the contacts, so a chain of hinges hangs and swings
-without drifting apart.
+A joint is a component on its own entity that constrains two bodies. To
+constrain one body to a point in the world instead, leave the other
+side as `ecs.None`. `DistanceJoint2` and `DistanceJoint3` hold two
+bodies a fixed distance apart, or within a range when given `Min` and
+`Max`. `RevoluteJoint2` and `HingeJoint3` allow rotation about one
+axis. `BallJoint3` allows rotation about any axis through a point.
+`SpringJoint2` and `SpringJoint3` pull towards a rest length with
+stiffness and damping. `FixedJoint2` and `FixedJoint3` remove all
+relative motion. Joints are solved in the same iterations as the
+contacts, so a chain of hinges holds together.
 
 ```go
 // 2D: a crate on a rope from a fixed point, and a wheel sprung to a cart.
@@ -161,12 +165,12 @@ w.SpawnWith(phys.SpringJoint2{A: cart, B: wheel,
 ```
 
 A hinge or revolute joint measures its angle from the pose on its first
-step, positive by the right-hand rule about the axis; `Angle(w)` reads
-it. `MinAngle` and `MaxAngle` stop it at either end, for a door that
-opens one way; both zero means unlimited. `MotorSpeed` and
-`MaxMotorTorque` turn it into a motor that drives towards a speed with
-bounded torque, for a wheel or a winch; a heavy load slows it and a
-limit stops it.
+step, positive by the right-hand rule about the axis. `Angle(w)` reads
+that angle. `MinAngle` and `MaxAngle` stop the joint at either end, so
+a door opens one way only; both zero means unlimited. `MotorSpeed` and
+`MaxMotorTorque` drive the joint towards a speed with bounded torque,
+for a wheel or a winch. A heavy load slows the motor and a limit stops
+it.
 
 ```go
 w.SpawnWith(phys.HingeJoint3{A: axle, B: wheel, AxisA: lin.V3(1, 0, 0), AxisB: lin.V3(1, 0, 0),
@@ -175,19 +179,21 @@ w.SpawnWith(phys.HingeJoint3{A: frame, B: door, AnchorA: hingePos, AnchorB: lin.
 	AxisA: lin.V3(0, 1, 0), AxisB: lin.V3(0, 1, 0), MinAngle: 0, MaxAngle: 1.6})
 ```
 
-`BallJoint3` pins two bodies at a point and lets them turn in every
-direction. `AxisB` is the limb's axis in its own frame (local Y by
-default) and `AxisA` the centre of its cone in the parent's frame (by
-default, where the limb pointed on the first step). `ConeAngle` limits
-how far the limb swings from that centre and `TwistAngle` how far it
-turns about itself; `Angles(w)` reads both.
+`BallJoint3` holds two bodies together at a point and allows rotation
+in every direction. `AxisB` is the limb's axis in its own frame (local
+Y by default) and `AxisA` is the centre of its cone in the parent's
+frame (by default, the direction the limb pointed on the first step).
+`ConeAngle` limits how far the limb swings from that centre and
+`TwistAngle` limits how far it turns about itself. `Angles(w)` reads
+both.
 
 ## Ragdolls
 
 `NewRagdoll3(w, spec)` spawns a humanoid of eleven capsules (pelvis,
 spine, head, upper arms, forearms, thighs, shins) joined by ball joints
 at the waist, neck, shoulders and hips and by one-way hinges at the
-elbows and knees, with limits that make it flop rather than fold. A zero
+elbows and knees. The joint limits stop the elbows and knees bending
+backwards. A zero
 `RagdollSpec` gives a figure 1.8 units tall with a mass of 70; `Height`
 scales it, and `Mass`, the bone sizes, `Position` (where its feet
 stand) and `Rotation` adjust the rest. By default the parts share a
@@ -197,11 +203,11 @@ The result names every part and joint (`Parts`, `Joints`,
 `RagdollPelvis` and the other part constants) so a game can draw them,
 and `Bones` records each part's size as built, so the mesh for a limb
 can be scaled to fit its collider.
-`Pose` places the parts from an animated character's bones at the
-moment it dies: give it the world position and rotation of each part,
-where the position is the part's centre, which is the bone's origin
-plus half the bone's `Length` along its rotated -Y axis. `Despawn`
-removes the whole figure.
+`Pose` places the parts to match an animated character's bones, which
+is how a game hands over from an animation to the ragdoll. Give it the
+world position and rotation of each part. The position is the part's
+centre, which is the bone's origin plus half the bone's `Length` along
+its rotated -Y axis. `Despawn` removes the whole figure.
 
 ```go
 r := phys.NewRagdoll3(w, phys.RagdollSpec{Position: lin.V3(0, 3, 0)})
@@ -211,7 +217,8 @@ head := r.Parts[phys.RagdollHead]
 ## Continuous collision
 
 A small fast body can pass through a thin wall between two steps. Set
-`Body.CCD` on bullets and the like. The body is then swept against the
+`Body.CCD` on bullets and other fast bodies to prevent that. The body
+is then swept against the
 static colliders each substep and stopped at the first one it would
 have crossed, and its bounding sphere is swept against the other moving
 bodies so two fast bodies meet rather than cross. The second test is
@@ -229,9 +236,9 @@ w.SpawnWith(gfx.At(0, 1.5, 0), bullet,
 ## Sleeping
 
 When `Settings.SleepTime` is set, bodies that stay at rest for that long
-go to sleep: they are neither integrated nor paired with other sleeping
-bodies. A touch or an impulse wakes them. `Body.Asleep` reports the
-state and `Wake` ends it early. Sleeping is off by default. A body
+go to sleep. A sleeping body is neither integrated nor paired with other
+sleeping bodies. A contact or an impulse wakes it. `Body.Asleep` reports
+the state and `Wake` ends it early. Sleeping is off by default. A body
 counts as at rest while it moves slower than `Settings.SleepThreshold`,
 in units and radians per second. A stack of boxes at the default solver
 quality jitters slightly and may never settle below the threshold;
@@ -256,13 +263,13 @@ if b, ok := ecs.Get[phys.Body3](w, crate); ok {
 
 ## Character controllers
 
-`CharacterController3` and `CharacterController2` move a capsule the way
-players expect rather than the way physics dictates. `Move` sweeps it
-along a velocity, slides it along whatever it meets, steps it up ledges
-no taller than `StepHeight`, refuses slopes steeper than `MaxSlope`, and
-reports `Grounded` and the `GroundNormal`. A controller is kinematic:
-it pushes nothing and nothing pushes it. Give the character a trigger
-collider for the things that should notice it.
+`CharacterController3` and `CharacterController2` move a capsule under
+direct control rather than through the solver. `Move` sweeps the
+capsule along a velocity, slides it along whatever it meets, steps it
+up ledges no taller than `StepHeight`, refuses slopes steeper than
+`MaxSlope`, and reports `Grounded` and the `GroundNormal`. A controller
+is kinematic, so it pushes nothing and nothing pushes it. To let other
+entities detect the character, give it a trigger collider.
 
 ```go
 hero := w.SpawnWith(gfx.At(1, 3.5, -8))
@@ -279,12 +286,12 @@ if ctrl.Grounded && jump {
 
 ## Tuning
 
-Each update is split into substeps. In each one, velocities integrate
-gravity and forces; a sweep over bounding boxes finds candidate pairs;
-the shapes generate contact points; a sequential impulse solver
-iterates over the contacts and joints, applying normal impulses with
-restitution, friction impulses clamped by the normal impulse, and a
-small positional correction; and positions integrate.
+Each update is split into substeps. In each substep, velocities
+integrate gravity and forces. A sweep over bounding boxes finds
+candidate pairs. The shapes generate contact points. A sequential
+impulse solver iterates over the contacts and joints, applying normal
+impulses with restitution, friction impulses clamped by the normal
+impulse, and a small positional correction. Positions then integrate.
 
 `Settings.Substeps` (default 4) trades speed for stability under fast
 motion and tall stacks; `Iterations` (default 8) stiffens contacts and
@@ -296,13 +303,13 @@ hundred or so of each other, as with every impulse solver.
 // 2D at pixel scale, with a stiffer solver than the defaults.
 ecs.SetResource(w, phys.Settings2{Gravity: lin.V2(0, 900), Substeps: 6, Iterations: 12})
 
-// The step costs what it costs; measure it rather than guess.
+// Measure the cost of the step.
 done := ctx.Profile("physics")
 w.Update(ctx.Delta)
 done()
 ```
 
-## Beyond rigid bodies
+## Orbital mechanics
 
 For spaceflight, planets and moons, use the [orbit](space.html)
 package. It works at astronomical scale in double precision and writes

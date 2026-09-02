@@ -1,4 +1,4 @@
-// Package input is the keyboard, mouse and gamepads as a game reads them:
+// Package input reports the state of the keyboard, mouse and gamepads:
 // what is held, what changed this update, where the pointer is and what
 // text was typed, in view units.
 package input

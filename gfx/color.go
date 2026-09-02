@@ -1,30 +1,30 @@
-// Package gfx is what a game draws with. A Graphics is the drawing
-// context for one window; every Draw* call queues work for the frame the
-// engine has open, and the engine submits it. 2D and 3D share a frame:
-// the 3D scene renders first into a high dynamic range image, the post
-// pass tone-maps it, and sprites, text and paths draw over the top in
-// the order they were queued.
+// Package gfx draws a game's 2D and 3D graphics. A Graphics is the
+// drawing context for one window. Every Draw* call queues work for the
+// frame the engine has open, and the engine submits it. 2D and 3D share
+// a frame. The 3D scene renders first into a high dynamic range image,
+// the post pass tone-maps it, and sprites, text and paths draw over the
+// top in the order they were queued.
 //
 // # 2D
 //
 // Textures come from images (NewTexture), pixel writes (Texture.Write)
 // or render targets (NewRenderTexture with DrawTo). Sprites are drawn
 // with DrawTexture, DrawSprite and DrawRegion, in the units set by
-// SetView with the origin at the top-left and +Y down; consecutive
+// SetView with the origin at the top-left and +Y down. Consecutive
 // sprites with one texture, blend mode and shader become one draw. A
-// Camera2D pans, zooms and rotates them; a Tilemap draws a grid of
+// Camera2D pans, zooms and rotates them, and a Tilemap draws a grid of
 // regions with culling and animated tiles. Paths (Path, FillPath,
-// StrokePath) draw vector shapes, gradients and dashes anti-aliased;
+// StrokePath) draw vector shapes, gradients and dashes anti-aliased.
 // Fonts shape text with HarfBuzz (DrawText, TextOptions, RichText,
 // Hyphenator) and rasterise glyphs, colour emoji included, into an
 // atlas. SetShader, SetBlend, SetColorMatrix and SetLights2D change how
-// later sprites are drawn; PushTransform and PushClip nest.
+// later sprites are drawn. PushTransform and PushClip nest.
 //
 // # 3D
 //
 // A Mesh is indexed geometry from NewMesh, the shape functions
 // (CubeMesh, SphereMesh, PlaneMesh, HeightfieldMesh and more) or a glTF
-// Model loaded with LoadModel; Mesh.Update replaces geometry that
+// Model loaded with LoadModel. Mesh.Update replaces geometry that
 // changes. A Material is metallic-roughness PBR with textures, clearcoat,
 // sheen, subsurface, transmission, outlines and x-ray, or a game's own
 // mesh Shader. A Model's clips play through an AnimPlayer with
@@ -34,22 +34,22 @@
 // camera's Frustum, sorted for blending and lit by SetLight's
 // directional light with cascaded shadows, AddPointLight and
 // AddSpotLight, the procedural Sky or an Environment map, and Fog.
-// DrawLOD picks a mesh by distance; DrawBillboard and DrawText3D put
-// camera-facing quads and labels in the scene; DrawDecal projects a
+// DrawLOD picks a mesh by distance. DrawBillboard and DrawText3D put
+// camera-facing quads and labels in the scene, and DrawDecal projects a
 // texture onto geometry. SetPost sets exposure, bloom, ambient
 // occlusion, vignette and anti-aliasing. Project, ScreenRay and
-// Mesh.Intersect link the view and the world; DrawLine3D and the
-// DrawWire* helpers draw debug lines over everything.
+// Mesh.Intersect convert between the view and the world. DrawLine3D and
+// the DrawWire* helpers draw debug lines over everything.
 //
 // # Conventions
 //
-// Option and material fields follow "zero means the default": a zero
+// Option and material fields follow "zero means the default". A zero
 // Roughness is 0.6, a zero IOR is 1.5, a zero Color where a tint is
-// expected is white, a zero Camera field of view is 60 degrees. A field
-// whose zero must mean something of its own is named for that zero
+// expected is white, and a zero Camera field of view is 60 degrees. A
+// field whose zero must mean something of its own is named for that zero
 // (NoMipmaps, NoDepthTest, Sky.Vacuum), so an empty struct is always a
-// sensible starting point. Sizes and positions are float32 view units
-// unless a name says pixels; rectangles are lin.Rect; angles are
+// valid starting point. Sizes and positions are float32 view units
+// unless a name says pixels. Rectangles are lin.Rect, and angles are
 // radians. Colours are linear, non-premultiplied floats (RGB and Hex
 // convert from sRGB bytes). Every GPU resource has a Destroy that must
 // not run while a frame using it is in flight, which under bunyip.Run

@@ -1,20 +1,20 @@
-// Package particle is a CPU-simulated 2D particle system drawn through
-// the sprite stream: fire, smoke, sparks, rain and confetti from an
-// Emitter of plain fields. New makes a System from an Emitter; the game
-// calls Update each step and Draw each frame.
+// Package particle simulates 2D particles on the CPU and draws them
+// through the sprite stream: fire, smoke, sparks, rain and confetti from
+// an Emitter of plain fields. To make a System, call New with an
+// Emitter, then call Update each step and Draw each frame.
 //
-// An Emitter says how many particles a second (or a Burst of how many
-// at once), where they start (a point, a circle, a rectangle, a line),
-// their speed, direction and spread, lifetime, size and colour over
-// life as Curves and Gradients, gravity and drag, spin, and the texture
-// or region each is drawn with, additive or blended. Presets (Fire,
-// Smoke, Sparks, Rain, Confetti and more) are starting points a game
-// tweaks. A System owns the live particles and can be moved, paused,
-// stopped when its emitter finishes, and asked how many are alive.
-// Thousands of particles are cheap; tens of thousands still draw as one
-// batch but cost CPU in Update.
+// An Emitter sets how many particles a second (or a Burst of how many at
+// once), where they start (a point, a circle, a rectangle, a line),
+// their speed, direction and spread, lifetime, size and colour over life
+// as Curves and Gradients, gravity and drag, spin, and the texture or
+// region each is drawn with, additive or blended. The presets (Fire,
+// Smoke, Sparks, Rain, Confetti and more) are starting points to tweak.
+// A System owns the live particles and can be moved, paused, stopped
+// when its emitter finishes, and asked how many are alive. Thousands of
+// particles are cheap. Tens of thousands still draw as one batch but
+// cost CPU in Update.
 //
-// Emitter fields follow "zero means the default": an empty Emitter emits
+// Emitter fields follow "zero means the default". An empty Emitter emits
 // nothing but is valid, and every preset is an Emitter a game can tweak
 // before or after New. Sizes and positions are in view units, angles in
 // radians measured from +X towards +Y (so -Pi/2 points up the screen).

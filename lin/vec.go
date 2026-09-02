@@ -1,10 +1,9 @@
-// Package lin is the engine's small linear algebra library: vectors,
-// matrices and quaternions in float32, column-major, right-handed, with
-// Vulkan's clip space (depth 0..1, +Y down).
+// Package lin provides the engine's linear algebra: vectors, matrices
+// and quaternions in float32, column-major, right-handed, with Vulkan's
+// clip space (depth 0..1, +Y down).
 //
-// Values are plain structs passed by value; every operation returns a
-// new value and never modifies its receiver, so expressions read like
-// arithmetic:
+// Values are plain structs passed by value. Every operation returns a
+// new value and never modifies its receiver.
 //
 //	eye := target.Add(lin.V3(0, 2, 5))
 //	view := lin.LookAt(eye, target, lin.V3(0, 1, 0))

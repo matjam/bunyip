@@ -1,15 +1,17 @@
 // Package anim animates entities. A Curve interpolates keyframes of any
-// value type; a Track applies a curve to one property of one component;
-// a Clip bundles tracks with a loop mode; and a Player component plays
-// clips on an entity, crossfading between them. The same machinery
-// moves a 2D sprite's position and tint, a 3D transform's rotation and
-// scale, or any field of your own component, and one System drives
-// every player, sprite-sheet Flipbook and skeletal Skeleton in the
-// world. For skeletons, BlendSpace1D, BlendSpace2D and BlendTree are
-// data that turn parameters (a speed, a strafe direction) into clip
-// weights, and a Blend plays them on a gfx.AnimPlayer with their cycles
-// in step; TwoBoneIK and LookAt are the solvers behind SolveTwoBoneIK
-// and LookAtNode, which plant feet and turn heads on the player's pose.
+// value type. A Track applies a curve to one property of one component.
+// A Clip bundles tracks with a loop mode. A Player component plays clips
+// on an entity and crossfades between them. The same types animate a 2D
+// sprite's position and tint, a 3D transform's rotation and scale, and
+// any field of your own component. One System drives every player,
+// sprite-sheet Flipbook and skeletal Skeleton in the world.
+//
+// For skeletons, BlendSpace1D, BlendSpace2D and BlendTree are data that
+// turn parameters (a speed, a strafe direction) into clip weights, and a
+// Blend plays them on a gfx.AnimPlayer with their cycles in step.
+// TwoBoneIK and LookAt are the solvers behind SolveTwoBoneIK and
+// LookAtNode, which adjust the player's pose to place feet and aim
+// heads.
 //
 //	bounce := anim.NewClip("bounce", anim.Loop,
 //		anim.Position2(anim.Vec2s(

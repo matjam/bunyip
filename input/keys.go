@@ -1,23 +1,25 @@
-// Package input is the state of the keyboard, mouse and gamepads as a
-// game reads it, and the vocabulary the platform layers fill it with.
+// Package input reports the state of the keyboard, mouse and gamepads,
+// and names the keys, buttons and axes the platform layers fill that
+// state with.
 //
-// State holds every key, button, stick and the pointer. Levels (KeyDown,
-// MouseDown, Gamepad.Down) say what is held now; edges (KeyPressed,
-// KeyReleased and their mouse and gamepad twins) say what changed since
-// the last update and are cleared by the engine after each one, so a
-// press is seen exactly once however many updates or frames it spans.
-// During Draw the edges cover the whole drawn frame instead, so an
-// immediate-mode interface built in Draw misses nothing. KeyHeld,
-// KeysDown, KeyRepeated and MouseDoubleClicked cover charged shots,
-// combos, scrolling menus and double clicks; Chars and Composition carry
-// typed text with the keyboard layout and input method applied.
+// State holds every key, button, stick and the pointer. Level queries
+// (KeyDown, MouseDown, Gamepad.Down) report what is held now. Edge
+// queries (KeyPressed, KeyReleased and their mouse and gamepad
+// equivalents) report what changed since the last update, and the engine
+// clears them after each one, so a press is reported exactly once
+// however many updates or frames it spans. During Draw the edges cover
+// the whole drawn frame instead, so an immediate-mode interface built in
+// Draw sees every change. KeyHeld, KeysDown, KeyRepeated and
+// MouseDoubleClicked cover charged shots, combos, scrolling menus and
+// double clicks. Chars and Composition carry typed text with the
+// keyboard layout and input method applied.
 //
-// Keys are named by physical position (KeyW is the key in W's place on
-// a US keyboard whatever it prints), which is what movement bindings
-// want; Key.String names them for prompts. Actions maps named actions
-// to any keys, buttons and axes, with dead zones, rebinding through
-// Listen and JSON bindings for a settings file, so game code asks for
-// "jump" and takes a gamepad without a second set of checks.
+// Keys are named by physical position, so KeyW is the key in W's place
+// on a US keyboard whatever it prints, which is what movement bindings
+// need. Key.String names them for prompts. Actions maps named actions to
+// any keys, buttons and axes, with dead zones, rebinding through Listen
+// and JSON bindings for a settings file, so game code asks for "jump"
+// and supports a gamepad without a second set of checks.
 package input
 
 // Key identifies a physical key by position, independent of the active

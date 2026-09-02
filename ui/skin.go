@@ -2,14 +2,14 @@ package ui
 
 import "github.com/matjam/bunyip/gfx"
 
-// Slice is a nine-slice texture: the corners keep their size, the edges
+// Slice is a nine-slice texture. The corners keep their size, the edges
 // stretch along one axis and the centre fills the rest, so one small
 // image skins boxes of any size. It is gfx.NineSlice, so the same value
 // draws outside the interface too.
 type Slice = gfx.NineSlice
 
 // Skin holds the art for each widget part. Any nil slice falls back to
-// the theme's flat colours, so a skin can start with just a button.
+// the theme's flat colours, so a skin can start with one button.
 type Skin struct {
 	Panel        *Slice
 	Button       *Slice

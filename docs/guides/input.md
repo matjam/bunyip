@@ -7,7 +7,7 @@ summary: keys, mouse, gamepads, action maps and rebinding
 
 The [input](../pkg/input.html) package holds the state of every key,
 button, stick and pointer, read through `ctx.Input`. Game code never
-polls the platform: the engine feeds events in and clears the edges
+polls the platform. The engine feeds events in and clears the edges
 after each update, so `KeyPressed` is true for exactly one update per
 press, however many frames the press spans.
 
@@ -19,11 +19,11 @@ operating system's auto-repeat, for menus that scroll while a key is
 held. `KeyHeld` is how long a key has been down, for a charged shot, and
 `KeysDown` lists every held key, for combos and rebinding screens.
 `Chars` is the text typed this update with the keyboard layout and
-modifiers applied, which is what a text field wants; `Composition` is
+modifiers applied, which is what a text field reads; `Composition` is
 the input method's text in progress.
 
-Keys are named by physical position: `KeyW` is the key in W's place on a
-US keyboard whatever it prints, which is what movement bindings want.
+Keys are named by physical position. `KeyW` is the key in W's place on a
+US keyboard whatever it prints, which is what movement bindings need.
 `Key.String` names a key for a prompt.
 
 ```go
@@ -52,7 +52,7 @@ lines, and the `Mouse*` button methods mirror the key ones.
 `MouseDoubleClicked` reports the second of two quick presses close
 together. Capture belongs to the window rather than the input state:
 `ctx.SetCursorCaptured` hides the pointer and delivers relative motion
-only, which is what a first-person camera wants.
+only, which is what a first-person camera needs.
 
 ```go
 in := ctx.Input
@@ -112,9 +112,9 @@ for i := range input.MaxGamepads {
 
 ## Actions
 
-Game code that reads keys directly cannot be rebound, and it needs a
-second copy of every check to support a gamepad. `Actions` names what
-the player does and binds each name to any number of sources:
+`Actions` names what the player does and binds each name to any number
+of sources. Game code that reads keys directly cannot be rebound, and it
+needs a second copy of every check to support a gamepad.
 
 ```go
 acts := input.NewActions()
@@ -134,9 +134,9 @@ axis source reads one side of a stick, so bind its `Neg` for the other
 side. `Pad` chooses which controller the pad sources read.
 
 A settings screen calls `Listen` each update while it waits for the
-player: it returns the first key, button or stick flick, and `Rebind`
-swaps it in, replacing every binding the action had. `Names` and
-`Bindings` fill the rest of the screen.
+player. `Listen` returns the first key, button or stick flick, and
+`Rebind` swaps it in, replacing every binding the action had. `Names`
+and `Bindings` fill the rest of the screen.
 
 ```go
 for _, name := range acts.Names() {

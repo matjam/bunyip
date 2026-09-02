@@ -18,7 +18,7 @@ var ErrDeltaData = errors.New("network: bad delta data")
 // EncodeDelta encodes the exported fields of current that differ from
 // baseline, both structs (or pointers to structs) of the same type, as
 // a change mask followed by only the changed values. An unchanged
-// snapshot encodes to just the mask, one byte per eight fields.
+// snapshot encodes to the mask alone, one byte per eight fields.
 //
 // Supported field types are bool, the sized and unsized integers,
 // float32, float64, string, arrays of those, and nested structs, which

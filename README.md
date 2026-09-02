@@ -1,7 +1,7 @@
 # Bunyip
 
 A complete game engine in Go. It draws 2D sprites and physically based 3D
-models in the same frame, and brings its own entity component system,
+models in the same frame, and includes an entity component system,
 physics, animation, celestial mechanics, interface toolkit, audio mixer,
 asset pipeline, saves, translation and networking, all written for this
 engine and documented in one voice. It is built for games that simulate
@@ -73,14 +73,14 @@ Every page is also published as Markdown for language models and other
 tools: the guides at `guides/<name>.md`, each package at
 `pkg/<package>.md`, an index at [llms.txt](https://matjam.github.io/bunyip/llms.txt)
 and everything in one file at `llms-full.txt`. `CLAUDE.md` in the
-repository orients a model working on the engine or writing a game with
-it.
+repository is written for a model working on the engine or writing a game
+with it.
 
 ## Packages
 
 | Package | What |
 |---|---|
-| `bunyip` | `Run`, `Config`, `Game`, `Context`: the loop and everything a game touches |
+| `bunyip` | `Run`, `Config`, `Game`, `Context`: the loop and the values a game uses |
 | `gfx` | textures, sprites, paths, text, meshes, materials, cameras, lights, fog, culling, LOD, billboards, models, post-processing |
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
 | `particle` | CPU particle systems drawn through the sprite batch |
@@ -136,8 +136,8 @@ func main() {
 
 ## Examples
 
-Every example takes `-seconds N` and `-shot file.png`, so a run is
-self-verifying without anyone watching the screen.
+Every example takes `-seconds N` and `-shot file.png`, so a run verifies
+itself without a person watching the screen.
 
 | Command | Shows |
 |---|---|
@@ -148,7 +148,7 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
 | `go run ./examples/audio [-music file.ogg]` | positional voices, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream and streamed music files |
 | `go run ./examples/solar` | the ECS driving a scene: hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
-| `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, a procedural sky with a slider that climbs to orbit, image-based lighting from a panorama, every post-processing setting on a slider, glTF animation clips |
+| `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, a procedural sky with a slider that raises the altitude to orbit, image-based lighting from a panorama, every post-processing setting on a slider, glTF animation clips |
 | `go run ./examples/pathfinding` | A*, Dijkstra maps, field of view, flood fill and lines on a paintable grid; save and load through the save package |
 | `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic; `-reliable` sends chat over reliable UDP and shows the link's round trip and loss |
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |

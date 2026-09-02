@@ -1,35 +1,35 @@
-// Package ui is an immediate-mode interface toolkit drawn with gfx. Every
-// frame the game rebuilds the interface by calling widget methods inside
-// Begin's closure, nesting containers (Panel, Window, Row, Columns,
-// ScrollArea, Tabs, Table, Tree, MenuBar, Modal) the same way; widgets
-// return what happened (a click, a changed value) and keep no state of
-// their own beyond what the Theme and the caller provide. Values live in
-// the game's variables and are passed by pointer.
+// Package ui is an immediate-mode interface toolkit drawn with gfx. To
+// build the interface, call widget methods inside Begin's closure every
+// frame, nesting containers (Panel, Window, Row, Columns, ScrollArea,
+// Tabs, Table, Tree, MenuBar, Modal) the same way. Widgets return what
+// happened (a click, a changed value) and keep no state of their own
+// beyond what the Theme and the caller provide. Values live in the
+// game's variables and are passed by pointer.
 //
-// The widgets: Label and RichLabel, Button and IconButton, Checkbox,
+// The widgets are Label and RichLabel, Button and IconButton, Checkbox,
 // Radio and RadioGroup, Slider, IntSlider and Spinner, Progress,
 // Dropdown, ListBox and ReorderableList, TextField and TextArea with
 // selection, clipboard and undo, ColorPicker, Image, Tooltip and
 // Separator. Anchored, Stretched and Split place rectangles from the
 // view's size. DragSource and DropTarget carry a payload from one widget
-// to another with a ghost under the pointer.
+// to another and draw a ghost under the pointer.
 //
-// Identity comes from a widget's label and its enclosing containers;
-// widgets with the same label in one container are told apart by the
-// order they are called in, so a list of identical buttons works as
-// long as the order is stable. Focus moves with Tab and the d-pad and
+// A widget's identity comes from its label and its enclosing containers.
+// Widgets with the same label in one container are told apart by the
+// order they are called in, so a list of identical buttons works as long
+// as the order is stable. Focus moves with Tab and the d-pad and
 // activates with Enter, Space or a gamepad's A. A list, a row of tabs, a
-// table's rows, a tree, a radio group or an open dropdown is one Tab
-// stop whose items the arrows, Home, End, PageUp and PageDown move
-// between; sliders and spinners step with the left and right arrows.
-// WantsMouse and WantsKeyboard tell the game when the interface took
+// table's rows, a tree, a radio group and an open dropdown are each one
+// Tab stop, and the arrows, Home, End, PageUp and PageDown move between
+// the items inside. Sliders and spinners step with the left and right
+// arrows. WantsMouse and WantsKeyboard report when the interface took
 // the input. Accessible lists the last frame's widgets with roles and
 // values for screen readers and tests.
 //
-// Colours, spacing and the font live in a Theme, so a game restyles the
-// toolkit by swapping one value (the built-in themes come from
-// NamedTheme); a Skin of nine-slice textures inside the theme replaces
-// the flat rectangles with drawn art.
+// Colours, spacing and the font live in a Theme. To restyle the toolkit,
+// swap that one value. The built-in themes come from NamedTheme. A Skin
+// of nine-slice textures inside the theme replaces the flat rectangles
+// with drawn art.
 package ui
 
 import "github.com/matjam/bunyip/gfx"

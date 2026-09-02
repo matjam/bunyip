@@ -6,10 +6,10 @@ summary: fragment shaders written by the game, for sprites and for mesh surfaces
 ---
 
 Bunyip compiles its GLSL to SPIR-V offline and embeds it, and a game does
-the same. You write only the part that varies; the engine's prelude
-provides the textures, the uniforms and the lighting, and `bunyip-shader`
-puts them together and runs glslangValidator (from the Vulkan SDK or the
-glslang package, which must be on your PATH).
+the same. You write only the part that varies. The engine's prelude
+provides the textures, the uniforms and the lighting. `bunyip-shader`
+puts the two together and runs glslangValidator, which comes from the
+Vulkan SDK or the glslang package and must be on your PATH.
 
 ## A sprite shader
 
@@ -56,15 +56,15 @@ ctx.Gfx.Shaded(wave, func() {
 })
 ```
 
-`Shaded` sets the shader for the draws inside the closure; `SetShader`
+`Shaded` sets the shader for the draws inside the closure. `SetShader`
 sets it as state, and nil restores the default. Each draw keeps the
 uniform values and images that were set when it was queued, so changing
-them between draws is fine and cheap.
+them between draws is cheap.
 
-Uniforms are a struct copied byte for byte, laid out by std140 rules:
+Uniforms are a struct copied byte for byte, laid out by std140 rules.
 `float32`, `int32`, `lin.Vec2`, `lin.Vec4` and `lin.Mat4` fields line up
-as you would expect; a `lin.Vec3` takes sixteen bytes, so follow it with
-a `float32` of padding; a block is at most 1024 bytes.
+one after another. A `lin.Vec3` takes sixteen bytes, so follow it with a
+`float32` of padding. A block is at most 1024 bytes.
 
 ## A mesh shader
 
@@ -91,8 +91,8 @@ material's `clearcoat`, `clearcoatRoughness`, `sheen`,
 `sheenRoughness`, `subsurface`, `thickness`, `transmission`, `ior`,
 `volume` (thickness in world units), `attenuation` and
 `attenuationDistance`, all filled in from the material's textures and
-factors before `surface` runs; change any of them and the lighting
-follows. Everything else is the standard pipeline: the shadowed
+factors before `surface` runs. Changing any of them changes the
+lighting. Everything else is the standard pipeline: the shadowed
 directional light, point and spot lights, the sky or environment map,
 fog, alpha cutout, bloom and anti-aliasing. Compile with `-kind mesh`,
 create it with `NewMeshShader`, and set it on a material:
@@ -122,7 +122,7 @@ too, so displaced geometry casts the right shadow. When a source has a
 vertex hook, `bunyip-shader` writes a bundle of all five programs
 (fragment; static and skinned vertex, lit and shadow) to the one output
 file, and `NewMeshShader` reads either that or plain fragment SPIR-V.
-The `shaders` example's flag ripples this way.
+The rippling flag in the `shaders` example uses a vertex hook.
 
 ## Blend modes and transforms
 
@@ -161,5 +161,6 @@ rippling flag on meshes.
 ## Reloading while the game runs
 
 `Shader.Reload` swaps in newly compiled SPIR-V without recreating the
-shader, so an `asset.Watcher` on the `.spv` files gives hot reload: edit
-the GLSL, run `go generate`, and the next frame draws with it.
+shader, so an `asset.Watcher` on the `.spv` files gives hot reload. Edit
+the GLSL, run `go generate`, and the next frame draws with the new
+shader.

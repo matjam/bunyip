@@ -1,35 +1,35 @@
-// Package bunyip is the engine's front door. A game implements Game, fills
-// in a Config and calls Run; the engine owns the window, the event loop,
-// the renderer, the audio device and the frame pacing, and hands the game
-// a Context each call with the input state, the Graphics to draw with,
-// the audio Mixer, the clock and the window controls.
+// Package bunyip runs a game's main loop. To start a game, implement
+// Game, fill in a Config and call Run. Run owns the window, the event
+// loop, the renderer, the audio device and the frame pacing, and passes
+// a Context to each call with the input state, the Graphics to draw
+// with, the audio Mixer, the clock and the window controls.
 //
 // # The loop
 //
-// Two loop modes serve two kinds of game. Real-time games get a fixed
-// timestep: Update runs at Config.FixedStep regardless of frame rate,
-// Draw runs once per frame, and Context.Alpha says how far the next
-// update is so drawing can interpolate. Turn-based games set TurnBased,
-// and the loop then sleeps in the operating system until input arrives
-// (or Context.Wake is called from another goroutine), running one Update
-// and one Draw per batch of events; the process uses no CPU while the
-// player thinks.
+// There are two loop modes. Real-time games use a fixed timestep:
+// Update runs at Config.FixedStep regardless of frame rate, Draw runs
+// once per frame, and Context.Alpha reports how far the next update is
+// so drawing can interpolate. Turn-based games set TurnBased. The loop
+// then sleeps in the operating system until input arrives, or until
+// Context.Wake is called from another goroutine, and runs one Update
+// and one Draw per batch of events. The process uses no CPU between
+// batches.
 //
 // # The view
 //
-// Config.ViewWidth and ViewHeight fix the game's coordinate space and
+// Config.ViewWidth and ViewHeight fix the game's coordinate space, and
 // the window scales it by Config.Scaling (fit with letterboxing, whole
-// multiples for pixel art, or stretch); without them the view follows
+// multiples for pixel art, or stretch). Without them the view follows
 // the window's size in points. Config.Headless runs the same loop
-// without a window for tests and screenshot runs, and
-// Context.Screenshot saves any frame.
+// without a window, for tests and screenshot runs. Context.Screenshot
+// saves any frame.
 //
 // # Errors and exit
 //
-// Returning an error from Init, Update or Draw stops the loop and Run
-// returns it; Context.Quit stops it cleanly. With Config.HandleClose the
+// Returning an error from Init, Update or Draw stops the loop, and Run
+// returns it. Context.Quit stops it cleanly. With Config.HandleClose the
 // window's close button sets Context.CloseRequested instead of quitting,
-// so a game can save or ask first. A lost graphics device is rebuilt
+// so a game can save or prompt first. A lost graphics device is rebuilt
 // and Init runs again, so Init must be safe to run twice.
 package bunyip
 

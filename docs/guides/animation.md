@@ -85,8 +85,8 @@ same `Player` works for a 2D entity; only the tracks differ.
 ## Finishing and sequencing
 
 When a `Once` clip ends the system emits `anim.Finished` with the
-entity and the clip. A small system that listens for it is how
-animations chain: land, then fade back to idle; explode, then despawn.
+entity and the clip. To chain animations, add a system that reads the
+event: land, then fade back to idle; explode, then despawn.
 
 ```go
 w.AddSystem("return", func(w *ecs.World, dt float64) {
@@ -99,9 +99,9 @@ w.AddSystem("return", func(w *ecs.World, dt float64) {
 ## Flipbooks
 
 A `Flipbook` component plays sprite-sheet frames into the entity's
-`gfx.Sprite` by rewriting its texture window each update: a sheet, the
-frame indices, a rate and whether to loop. A finished non-looping
-flipbook also emits `Finished`.
+`gfx.Sprite` by rewriting its texture window each update. It holds a
+sheet, the frame indices, a rate and whether to loop. A finished
+non-looping flipbook also emits `Finished`.
 
 ```go
 w.SpawnWith(gfx.Sprite{Size: lin.V2(64, 64), Color: gfx.White}, spriteTexture{tex},
@@ -113,10 +113,10 @@ w.SpawnWith(gfx.Sprite{Size: lin.V2(64, 64), Color: gfx.White}, spriteTexture{te
 A `Skeleton` component wraps a `gfx.AnimPlayer` for a glTF model's
 clips; the system advances it, and the entity draws with
 `gfx.DrawModelAnimated`. Clip selection stays on the player, so a
-character controller system names the clip it wants:
-`Play(name, loop)` snaps to a clip, `CrossFade(name, loop, seconds)`
-blends into it from whatever is playing, `Finished` says when a
-one-shot clip has ended.
+character controller system names the clip to play. `Play(name, loop)`
+snaps to a clip, `CrossFade(name, loop, seconds)` blends into it from
+whatever is playing, and `Finished` reports when a one-shot clip has
+ended.
 
 ```go
 player := model.NewAnimPlayer()
@@ -131,12 +131,12 @@ with the frame's seconds and draw.
 
 ## Animation events
 
-A footstep sound, the frame a punch connects, the moment a spell spawns
-its effect: `AddEvent(clip, time, name)` marks such a moment in a clip,
-and every `Advance` reports the events playback crossed, through
-`Events` afterwards or `OnEvent` as they happen. An event fires on
-every loop, and on the outgoing clip of a crossfade and on layers too,
-so a walk's footsteps keep landing while it fades into a run. Through
+To mark a moment in a clip, call `AddEvent(clip, time, name)`: a
+footstep sound, the frame a punch connects, the moment a spell spawns
+its effect. Every `Advance` reports the events playback crossed,
+through `Events` afterwards or `OnEvent` as they happen. An event fires
+on every loop, on the outgoing clip of a crossfade and on layers, so a
+walk's footsteps keep landing while it fades into a run. Through
 the `Skeleton` component the same events arrive as `anim.SkeletonEvent`
 with the entity, beside `Finished`.
 
@@ -155,11 +155,11 @@ w.AddSystem("footsteps", func(w *ecs.World, dt float64) {
 ## Root motion
 
 A walk cycle authored in place slides the character across the floor
-without moving the entity, so collisions and the camera lose track of
-it. With `SetRootMotion("Hips")` the player takes that movement out of
-the pose and hands it over: `RootMotion` returns how far the root moved
-and how far it turned about +Y during the last `Advance`, in model
-space, blended through crossfades and added up across a loop point. The
+without moving the entity, so collisions and the camera do not follow
+it. `SetRootMotion("Hips")` takes that movement out of the pose and
+reports it instead. `RootMotion` returns how far the root moved and how
+far it turned about +Y during the last `Advance`, in model space,
+blended through crossfades and added up across a loop point. The
 `Skeleton` component applies it to the entity's `gfx.Transform`
 automatically; set `KeepRootMotion` to read it yourself, for a body
 that physics moves:
@@ -177,10 +177,11 @@ reported too, so a jump's rise comes through the delta.
 ## Layers and masks
 
 A layer plays a second clip over part of the skeleton: a wave over the
-arms while the legs keep walking, a flinch over the spine. A mask says
-which nodes the layer owns; `Model.MaskSubtree("Spine1")` takes a node
-and everything under it, `Model.MaskNodes` exactly the named nodes, and
-`nil` means the whole skeleton.
+arms while the legs keep walking, a flinch over the spine. A mask lists
+the nodes the layer applies to; `Model.MaskSubtree("Spine1")` takes a
+node and everything under it,
+`Model.MaskNodes` exactly the named nodes, and `nil` means the whole
+skeleton.
 
 ```go
 wave := player.Layer("wave", 1, model.MaskSubtree("RightShoulder"))
@@ -190,17 +191,18 @@ wave.Loop = false // hold the last frame when it ends; RemoveLayer takes it off
 Layers blend in order after the main clip and its crossfade. By default
 a layer replaces the pose of its nodes, scaled by `Weight`; with
 `Additive` set it adds the clip's difference from the rest pose to
-whatever is underneath, which is how a breathing loop or a recoil goes
+whatever is underneath, which is how a breathing loop or a recoil plays
 over any base clip. Change `Weight` over time to fade a layer in and
 out; `Play` and `CrossFade` leave layers alone.
 
 ## Blend spaces
 
-Locomotion is rarely one clip: the speed the controller wants falls
-between a walk and a run, and a strafe is some mix of forward and
-sideways. A blend space places clips along a parameter and mixes the
-ones around its value, and it is plain data with JSON tags, so a game
-can build one in code or load it from a file beside the model.
+A blend space places clips along a parameter and mixes the ones around
+its current value. Use one where a single clip will not do: the speed
+the controller asks for falls between a walk and a run, and a strafe is
+a mix of forward and sideways. A blend space is plain data with JSON
+tags, so a game can build one in code or load it from a file beside the
+model.
 
 A `BlendSpace1D` places clips along one parameter: idle at 0, walk at
 1, run at 2. At 1.5 the walk and the run each get half the pose; past
@@ -253,8 +255,8 @@ skel.SetParameter("speed", velocity.Len())
 skel.SetParameter("crouch", crouchAmount)
 ```
 
-Under it is the player's `SetBlend`, which plays a list of clips with
-weights and times in place of the main clip; events fire and root
+Below `Blend` is the player's `SetBlend`, which plays a list of clips
+with weights and times in place of the main clip; events fire and root
 motion accrues for every clip in the blend by its weight, and layers
 play over it as over a clip. `Play` and `CrossFade` drop a blend, so a
 jump from a locomotion blend snaps into its clip; when a game needs the
@@ -263,8 +265,8 @@ poses itself.
 
 ## Inverse kinematics and node overrides
 
-After the clips are blended, `PostPose` runs with the pose built and
-before the joint matrices are made: the place to plant a foot on uneven
+`PostPose` runs after the clips are blended and the pose is built, and
+before the joint matrices are made. Use it to plant a foot on uneven
 ground, reach a hand to a handle or turn a head. `SolveTwoBoneIK` takes
 three node indices (hip, knee, foot), a target and a pole point the
 middle joint bends towards; `LookAtNode` turns a node so its forward
@@ -281,7 +283,7 @@ player.PostPose = func(p *gfx.AnimPlayer) {
 }
 ```
 
-Under them are the player's node overrides, usable directly from
+Below those helpers are the player's node overrides, usable from
 `PostPose` or after `Advance`: `NodePosition` and `NodeRotation` read a
 node in model space, `NodeLocal` and `SetNodeLocal` read and replace
 its transform relative to its parent, `SetNodeRotation` sets only the
@@ -294,7 +296,7 @@ nothing plays, it stays.
 
 Blend shapes in a glTF file (a smile, a blink, a bent leaf) load as
 morph targets with their default weights, and a clip's `weights`
-channel animates them like any other. The player carries the weights in
+channel animates them like any other. The player holds the weights in
 its pose and `DrawModelAnimated` blends them in; `SetMorphWeights` on
 the player holds weights that no clip is driving, for an expression
 chosen by the game, and `Model.SetMorphWeights` blends a model that is
@@ -314,9 +316,9 @@ vertices plus each target with a non-zero weight are summed and the
 result uploaded, one pass over the vertices per active target and one
 upload per changed mesh per frame. Unchanged weights cost nothing. That
 is fine for faces and props with a few thousand vertices; a crowd of
-morphing characters would want a GPU path, which the engine does not
-have yet. Each instance of a morphing mesh gets its own copy on load,
-so two characters with the same face can pull different expressions.
+morphing characters needs a GPU path, which the engine does not have
+yet. Each instance of a morphing mesh gets its own copy on load, so two
+characters with the same face can show different expressions.
 
 ## Where the values come from
 

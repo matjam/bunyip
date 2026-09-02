@@ -170,11 +170,11 @@ g.timers.Cancel(spawns)
 g.round.Start(90) // g.round is a timer.Countdown; Running says time remains
 ```
 
-`timer.Sequence` writes a cutscene, a turn's animation or a boss pattern
-as a list of steps instead of a state machine: `Do` something, `Wait` a
-second, wait `Until` a condition holds, `Run` a function each update
-until it reports it is done, and `Loop` for patrols. `Skip` jumps to the
-end for a player who presses through.
+To write a cutscene, a turn's animation or a boss pattern as a list of
+steps instead of a state machine, use `timer.Sequence`. The steps are
+`Do` something, `Wait` a second, wait `Until` a condition holds, `Run` a
+function each update until it reports it is done, and `Loop` for
+patrols. `Skip` jumps to the end for a player who presses through.
 
 ```go
 g.cutscene = timer.NewSequence().
@@ -287,7 +287,7 @@ for _, ev := range server.Poll() {
 }
 ```
 
-The client is the same shape, with `Send` on the connection it embeds:
+The client works the same way, with `Send` on the connection it embeds:
 
 ```go
 client, err := network.Dial("gameserver:7777", reg, 5*time.Second)
@@ -324,12 +324,12 @@ print := network.Fingerprint(serverCfg)
 client, err = network.DialTLS(addr, reg, network.PinnedConfig(print), 5*time.Second)
 ```
 
-A UDP `Peer` has two ways to send. `Send` fires a packet that may be
+A UDP `Peer` has two ways to send. `Send` sends a packet that may be
 lost, for state that is replaced every frame. `SendReliable` resends
 until the packet is acknowledged and delivers in order, for anything
 that must arrive. Every packet acknowledges what came the other way,
 and `Stats` reports a link's round trip, loss and pending count. Peers
-say hello and keep alive, so a `Peer` raises `Connected` and
+exchange hello and keep-alive packets, so a `Peer` raises `Connected` and
 `Disconnected` for UDP addresses (after `SetTimeout` of silence, a
 goodbye, or a restart), and `Peers` lists who is there.
 
@@ -363,8 +363,8 @@ last acknowledged, with `SnapshotReceiver` on the other end. `Interest`
 chooses which entities are near enough to a viewer to be worth sending,
 with hysteresis at the edge so nothing flickers in and out.
 
-Prediction is the one with the most moving parts. `Step` must be the
-same function the server runs, so the replay lands where the server did:
+Prediction takes the most setting up. `Step` must be the same function
+the server runs, so the replay lands where the server did:
 
 ```go
 step := func(s playerState, in playerInput) playerState { return s.move(in) }

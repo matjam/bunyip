@@ -1,10 +1,11 @@
-// Package asset finds a game's files: loose directories while
-// developing, pack files when shipping, embedded files built into the
-// binary with go:embed, or any mix, with earlier sources taking
-// precedence so a modder's or developer's copy overrides the packed or
-// embedded one. Open takes directory and pack paths; OpenFS also takes
-// an io/fs.FS. One-call loaders (Image, Texture, Font, Sound, Music,
-// Model, Tracker) read and decode an asset into an engine object. A
+// Package asset finds and loads a game's files. Sources are loose
+// directories while developing, pack files when shipping, files
+// embedded in the binary with go:embed, or any mix, with earlier
+// sources taking precedence so a modder's or developer's copy overrides
+// the packed or embedded one. Open takes directory and pack paths;
+// OpenFS also takes an io/fs.FS. The one-call loaders (Image, Texture,
+// Font, Sound, Music, Model, Tracker) read and decode an asset into an
+// engine object. A
 // Loader decodes assets on worker goroutines for loading screens, and a
 // Watcher reports loose files that change on disk for hot reload.
 package asset

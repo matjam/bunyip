@@ -1,16 +1,17 @@
-// Package rng is a small, fast, seedable random number generator (PCG32)
-// for games: the same seed always gives the same sequence on every
-// platform, streams can be forked so systems do not disturb each other,
-// and the state can be saved and restored.
+// Package rng provides a small, fast, seedable random number generator
+// (PCG32) for games. The same seed always gives the same sequence on
+// every platform, streams can be forked so systems do not disturb each
+// other, and the state can be saved and restored.
 //
-// New(seed) makes a source; Fork derives an independent stream from it,
-// so a dungeon generator, loot tables and particle jitter each take
-// their own and adding a call to one never changes what another
-// produces, which keeps seeds shareable and replays exact. Beyond the
-// integer and float draws there are the game helpers: Roll for dice
-// (Roll(2, 6) is 2d6), Chance, Range and Between, Pick, WeightedIndex,
-// Shuffle and Normal. State and Restore put the generator into a save
-// file. Sources are not safe for concurrent use; fork one per goroutine.
+// To make a source, call New with a seed. Fork derives an independent
+// stream from it, so a dungeon generator, loot tables and particle
+// jitter each take their own, and adding a call to one never changes
+// what another produces, which keeps seeds shareable and replays exact.
+// Besides the integer and float draws there are game helpers: Roll for
+// dice (Roll(2, 6) is 2d6), Chance, Range and Between, Pick,
+// WeightedIndex, Shuffle and Normal. State and Restore put the generator
+// into a save file. Sources are not safe for concurrent use; fork one
+// per goroutine.
 package rng
 
 import (

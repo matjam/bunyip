@@ -6,8 +6,8 @@ summary: sprites, atlases, the camera, layers and sorting, tilemaps, text, vecto
 ---
 
 The [gfx](../pkg/gfx.html) package is one drawing context for a window.
-Everything a 2D game puts on screen goes through it. This guide follows
-the order a game needs things in, from the frame to the batch statistics
+All of a 2D game's drawing goes through it. This guide covers the parts
+in the order a game needs them, from the frame to the batch statistics
 at the end.
 
 ## The frame
@@ -24,13 +24,14 @@ Coordinates are float32 view units with the origin at the top-left and
 white.
 
 By default the view is the window's size in points, so `ctx.Width` and
-`ctx.Height` change on a resize. A game designed for one resolution sets
-`Config.ViewWidth` and `ViewHeight` instead; the engine scales that
-fixed view into the window and centres it, and the two stay constant.
-`Config.Scaling` picks how: `ScaleFit` keeps the aspect ratio with bars,
-`ScaleInteger` scales by whole numbers only so pixel art stays crisp
-(leave those textures on the default nearest sampling), `ScaleStretch`
-fills the window. The [window guide](window.html) has the rest.
+`ctx.Height` change on a resize. For a game designed at one resolution,
+set `Config.ViewWidth` and `ViewHeight` instead. The engine then scales
+that fixed view into the window and centres it, and the two values stay
+constant. `Config.Scaling` chooses the scaling. `ScaleFit` keeps the
+aspect ratio and adds bars. `ScaleInteger` scales by whole numbers only,
+which keeps pixel art crisp; leave those textures on the default nearest
+sampling. `ScaleStretch` fills the window. The
+[window guide](window.html) has the rest.
 
 ```go
 bunyip.Run(bunyip.Config{
@@ -44,10 +45,10 @@ bunyip.Run(bunyip.Config{
 `Graphics.NewTexture` uploads an `image.Image`. `TextureOptions` chooses
 `Linear` filtering for smooth scaling, `NoMipmaps`, `Repeat` to tile,
 and `Data` for pixels that are not sRGB colour, such as masks and normal
-maps. Every texture has `Destroy`; call it from `Shutdown`. Real games
-load through the [asset](../pkg/asset.html) package, which resolves a
-name against loose directories, pack files and embedded filesystems in
-order, so a developer's copy wins over the shipped one.
+maps. Every texture has `Destroy`; call it from `Shutdown`. To load a
+texture by name, use the [asset](../pkg/asset.html) package. It resolves
+a name against loose directories, pack files and embedded filesystems in
+that order, so a loose file takes priority over a shipped one.
 
 ```go
 //go:embed assets
@@ -57,8 +58,8 @@ g.fs, err = asset.OpenFS(asset.Dir("assets"), asset.FSSource(embedded))
 g.tex, err = asset.Texture(ctx.Gfx, g.fs, "sprites/hero.png", gfx.TextureOptions{})
 ```
 
-A `Region` is a rectangle of a texture, from `gfx.NewRegion` or a sheet,
-and is what an atlas hands out. A `Sheet` cuts a texture into a grid of
+A `Region` is a rectangle of a texture, made by `gfx.NewRegion` or
+returned by a sheet or an atlas. A `Sheet` cuts a texture into a grid of
 equal frames numbered row-major from the top-left; a `Sheet` literal
 takes `Margin` and `Spacing` when the grid has padding. `ParseAtlas`
 reads packed atlases with named frames, in TexturePacker JSON (hash or
@@ -78,8 +79,8 @@ idle, ok := atlas.Region("hero_idle_0")
 ```
 
 `DrawNineSlice` stretches a `NineSlice` over any rectangle while its
-corners keep their size, which is how panels and speech bubbles come
-from a 24 by 24 png; `Tile` repeats the edges and centre instead of
+corners keep their size, so a 24 by 24 png draws a panel or a speech
+bubble at any size. Set `Tile` to repeat the edges and centre instead of
 stretching them. `NewBlankTexture` and `Texture.Write` replace a
 texture's pixels, streamed without waiting for the GPU, so a painting
 tool or a video can change one every frame; `Texture.Read` copies
@@ -100,9 +101,9 @@ nil texture draws a 1x1 white pixel, so a plain coloured quad is a
 tinted sprite. `DrawTexture` places a whole texture at its own size;
 `DrawRegion` and `DrawFrame` fill the UVs in from a region or a sheet
 frame, where a zero `Size` means its own size. `DrawIndexed` and
-`DrawTriangles` take raw `Vertex2D` geometry. Sheet animation is two
-plain values: an `Animation` lists frames and a rate, an `AnimState`
-plays it, with `Advance`, `Frame` and `Done`.
+`DrawTriangles` take raw `Vertex2D` geometry. Sheet animation uses two
+values: an `Animation` lists frames and a rate, and an `AnimState` plays
+it, with `Advance`, `Frame` and `Done`.
 
 ```go
 gr.Draw(g.tex, gfx.Sprite{
@@ -121,25 +122,26 @@ gr.DrawFrame(sheet, g.anim.Frame(), gfx.Sprite{Pos: g.player}) // Draw
 Consecutive sprites that share a texture, blend mode, shader, clip and
 colour matrix merge into one draw call. Changing any of those breaks the
 batch, so a hundred sprites from one atlas cost one draw and alternating
-between two textures costs a hundred. Grouping by texture is what an
-atlas is for; `SetLayer` keeps that grouping while still controlling
-what ends up in front.
+between two textures costs a hundred. Pack sprites into one atlas to
+keep them grouped by texture, and use `SetLayer` to control what draws
+in front without breaking that grouping.
 
 ## Tint, blending and transforms
 
-The sprite's `Color` multiplies the texture, which covers team colours,
+The sprite's `Color` multiplies the texture. Use it for team colours,
 fading and a damage flash. For more, a `ColorMatrix` recolours
 everything drawn inside it: `Saturation`, `HueRotate`, `Brightness`,
 `Contrast`, `Invert`, `Grayscale`, `Sepia` and `Tint`, composed with
-`Mul`. `Blended` picks a blend mode for a stretch of drawing: `BlendAdd`
-for glows and explosions, `BlendMultiply` for shadows and tinted glass,
-then `BlendScreen`, `BlendLighten`, `BlendDarken`, `BlendReplace` and
-`BlendErase` to cut a hole.
+`Mul`. To set a blend mode for a stretch of drawing, call `Blended`.
+`BlendAdd` suits glows and explosions and `BlendMultiply` suits shadows
+and tinted glass; `BlendScreen`, `BlendLighten`, `BlendDarken`,
+`BlendReplace` and `BlendErase` are the rest, and `BlendErase` cuts a
+hole.
 
 `Transformed` maps everything drawn inside it through a `lin.Affine`
 (`Translate2`, `Rotate2`, `Scale2`, `Shear2`, composed with `Mul`), and
-`Clip` limits drawing to a rectangle, which is how a scrolling list
-stays inside its panel. `SetColorMatrix`, `SetBlend`, `PushTransform`/
+`Clip` limits drawing to a rectangle, which keeps a scrolling list
+inside its panel. `SetColorMatrix`, `SetBlend`, `PushTransform`/
 `PopTransform` and `PushClip`/`PopClip` are the non-closure forms.
 
 ```go
@@ -153,19 +155,18 @@ gr.Blended(gfx.BlendAdd, func() { gr.Draw(g.glow, muzzleFlash) })
 
 `SetCamera2D` makes later drawing world-space. A `Camera2D` has a
 position (the world point at the centre of the view), a `Zoom` where 2
-shows half as much, and a `Rotation`; screen shake is an offset added to
+shows half as much, and a `Rotation`. For screen shake, add an offset to
 that position for a few frames. `ViewToWorld` maps the pointer back into
 the world, `WorldToView` goes the other way for a marker pinned to an
-entity, and `VisibleRect` returns the world rectangle on screen, which
-is what a game culls against. `ScreenSpace` returns to view coordinates
-for the HUD.
+entity, and `VisibleRect` returns the world rectangle on screen; cull
+against that. `ScreenSpace` returns to view coordinates for the HUD.
 
 `SetLayer` orders drawing across calls. Sprites draw in ascending layer
 order and, within a layer, in submission order, so a game can write its
-draw code in any order and still get the right stacking. Layers are also
-how parallax is arranged: each background at its own layer, translated
-by its share of the camera's offset. A top-down game that wants sprites
-sorted by their feet sorts its own actor slice by y before drawing.
+draw code in any order and still get the right stacking. For parallax,
+put each background on its own layer and translate it by its share of
+the camera's offset. To sort sprites by their feet in a top-down game,
+sort your own actor slice by y before drawing.
 
 ```go
 // Update: ease towards the player, then shake.
@@ -198,16 +199,17 @@ gr.SetLayer(0)
 A `Tilemap` is a grid of frame indices into a `Sheet`; -1 is an empty
 cell. `TileW` and `TileH` set the drawn size of a tile, so 16-pixel art
 can be drawn at 32 units. `DrawTilemap` skips the cells outside the
-active camera's view, so a map of any size costs what is on screen.
+active camera's view, so the cost depends on what is on screen rather
+than on the size of the map.
 
 A cell can carry flip bits above the frame index, so one sheet frame
 serves eight orientations: `TileFlipped` packs them, `TileFrame` unpacks
 a cell, and the bits (`TileFlipX`, `TileFlipY`, `TileFlipDiag`) match
 the Tiled editor's convention. `Animate` makes one frame index cycle
 through others, for water and torches, and `Advance` steps every
-animation on the map. For a very large or infinite world keep one
+animation on the map. For a very large or infinite world, keep one
 tilemap per chunk and draw the chunks that intersect `VisibleRect`;
-building one is cheap.
+building a tilemap is cheap.
 
 ```go
 g.tilemap = gfx.NewTilemap(sheet, 256, 256)
@@ -232,9 +234,9 @@ layers in order with the group state above them applied. `Advance` steps
 the tile animations, `Size` gives the map's pixel size, `Layer` finds a
 layer by name and `Destroy` releases the textures.
 
-Object layers are the game's to place: rectangles, ellipses, points,
-polygons and polylines with names, classes and typed custom properties,
-which is where spawn points, triggers and collision shapes come from.
+Object layers are left to the game. They hold rectangles, ellipses,
+points, polygons and polylines with names, classes and typed custom
+properties; read them for spawn points, triggers and collision shapes.
 Tiled's flip and rotation bits survive the import. Zstd-compressed
 layers are not supported; CSV, base64, zlib and gzip are.
 
@@ -287,9 +289,9 @@ gr.DrawTextBlock(g.font, story, 40, y, opts, gfx.White)
 ```
 
 `NewSDFFont` builds a signed-distance atlas that stays sharp at any size
-and angle, which is what damage numbers and a zooming strategy map want
-from one font object. Colour emoji draw in their own colours when a
-bitmap emoji font is given as a fallback. `ParseRich` reads a small
+and angle, so one font object serves damage numbers and a zooming
+strategy map. Colour emoji draw in their own colours when a bitmap emoji
+font is given as a fallback. `ParseRich` reads a small
 markup (`[b]`, `[i]`, `[u]`, `[#ff8800]`, `[link=name]`) into a
 `RichText` that `DrawRichText` lays out across regular, bold and italic
 faces, returning each link's rectangle for clicks.
@@ -305,15 +307,15 @@ for _, l := range links {
 }
 ```
 
-`DrawTextOnPath` runs a line of text along a path, each glyph turned to
-follow it, for a river's name on a strategy map. `Font.Shape` returns
-positioned glyphs for custom drawing and hit-testing, `DrawGlyphs` draws
-them, and fonts have `Destroy`.
+`DrawTextOnPath` draws a line of text along a path with each glyph
+rotated to follow it, for labels such as a river name on a strategy map.
+`Font.Shape` returns positioned glyphs for custom drawing and
+hit-testing, `DrawGlyphs` draws them, and fonts have `Destroy`.
 
 ## Shapes and paths
 
 `FillRect`, `FillCircle`, `FillPolygon`, `StrokeRect`, `StrokeCircle`
-and `StrokeLine` cover the quick cases and go through the sprite stream,
+and `StrokeLine` draw simple shapes. They go through the sprite stream,
 so they sort by layer and clip like everything else.
 
 A `Path` collects lines, quadratic and cubic curves and arcs, with
@@ -356,10 +358,10 @@ sheet, a `Blend` and a `Layer`. `Fire`, `Smoke`, `Sparks`, `Rain` and
 A `System` owns the live particles: `Update` advances it, `Draw` queues
 them, `SetPosition` moves it, `Burst` fires a one-shot and `Finished`
 reports one that has run out, so the game can drop it. `WorldSpace`
-decides whether particles stay where they were born when the system
-moves, as smoke should, or travel with it, as a thruster flame should.
-Thousands are cheap; tens of thousands still draw as one batch but cost
-CPU in `Update`.
+decides whether particles stay where they were emitted when the system
+moves, which suits smoke, or travel with it, which suits a thruster
+flame. Thousands are cheap; tens of thousands still draw as one batch
+but cost CPU in `Update`.
 
 ```go
 e := particle.Fire()
@@ -379,10 +381,10 @@ g.fire.Draw(gr)          // Draw
 lights above the sprite plane for the frame, and `DrawLit` draws a
 sprite lit by them through a tangent-space normal map uploaded with
 `TextureOptions{Data: true}`. Lit sprites take light from every
-direction: there are no 2D shadows cast by occluders, which is a known
-gap. A game that needs hard light shafts draws its own occlusion,
-usually by rendering a light mask to a render texture and compositing it
-with `BlendMultiply`.
+direction. There are no 2D shadows cast by occluders, which is a known
+gap. For hard light shafts, draw your own occlusion, usually by
+rendering a light mask to a render texture and compositing it with
+`BlendMultiply`.
 
 ```go
 gr.SetLights2D(gfx.RGB(30, 30, 45),
@@ -395,11 +397,11 @@ gr.DrawLit(g.wallTex, g.wallNormal, gfx.Sprite{Pos: lin.V2(x, y), Size: lin.V2(6
 ## Render textures
 
 A `RenderTexture` is an offscreen surface that draws like the screen and
-is then used like a texture: minimaps, portraits, mirrors, or a whole
-low-resolution scene, whose pixels `RenderTextureOptions.Nearest` keeps
-sharp when it is scaled up. `DrawTo` runs a closure with the render
-texture as the output; it is rendered before the main frame, so the
-result can be drawn in the same frame.
+is then used like a texture, for minimaps, portraits, mirrors or a whole
+low-resolution scene. Set `RenderTextureOptions.Nearest` to keep its
+pixels sharp when it is scaled up. `DrawTo` runs a closure with the
+render texture as the output; it is rendered before the main frame, so
+the result can be drawn in the same frame.
 
 ```go
 g.mini, err = ctx.Gfx.NewRenderTextureOptions(320, 180, gfx.RenderTextureOptions{Nearest: true})
@@ -413,22 +415,22 @@ gr.ScreenSpace()
 gr.Draw(g.mini.Texture(), gfx.Sprite{Pos: lin.V2(ctx.Width-232, 12), Size: lin.V2(220, 124)})
 ```
 
-Rendering the whole game into a render texture and drawing it back as
-one sprite is how a 2D game gets a post effect: put a sprite shader on
-that one draw for a vignette, a CRT curve or a palette swap.
-`PostSettings` and its bloom, ambient occlusion and LUT grading apply to
-the 3D scene's HDR pass, not to 2D drawing. `RenderTexture.Read` copies
-the pixels back, and `ctx.Screenshot(path)` writes the whole frame to a
-PNG, which is what every example does with `-shot`.
+For a post effect, render the whole game into a render texture and draw
+it back as one sprite with a sprite shader on that draw, which gives a
+vignette, a CRT curve or a palette swap. `PostSettings` and its bloom,
+ambient occlusion and LUT grading apply to the 3D scene's HDR pass, not
+to 2D drawing. `RenderTexture.Read` copies the pixels back, and
+`ctx.Screenshot(path)` writes the whole frame to a PNG, which is what
+every example does with `-shot`.
 
 ## Shaders
 
 A game's own fragment shader, compiled to SPIR-V offline with
-`bunyip-shader`, colours 2D drawing: `SetShader` or `Shaded` sets it for
+`bunyip-shader`, colours 2D drawing. `SetShader` or `Shaded` sets it for
 a stretch of sprites, `Shader.SetUniforms` passes a struct of parameters
-and `Shader.SetImage` up to four extra textures. Everything drawn while
-one shader is set is one batch as long as nothing else changes. The
-[shaders guide](shaders.html) covers writing and building them.
+and `Shader.SetImage` passes up to four extra textures. Everything drawn
+while one shader is set is one batch as long as nothing else changes.
+The [shaders guide](shaders.html) covers writing and building them.
 
 ## Performance
 
@@ -444,11 +446,10 @@ and shaders around groups rather than around single draws.
 F3 toggles an overlay with the frame time, the update and draw times,
 the draw counts and any `ctx.Profile` scopes; `Config.Debug` shows it
 from the start. `Config.DrawBudget` sets the number of draw calls a
-frame should stay under and the overlay warns when a frame goes over, so
-a batching regression is noticed rather than discovered later. Sprites
-are not culled for you, only tilemaps and 3D meshes are, so a game with
-a large world tests its own entities against the camera's visible
-rectangle first.
+frame should stay under, and the overlay warns when a frame goes over,
+so a batching regression shows up as soon as it appears. Sprites are not
+culled for you, only tilemaps and 3D meshes are, so in a large world
+test your own entities against the camera's visible rectangle first.
 
 ```go
 view := g.cam.VisibleRect(ctx.Width, ctx.Height).Inset(-64) // margin for big sprites
@@ -462,10 +463,10 @@ for _, e := range g.entities {
 ## Debug drawing
 
 `DebugText` and `Debugf` put a line of text on screen in the engine's
-own font with a dark shadow, so a value can go up before any font is
-loaded; `DebugFont` returns that font for measuring. For shapes,
-`StrokeRect` and `StrokeCircle` on a high layer draw collision boxes and
-trigger volumes over the scene.
+own font with a dark shadow, so you can print a value before any font is
+loaded; `DebugFont` returns that font for measuring. For shapes, call
+`StrokeRect` and `StrokeCircle` on a high layer to draw collision boxes
+and trigger volumes over the scene.
 
 ```go
 gr.SetLayer(1000)

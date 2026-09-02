@@ -8,7 +8,7 @@ summary: install the Vulkan driver, open a window, learn the loop and the window
 ## Requirements
 
 Bunyip needs Go 1.26 or later and a Vulkan driver. There is nothing to
-compile against: the engine opens the driver at run time.
+compile against. The engine opens the driver at run time.
 
 | Platform | Install |
 |---|---|
@@ -67,13 +67,13 @@ twice.
 
 ## The loop
 
-Real-time is the default mode. `Update` runs at a fixed step (60 Hz
-unless `Config.FixedStep` says otherwise) and `Draw` runs once per
+Real-time is the default mode. `Update` runs at a fixed step, 60 Hz
+unless `Config.FixedStep` sets another value, and `Draw` runs once per
 displayed frame. `ctx.Delta` is the step, so the simulation is the same
 whatever the frame rate. When frames come faster than updates,
-`ctx.Alpha` during `Draw` says how far the clock has run past the last
-update, as a fraction of a step; drawing a body at
-`previous + (current - previous) * Alpha` keeps motion smooth.
+`ctx.Alpha` during `Draw` holds how far the clock has run past the last
+update, as a fraction of a step. Draw a body at
+`previous + (current - previous) * Alpha` to keep motion smooth.
 
 After a stall (a long load, a window drag) the loop catches up with
 extra updates. `Config.MaxCatchUp` caps how much lost time it makes up
@@ -83,15 +83,15 @@ updates and silences the mixer while another window has focus.
 
 Turn-based games set `Config.TurnBased`. The loop then blocks in the
 operating system until input arrives and runs one `Update` and one
-`Draw` per batch of events, so the process uses no CPU while the player
-thinks. A timer, a network message or a finished asset load can wake it
-with `ctx.Wake`, and `ctx.RequestRedraw` asks for another frame while
-an animation is playing.
+`Draw` per batch of events, so the process uses no CPU between events.
+A timer, a network message or a finished asset load can wake it with
+`ctx.Wake`. Call `ctx.RequestRedraw` to ask for another frame while an
+animation is playing.
 
 ## The window
 
-`Config` sizes the window at the start and `Context` controls it while
-the game runs: the title, the icon, size limits, the pointer's shape and
+`Config` sizes the window at the start. `Context` controls it while the
+game runs: the title, the icon, size limits, the pointer's shape and
 visibility, full screen, the window's place on the screen, and a fixed
 view that the engine scales and letterboxes for you. The
 [window guide](window.html) covers all of it, along with what a resize
@@ -115,7 +115,7 @@ draw-call counts and any profile scopes the game recorded; `Config.Debug`
 shows it from the start. `Config.DrawBudget` turns the draw-call count
 into a warning when a frame exceeds it. `Config.Pprof` serves Go's
 profiler on an address. `Config.LogFile` writes the log to a file and
-appends a stack trace if the game panics, which is the report to ask a
+appends a stack trace if the game panics. That file is the one to ask a
 player for. `bunyip.FlyCamera` is a free-flying camera for looking round
 a 3D scene while it is being built.
 

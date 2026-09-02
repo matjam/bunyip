@@ -1,9 +1,9 @@
-// Package tiled reads maps saved by the Tiled editor in its JSON form
-// (.tmj or .json maps, .tsj tilesets) or its XML form (.tmx maps, .tsx
-// tilesets) into plain Go types, and builds drawable levels from them.
-// Parse tells the forms apart by their first byte, and a map in one
-// form may name an external tileset in the other. Parse and Load need
-// no GPU; Build turns a Map into gfx tilemaps for drawing.
+// Package tiled reads maps saved by the Tiled editor and builds
+// drawable levels from them. It decodes the JSON form (.tmj or .json
+// maps, .tsj tilesets) and the XML form (.tmx maps, .tsx tilesets) into
+// plain Go types. Parse distinguishes the forms by their first byte, and
+// a map in one form may name an external tileset in the other. Parse and
+// Load need no GPU. Build turns a Map into gfx tilemaps for drawing.
 //
 // A Map has tile layers (CSV or base64 with zlib or gzip compression,
 // flipped and rotated tiles), object layers (rectangles, ellipses,
@@ -13,7 +13,7 @@
 // animations, collision shapes and properties. Build loads the
 // tilesets' images, makes one gfx.Tilemap per tile layer with the
 // animations wired up, and returns a Level whose Draw draws the layers
-// in order; a game keeps the object layers to place its entities.
+// in order. Keep the object layers to place your own entities.
 // Properties are typed (string, int, float, bool, colour, file, object)
 // and read with the accessors on Properties.
 package tiled

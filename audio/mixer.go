@@ -1,19 +1,20 @@
-// Package audio mixes sounds in Go and hands float32 stereo frames to the
-// platform's output device. A Sound holds decoded samples at the mixer's
-// rate; Play starts a Voice that can be adjusted or stopped while it runs.
-// Music streams from a decoder instead of being held in memory. Voices
-// can be placed in the listener's world (with distance, panning, Doppler
-// and occlusion), filtered, sent to a reverb, faded, pitched, muted,
-// soloed and prioritised, and grouped on a Bus to be turned down, muted
-// or paused together. The mixer has one shared reverb, replaced by a
-// ReverbZone while the listener stands in one, and a Bus can carry a
-// reverb of its own. Mixing happens on the audio device's thread, so
-// every method is safe to call from the game loop, and every change in
-// gain ramps across a block so nothing clicks.
+// Package audio mixes sounds in Go and passes float32 stereo frames to
+// the platform's output device. A Sound holds decoded samples at the
+// mixer's rate. To play one, call Play, which returns a Voice that can
+// be adjusted or stopped while it runs. Music streams from a decoder
+// instead of being held in memory. Voices can be placed in the
+// listener's world (with distance, panning, Doppler and occlusion),
+// filtered, sent to a reverb, faded, pitched, muted, soloed and
+// prioritised, and grouped on a Bus to be turned down, muted or paused
+// together. The mixer has one shared reverb, which a ReverbZone replaces
+// while the listener is inside that zone, and a Bus can carry a reverb
+// of its own. Mixing happens on the audio device's thread, so every
+// method is safe to call from the game loop, and every change in gain
+// ramps across a block so nothing clicks.
 //
-// Decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole file
-// as bytes; streams (OpenMusic) take readers, because they seek while
-// they play.
+// The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole
+// file as bytes. The streams (OpenMusic) take readers, because they seek
+// while they play.
 package audio
 
 import (
@@ -341,8 +342,9 @@ func (v *Voice) SetPitch(p float32) { v.set(func() { v.pitch = max(p, 0.01) }) }
 // the pause lands in fades out, so it never clicks.
 func (v *Voice) SetPaused(p bool) { v.set(func() { v.paused = p }) }
 
-// SetMute silences the voice while it keeps playing, so unmuting picks
-// up wherever the sound has got to; pausing holds it instead.
+// SetMute silences the voice while it keeps playing, so unmuting resumes
+// wherever the sound has reached. To stop the sound advancing, use
+// SetPaused instead.
 func (v *Voice) SetMute(mute bool) { v.set(func() { v.mute = mute }) }
 
 // Muted reports whether the voice is muted.
@@ -352,9 +354,9 @@ func (v *Voice) Muted() bool {
 	return v.mute
 }
 
-// SetSolo auditions the voice: while any voice is soloed, every voice
-// that is not falls silent, still playing. Clearing the last solo brings
-// them back. Bus solos are separate and combine with it.
+// SetSolo solos the voice. While any voice is soloed, every voice that
+// is not soloed is silent and keeps playing. Clearing the last solo
+// makes them audible again. Bus solos are separate and combine with it.
 func (v *Voice) SetSolo(solo bool) { v.set(func() { v.solo = solo }) }
 
 // Soloed reports whether the voice is soloed.

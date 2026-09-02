@@ -1,17 +1,17 @@
-// Package grid holds the tile-map helpers roguelikes and strategy games
-// need: a generic cell grid, A* and Dijkstra pathfinding, Bresenham
-// lines, shadowcasting field of view and flood fill.
+// Package grid provides the tile-map helpers roguelikes and strategy
+// games need: a generic cell grid, A* and Dijkstra pathfinding,
+// Bresenham lines, shadowcasting field of view and flood fill.
 //
 // Grid[T] is a rectangular array of cells with bounds checking (In, At,
-// Set, Fill, Each); the algorithms take a cost or passability function
-// over points, so they work on any map representation, not only a
-// Grid. AStar finds one path with four or eight-way movement and a cost
-// per step; Dijkstra fills a map of distances from many sources at
-// once, which units then descend with Downhill, the cheapest way to
-// move a crowd towards the player. FOV computes what a point sees
-// against an opacity function; Line walks the cells between two points
-// for projectiles and line of sight; FloodFill collects a connected
-// region.
+// Set, Fill, Each). The algorithms take a cost or passability function
+// over points, so they work on any map representation, not only a Grid.
+// AStar finds one path with four or eight-way movement and a cost per
+// step. Dijkstra fills a map of distances from many sources at once, and
+// units descend that map with Downhill, which moves many units towards
+// the player for the cost of one fill. FOV computes which cells are
+// visible from a point against an opacity function. Line walks the cells
+// between two points for projectiles and line of sight. FloodFill
+// collects a connected region.
 //
 // Points are integer cell coordinates with +Y down, matching the
 // renderer's 2D space and Tilemap; nothing here depends on gfx.

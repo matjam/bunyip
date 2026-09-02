@@ -42,16 +42,16 @@ v.SetLowPass(1200)
 v.FadeOut(0.5)
 ```
 
-`audio.Sine(440, 0.3, ctx.Audio.Rate())` makes a `PCM` without a file,
-which is how the examples and tests get something to play.
+`audio.Sine(440, 0.3, ctx.Audio.Rate())` makes a `PCM` without a file.
+The examples and tests use it to get something to play.
 
 ## Buses
 
-Voices play through a `Bus`, and a settings screen binds its sliders to
-buses rather than to every voice. `Music`, `Effects` and `Dialogue` come
-ready; `NewBus` makes more. A bus has its own volume, pause, mute, solo
-and reverb, applied with the same ramps. Set `PlayOptions.Bus` to choose
-one.
+Voices play through a `Bus`. A settings screen binds its sliders to
+buses rather than to every voice. `Music`, `Effects` and `Dialogue`
+already exist; `NewBus` makes more. A bus has its own volume, pause,
+mute, solo and reverb, applied with the same ramps. To choose a bus, set
+`PlayOptions.Bus`.
 
 ```go
 m := ctx.Audio
@@ -69,37 +69,37 @@ not have to be handed one.
 
 ## Pausing
 
-`Mixer.SetPaused` holds every voice at once; a pause menu calls it, and
-the engine calls it for you when `Config.PauseUnfocused` is set and the
-window loses focus. `Bus.SetPaused` and `Voice.SetPaused` hold less. A
-pause fades out over the block it lands in and the resume fades back in,
-so neither clicks. Each level is kept separately: resuming the mixer
-leaves a paused bus paused.
+To pause every voice at once, call `Mixer.SetPaused`. A pause menu calls
+it, and the engine calls it for you when `Config.PauseUnfocused` is set
+and the window loses focus. `Bus.SetPaused` pauses one bus and
+`Voice.SetPaused` one voice. A pause fades out over the block it lands
+in and the resume fades back in, so neither clicks. Each level is kept
+separately, so resuming the mixer leaves a paused bus paused.
 
 ```go
 if ctx.Input.KeyPressed(input.KeyEscape) {
 	g.menu = !g.menu
 	ctx.Audio.SetPaused(g.menu) // everything holds where it is
 }
-ctx.Audio.Effects().SetPaused(true) // one bus: the world stops, the music plays on
+ctx.Audio.Effects().SetPaused(true) // one bus, so effects stop and music plays on
 g.engine.SetPaused(true)            // one voice
 ```
 
 ## Mute and solo
 
-Mute is not pause: a muted voice or bus keeps playing silently, so
-unmuting picks up wherever the sound has got to. `Voice.SetMute` and
-`Bus.SetMute` do that. Solo is the mixing desk's audition button: while
-any voice is soloed only soloed voices are heard, and while any bus is
-soloed only soloed buses (a voice on no bus counts as a bus of its own).
-`Voice.SetSolo` and `Bus.SetSolo` set it, and clearing the last solo
-brings everything back.
+To mute a voice or bus, call `Voice.SetMute` or `Bus.SetMute`. A muted
+voice or bus keeps playing silently, so unmuting resumes wherever the
+sound has reached; to stop the sound advancing, use `SetPaused` instead.
+To solo, call `Voice.SetSolo` or `Bus.SetSolo`. While any voice is
+soloed, only soloed voices are heard. While any bus is soloed, only
+soloed buses are heard, and a voice on no bus is silent. Clearing the
+last solo brings everything back.
 
 ```go
 music := ctx.Audio.Music()
-music.SetMute(!music.Muted()) // the mute button: it keeps playing, silently
+music.SetMute(!music.Muted()) // the mute button; the music keeps playing silently
 
-// A mixing screen auditions one bus at a time; g.audition is "" for none.
+// A mixing screen plays one bus at a time; g.audition is "" for none.
 for _, b := range []*audio.Bus{ctx.Audio.Music(), ctx.Audio.Effects(), ctx.Audio.Dialogue()} {
 	b.SetSolo(b.Name() == g.audition)
 }
@@ -111,7 +111,7 @@ for _, b := range []*audio.Bus{ctx.Audio.Music(), ctx.Audio.Effects(), ctx.Audio
 ahead on its own goroutine; `PlayStream` plays it, and `Close` stops it.
 `Music.Duration` and `Music.Seek` work for all three formats.
 Anything implementing `Stream` (fill a buffer of stereo frames) plays the
-same way, which is how procedural music and the tracker player plug in.
+same way. Procedural music and the tracker player use that.
 
 ```go
 f, err := os.Open("music/theme.ogg")
@@ -154,16 +154,16 @@ torch.SetPosition(lin.V3(6, 1, -8)) // when the source moves
 
 ### Doppler
 
-`SetDoppler(1)` turns the Doppler effect on: a positional sound closing
-on the listener plays sharp and one receding plays flat, by how fast each
-moves along the line between them. The mixer does not integrate motion,
-so the game gives it velocities: `Listener.Velocity` and
-`Voice.SetVelocity` (or `PlayOptions.Velocity`), in world units per
+To turn the Doppler effect on, call `SetDoppler(1)`. A positional sound
+closing on the listener then plays sharp, and one receding plays flat,
+by how fast each moves along the line between them. The mixer does not
+integrate motion, so the game gives it velocities: `Listener.Velocity`
+and `Voice.SetVelocity` (or `PlayOptions.Velocity`), in world units per
 second. They are measured against the speed of sound, 343 by default,
 which suits metres; a game in pixels sets `SetSpeedOfSound` higher to
 keep the effect subtle. The factor scales the shift, so 0.5 halves it and
-0 (the default) is off. Streams have no pitch, so Doppler leaves them
-alone.
+0 (the default) is off. Streams have no pitch, so Doppler does not apply
+to them.
 
 ```go
 ctx.Audio.SetDoppler(1)
@@ -178,11 +178,12 @@ train.SetVelocity(lin.V3(0, 0, -40)) // world units per second
 ### Occlusion
 
 A sound behind a wall is quieter and duller than one in the open.
-`PlayOptions.Occlusion` and `Voice.SetOcclusion` take 0 (clear) to 1
-(fully blocked, 20 dB down and low-passed to 400 Hz), with the amounts in
-between on a decibel scale. The mixer has no scene, so the game decides:
-cast a physics ray from the listener to the source each frame and set the
-occlusion from what it hits, or fade it as a door opens.
+Occlusion applies that. `PlayOptions.Occlusion` and
+`Voice.SetOcclusion` take 0 (clear) to 1 (fully blocked, 20 dB down and
+low-passed to 400 Hz), with the amounts in between on a decibel scale.
+The mixer has no scene, so the game supplies the amount. Cast a physics
+ray from the listener to the source each frame and set the occlusion
+from what it hits, or fade it as a door opens.
 
 ```go
 // g.wallBetween is the game's own ray against the level.
@@ -213,15 +214,16 @@ g.pad.SetReverb(0.5)                                    // change it while it pl
 
 ### Reverb zones
 
-A cave should not sound like the field outside it. `SetReverbZones`
-takes a list of `ReverbZone`s, each a sphere with its own settings, and
-the mixer checks them whenever the listener moves: inside a zone its
-settings replace the shared reverb, blended in over `Fade` units from the
-edge so walking through the doorway never jumps. A zero `Fade` blends
-across the whole radius; set it to a fraction of the radius for a room
-that sounds the same everywhere but its threshold. Where zones overlap
-the one the listener is furthest inside wins. `Mixer.Reverb` reports what
-is in effect, for a debug overlay.
+To give an area its own reverb, so a cave does not sound like the field
+outside it, call `SetReverbZones`. It takes a list of `ReverbZone`s,
+each a sphere with its own settings, and the mixer checks them whenever
+the listener moves. Inside a zone its settings replace the shared
+reverb, blended in over `Fade` units from the edge so walking through
+the doorway never jumps. A zero `Fade` blends across the whole radius;
+set it to a fraction of the radius for a room that sounds the same
+everywhere but its threshold. Where zones overlap, the one the listener
+is furthest inside wins. `Mixer.Reverb` reports what is in effect, for a
+debug overlay.
 
 ```go
 ctx.Audio.SetReverbZones([]audio.ReverbZone{
@@ -297,10 +299,10 @@ song position (an index into the order list) and row, `Length` counts the
 positions and `Rows` the rows in the pattern at one, and `Seek(order,
 row)` jumps there, cutting whatever was sounding, so a level with several
 sections in one module can seek between them. `Mute(channel, true)`
-silences a pattern channel while the song plays on, `Solo` auditions
-one, and `Channels` says how many there are. A game that drops the drums
-while the player hides mutes their channel and unmutes it later without
-a break.
+silences a pattern channel while the song plays on, `Solo` plays one
+channel alone, and `Channels` says how many there are. To drop the drums
+while the player hides, mute their channel and unmute it later; the song
+does not break.
 
 ```go
 p := g.player

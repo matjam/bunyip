@@ -5,11 +5,11 @@ order: 1
 summary: how the window is opened, sized and controlled, what is fixed at start and what changes at run time
 ---
 
-## Who owns the window
+## Opening the window
 
 `bunyip.Run` opens the window from the `Config` it is given, and closes
 it when the loop ends. There is no window object in the API and there is
-only one window: a game reaches it through methods on the `Context` it
+only one window. A game reaches it through methods on the `Context` it
 gets in `Init`, `Update` and `Draw`.
 
 ```go
@@ -21,8 +21,8 @@ func (g *game) Update(ctx *bunyip.Context) error {
 }
 ```
 
-`Config` decides what the window is at the moment it opens; `Context`
-decides what it does afterwards.
+`Config` sets what the window is at the moment it opens. `Context`
+methods change it afterwards.
 
 | Fixed at start | Changed at run time |
 |---|---|
@@ -31,17 +31,17 @@ decides what it does afterwards.
 | `ViewWidth`, `ViewHeight`, `Scaling` | `SetFullscreen`, `Fullscreen` |
 | `Headless`, `NoVSync`, `HandleClose`, `PauseUnfocused` | `SetPosition`, `Position`, `SetAlwaysOnTop` |
 
-Two absences are worth stating plainly. There is no programmatic resize:
-nothing in the API sets the window's size after it opens, so the player
-and the window manager own it. And there is no `Config` field to start
-full screen; a game that wants it calls `ctx.SetFullscreen(true)` from
-`Init`. Full-screen state is read back from the operating system rather
-than remembered by the engine, so `ctx.Fullscreen` is still right after
-the player uses the system's own full-screen button.
+Two things are missing on purpose. There is no programmatic resize.
+Nothing in the API sets the window's size after it opens, so the player
+and the window manager control it. There is also no `Config` field to
+start full screen. To start full screen, call `ctx.SetFullscreen(true)`
+from `Init`. Full-screen state is read back from the operating system
+rather than remembered by the engine, so `ctx.Fullscreen` is still right
+after the player uses the system's own full-screen button.
 
 ## Points, pixels and view units
 
-Three units meet at the window and mixing them is the usual source of
+Three units meet at the window. Mixing them is the usual cause of
 misplaced sprites.
 
 | Unit | What it is | Where it appears |
@@ -68,7 +68,7 @@ largest size that keeps the aspect ratio, `ScaleInteger` scales by whole
 numbers so pixel art stays crisp, and `ScaleStretch` fills the window and
 distorts. `ScaleFit` and `ScaleInteger` centre the view and leave black
 bars around it. `ctx.Width` and `ctx.Height` never change, so layout
-written once is still right; only `ctx.Scale` moves.
+written once is still right; only `ctx.Scale` changes.
 
 ```go
 bunyip.Run(bunyip.Config{
@@ -99,7 +99,7 @@ The loop turns window events into a few things a game reads.
 - `ctx.Quit` ends the loop after the current callback.
 - `ctx.RequestRedraw` asks a turn-based loop for another frame without
   waiting for input, which is how an animation that spans turns plays.
-  `ctx.Wake` prods the loop out of its wait from a timer, a network reply
+  `ctx.Wake` ends the loop's wait early, from a timer, a network reply
   or a finished asset load.
 
 ```go
@@ -132,9 +132,8 @@ the same loop with no window. Frames render offscreen at `Config.Width`
 by `Config.Height`, `ctx.Scale` is 1, the size never changes, and no
 events arrive, so no key is ever pressed and the window never asks to
 close. The window controls still exist and do nothing. `ctx.Screenshot`
-works, which is the point: every example takes `-seconds N` and
-`-shot file.png`, and the test that runs them all runs headless on a
-machine with no display.
+works. Every example takes `-seconds N` and `-shot file.png`, and the
+test that runs them all runs headless on a machine with no display.
 
 ```
 BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
@@ -162,8 +161,8 @@ missing.
 | `Clipboard`, `SetClipboard` | yes | yes | error |
 | DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | always 1 |
 
-A no-op is honest: the call returns and nothing happens, rather than
-pretending. `Position` returns (0, 0) where it is not implemented.
+Where a control is a no-op, the call returns and nothing happens.
+`Position` returns (0, 0) where it is not implemented.
 
 ## Lifecycle
 

@@ -14,25 +14,25 @@ mechanics, an immediate-mode interface, an audio mixer with positional
 sound and a tracker player, and the services a finished game needs:
 asset packs, saves, translation, action maps, and networking with
 prediction and reliable delivery. Every part is written for this engine
-and documented in the same voice, so a game reaches for one API rather
-than a dozen libraries with different ideas.
+and documented in the same voice, so a game uses one API rather than a
+dozen libraries with different conventions.
 
 It is built for games that simulate as much as they render: roguelikes
 with thousands of entities, 4X strategy on a hex map, a space game with
-real orbits, an arcade game that wants a 3D hero on a 2D field. A
-turn-based game sleeps in the operating system between moves; a
-real-time game runs a fixed timestep.
+real orbits, an arcade game with a 3D hero on a 2D field. A turn-based
+game blocks in the operating system between moves; a real-time game runs
+a fixed timestep.
 
-The engine is pure Go. It builds with `go build` and no cgo, talks to
-Vulkan through a generated binding and to each operating system's own
+The engine is pure Go. It builds with `go build` and no cgo, calls
+Vulkan through a generated binding and each operating system's own
 windowing and audio APIs through purego, and cross-compiles by setting
-`GOOS`. A game never sees Vulkan; it sees sprites, meshes, cameras,
-lights and widgets, and every example runs to a screenshot without a
-window so the whole engine is testable on a build machine.
+`GOOS`. A game does not call Vulkan; it works with sprites, meshes,
+cameras, lights and widgets. Every example runs to a screenshot without
+a window, so the whole engine is testable on a build machine.
 
 ## Design
 
-- **Pure Go.** The engine builds with `CGO_ENABLED=0`. Native libraries
+- **No cgo.** The engine builds with `CGO_ENABLED=0`. Native libraries
   (the Vulkan loader, AppKit, Core Audio, and their Windows and Linux
   counterparts) are opened at run time, so building is `go build` and
   cross-compiling is a matter of setting `GOOS`.
@@ -40,17 +40,18 @@ window so the whole engine is testable on a build machine.
   system has a small window, input and audio layer written against its
   own APIs.
 - **Two loop modes.** Real-time games run a fixed timestep. Turn-based
-  games set one flag, and the process then sleeps in the operating
+  games set one flag, and the process then blocks in the operating
   system until the player does something.
-- **Data first.** Game state lives in an entity component system with
-  dense per-type storage. A query over a hundred thousand entities
-  walks a few slices, and systems are plain functions over that data.
+- **Entity component system.** Game state lives in an entity component
+  system with dense per-type storage. A query over a hundred thousand
+  entities walks a few slices, and systems are plain functions over that
+  data.
 - **Immediate-mode interface.** The interface is rebuilt every frame from
   Go values, and closures scope every container, so there is no widget
   tree to keep in step with the game.
 - **Self-verifying examples.** Every example takes `-seconds` and
-  `-shot`, runs to a screenshot without anyone watching, and the
-  renderer's tests read pixels back from a headless surface.
+  `-shot`, runs unattended to a screenshot, and the renderer's tests
+  read pixels back from a headless surface.
 
 ## The shape of a game
 
@@ -76,9 +77,9 @@ func main() {
 ```
 
 `Update` advances the simulation and `Draw` queues drawing. The
-[bunyip](../pkg/bunyip.html) package owns the window, the loop and the
-frame pacing. The `Context` it passes in holds everything else a game
-touches: graphics, input, audio, timing and the window.
+[bunyip](../pkg/bunyip.html) package manages the window, the loop and
+the frame pacing. The `Context` it passes in holds everything else a
+game uses: graphics, input, audio, timing and the window.
 
 ## Package map
 

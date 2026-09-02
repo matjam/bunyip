@@ -1,13 +1,13 @@
-// Package timer schedules callbacks on game time: after a delay, or
+// Package timer schedules callbacks on game time, after a delay or on
 // every interval. Timers run when the game calls Update, so they pause
 // with the game and stay deterministic.
 //
-// A Scheduler is advanced by the game each update with the step; After
-// runs a function once, Every repeatedly, and both return a handle to
-// Cancel. A Countdown is the simpler thing: start it, update it, ask
-// whether it is still Running. Because time is the game's own, a paused
-// game stops its timers by not calling Update, a replay reruns them
-// identically, and a fast-forward advances them by a larger step.
+// Advance a Scheduler each update with the step. After runs a function
+// once, Every runs it repeatedly, and both return a handle to Cancel.
+// Countdown is a simpler alternative. Start it, update it, and ask
+// whether it is still Running. Because the time is the game's own, a
+// paused game stops its timers by not calling Update, a replay reruns
+// them identically, and a fast-forward advances them by a larger step.
 // Schedulers are not goroutine-safe and fire on the goroutine that
 // calls Update, the game loop's, so callbacks may touch game state
 // freely.

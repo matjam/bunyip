@@ -1,14 +1,14 @@
-// Package tween animates values over time: a Tween moves a number from
+// Package tween animates values over time. A Tween moves a number from
 // one value to another with an easing curve, and Sequence chains them.
 //
-// New takes a start, an end, a duration in seconds and an Ease (the
-// usual easing curves are provided; any func(t float32) float32 works).
-// The game advances a tween with Update each step and reads Value, or
-// sets OnDone to be told when it finishes. Tweens are the building
-// block for menus sliding in, health bars draining, cameras easing to a
-// target and damage numbers floating up; NewSequence runs several in
-// order, and the anim package covers keyframed curves over vectors,
-// colours and component fields.
+// To make a tween, call New with a start, an end, a duration in seconds
+// and an Ease. The usual easing curves are provided, and any
+// func(t float32) float32 works. Call Update each step to advance a
+// tween, then read Value, or set OnDone to be called when it finishes.
+// Use tweens for menus sliding in, health bars draining, cameras easing
+// to a target and damage numbers floating up. NewSequence runs several
+// in order. For keyframed curves over vectors, colours and component
+// fields, see the anim package.
 package tween
 
 import "math"

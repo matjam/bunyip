@@ -5,15 +5,15 @@ order: 3
 summary: a complete game on the entity component system, step by step
 ---
 
-This guide writes Tetris from an empty file on top of the engine's
-[entity component system](ecs.html). Along the way it uses the loop,
-input, drawing, the timer and tween packages, the UI and the mixer. The
-finished program is `examples/tetris` in the repository; run it with
+In this guide you write Tetris from an empty file on top of the engine's
+[entity component system](ecs.html). It uses the loop, input, drawing,
+the timer and tween packages, the UI and the mixer. The finished program
+is `examples/tetris` in the repository; run it with
 `go run ./examples/tetris`.
 
 ![The finished game](tetris.png)
 
-## 1. What is an entity here?
+## 1. Entities, resources and events
 
 Tetris has two kinds of thing on the board: blocks that have settled,
 and the one piece the player is steering. Both become entities. A
@@ -52,8 +52,8 @@ type Bag struct {
 }
 ```
 
-And two *events* let the game logic tell the effects code what
-happened without knowing it exists:
+Two *events* let the game logic report what happened to the effects
+code without referring to it:
 
 ```go
 type Locked struct{}          // a piece settled without clearing lines
@@ -90,7 +90,7 @@ func (p Falling) rotated() Falling {
 }
 ```
 
-Every rule in Tetris comes down to "would this piece fit?", answered
+Most of the rules reduce to whether a piece fits, which `fits` answers
 against the `Board` resource:
 
 ```go
@@ -145,9 +145,9 @@ func boardSystem(w *ecs.World, dt float64) {
 ## 4. Input as a resource
 
 `ctx.Input` lives outside the world, so each `Update` copies the key
-presses the game cares about into the `Controls` resource and then runs
-the systems. The input system is then a function of the world alone,
-which makes it testable and, later, replayable:
+presses the game uses into the `Controls` resource and then runs the
+systems. The input system is then a function of the world alone, which
+makes it testable and, later, replayable:
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -205,7 +205,7 @@ func inputSystem(w *ecs.World, dt float64) {
 
 The piece should fall every 600 ms whatever the frame rate. A
 [timer.Scheduler](../pkg/timer.html) in the `Clock` resource runs a
-callback on game time; the gravity system just advances it:
+callback on game time, and the gravity system advances it:
 
 ```go
 clock.Drop = clock.Timers.Every(0.6, func() { drop(w) })
@@ -263,7 +263,7 @@ func lockPiece(w *ecs.World) {
 		})
 		boardSystem(w, 0)
 		cleared++
-		y++ // re-check the row that just fell into this slot
+		y++ // re-check the row that fell into this slot
 	}
 	if cleared > 0 {
 		s := ecs.Resource[Score](w)
@@ -277,8 +277,8 @@ func lockPiece(w *ecs.World) {
 }
 ```
 
-The game logic never mentions sound or animation. It emits an event
-and moves on.
+The game logic never mentions sound or animation. It emits an event and
+does nothing else.
 
 ## 7. Effects from events
 

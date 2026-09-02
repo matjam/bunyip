@@ -1,22 +1,22 @@
 // Package network moves typed messages between game instances over TCP
-// (ordered, reliable: turn-based games, lobbies, chat; encrypted with
-// ListenTLS and DialTLS) and UDP (fast: real-time state with Send,
-// reliable and ordered when it must arrive with SendReliable). A
-// Registry names the message types both ends agree on; messages are
-// plain Go structs encoded as JSON unless they implement
-// encoding.BinaryMarshaler.
+// and UDP. TCP is ordered and reliable, for turn-based games, lobbies
+// and chat, and is encrypted with ListenTLS and DialTLS. UDP is faster.
+// Send carries real-time state, and SendReliable delivers a message
+// reliably and in order when it must arrive. A Registry names the
+// message types both ends agree on. Messages are plain Go structs
+// encoded as JSON unless they implement encoding.BinaryMarshaler.
 //
-// Every connection delivers Events through a channel that a game drains
-// once per frame with Poll, so no locking is needed in game code; a
-// turn-based game can set OnActivity to Context.Wake so it wakes up
-// when a message arrives. UDP peers get Connected and Disconnected
-// events too, from a hello and keepalive exchange with a timeout.
+// Every connection delivers Events through a channel. Drain it once per
+// frame with Poll, so game code needs no locking. A turn-based game can
+// set OnActivity to Context.Wake to wake up when a message arrives. UDP
+// peers get Connected and Disconnected events too, from a hello and
+// keepalive exchange with a timeout.
 //
-// For real-time state the helpers cover the usual techniques:
-// Interpolator, Predictor, History and Clock for smoothing, prediction,
-// lag compensation and server time; EncodeDelta with SnapshotBuffer and
-// SnapshotReceiver for sending only what changed since the snapshot a
-// client acknowledged; and Interest for choosing which entities a
+// For real-time state the helpers cover the usual techniques.
+// Interpolator, Predictor, History and Clock handle smoothing,
+// prediction, lag compensation and server time. EncodeDelta with
+// SnapshotBuffer and SnapshotReceiver sends only what changed since the
+// snapshot a client acknowledged. Interest chooses which entities a
 // viewer needs at all.
 package network
 

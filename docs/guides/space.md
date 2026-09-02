@@ -5,15 +5,15 @@ order: 2
 summary: celestial mechanics for any star system: Kepler orbits, N-body gravity, ships under thrust
 ---
 
-The [orbit](../pkg/orbit.html) package gives a space game real
-celestial mechanics without tying it to our solar system. Bodies are
-masses at positions in double precision; the gravitational constant and
-the units are yours to choose. Use metres, kilograms and seconds with
-the real `G` and the constants in [orbit/sol](../pkg/orbit/sol.html)
-for our neighbourhood, or set `G` to 1 and invent a system in game
-units, as the space example does.
+The [orbit](../pkg/orbit.html) package computes celestial mechanics for
+any star system, not only our own. Bodies are masses at positions in
+double precision. You choose the gravitational constant and the units.
+For our solar system, use metres, kilograms and seconds with the real
+`G` and the constants in [orbit/sol](../pkg/orbit/sol.html). For an
+invented system, set `G` to 1 and pick your own game units, as the
+space example does.
 
-## Two bodies, exactly
+## Two-body orbits
 
 `Elements` are the classical orbital elements (semi-major axis,
 eccentricity, inclination, node, argument of periapsis, true anomaly).
@@ -21,7 +21,7 @@ eccentricity, inclination, node, argument of periapsis, true anomaly).
 of gravitational parameter mu (G times its mass), and `ElementsOf`
 goes back. `Propagate` advances a state by any time span exactly, for
 circles, ellipses, parabolas and hyperbolas alike, so a moon's position
-a year from now is one call, not a million steps.
+a year from now takes one call rather than a million integration steps.
 
 ```go
 el := orbit.Elements{SemiMajorAxis: 20, Eccentricity: 0.3}
@@ -30,8 +30,8 @@ later := orbit.Propagate(s, mu, el.Period(mu)/2) // at apoapsis
 ```
 
 `Period`, `Periapsis`, `Apoapsis`, `CircularVelocity`,
-`EscapeVelocity`, `VisViva`, `Hohmann` and `SphereOfInfluence` give
-the numbers a player wants to see and the burns a planner needs.
+`EscapeVelocity`, `VisViva`, `Hohmann` and `SphereOfInfluence` compute
+the figures a readout displays and the burns a transfer needs.
 
 ```go
 // Real units: low Earth orbit to geostationary, and the elements of a
@@ -43,12 +43,12 @@ now := orbit.ElementsOf(orbit.State{Pos: rel, Vel: relVel}, sol.MuEarth)
 soon := now.AtTime(sol.MuEarth, 600) // where it is ten minutes on
 ```
 
-## Many bodies, numerically
+## N-body simulation
 
 `Simulation` integrates bodies under their mutual gravity with a
 symplectic leapfrog, which keeps the energy of a system steady over
-long runs. `RK4` steps a single particle through an acceleration field,
-the right tool for a ship whose engine is part of the force.
+long runs. `RK4` steps a single particle through an acceleration field.
+Use `RK4` for a ship whose engine contributes to the force on it.
 
 ```go
 // Two stars of equal mass circling each other, in game units.
@@ -72,7 +72,8 @@ Give entities an `orbit.Body` (position, velocity, mass) and the
 `orbit.System`:
 
 - entities with a `Kepler` component follow an exact orbit around their
-  `Primary`, and chains work: moons around planets around a star;
+  `Primary`, and chains are supported, such as moons around planets
+  around a star;
 - entities marked `Ship` are integrated numerically under every massive
   body's gravity plus their `Thrust`;
 - everything with a `gfx.Transform` gets a scaled position written into
@@ -88,22 +89,23 @@ w.AddSystem("orbits", orbit.System)
 ```
 
 `Settings.TimeScale` is the time warp. `Settings.Scale` converts
-simulation distance into scene units, and `Settings.Origin` is the
-floating origin: set it to the ship's or camera's position each frame
-and the scene stays near zero, where float32 rendering is precise, no
-matter how far the ship has flown.
+simulation distance into scene units. `Settings.Origin` is the floating
+origin. Set it to the ship's or camera's position each frame. The scene
+then stays near zero however far the ship has flown, which is the range
+where float32 rendering is precise.
 
 `Predict` integrates a copy of a ship ahead and returns its path in
-scene units for drawing; the planets move along their orbits as it
-looks ahead, so the path is right even around a fast-moving world.
-`PredictRelative` draws that path in the frame of a chosen body, so a
-ship circling a planet shows a loop around the planet where it is now
-rather than a streak across the sky. `Around` reports which body
-dominates a ship and its orbital elements relative to it, for a readout;
-pass its primary to `PredictRelative`.
+scene units for drawing. The Kepler bodies move along their orbits
+during the prediction, so the path is correct even around a fast-moving
+world.
+`PredictRelative` returns that path in the frame of a chosen body, so a
+ship circling a planet draws a closed loop around the planet's current
+position instead of a long arc across the scene. `Around` reports which
+body dominates a ship and the ship's orbital elements relative to it,
+which is what a readout needs. Pass that primary to `PredictRelative`.
 
 ```go
-// Draw a lap and a half of the ship's path around whatever holds it.
+// Draw a lap and a half of the ship's path around its primary.
 primary, el, mu, ok := orbit.Around(w, ship)
 horizon := 60.0
 if ok && el.Eccentricity < 1 {
@@ -114,23 +116,24 @@ for _, p := range orbit.PredictRelative(w, ship, primary, horizon, 90) {
 }
 ```
 
-Ships are integrated with an adaptive step: never longer than a small
-fraction of the local orbital timescale, with the Kepler bodies moved
-along their orbits at each step. A ship in a twenty-second orbit stays
-on it at a time warp of two hundred.
+Ships are integrated with an adaptive step. The step is never longer
+than a small fraction of the local orbital timescale, and the Kepler
+bodies are moved along their orbits at each step. A ship in a
+twenty-second orbit stays on it at a time warp of two hundred.
 
 ## The space example
 
-`examples/space` puts all of this together: a star, seven planets with
-a dozen moons, three hundred massless asteroids in a belt (they follow
-their orbits but pull on nothing, so they cost the ship's integration
-nothing), and a comet on a steep, eccentric orbit. Every body's orbit is
-drawn as a ring of dots from its elements, the ship's predicted path is
-drawn in the frame of whatever it orbits, Tab cycles the camera's focus
-(and the floating origin) through the bodies, and the scroll wheel zooms
-from the ship's hull to the whole system. With `G = 1` and a star of
-mass 175 the inner planet takes two minutes to go round and the outer
-one an hour, so the time warp slider is how you watch the system move.
+`examples/space` uses all of this. It has a star, seven planets with a
+dozen moons, three hundred massless asteroids in a belt (they follow
+their orbits but pull on nothing, so they add nothing to the cost of
+the ship's integration), and a comet on a steep, eccentric orbit. Every
+body's orbit is drawn as a ring of dots from its elements, the ship's
+predicted path is drawn in the frame of its primary, Tab cycles the
+camera's focus (and the floating origin) through the bodies, and the
+scroll wheel zooms from the ship's hull out to the whole system. With
+`G = 1` and a star of mass 175 the inner planet takes two minutes to
+complete an orbit and the outer one an hour, so raise the time warp
+slider to watch the system move.
 
 ```go
 // From examples/space: the time warp, and the focused body pinned to the
@@ -145,10 +148,10 @@ w.Update(ctx.Delta)
 
 ## Choosing units
 
-Stay consistent and the equations do not care. With `G = 1`, a star of
-mass 5000 and a planet at distance 55, the planet's period is
-2π·√(55³/5000) ≈ 36 time units. Pick masses and distances that make the
-periods you want, then set `TimeScale` for how fast it should feel.
+Any consistent set of units works. With `G = 1`, a star of mass 5000
+and a planet at distance 55, the planet's period is 2π·√(55³/5000) ≈ 36
+time units. Pick masses and distances that give the periods you want,
+then set `TimeScale` to control how fast play runs.
 
 ```go
 const g, starMass = 1.0, 5000.0

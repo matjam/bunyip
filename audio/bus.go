@@ -81,9 +81,9 @@ func (b *Bus) Paused() bool {
 	return b.paused
 }
 
-// SetMute silences every voice on the bus while leaving it playing, so
-// unmuting picks up where the sound has got to. The gain ramps over one
-// block, so it never clicks.
+// SetMute silences every voice on the bus while they keep playing, so
+// unmuting resumes wherever the sound has reached. The gain ramps over
+// one block, so it never clicks.
 func (b *Bus) SetMute(mute bool) {
 	b.m.mu.Lock()
 	b.mute = mute
@@ -97,10 +97,9 @@ func (b *Bus) Muted() bool {
 	return b.mute
 }
 
-// SetSolo makes the bus one of the few heard: while any bus is soloed,
-// every other bus (and voices on no bus) fall silent, still playing, the
-// way a mixing desk's solo button auditions one group. Clearing the last
-// solo brings the rest back.
+// SetSolo solos the bus. While any bus is soloed, every other bus, and
+// every voice on no bus, is silent and keeps playing. Clearing the last
+// solo makes the rest audible again.
 func (b *Bus) SetSolo(solo bool) {
 	b.m.mu.Lock()
 	b.solo = solo

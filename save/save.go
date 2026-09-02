@@ -1,18 +1,19 @@
-// Package save keeps a game's files where the operating system expects
-// them: settings, save slots and anything else worth keeping between
-// runs, written as JSON and replaced atomically so a crash mid-write
-// never corrupts a save.
+// Package save stores a game's files in the platform's own data
+// directory: settings, save slots and anything else worth keeping
+// between runs, written as JSON and replaced atomically so a crash
+// mid-write never corrupts a save.
 //
-// Open(app) picks the directory for a game: Application Support on
-// macOS, AppData on Windows, XDG data on Linux; OpenAt takes any
-// directory, for tests. A Store's Write and Read take any value
-// encoding/json handles, and Load reads a value with defaults for the
-// fields a file does not have, which is how settings survive new
-// versions. List names the files present for a load menu, Delete
-// removes one, and Exists checks before overwriting. Files are written
-// to a temporary name and renamed into place, so a reader sees the old
-// file or the new one and never a torn one. For whole ECS worlds,
-// ecs.World.Save produces the bytes and this package stores them.
+// To open a store, call Open with the application name. It picks
+// Application Support on macOS, AppData on Windows and XDG data on
+// Linux. OpenAt takes any directory, for tests. A Store's Write and Read
+// take any value encoding/json handles, and Load reads a value with
+// defaults for the fields a file does not have, which is how settings
+// survive new versions. List names the files present for a load menu,
+// Delete removes one, and Exists checks before overwriting. Files are
+// written to a temporary name and renamed into place, so a reader sees
+// the old file or the new one and never a partly written one. For whole
+// ECS worlds, ecs.World.Save produces the bytes and this package stores
+// them.
 package save
 
 import (

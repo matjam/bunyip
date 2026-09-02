@@ -1,13 +1,13 @@
-// Package ecs is the engine's entity component system: entities are
+// Package ecs is the engine's entity component system. Entities are
 // cheap handles, components are plain Go structs stored in dense
 // per-type columns, and queries iterate every entity carrying a set of
 // components with no lookups in the loop.
 //
-// Storage is by archetype: every distinct set of component types gets a
+// Storage is by archetype. Every distinct set of component types gets a
 // table with one column per type, and an entity lives in exactly one
 // table. Adding or removing a component moves the entity to another
-// table, so structural changes cost a copy while iteration over a
-// hundred thousand entities is a walk down a few slices.
+// table, so structural changes cost a copy, while iterating a hundred
+// thousand entities reads a few slices in order.
 //
 //	w := ecs.NewWorld()
 //	e := w.SpawnWith(Position{1, 2}, Velocity{0.5, 0})
@@ -17,15 +17,15 @@
 //	})
 //
 // Systems are functions registered on the world and run in order by
-// Update; resources are singletons such as the score or the rules;
-// events are per-frame queues that systems use to talk to each other.
+// Update. Resources are singletons such as the score or the rules.
+// Events are per-frame queues that carry values between systems.
 //
 // Worlds save and load as JSON. Register names each component and
-// resource type so files stay valid across builds; Save writes every
+// resource type so files stay valid across builds. Save writes every
 // live entity, its parent links and the registered resources, and Load
 // recreates them with fresh handles, rewriting the Entity fields inside
-// components. Prefab is a template of components (and child prefabs)
-// that spawns independent copies; Clone and CloneTree copy an entity
+// components. A Prefab is a template of components (and child prefabs)
+// that spawns independent copies. Clone and CloneTree copy an entity
 // that already exists.
 package ecs
 

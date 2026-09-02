@@ -1,7 +1,7 @@
 // Package sol holds real-world constants for games set in our solar
-// system. The orbit package itself is unit-agnostic: any masses, any
-// gravitational constant, any scale of distance and time work, so a
-// fictional system needs nothing from here.
+// system. The orbit package itself is unit-agnostic and works with any
+// masses, any gravitational constant and any scale of distance and time,
+// so a fictional system needs nothing from this package.
 package sol
 
 // Distances in metres, masses in kilograms, time in seconds.

@@ -12,7 +12,7 @@ update or free.
 
 ## Frames and containers
 
-Everything happens inside `Begin`, which finishes the frame when its
+Build the interface inside `Begin`, which finishes the frame when its
 body returns. Containers take their contents as closures too:
 
 ```go
@@ -36,9 +36,10 @@ u.Begin(ctx.Input, func() {
 Widgets stack top to bottom inside a panel; `Row` and `Columns` lay a
 few side by side. `Label` wraps to the width it is given.
 
-`Anchored`, `Stretched` and `Split` compute rectangles from the view: a
-panel pinned to a corner, one that grows with the window, a sidebar
-beside a main area. `Tabs` switches between sets of widgets, `Table`
+`Anchored`, `Stretched` and `Split` compute rectangles from the view.
+Use `Anchored` for a panel pinned to a corner, `Stretched` for one that
+grows with the window, and `Split` for a sidebar beside a main area.
+`Tabs` switches between sets of widgets, `Table`
 lays out rows of `Cell` values (or any widget) under a header, `Tree`
 and `TreeOpen` nest collapsible sections, and `Window` is a panel the
 user drags by its title and resizes by its corner. `MenuBar`, `Menu` and
@@ -102,8 +103,8 @@ u.Panel("Settings", ui.Rect{X: 20, Y: 20, W: 320, H: 300}, func() {
 have a caret, a selection made with Shift and the arrows or by dragging,
 Home and End, word jumps with Ctrl or Cmd and the arrows, select all,
 cut, copy, paste, and undo and redo (Ctrl or Cmd with Z, Shift+Z or Y).
-Set the context's `Clipboard` to the engine's `Context` and the
-clipboard is the system's. Text fields show the input method's
+To use the system clipboard, set the context's `Clipboard` to the
+engine's `Context`. Text fields show the input method's
 composition underlined and report their rectangle through
 `OnTextInputRect` so the platform can place candidate windows; wire
 that to `ctx.SetTextInputRect` once.
@@ -115,8 +116,8 @@ and are passed by pointer. A widget's identity comes from its label and
 the enclosing containers, and widgets with the same label in one
 container are told apart by the order they are called in, so a list of
 identical buttons works as long as the order is stable. A widget
-reports `true` when something happened: a click, a changed value, a
-toggled box.
+returns `true` when something happened to it, such as a click, a
+changed value or a toggled box.
 
 ```go
 u.Begin(ctx.Input, func() {
@@ -161,7 +162,8 @@ activates the item. A row that focus moves to inside a `ScrollArea` or
 a list scrolls into view. Tab leaves for the next widget, and Shift-Tab
 comes back to the item it left. On a gamepad, up and down on the d-pad
 step through everything in order, so a list is walked row by row and
-left out the other end; left and right move along tabs and radios.
+focus then continues to the next widget. Left and right move along tabs
+and radios.
 Right opens a focused tree node and Left closes it. A focused `Slider`,
 `IntSlider` or `Spinner` steps with the left and right arrows, the
 minus and plus keys, or the d-pad. `Table` returns the row clicked or
@@ -196,9 +198,9 @@ on the context to draw something else, such as the item's icon.
 such as a cell of an inventory grid. Both take an accept function (nil
 accepts anything), outline the target in the accent colour while an
 accepted payload hovers over it, and report the payload on the frame
-the pointer is released there. `Dragging` returns the payload in flight
-so a target can show itself ready. Escape cancels a drag and nothing is
-dropped.
+the pointer is released there. `Dragging` returns the payload of the
+drag in progress, so the game can draw a target differently while a
+drag is under way. Escape cancels a drag and nothing is dropped.
 
 ```go
 u.DragGhost = func(label string, payload any, x, y float32) {
@@ -238,8 +240,8 @@ theme.RowHeight = 32
 u.Theme = theme
 ```
 
-A game with art of its own gives `FromPalette` the seven colours and
-takes the rest of the measures as they come:
+To match a game's own art, pass its seven colours to `FromPalette` and
+leave the other measures at their defaults:
 
 ```go
 u.Theme = ui.FromPalette(font, ui.Palette{
@@ -260,14 +262,14 @@ built-in ones, for a dropdown in a settings panel.
 
 ## Skins
 
-`ui.Rect` is `lin.Rect` and `ui.Slice` is `gfx.NineSlice`, so the values
-the interface uses draw outside it too.
+`ui.Rect` is `lin.Rect` and `ui.Slice` is `gfx.NineSlice`, so the game
+can draw with the same values outside the interface.
 
 A theme may carry a `Skin` of nine-slice textures for panels, buttons
 in three states, fields, checkboxes, tracks, fills, knobs and scroll
 thumbs. Any slice left nil falls back to the theme's flat colours, so a
-skin can start with just a button image. The borders of each slice are
-in texture pixels.
+skin can start with one button image and grow from there. The borders
+of each slice are in texture pixels.
 
 ```go
 btn, err := ctx.Gfx.NewTexture(buttonPNG, gfx.TextureOptions{Linear: true, NoMipmaps: true})
@@ -310,6 +312,7 @@ for _, n := range u.Accessible() {
 }
 ```
 
-The list is the frame just built, so read it after `Begin` returns. A
+The list covers the frame that was built most recently, so read it
+after `Begin` returns. A
 test finds a widget by role and label and clicks the centre of its
 `Rect`, which is how the package's own navigation tests work.

@@ -1,20 +1,20 @@
-// Package orbit is celestial mechanics for space games: orbital
-// elements and state vectors, two-body propagation that handles
-// circles, ellipses, parabolas and hyperbolas alike, an N-body
-// integrator for planets and moons pulling on each other, and helpers
-// for the numbers a player sees (periods, apsides, escape velocity,
-// transfer burns). Everything is double precision, because a planetary
-// system does not fit in float32, and nothing assumes our own solar
-// system: bodies are masses at positions, the gravitational constant is
-// yours to set, and units are whatever you choose (metres and seconds
-// with the real G, or a game's own units with G = 1).
+// Package orbit computes celestial mechanics for space games. It
+// provides orbital elements and state vectors, two-body propagation
+// that handles circles, ellipses, parabolas and hyperbolas alike, an
+// N-body integrator for planets and moons pulling on each other, and
+// helpers for the numbers a player sees (periods, apsides, escape
+// velocity, transfer burns). Everything is double precision, because a
+// planetary system does not fit in float32. Nothing assumes our own
+// solar system. Bodies are masses at positions, the gravitational
+// constant is yours to set, and units are whatever you choose (metres
+// and seconds with the real G, or a game's own units with G = 1).
 //
-// The System bridges it to the entity component system: Body
-// components hold positions and velocities at astronomical scale, the
-// system moves them (analytically for entities on a Kepler orbit,
-// numerically for free bodies under thrust and gravity) and writes
+// System connects the package to the entity component system. Body
+// components hold positions and velocities at astronomical scale. The
+// system moves them, analytically for entities on a Kepler orbit and
+// numerically for free bodies under thrust and gravity, and writes
 // scaled positions into gfx.Transform relative to a floating origin, so
-// rendering keeps its precision wherever the camera is.
+// rendering keeps its precision at any camera position.
 package orbit
 
 import (

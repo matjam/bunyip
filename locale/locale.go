@@ -1,7 +1,7 @@
-// Package locale translates a game's strings: tables of messages by
-// language with placeholders and plural forms, a fallback chain so a
-// half-translated language falls back to English rather than showing
-// keys, and the plural rules of the common languages.
+// Package locale translates a game's strings. It provides tables of
+// messages by language with placeholders and plural forms, a fallback
+// chain so a half-translated language falls back to English rather than
+// showing keys, and the plural rules of the common languages.
 //
 // A Bundle holds one Table per language, loaded from JSON files a
 // translator edits:
@@ -12,13 +12,13 @@
 //	  "inv.arrows": {"one": "{n} arrow", "other": "{n} arrows"}
 //	}
 //
-// The game asks the bundle for a language's Translator and calls T
-// with a key and the values for its placeholders; a plural entry picks
-// its form from the value named "n" (or the first number given). Keys
-// missing from a language come from the fallbacks in order, and a key
-// missing everywhere returns itself in brackets so it is seen and fixed.
-// Right-to-left layout of the interface is the game's; the text itself
-// shapes correctly through gfx.
+// To translate a string, get a language's Translator from the bundle and
+// call T with a key and the values for its placeholders. A plural entry
+// picks its form from the value named "n", or from the first number
+// given. Keys missing from a language come from the fallbacks in order,
+// and a key missing everywhere returns itself in brackets so it is
+// visible and can be fixed. Right-to-left layout of the interface is the
+// game's responsibility; the text itself shapes correctly through gfx.
 package locale
 
 import (

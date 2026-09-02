@@ -1,5 +1,5 @@
 // Package phys simulates rigid bodies in 2D and 3D on the entity
-// component system: shapes attached to entities collide, bounce, slide
+// component system. Shapes attached to entities collide, bounce, slide
 // and stack under gravity, and the game reads what touched what.
 //
 // A 2D entity carries a gfx.Transform2, a Body2 and a Collider2; a 3D
@@ -26,10 +26,10 @@
 // and levels, with a triangle tree built by NewMeshShape). Sphere and
 // box pairs have exact tests; every other pair collides through support
 // functions (GJK for distance, EPA for penetration) with face manifolds
-// clipped like the box test's. Shapes in 2D are Circle, Box2, Polygon2,
-// Capsule2, and for terrain Edge2 and Chain2.
+// clipped the same way as the box test's. Shapes in 2D are Circle, Box2,
+// Polygon2, Capsule2, and for terrain Edge2 and Chain2.
 //
-// Queries answer questions about the world between updates: Raycast2
+// Queries inspect the world between updates. Raycast2
 // and Raycast3 return the nearest collider along a ray and RaycastAll2
 // and RaycastAll3 every one in order; OverlapShape2 and OverlapShape3
 // (with OverlapCircle2, OverlapBox2, OverlapSphere3 and OverlapBox3)
@@ -44,18 +44,19 @@
 // SpringJoint2 and SpringJoint3 (damped springs) and FixedJoint2 and
 // FixedJoint3 (welds). They are solved with the contacts, in entity
 // order. NewRagdoll3 spawns a humanoid of capsules on limited joints
-// from a RagdollSpec and Ragdoll3.Pose places it from an animated
+// from a RagdollSpec, and Ragdoll3.Pose places it from an animated
 // character's bones. A body with CCD set is swept against static
-// geometry every substep so it cannot tunnel, and its bounding sphere
-// against the other moving bodies; with Settings.SleepTime set, bodies
-// that rest for that long sleep until touched or pushed (Body.Asleep,
-// Body.Wake).
+// geometry every substep so it cannot tunnel, and its bounding sphere is
+// swept against the other moving bodies. With Settings.SleepTime set,
+// bodies that rest for that long sleep until touched or pushed
+// (Body.Asleep, Body.Wake).
 //
 // CharacterController2 and CharacterController3 move an upright capsule
-// by sweeps rather than dynamics: sliding along walls, climbing steps up
-// to StepHeight, walking slopes up to MaxSlope and reporting Grounded.
+// by sweeps rather than dynamics. The capsule slides along walls, climbs
+// steps up to StepHeight, walks slopes up to MaxSlope and reports
+// Grounded.
 //
-// For orbits and spaceflight, see the orbit package; it works with the
+// For orbits and spaceflight, see the orbit package. It works with the
 // same transforms at astronomical scale.
 package phys
 
