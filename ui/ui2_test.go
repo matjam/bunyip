@@ -14,7 +14,7 @@ func (f *fakeClipboard) Clipboard() (string, error)  { return f.s, nil }
 func (f *fakeClipboard) SetClipboard(s string) error { f.s = s; return nil }
 
 // run runs one interface frame with body as the whole interface.
-func run(t *testing.T, c *Context, in *input.State, body func()) {
+func run(t *testing.T, c *Context, in *feeder, body func()) {
 	t.Helper()
 	in.EndUpdate()
 	in.SetDrawing(true)
@@ -22,20 +22,20 @@ func run(t *testing.T, c *Context, in *input.State, body func()) {
 		in.SetDrawing(false)
 		in.EndFrame()
 	}()
-	ok, err := c.g.Begin(gfx.Black)
+	ok, err := beginFrame(c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok {
 		return
 	}
-	c.Begin(in, body)
-	if _, err := c.g.End(false); err != nil {
+	c.Begin(in.state, body)
+	if err := endFrame(c); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func press(in *input.State, k input.Key, mods input.Mods) {
+func press(in *feeder, k input.Key, mods input.Mods) {
 	in.FeedKey(k, true, false, mods)
 	in.FeedKey(k, false, false, mods)
 }
@@ -44,7 +44,7 @@ func TestTextEditing(t *testing.T) {
 	c := newContext(t)
 	clip := &fakeClipboard{}
 	c.Clipboard = clip
-	in := &input.State{}
+	in := newFeeder()
 	text := "hello"
 	field := func() {
 		c.Panel("T", Rect{X: 10, Y: 10, W: 200, H: 200}, func() { c.TextField("name", &text) })
@@ -133,7 +133,7 @@ func TestWrapRunes(t *testing.T) {
 
 func TestLayoutWidgets(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	tab, radio, sel, spin := 0, 0, -1, 5
 	col := gfx.RGB(255, 0, 0)
 	modal := true

@@ -59,7 +59,7 @@ func mixUntilDone(m *Mixer, v *Voice, maxBlocks int) []float32 {
 	var all []float32
 	block := make([]float32, 512*2)
 	for i := 0; i < maxBlocks && v.Playing(); i++ {
-		m.Mix(block)
+		m.mix(block)
 		all = append(all, block...)
 	}
 	return all
@@ -112,7 +112,7 @@ func TestMusicLoops(t *testing.T) {
 		t.Fatalf("looping music rms %.3f, want a steady tone", l)
 	}
 	music.Close()
-	m.Mix(make([]float32, 1024))
+	m.mix(make([]float32, 1024))
 	if v.Playing() {
 		t.Fatal("voice survived Close")
 	}
@@ -166,8 +166,8 @@ func TestPositional(t *testing.T) {
 	at := func(p lin.Vec3) (float64, float64) {
 		m.StopAll()
 		m.Play(tone, PlayOptions{Positional: true, Position: p, MinDistance: 1, MaxDistance: 100})
-		m.Mix(block) // ramp-in block
-		m.Mix(block)
+		m.mix(block) // ramp-in block
+		m.mix(block)
 		return rms(block)
 	}
 	l, r := at(lin.Vec3{X: 5})
@@ -220,8 +220,8 @@ func TestLowPass(t *testing.T) {
 	level := func(s *Sound) float64 {
 		m.StopAll()
 		m.Play(s, PlayOptions{LowPass: 500})
-		m.Mix(block)
-		m.Mix(block)
+		m.mix(block)
+		m.mix(block)
 		l, _ := rms(block)
 		return l
 	}
@@ -237,11 +237,11 @@ func TestReverbTail(t *testing.T) {
 	v := m.Play(click, PlayOptions{Reverb: 1})
 	block := make([]float32, 4096)
 	for v.Playing() {
-		m.Mix(block)
+		m.mix(block)
 	}
 	var tail float64
 	for range 20 { // almost a second after the click ended
-		m.Mix(block)
+		m.mix(block)
 		l, r := rms(block)
 		tail += l + r
 	}
@@ -249,7 +249,7 @@ func TestReverbTail(t *testing.T) {
 		t.Fatalf("no reverb tail after the source ended: %.4f", tail)
 	}
 	m.SetReverb(ReverbSettings{})
-	m.Mix(block)
+	m.mix(block)
 	if l, r := rms(block); l+r > 0 {
 		t.Fatal("reverb still audible after being turned off")
 	}
@@ -276,7 +276,7 @@ func TestFadeAndPitch(t *testing.T) {
 	}
 	v = m.Play(tone, PlayOptions{})
 	v.SetPaused(true)
-	m.Mix(make([]float32, 1024))
+	m.mix(make([]float32, 1024))
 	if !v.Playing() {
 		t.Fatal("paused voice ended")
 	}

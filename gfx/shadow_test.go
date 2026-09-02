@@ -22,7 +22,7 @@ func TestShadows(t *testing.T) {
 	render := func(shadows bool) *image.RGBA {
 		var img *image.RGBA
 		for range 2 {
-			ok, err := g.Begin(Black)
+			ok, err := g.begin(Black)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -36,7 +36,7 @@ func TestShadows(t *testing.T) {
 			floor := lin.Translate(lin.V3(0, -1, 0)).Mul(lin.Scale(lin.V3(20, 0.2, 20)))
 			g.DrawMesh(cube, Material{BaseColor: White, Roughness: 1}, floor)
 			g.DrawMesh(cube, Material{BaseColor: White, Roughness: 1}, lin.Translate(lin.V3(0, 2, 0)))
-			if img, err = g.End(true); err != nil {
+			if img, err = g.end(true); err != nil {
 				t.Fatal(err)
 			}
 		}

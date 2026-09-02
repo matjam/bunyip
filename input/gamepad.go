@@ -87,8 +87,8 @@ func (s *State) Gamepad(i int) *Gamepad {
 	return &g
 }
 
-// FeedGamepad replaces controller i's state, deriving press and release edges.
-func (s *State) FeedGamepad(i int, connected bool, name string, buttons [GamepadButtonCount]bool, axes [GamepadAxisCount]float32) {
+// feedGamepad replaces controller i's state, deriving press and release edges.
+func (s *State) feedGamepad(i int, connected bool, name string, buttons [GamepadButtonCount]bool, axes [GamepadAxisCount]float32) {
 	if i < 0 || i >= MaxGamepads {
 		return
 	}
@@ -127,5 +127,5 @@ func (s *State) MouseDelta() (dx, dy float32) {
 	return s.mouseDX, s.mouseDY
 }
 
-// FeedMouseDelta accumulates relative pointer movement.
-func (s *State) FeedMouseDelta(dx, dy float32) { s.mouseDX += dx; s.mouseDY += dy }
+// feedMouseDelta accumulates relative pointer movement.
+func (s *State) feedMouseDelta(dx, dy float32) { s.mouseDX += dx; s.mouseDY += dy }

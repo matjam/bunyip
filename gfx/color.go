@@ -55,12 +55,6 @@
 // not run while a frame using it is in flight, which under bunyip.Run
 // means calling it from Init, Update, Draw or Shutdown, never from
 // another goroutine. Stats reports what the last frame cost.
-//
-// # Engine plumbing
-//
-// New, Begin, End, Resize, SetTime and Destroy on Graphics are called
-// by the engine loop; a game under bunyip.Run never needs them, and
-// tests drive a headless Graphics through them.
 package gfx
 
 import "github.com/matjam/bunyip/lin"

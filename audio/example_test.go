@@ -8,17 +8,13 @@ import (
 )
 
 func ExampleMixer() {
-	// The engine creates the mixer and pulls Mix from the output device;
-	// here we pull it by hand.
+	// The engine creates the mixer and the output device pulls frames
+	// from it; a game only starts and adjusts voices.
 	m := audio.NewMixer(48000)
 	beep, _ := m.NewSound(audio.Sine(440, 0.1, 48000))
 	v := m.Play(beep, audio.PlayOptions{Volume: 0.5, Pan: -0.5})
-	buf := make([]float32, 512*2)
-	m.Mix(buf)
 	fmt.Println(m.Playing(), v.Playing())
-	for v.Playing() {
-		m.Mix(buf)
-	}
+	m.StopAll()
 	fmt.Println(m.Playing())
 	// Output:
 	// 1 true
@@ -46,22 +42,21 @@ func ExampleBus() {
 	footsteps := m.NewBus("footsteps") // buses beyond the three built in
 	step, _ := m.NewSound(audio.Sine(120, 0.05, 48000))
 	m.Play(step, audio.PlayOptions{Bus: footsteps})
-	m.SetPaused(true)
-	buf := make([]float32, 512*2)
-	m.Mix(buf)
-	fmt.Println(m.Playing(), buf[0])
+	footsteps.SetVolume(0.6)
+	m.SetPaused(true) // the pause menu: everything holds, nothing is lost
+	fmt.Println(m.Playing(), footsteps.Volume())
 	// Output:
-	// 1 0
+	// 1 0.6
 }
 
 func ExampleVoice_OnDone() {
 	m := audio.NewMixer(48000)
 	beep, _ := m.NewSound(audio.Sine(440, 0.01, 48000))
 	v := m.Play(beep, audio.PlayOptions{})
-	v.OnDone(func() { fmt.Println("done at", v.Position() >= beep.Duration()) })
-	m.Mix(make([]float32, 1024*2))
+	v.OnDone(func() { fmt.Println("done") }) // when it plays out, or is stopped
+	m.StopAll()
 	// Output:
-	// done at true
+	// done
 }
 
 func ExampleMixer_SetReverb() {

@@ -1,11 +1,6 @@
 // Package input is the keyboard, mouse and gamepads as a game reads them:
 // what is held, what changed this update, where the pointer is and what
 // text was typed, in view units.
-//
-// Engine plumbing. The Feed methods, EndUpdate, EndFrame and SetDrawing
-// exist for the engine loop and the platform layer, which push events in
-// and mark frame boundaries; a game under bunyip.Run never calls them,
-// though a test scripting input may.
 package input
 
 import "github.com/matjam/bunyip/lin"
@@ -56,10 +51,10 @@ type frameTransients struct {
 	repeated                        [KeyCount]bool
 }
 
-// EndUpdate clears the per-update transients (pressed, released, scroll,
+// endUpdate clears the per-update transients (pressed, released, scroll,
 // typed text), first latching them for Draw. The engine calls it after
 // each game update.
-func (s *State) EndUpdate() {
+func (s *State) endUpdate() {
 	f := &s.frame
 	for k := range s.pressed {
 		f.pressed[k] = f.pressed[k] || s.pressed[k]
@@ -110,9 +105,9 @@ func (s *State) EndUpdate() {
 	}
 }
 
-// EndFrame clears the transients latched for Draw. The engine calls it
+// endFrame clears the transients latched for Draw. The engine calls it
 // after each drawn frame.
-func (s *State) EndFrame() {
+func (s *State) endFrame() {
 	s.frame = frameTransients{chars: s.frame.chars[:0]}
 	for i := range s.gamepads {
 		s.gamepads[i].framePressed = [GamepadButtonCount]bool{}
@@ -120,11 +115,11 @@ func (s *State) EndFrame() {
 	}
 }
 
-// SetDrawing switches the accessors between what happened since the
+// setDrawing switches the accessors between what happened since the
 // last update (for Update) and what happened since the last drawn frame
 // (for Draw, where immediate-mode interfaces run). The engine sets it
 // around Draw.
-func (s *State) SetDrawing(drawing bool) { s.drawing = drawing }
+func (s *State) setDrawing(drawing bool) { s.drawing = drawing }
 
 // KeyDown reports whether the key is held.
 func (s *State) KeyDown(k Key) bool { return s.down[k] }
@@ -223,10 +218,9 @@ func (s *State) Chars() []rune {
 // after the committed text; it is empty when nothing is being composed.
 func (s *State) Composition() string { return s.composition }
 
-// FeedKey records a key going down or up; the engine calls the Feed
-// methods as platform events arrive, and a test can call them to script
-// input.
-func (s *State) FeedKey(k Key, down, repeat bool, mods Mods) {
+// feedKey records a key going down or up; the engine calls the feed
+// methods as platform events arrive.
+func (s *State) feedKey(k Key, down, repeat bool, mods Mods) {
 	s.mods = mods
 	if k == KeyUnknown {
 		return
@@ -244,17 +238,17 @@ func (s *State) FeedKey(k Key, down, repeat bool, mods Mods) {
 	s.released[k] = true
 }
 
-// FeedChar records a typed character.
-func (s *State) FeedChar(r rune) { s.chars = append(s.chars, r) }
+// feedChar records a typed character.
+func (s *State) feedChar(r rune) { s.chars = append(s.chars, r) }
 
-// FeedComposition records the input method's uncommitted text.
-func (s *State) FeedComposition(text string) { s.composition = text }
+// feedComposition records the input method's uncommitted text.
+func (s *State) feedComposition(text string) { s.composition = text }
 
-// FeedMouseMove records the pointer position in view units.
-func (s *State) FeedMouseMove(x, y float32) { s.mouseX, s.mouseY = x, y }
+// feedMouseMove records the pointer position in view units.
+func (s *State) feedMouseMove(x, y float32) { s.mouseX, s.mouseY = x, y }
 
-// FeedMouseButton records a button going down or up at a position.
-func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float32) {
+// feedMouseButton records a button going down or up at a position.
+func (s *State) feedMouseButton(b MouseButton, down bool, x, y float32) {
 	s.mouseX, s.mouseY = x, y
 	if int(b) >= len(s.buttons) {
 		return
@@ -275,11 +269,11 @@ func (s *State) FeedMouseButton(b MouseButton, down bool, x, y float32) {
 	}
 }
 
-// FeedScroll accumulates wheel movement in lines.
-func (s *State) FeedScroll(dx, dy float32) { s.scrollX += dx; s.scrollY += dy }
+// feedScroll accumulates wheel movement in lines.
+func (s *State) feedScroll(dx, dy float32) { s.scrollX += dx; s.scrollY += dy }
 
-// FeedFocusLost releases everything, since key-up events stop arriving.
-func (s *State) FeedFocusLost() {
+// feedFocusLost releases everything, since key-up events stop arriving.
+func (s *State) feedFocusLost() {
 	for k := range s.down {
 		if s.down[k] {
 			s.down[k] = false

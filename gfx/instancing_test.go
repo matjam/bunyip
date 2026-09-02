@@ -21,7 +21,7 @@ func TestInstancingAndBlend(t *testing.T) {
 	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1})
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +38,7 @@ func TestInstancingAndBlend(t *testing.T) {
 		// A translucent red sheet in front of the middle of the grid.
 		g.DrawMesh(cube, Material{BaseColor: Color{1, 0, 0, 0.5}, Blend: true, Roughness: 1},
 			lin.Translate(lin.V3(0, 0, 3)).Mul(lin.Scale(lin.V3(3, 3, 0.05))))
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatal(err)
 		}
 	}

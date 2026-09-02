@@ -18,10 +18,6 @@
 // to any keys, buttons and axes, with dead zones, rebinding through
 // Listen and JSON bindings for a settings file, so game code asks for
 // "jump" and takes a gamepad without a second set of checks.
-//
-// The Feed* methods and EndUpdate, EndFrame and SetDrawing are the
-// engine's plumbing; a game under bunyip.Run never calls them, and a
-// test drives a State through them.
 package input
 
 // Key identifies a physical key by position, independent of the active

@@ -37,13 +37,13 @@ func TestColorLUT(t *testing.T) {
 	defer swap.Destroy()
 	shot := func(lut *Texture) color.RGBA {
 		g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true, LUT: lut})
-		if ok, err := g.Begin(Black); err != nil || !ok {
+		if ok, err := g.begin(Black); err != nil || !ok {
 			t.Fatal(err)
 		}
 		g.SetCamera(Camera{Position: lin.V3(0, 0, 3), Target: lin.V3(0, 0, 0)})
 		g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: Color{1, 1, 1, 1}, Ambient: Color{0.2, 0.2, 0.2, 1}})
 		g.DrawMesh(cube, Material{BaseColor: Color{1, 0.1, 0.1, 1}, Unlit: true}, lin.Identity())
-		img, err := g.End(true)
+		img, err := g.end(true)
 		if err != nil {
 			t.Fatal(err)
 		}

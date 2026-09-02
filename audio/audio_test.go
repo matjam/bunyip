@@ -14,7 +14,7 @@ func TestMixLoopAndStop(t *testing.T) {
 	}
 	v := m.Play(snd, PlayOptions{Loop: true, Volume: 0.5})
 	out := make([]float32, 20)
-	m.Mix(out)
+	m.mix(out)
 	// Centre pan is sqrt(1/2) per side; 0.5 * 0.5 * 0.707 = 0.177 on every frame because it loops.
 	for i, s := range out {
 		if math.Abs(float64(s)-0.1767) > 0.002 {
@@ -22,12 +22,12 @@ func TestMixLoopAndStop(t *testing.T) {
 		}
 	}
 	v.Stop()
-	m.Mix(out)
+	m.mix(out)
 	if out[0] != 0 || m.Playing() != 0 {
 		t.Errorf("voice kept playing after Stop: %v, %d voices", out[0], m.Playing())
 	}
 	one := m.Play(snd, PlayOptions{})
-	m.Mix(out) // 10 frames, sound is 4: it ends within this call
+	m.mix(out) // 10 frames, sound is 4: it ends within this call
 	if one.Playing() || m.Playing() != 0 {
 		t.Error("one-shot voice did not finish")
 	}
@@ -42,7 +42,7 @@ func TestPanAndClamp(t *testing.T) {
 	m.Play(snd, PlayOptions{Pan: 1})
 	m.Play(snd, PlayOptions{Pan: 1})
 	out := make([]float32, 4)
-	m.Mix(out)
+	m.mix(out)
 	if out[0] != 0 || out[1] != 1 {
 		t.Errorf("hard-right pan gave L=%v R=%v; want 0 and 1 (clamped)", out[0], out[1])
 	}

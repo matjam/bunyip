@@ -22,12 +22,12 @@ func newHeadless(t *testing.T, w, h int) *Graphics {
 	if err != nil {
 		t.Fatalf("NewRenderer: %v", err)
 	}
-	g, err := New(r)
+	g, err := newGraphics(r)
 	if err != nil {
 		r.Destroy()
-		t.Fatalf("gfx.New: %v", err)
+		t.Fatalf("gfx: new graphics: %v", err)
 	}
-	t.Cleanup(func() { g.Destroy(); r.Destroy() })
+	t.Cleanup(func() { g.destroy(); r.Destroy() })
 	return g
 }
 
@@ -49,7 +49,7 @@ func TestSprites(t *testing.T) {
 
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatalf("Begin: %v", err)
 		}
@@ -58,7 +58,7 @@ func TestSprites(t *testing.T) {
 		}
 		g.FillRect(0, 0, 64, 64, RGB(0, 0, 255))
 		g.Draw(tex, Sprite{Pos: v2(64, 64), Size: v2(64, 64)})
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatalf("End: %v", err)
 		}
 	}

@@ -12,11 +12,11 @@ import (
 func tail(m *Mixer, v *Voice, blocks int) float64 {
 	block := make([]float32, 4096)
 	for v.Playing() {
-		m.Mix(block)
+		m.mix(block)
 	}
 	var sum float64
 	for range blocks {
-		m.Mix(block)
+		m.mix(block)
 		l, r := rms(block)
 		sum += l + r
 	}
@@ -95,8 +95,8 @@ func TestOcclusion(t *testing.T) {
 	level := func(s *Sound, occlusion float32) float64 {
 		m.StopAll()
 		m.Play(s, PlayOptions{Occlusion: occlusion})
-		m.Mix(block)
-		m.Mix(block)
+		m.mix(block)
+		m.mix(block)
 		l, _ := rms(block)
 		return l
 	}
@@ -116,21 +116,21 @@ func TestOcclusion(t *testing.T) {
 	// Set while playing, and read back.
 	m.StopAll()
 	v := m.Play(low, PlayOptions{Loop: true})
-	m.Mix(block)
-	m.Mix(block)
+	m.mix(block)
+	m.mix(block)
 	before, _ := rms(block)
 	v.SetOcclusion(2) // clamped to 1
 	if v.Occlusion() != 1 {
 		t.Fatalf("Occlusion %v, want 1", v.Occlusion())
 	}
-	m.Mix(block) // ramp block
-	m.Mix(block)
+	m.mix(block) // ramp block
+	m.mix(block)
 	if after, _ := rms(block); after > before*0.2 {
 		t.Fatalf("SetOcclusion did not attenuate: %.4f then %.4f", before, after)
 	}
 	v.SetOcclusion(0)
-	m.Mix(block)
-	m.Mix(block)
+	m.mix(block)
+	m.mix(block)
 	if after, _ := rms(block); math.Abs(after-before) > 0.01 {
 		t.Fatalf("clearing occlusion gave %.4f, want %.4f", after, before)
 	}
@@ -142,8 +142,8 @@ func TestMuteAndSolo(t *testing.T) {
 	b := m.Play(dc(m), PlayOptions{Loop: true, Bus: m.Music()})
 	out := make([]float32, 20)
 	settle := func() float64 {
-		m.Mix(out) // the ramp block
-		m.Mix(out)
+		m.mix(out) // the ramp block
+		m.mix(out)
 		l, _ := rms(out)
 		return l
 	}
@@ -155,7 +155,7 @@ func TestMuteAndSolo(t *testing.T) {
 	if !a.Muted() {
 		t.Fatal("Muted did not read back")
 	}
-	m.Mix(out) // the ramp: falling, never jumping
+	m.mix(out) // the ramp: falling, never jumping
 	for i := 2; i < len(out); i += 2 {
 		if out[i] > out[i-2] {
 			t.Fatalf("mute jumped at frame %d: %v then %v", i/2, out[i-2], out[i])
@@ -254,22 +254,22 @@ func TestPauseFades(t *testing.T) {
 	m := NewMixer(1000)
 	v := m.Play(dc(m), PlayOptions{Loop: true})
 	out := make([]float32, 20)
-	m.Mix(out)
-	m.Mix(out)
+	m.mix(out)
+	m.mix(out)
 	v.SetPaused(true)
-	m.Mix(out)
+	m.mix(out)
 	for i := 2; i < len(out); i += 2 {
 		if out[i] >= out[i-2] {
 			t.Fatalf("voice pause did not fade at frame %d: %v then %v", i/2, out[i-2], out[i])
 		}
 	}
 	pos := v.Position()
-	m.Mix(out)
+	m.mix(out)
 	if l, r := rms(out); l+r != 0 || v.Position() != pos {
 		t.Fatalf("held voice produced %.3f/%.3f and moved from %v to %v", l, r, pos, v.Position())
 	}
 	v.SetPaused(false)
-	m.Mix(out)
+	m.mix(out)
 	for i := 2; i < len(out); i += 2 {
 		if out[i] <= out[i-2] {
 			t.Fatalf("resume did not ramp at frame %d: %v then %v", i/2, out[i-2], out[i])

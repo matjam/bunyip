@@ -163,11 +163,11 @@ func TestDrawTextRenders(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Destroy()
-	if ok, err := g.Begin(Black); err != nil || !ok {
+	if ok, err := g.begin(Black); err != nil || !ok {
 		t.Fatal(err)
 	}
 	g.DrawText(f, "Hi", 4, 4, White)
-	img, err := g.End(true)
+	img, err := g.end(true)
 	if err != nil {
 		t.Fatal(err)
 	}

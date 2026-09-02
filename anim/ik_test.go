@@ -12,6 +12,7 @@ import (
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
+	"github.com/matjam/bunyip/internal/hook"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
@@ -117,13 +118,13 @@ func headless(t *testing.T) *gfx.Graphics {
 	if err != nil {
 		t.Fatalf("NewRenderer: %v", err)
 	}
-	g, err := gfx.New(r)
+	gd, err := hook.NewGraphics(r) // the engine builds the context; a test does it the same way
 	if err != nil {
 		r.Destroy()
-		t.Fatalf("gfx.New: %v", err)
+		t.Fatalf("new graphics: %v", err)
 	}
-	t.Cleanup(func() { g.Destroy(); r.Destroy() })
-	return g
+	t.Cleanup(func() { gd.Destroy(); r.Destroy() })
+	return gd.Game().(*gfx.Graphics)
 }
 
 func TestSolveOnPlayer(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/internal/audioout"
+	"github.com/matjam/bunyip/internal/hook"
 	"github.com/matjam/bunyip/internal/platform"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
@@ -101,28 +102,31 @@ func runOnce(cfg Config, game Game) error {
 		return err
 	}
 	defer r.Destroy()
-	g, err := gfx.New(r)
+	gd, err := hook.NewGraphics(r)
 	if err != nil {
 		return err
 	}
-	defer g.Destroy()
-
-	mixer := audio.NewMixer(audioRate)
+	defer gd.Destroy()
+	in := hook.NewInput()
+	mix := hook.NewMixer(audioRate)
 	if !cfg.NoAudio && !cfg.Headless {
-		dev, err := audioout.Open(audioRate, mixer.Mix)
+		dev, err := audioout.Open(audioRate, mix.Mix)
 		if err != nil {
 			cfg.Log.Warn("bunyip: audio output unavailable, continuing silent", "err", err)
 		} else {
 			defer dev.Close()
 		}
 	}
-	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1, focused: true}}
+	// The drivers stay in the loop; the game sees the public values.
+	l := &loop{cfg: cfg, app: app, win: win, game: game, gfx: gd, input: in, audio: mix,
+		ctx: &Context{Gfx: gd.Game().(*gfx.Graphics), Input: in.Game().(*input.State), Log: cfg.Log,
+			Audio: mix.Game().(*audio.Mixer), Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1, focused: true}}
 	l.overlay.on = cfg.Debug
 	l.overlay.budget = cfg.DrawBudget
 	if cfg.Icon != nil {
 		win.SetIcon(cfg.Icon)
 	}
-	defer l.overlay.destroy() // before g.Destroy, which was deferred earlier
+	defer l.overlay.destroy() // before the graphics context, destroyed by the defer above
 	if cfg.Pprof != "" && !cfg.recovering {
 		servePprof(cfg.Pprof, l.ctx)
 	}
@@ -150,6 +154,12 @@ type loop struct {
 	ctx     *Context
 	overlay overlay
 
+	// The engine's side of the public values in ctx: the frame, the event
+	// feed and the audio pull, none of which a game calls.
+	gfx   hook.Graphics
+	input hook.Input
+	audio hook.Audio
+
 	// The main output's pixel rectangle and the window's pixels per point,
 	// for mapping pointer positions into view units.
 	viewport       lin.Rect
@@ -169,7 +179,7 @@ func (l *loop) applySize() {
 	pw, ph := w.PixelSize()
 	width, height := w.Size()
 	l.pixelsPerPoint = float32(w.Scale())
-	l.ctx.Gfx.Resize(pw, ph)
+	l.gfx.Resize(pw, ph)
 	cfg := l.cfg
 	if cfg.ViewWidth <= 0 || cfg.ViewHeight <= 0 {
 		l.viewport = lin.R(0, 0, float32(pw), float32(ph))
@@ -233,7 +243,7 @@ func (l *loop) run() error {
 			break
 		}
 		for i, g := range l.app.Gamepads() {
-			l.ctx.Input.FeedGamepad(i, g.Connected, g.Name, g.Buttons, g.Axes)
+			l.input.FeedGamepad(i, g.Connected, g.Name, g.Buttons, g.Axes)
 		}
 		l.overlay.toggle(l.ctx.Input)
 		now := time.Now()
@@ -286,7 +296,7 @@ func (l *loop) update() error {
 	err := l.game.Update(l.ctx)
 	l.updateTime += time.Since(start)
 	l.updates++
-	l.ctx.Input.EndUpdate()
+	l.input.EndUpdate()
 	l.ctx.closeReq = false // the game has seen it
 	return err
 }
@@ -307,13 +317,14 @@ func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 func (l *loop) draw() error {
 	// Draw sees every input edge since the last frame, so an interface
 	// built here reacts to clicks that Update already consumed.
-	l.ctx.Input.SetDrawing(true)
-	l.ctx.Gfx.SetTime(l.ctx.Time)
+	l.input.SetDrawing(true)
+	l.gfx.SetTime(l.ctx.Time)
 	defer func() {
-		l.ctx.Input.SetDrawing(false)
-		l.ctx.Input.EndFrame()
+		l.input.SetDrawing(false)
+		l.input.EndFrame()
 	}()
-	ok, err := l.ctx.Gfx.Begin(l.ctx.Clear)
+	c := l.ctx.Clear
+	ok, err := l.gfx.Begin([4]float32{c.R, c.G, c.B, c.A})
 	if err != nil || !ok {
 		return err
 	}
@@ -330,7 +341,7 @@ func (l *loop) draw() error {
 	}
 	capture := l.ctx.shot != ""
 	presentStart := time.Now()
-	img, err := l.ctx.Gfx.End(capture)
+	img, err := l.gfx.End(capture)
 	if err != nil {
 		return err
 	}
@@ -366,7 +377,7 @@ func (l *loop) publishStats() {
 }
 
 func (l *loop) handleEvents(events []platform.Event) {
-	in := l.ctx.Input
+	in := l.input
 	for _, e := range events {
 		switch e.Kind {
 		case platform.EventClose:
@@ -391,9 +402,9 @@ func (l *loop) handleEvents(events []platform.Event) {
 				l.win.SetCursor(platform.CursorShape(l.ctx.cursor))
 			}
 		case platform.EventKeyDown:
-			in.FeedKey(e.Key, true, e.Repeat, e.Mods)
+			in.FeedKey(uint8(e.Key), true, e.Repeat, uint8(e.Mods))
 		case platform.EventKeyUp:
-			in.FeedKey(e.Key, false, false, e.Mods)
+			in.FeedKey(uint8(e.Key), false, false, uint8(e.Mods))
 		case platform.EventChar:
 			in.FeedChar(e.Rune)
 		case platform.EventCompose:
@@ -405,10 +416,10 @@ func (l *loop) handleEvents(events []platform.Event) {
 			}
 		case platform.EventMouseDown:
 			x, y := l.toView(e.X, e.Y)
-			in.FeedMouseButton(e.Button, true, x, y)
+			in.FeedMouseButton(uint8(e.Button), true, x, y)
 		case platform.EventMouseUp:
 			x, y := l.toView(e.X, e.Y)
-			in.FeedMouseButton(e.Button, false, x, y)
+			in.FeedMouseButton(uint8(e.Button), false, x, y)
 		case platform.EventScroll:
 			in.FeedScroll(float32(e.DX), float32(e.DY))
 		}

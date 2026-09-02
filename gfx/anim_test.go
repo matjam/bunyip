@@ -335,7 +335,7 @@ func TestMorphTargets(t *testing.T) {
 				t.Fatalf("animated weight %v", w)
 			}
 			for range 2 {
-				ok, err := g.Begin(Black)
+				ok, err := g.begin(Black)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -344,7 +344,7 @@ func TestMorphTargets(t *testing.T) {
 				}
 				g.SetCamera(Camera{Position: lin.V3(0, 0, 4)})
 				g.DrawModelAnimated(model, Transform{}, p)
-				if _, err := g.End(false); err != nil {
+				if _, err := g.end(false); err != nil {
 					t.Fatal(err)
 				}
 			}

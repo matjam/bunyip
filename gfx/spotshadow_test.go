@@ -26,7 +26,7 @@ func TestSpotShadow(t *testing.T) {
 	var px, py float32
 	luma := func(shadows bool) float32 {
 		g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
-		if ok, err := g.Begin(Black); err != nil || !ok {
+		if ok, err := g.begin(Black); err != nil || !ok {
 			t.Fatal(err)
 		}
 		g.SetCamera(Camera{Position: lin.V3(2.5, 4, 0.5), Target: lin.V3(0.5, 0, 0)})
@@ -35,7 +35,7 @@ func TestSpotShadow(t *testing.T) {
 		g.DrawMesh(floor, Material{Roughness: 1}, lin.Scale(lin.V3(8, 1, 8)))
 		g.DrawMesh(cube, Material{Roughness: 1}, lin.Translate(lin.V3(0.6, 1.2, 0)).Mul(lin.Scale(lin.V3(0.5, 0.5, 0.5))))
 		px, py, _ = g.Project(lin.V3(1.15, 0, 0))
-		img, err := g.End(true)
+		img, err := g.end(true)
 		if err != nil {
 			t.Fatal(err)
 		}

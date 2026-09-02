@@ -26,7 +26,7 @@ func TestRenderTexture(t *testing.T) {
 	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1})
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -40,7 +40,7 @@ func TestRenderTexture(t *testing.T) {
 		})
 		g.DrawTexture(rt.Texture(), 0, 0)
 		g.FillRect(64, 0, 64, 64, Color{0, 0, 1, 1})
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -65,7 +65,7 @@ func TestPicking(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cube.Destroy()
-	ok, err := g.Begin(Black)
+	ok, err := g.begin(Black)
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestPicking(t *testing.T) {
 	if h.Distance < 4.3 || h.Distance > 4.7 || h.Normal.Z < 0.9 {
 		t.Errorf("hit %+v: expected the front face about 4.5 away", h)
 	}
-	if _, err := g.End(false); err != nil {
+	if _, err := g.end(false); err != nil {
 		t.Fatal(err)
 	}
 }

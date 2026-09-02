@@ -11,37 +11,37 @@ func TestActions(t *testing.T) {
 	a.Bind("jump", KeySource(KeySpace), PadButton(ButtonA))
 	a.Bind("move_x", KeySource(KeyD), KeySource(KeyA).Neg(), PadAxis(AxisLeftX), PadAxis(AxisLeftX).Neg())
 
-	s.FeedKey(KeySpace, true, false, 0)
+	s.feedKey(KeySpace, true, false, 0)
 	if !a.Pressed(&s, "jump") || !a.Down(&s, "jump") {
 		t.Error("space did not fire jump")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 	if a.Pressed(&s, "jump") || !a.Down(&s, "jump") {
 		t.Error("jump edge did not clear or hold did")
 	}
-	s.FeedKey(KeySpace, false, false, 0)
+	s.feedKey(KeySpace, false, false, 0)
 	if !a.Released(&s, "jump") {
 		t.Error("jump did not release")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 
-	s.FeedKey(KeyA, true, false, 0)
+	s.feedKey(KeyA, true, false, 0)
 	if v := a.Value(&s, "move_x"); v != -1 {
 		t.Errorf("A gives %v, want -1", v)
 	}
-	s.FeedKey(KeyD, true, false, 0)
+	s.feedKey(KeyD, true, false, 0)
 	if v := a.Value(&s, "move_x"); v != 0 {
 		t.Errorf("A and D give %v, want 0", v)
 	}
-	s.FeedKey(KeyA, false, false, 0)
-	s.FeedKey(KeyD, false, false, 0)
-	s.EndUpdate()
+	s.feedKey(KeyA, false, false, 0)
+	s.feedKey(KeyD, false, false, 0)
+	s.endUpdate()
 
 	// A stick past the dead zone, either way; a flick past half is an edge.
 	var buttons [GamepadButtonCount]bool
 	var axes [GamepadAxisCount]float32
 	axes[AxisLeftX] = -0.6
-	s.FeedGamepad(0, true, "pad", buttons, axes)
+	s.feedGamepad(0, true, "pad", buttons, axes)
 	if !s.Gamepad(0).JustConnected() {
 		t.Error("the pad did not report connecting")
 	}
@@ -51,25 +51,25 @@ func TestActions(t *testing.T) {
 	if !a.Pressed(&s, "move_x") {
 		t.Error("a flick past half is not an edge")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 	if s.Gamepad(0).JustConnected() || a.Pressed(&s, "move_x") {
 		t.Error("edges did not clear")
 	}
 	axes[AxisLeftX] = 0.05
-	s.FeedGamepad(0, true, "pad", buttons, axes)
+	s.feedGamepad(0, true, "pad", buttons, axes)
 	if v := a.Value(&s, "move_x"); v != 0 {
 		t.Errorf("inside the dead zone gives %v", v)
 	}
 	buttons[ButtonA] = true
-	s.FeedGamepad(0, true, "pad", buttons, axes)
+	s.feedGamepad(0, true, "pad", buttons, axes)
 	if !a.Pressed(&s, "jump") {
 		t.Error("the pad's A did not fire jump")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 
 	// Rebinding: Listen captures the next press, Rebind swaps it in, and
 	// the bindings survive a round trip through JSON.
-	s.FeedKey(KeyJ, true, false, 0)
+	s.feedKey(KeyJ, true, false, 0)
 	src, ok := a.Listen(&s)
 	if !ok || src != KeySource(KeyJ) {
 		t.Fatalf("Listen = %v %v", src, ok)
@@ -106,9 +106,9 @@ func TestActions(t *testing.T) {
 func TestHeldAndDoubleClick(t *testing.T) {
 	var s State
 	s.SetStep(0.1)
-	s.FeedKey(KeyW, true, false, 0)
+	s.feedKey(KeyW, true, false, 0)
 	for range 5 {
-		s.EndUpdate()
+		s.endUpdate()
 	}
 	if h := s.KeyHeld(KeyW); h < 0.49 || h > 0.51 {
 		t.Errorf("held %v, want 0.5", h)
@@ -116,39 +116,39 @@ func TestHeldAndDoubleClick(t *testing.T) {
 	if keys := s.KeysDown(); len(keys) != 1 || keys[0] != KeyW {
 		t.Errorf("keys down %v", keys)
 	}
-	s.FeedKey(KeyW, false, false, 0)
-	s.EndUpdate()
+	s.feedKey(KeyW, false, false, 0)
+	s.endUpdate()
 	if s.KeyHeld(KeyW) != 0 || len(s.KeysDown()) != 0 {
 		t.Error("held time did not clear")
 	}
 
 	click := func(x, y float32) {
-		s.FeedMouseButton(MouseLeft, true, x, y)
-		s.FeedMouseButton(MouseLeft, false, x, y)
+		s.feedMouseButton(MouseLeft, true, x, y)
+		s.feedMouseButton(MouseLeft, false, x, y)
 	}
 	click(10, 10)
 	if s.MouseDoubleClicked(MouseLeft) {
 		t.Error("one click is a double click")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 	click(12, 11)
 	if !s.MouseDoubleClicked(MouseLeft) {
 		t.Error("two quick clicks are not a double click")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 	click(12, 11)
 	if s.MouseDoubleClicked(MouseLeft) {
 		t.Error("a third click continued the double click")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 	for range 6 { // 0.6 s later
-		s.EndUpdate()
+		s.endUpdate()
 	}
 	click(12, 11)
 	if s.MouseDoubleClicked(MouseLeft) {
 		t.Error("a slow second click counted")
 	}
-	s.EndUpdate()
+	s.endUpdate()
 	click(200, 200)
 	if s.MouseDoubleClicked(MouseLeft) {
 		t.Error("a second click far away counted")

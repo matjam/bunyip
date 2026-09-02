@@ -11,8 +11,8 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
-// Graphics is the drawing context for one window. Begin opens a frame,
-// the Draw* calls queue work, and End submits it.
+// Graphics is the drawing context for one window. The engine opens a
+// frame, the Draw* calls queue work, and the engine submits it.
 type Graphics struct {
 	r             *render.Renderer
 	descriptors   *render.DescriptorSets // five samplers: a texture and a shader's image0..3
@@ -136,8 +136,9 @@ func (g *Graphics) freeRetired() {
 	g.retired, g.retiredBufs = g.retired[:0], g.retiredBufs[:0]
 }
 
-// New builds the drawing context over a renderer.
-func New(r *render.Renderer) (*Graphics, error) {
+// newGraphics builds the drawing context over a renderer. The engine
+// loop calls it through internal/hook.
+func newGraphics(r *render.Renderer) (*Graphics, error) {
 	g := &Graphics{r: r, imageSets: map[[5]*Texture]vk.VkDescriptorSet{}}
 	var err error
 	if g.descriptors, err = r.Device.NewSamplerDescriptors(5, 2048); err != nil {
@@ -191,8 +192,8 @@ func New(r *render.Renderer) (*Graphics, error) {
 // spriteVert is the vertex program shared by every 2D pipeline.
 func (g *Graphics) spriteVert() []byte { return shaders.SpriteVert }
 
-// Resize tells the renderer the framebuffer changed size, in pixels.
-func (g *Graphics) Resize(width, height int) { g.r.Resize(width, height) }
+// resize tells the renderer the framebuffer changed size, in pixels.
+func (g *Graphics) resize(width, height int) { g.r.Resize(width, height) }
 
 // SetView sets the 2D coordinate space: (0,0) top-left to (width,height)
 // bottom-right, whatever the framebuffer's pixel size.
@@ -201,9 +202,9 @@ func (g *Graphics) SetView(width, height float32) { g.main.setView(width, height
 // View returns the current 2D coordinate space size.
 func (g *Graphics) View() (float32, float32) { return g.main.viewW, g.main.viewH }
 
-// Begin starts a frame cleared to clear. ok is false when the swapchain
+// begin starts a frame cleared to clear. ok is false when the swapchain
 // was rebuilt and the frame should be skipped.
-func (g *Graphics) Begin(clear Color) (ok bool, err error) {
+func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	g.frame, ok, err = g.r.BeginFrame()
 	if err != nil || !ok {
 		return ok, err
@@ -346,10 +347,10 @@ func (g *Graphics) DrawTexture(tex *Texture, x, y float32) {
 	g.Draw(tex, Sprite{Pos: lin.V2(x, y), Size: lin.V2(float32(tex.Width), float32(tex.Height))})
 }
 
-// End flushes queued work, submits and presents. With capture it returns the frame.
-func (g *Graphics) End(capture bool) (*image.RGBA, error) {
+// end flushes queued work, submits and presents. With capture it returns the frame.
+func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	if g.frame == nil {
-		return nil, fmt.Errorf("gfx: End without Begin")
+		return nil, fmt.Errorf("gfx: end without begin")
 	}
 	fr := g.frame
 	g.frame = nil
@@ -487,9 +488,9 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	return nil
 }
 
-// Destroy releases everything the context created. Textures made from it
+// destroy releases everything the context created. Textures made from it
 // must be destroyed first or are leaked with the device.
-func (g *Graphics) Destroy() {
+func (g *Graphics) destroy() {
 	_ = g.r.Device.WaitIdle()
 	g.freeRetired()
 	g.retired, g.retiredBufs = nil, nil

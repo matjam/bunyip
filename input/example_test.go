@@ -7,16 +7,20 @@ import (
 )
 
 func ExampleState() {
-	// The engine feeds the state from platform events; a test can script it.
-	var s input.State
-	s.FeedKey(input.KeySpace, true, false, 0)
-	s.FeedMouseButton(input.MouseLeft, true, 10, 20)
-	fmt.Println(s.KeyPressed(input.KeySpace), s.KeyDown(input.KeySpace), s.MousePressed(input.MouseLeft))
-
-	// After an update the edges clear but held state stays.
-	s.EndUpdate()
-	fmt.Println(s.KeyPressed(input.KeySpace), s.KeyDown(input.KeySpace))
+	// The engine fills the state from platform events and hands it to the
+	// game as ctx.Input. Levels say what is held now, edges what changed
+	// since the last update, so a press is seen exactly once.
+	move := func(in *input.State) (dx float32, jump bool) {
+		if in.KeyDown(input.KeyD) {
+			dx++
+		}
+		if in.KeyDown(input.KeyA) {
+			dx--
+		}
+		return dx, in.KeyPressed(input.KeySpace)
+	}
+	var in input.State // ctx.Input under bunyip.Run
+	fmt.Println(move(&in))
 	// Output:
-	// true true true
-	// false true
+	// 0 false
 }

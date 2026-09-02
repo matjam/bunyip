@@ -214,10 +214,9 @@ func (m *Mixer) Playing() int {
 	return len(m.voices)
 }
 
-// Mix writes len(out)/2 stereo frames. It is engine plumbing: the output
-// device calls it from its own thread, and a test can call it to pull
-// audio by hand; a game never does.
-func (m *Mixer) Mix(out []float32) {
+// mix writes len(out)/2 stereo frames. The output device calls it from
+// its own thread, through internal/hook.
+func (m *Mixer) mix(out []float32) {
 	clear(out)
 	m.mu.Lock()
 	frames := len(out) / 2

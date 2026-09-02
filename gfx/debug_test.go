@@ -44,7 +44,7 @@ func TestDebugLinesAndText(t *testing.T) {
 
 func TestProjectAndOrtho(t *testing.T) {
 	g := newHeadless(t, 96, 96)
-	if ok, err := g.Begin(Black); err != nil || !ok {
+	if ok, err := g.begin(Black); err != nil || !ok {
 		t.Fatal(err)
 	}
 	g.SetCamera(Camera{Position: lin.V3(0, 0, 3), Target: lin.V3(0, 0, 0)})
@@ -63,7 +63,7 @@ func TestProjectAndOrtho(t *testing.T) {
 	if _, y, _ := g.Project(lin.V3(0, 1, 0)); y > 1 {
 		t.Errorf("ortho top edge projects to y %v, want 0", y)
 	}
-	if _, err := g.End(false); err != nil {
+	if _, err := g.end(false); err != nil {
 		t.Fatal(err)
 	}
 	// Under an orthographic camera a sphere near and far draw the same size.
@@ -74,14 +74,14 @@ func TestProjectAndOrtho(t *testing.T) {
 	}
 	defer sphere.Destroy()
 	width := func(z float32) int {
-		if ok, err := g.Begin(Black); err != nil || !ok {
+		if ok, err := g.begin(Black); err != nil || !ok {
 			t.Fatal(err)
 		}
 		g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
 		g.SetCamera(Camera{Position: lin.V3(0, 0, 10), Target: lin.V3(0, 0, 0), Ortho: 2})
 		g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: White, Ambient: Color{0.5, 0.5, 0.5, 1}})
 		g.DrawMesh(sphere, Material{Unlit: true, BaseColor: White}, lin.Translate(lin.V3(0, 0, z)))
-		img, err := g.End(true)
+		img, err := g.end(true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,11 +135,11 @@ func TestTextureWriteAndRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Destroy()
-	if ok, err := g.Begin(Black); err != nil || !ok {
+	if ok, err := g.begin(Black); err != nil || !ok {
 		t.Fatal(err)
 	}
 	g.DrawTo(rt, RGB(0, 0, 255), func() {})
-	if _, err := g.End(false); err != nil {
+	if _, err := g.end(false); err != nil {
 		t.Fatal(err)
 	}
 	img, err := rt.Read()

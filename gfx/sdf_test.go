@@ -19,7 +19,7 @@ func TestSDFText(t *testing.T) {
 	defer f.Destroy()
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -28,7 +28,7 @@ func TestSDFText(t *testing.T) {
 		}
 		g.DrawTextBlock(f, "Bunyip", 10, 10, TextOptions{Size: 16}, White)
 		g.DrawTextBlock(f, "Bunyip", 10, 60, TextOptions{Size: 96}, White)
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -27,7 +27,7 @@ func TestMeshDepth(t *testing.T) {
 	for _, order := range []string{"far-first", "near-first"} {
 		var img *image.RGBA
 		for range 2 {
-			ok, err := g.Begin(Black)
+			ok, err := g.begin(Black)
 			if err != nil {
 				t.Fatalf("Begin: %v", err)
 			}
@@ -43,7 +43,7 @@ func TestMeshDepth(t *testing.T) {
 				g.DrawMesh(cube, green, near)
 				g.DrawMesh(cube, red, far)
 			}
-			if img, err = g.End(true); err != nil {
+			if img, err = g.end(true); err != nil {
 				t.Fatalf("End: %v", err)
 			}
 		}
@@ -71,7 +71,7 @@ func TestSpritesOverMeshes(t *testing.T) {
 	defer cube.Destroy()
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +81,7 @@ func TestSpritesOverMeshes(t *testing.T) {
 		g.FillRect(0, 0, 64, 64, Color{0, 0, 1, 1})
 		g.SetCamera(Camera{Position: lin.V3(0, 0, 3)})
 		g.DrawMesh(cube, Material{BaseColor: Color{1, 0, 0, 1}}, lin.Identity())
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatal(err)
 		}
 	}

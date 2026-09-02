@@ -35,7 +35,7 @@ func TestSkinning(t *testing.T) {
 	render := func(joints []lin.Mat4) *image.RGBA {
 		var img *image.RGBA
 		for range 2 {
-			ok, err := g.Begin(Black)
+			ok, err := g.begin(Black)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -45,7 +45,7 @@ func TestSkinning(t *testing.T) {
 			g.SetCamera(Camera{Position: lin.V3(0, 0, 4)})
 			g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: Color{3, 3, 3, 1}, Ambient: Color{0.3, 0.3, 0.3, 1}})
 			g.DrawSkinned(mesh, Material{BaseColor: White, Roughness: 1, DoubleSided: true}, lin.Identity(), joints)
-			if img, err = g.End(true); err != nil {
+			if img, err = g.end(true); err != nil {
 				t.Fatal(err)
 			}
 		}

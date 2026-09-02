@@ -18,7 +18,7 @@ func TestCamera2DAndLayers(t *testing.T) {
 	g := newHeadless(t, 128, 128)
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +33,7 @@ func TestCamera2DAndLayers(t *testing.T) {
 		g.FillRect(1000-10, 1000-10, 20, 20, Color{1, 0, 0, 1}) // 40x40 on screen around the centre
 		g.ScreenSpace()
 		g.FillRect(0, 0, 8, 8, Color{0, 1, 0, 1})
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -81,7 +81,7 @@ func TestTilemapAndNineSlice(t *testing.T) {
 	tm.TileW, tm.TileH = 16, 16
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +90,7 @@ func TestTilemapAndNineSlice(t *testing.T) {
 		}
 		g.DrawTilemap(tm, 0, 0, White)
 		g.DrawNineSlice(NineSlice{Tex: tex, Left: 2, Top: 1, Right: 2, Bottom: 1}, lin.R(40, 0, 48, 32), White)
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatal(err)
 		}
 	}

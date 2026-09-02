@@ -9,6 +9,7 @@ import (
 
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/internal/hook"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 )
@@ -23,22 +24,25 @@ func newContext(t *testing.T) *Context {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := gfx.New(r)
+	gd, err := hook.NewGraphics(r)
 	if err != nil {
 		t.Fatal(err)
 	}
+	g := gd.Game().(*gfx.Graphics)
 	font, err := g.NewFont(goregular.TTF, 14, gfx.FontOptions{AtlasSize: 512})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { font.Destroy(); g.Destroy(); r.Destroy() })
-	return New(g, DarkTheme(font))
+	c := New(g, DarkTheme(font))
+	drivers[c] = gd
+	t.Cleanup(func() { delete(drivers, c); font.Destroy(); gd.Destroy(); r.Destroy() })
+	return c
 }
 
 // frame runs one interface frame the way the engine does: an Update
 // consumes the input edges first, then Draw builds a panel with a button,
 // a checkbox and a text field, returning what the button reported.
-func frame(t *testing.T, c *Context, in *input.State, checked *bool, text *string) bool {
+func frame(t *testing.T, c *Context, in *feeder, checked *bool, text *string) bool {
 	t.Helper()
 	in.EndUpdate() // the game's Update ran and its edges were cleared
 	in.SetDrawing(true)
@@ -46,7 +50,7 @@ func frame(t *testing.T, c *Context, in *input.State, checked *bool, text *strin
 		in.SetDrawing(false)
 		in.EndFrame()
 	}()
-	ok, err := c.g.Begin(gfx.Black)
+	ok, err := beginFrame(c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,14 +58,14 @@ func frame(t *testing.T, c *Context, in *input.State, checked *bool, text *strin
 		return false
 	}
 	var clicked bool
-	c.Begin(in, func() {
+	c.Begin(in.state, func() {
 		c.Panel("Test", Rect{X: 10, Y: 10, W: 200, H: 200}, func() {
 			clicked = c.Button("Press")
 			c.Checkbox("Tick", checked)
 			c.TextField("name", text)
 		})
 	})
-	if _, err := c.g.End(false); err != nil {
+	if err := endFrame(c); err != nil {
 		t.Fatal(err)
 	}
 	return clicked
@@ -69,7 +73,7 @@ func frame(t *testing.T, c *Context, in *input.State, checked *bool, text *strin
 
 func TestWidgets(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	var checked bool
 	var text string
 	// Layout: panel padding 8, title line, then rows of 28 with 6 spacing.

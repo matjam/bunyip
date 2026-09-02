@@ -13,16 +13,10 @@ type, nine-slices and regions as values, colour and vector helpers,
 text options shared by every font kind, float32 input, decoders that
 take bytes, buses, embedded assets and one-call loaders, debug drawing,
 the fixed view, headless runs, the window controls, atlas formats with
-named frames, tweens over any value, and the naming and zero-value
-conventions stated in each package's comment.
+named frames, tweens over any value, engine plumbing hidden behind an
+internal hook package, and the naming and zero-value conventions stated
+in each package's comment.
 
-- Engine plumbing still sits on public types: `gfx.New` (whose
-  parameter is an internal type), `Graphics.Begin`, `End`, `Resize`,
-  `SetTime` and `Destroy`, `input.State.Feed*`, `EndUpdate`, `EndFrame`
-  and `SetDrawing`, and `audio.Mixer.Mix`. They are documented as
-  plumbing. Before a 1.0 they should move behind an internal hook
-  package registered from `init`, so the game-facing surface is all a
-  game sees.
 - The X11 clipboard: serving selections needs a request loop the
   platform layer does not run yet; macOS and Windows have it.
 
@@ -247,5 +241,4 @@ reload is `Shader.Reload` behind an `asset.Watcher`.
   package; the first runs found two third-party decoder panics, now
   turned into errors, and an unchecked accessor bound in the glTF
   reader.
-- A public API stability policy once the engine tags 1.0, after the
-  plumbing above is hidden.
+- A public API stability policy once the engine tags 1.0.

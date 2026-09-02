@@ -27,7 +27,7 @@ func nodeRect(t *testing.T, nodes []AccessibleNode, role, label string) Rect {
 
 func TestListNavigation(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	sel := -1
 	items := []string{"a", "b", "c", "d", "e"}
 	var nodes []AccessibleNode
@@ -106,7 +106,7 @@ func TestListNavigation(t *testing.T) {
 
 func TestTabsRadioTableKeys(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	tab, radio, clickedRow := 0, 0, -1
 	body := func() {
 		c.Panel("T", Rect{X: 10, Y: 10, W: 300, H: 220}, func() {
@@ -170,7 +170,7 @@ func TestTabsRadioTableKeys(t *testing.T) {
 
 func TestSliderSpinnerKeys(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	v, n, iv := float32(0.5), 5, 3
 	body := func() {
 		c.Panel("T", Rect{X: 10, Y: 10, W: 300, H: 220}, func() {
@@ -222,7 +222,7 @@ func TestSliderSpinnerKeys(t *testing.T) {
 
 func TestDropdownKeys(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	sel := 0
 	changes := 0
 	body := func() {
@@ -264,7 +264,7 @@ func TestDropdownKeys(t *testing.T) {
 
 func TestTreeKeys(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	var flag bool
 	body := func() {
 		c.Panel("T", Rect{X: 10, Y: 10, W: 300, H: 220}, func() {
@@ -302,7 +302,7 @@ func TestTreeKeys(t *testing.T) {
 
 func TestGamepadNavigation(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	clicks := map[string]int{}
 	body := func() {
 		c.Panel("T", Rect{X: 10, Y: 10, W: 300, H: 220}, func() {
@@ -339,7 +339,7 @@ func TestGamepadNavigation(t *testing.T) {
 
 func TestDragDrop(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	drops := 0
 	var got any
 	var nodes []AccessibleNode
@@ -438,7 +438,7 @@ func TestDragDrop(t *testing.T) {
 
 func TestReorderableList(t *testing.T) {
 	c := newContext(t)
-	in := &input.State{}
+	in := newFeeder()
 	items := []string{"a", "b", "c", "d"}
 	var nodes []AccessibleNode
 	body := func() {

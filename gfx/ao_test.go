@@ -22,7 +22,7 @@ func TestAmbientOcclusion(t *testing.T) {
 		g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, AmbientOcclusion: strength})
 		var img *image.RGBA
 		for range 2 {
-			ok, err := g.Begin(Black)
+			ok, err := g.begin(Black)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -33,7 +33,7 @@ func TestAmbientOcclusion(t *testing.T) {
 			g.SetLight(Light{Direction: lin.V3(0, -1, 0), Color: Color{0.5, 0.5, 0.5, 1}, Ambient: Color{1, 1, 1, 1}})
 			g.DrawMesh(cube, Material{BaseColor: White, Roughness: 1}, lin.Translate(lin.V3(0, -0.5, 0)).Mul(lin.Scale(lin.V3(12, 0.2, 12))))
 			g.DrawMesh(cube, Material{BaseColor: White, Roughness: 1}, lin.Translate(lin.V3(0, 0.5, 0)).Mul(lin.Scale(lin.V3(2, 2, 2))))
-			if img, err = g.End(true); err != nil {
+			if img, err = g.end(true); err != nil {
 				t.Fatal(err)
 			}
 		}

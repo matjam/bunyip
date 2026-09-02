@@ -13,6 +13,7 @@ import (
 	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/audio/tracker"
 	"github.com/matjam/bunyip/internal/audioout"
+	"github.com/matjam/bunyip/internal/hook"
 )
 
 func main() {
@@ -36,7 +37,10 @@ func run(path string, seconds float64, volume float32, dump string) error {
 		return err
 	}
 	const rate = 48000
-	mixer := audio.NewMixer(rate)
+	// The driver from hook is what the output device pulls from; the
+	// mixer it wraps is what this command sets up.
+	pull := hook.NewMixer(rate)
+	mixer := pull.Game().(*audio.Mixer)
 	var voice *audio.Voice
 	var player *tracker.Player
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -74,7 +78,7 @@ func run(path string, seconds float64, volume float32, dump string) error {
 		fmt.Printf("%s: %d channels at %d Hz, %.1f s\n", filepath.Base(path), pcm.Channels, pcm.Rate, float64(snd.Frames())/rate)
 		voice = mixer.Play(snd, audio.PlayOptions{Volume: volume})
 	}
-	render := mixer.Mix
+	render := pull.Mix
 	var tee *wavWriter
 	if dump != "" {
 		var err error
@@ -83,7 +87,7 @@ func run(path string, seconds float64, volume float32, dump string) error {
 		}
 		defer tee.Close()
 		render = func(out []float32) {
-			mixer.Mix(out)
+			pull.Mix(out)
 			tee.Write(out)
 		}
 	}

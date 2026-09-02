@@ -15,11 +15,11 @@ import (
 func frame2D(t *testing.T, g *Graphics, draw func()) *image.RGBA {
 	t.Helper()
 	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
-	if ok, err := g.Begin(Black); err != nil || !ok {
+	if ok, err := g.begin(Black); err != nil || !ok {
 		t.Fatal(err)
 	}
 	draw()
-	img, err := g.End(true)
+	img, err := g.end(true)
 	if err != nil {
 		t.Fatal(err)
 	}

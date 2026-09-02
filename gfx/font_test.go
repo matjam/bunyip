@@ -22,7 +22,7 @@ func TestText(t *testing.T) {
 	}
 	var img *image.RGBA
 	for range 2 {
-		ok, err := g.Begin(Black)
+		ok, err := g.begin(Black)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -30,7 +30,7 @@ func TestText(t *testing.T) {
 			continue
 		}
 		g.DrawText(f, "Bunyip", 10, 10, White)
-		if img, err = g.End(true); err != nil {
+		if img, err = g.end(true); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -365,8 +365,8 @@ func (g *Graphics) Shaded(s *Shader, draw func()) {
 	g.cur.shader = prev
 }
 
-// SetTime tells the graphics context the game clock, which shaders read
+// setTime tells the graphics context the game clock, which shaders read
 // as time(). The engine calls it every frame.
-func (g *Graphics) SetTime(seconds float64) { g.time = float32(seconds) }
+func (g *Graphics) setTime(seconds float64) { g.time = float32(seconds) }
 
 const maxUniformBlock = 1024
