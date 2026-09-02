@@ -24,6 +24,46 @@ goroutines behind a progress counter, for loading screens, and a
 `Watcher` reports loose files that changed on disk, for hot reload.
 `bunyip-pack` builds pack files.
 
+```go
+// Loose files first so a developer's copy wins, then the shipped pack.
+fs, err := asset.Open("assets", "game.pak")
+if err != nil {
+	return err
+}
+g.fs = fs
+if g.hero, err = asset.Texture(ctx.Gfx, fs, "sprites/hero.png", gfx.TextureOptions{}); err != nil {
+	return err
+}
+if g.font, err = asset.Font(ctx.Gfx, fs, "fonts/ui.ttf", 16, gfx.FontOptions{}); err != nil {
+	return err
+}
+```
+
+`OpenFS` takes sources instead of paths, so an `embed.FS` can sit under a
+loose directory:
+
+```go
+//go:embed assets
+var embedded embed.FS
+
+fs, err := asset.OpenFS(asset.Dir("assets"), asset.FSSource(embedded))
+```
+
+A `Loader` decodes in the background while a loading screen draws.
+`Handle.Ready` polls, `Get` blocks, and `Progress` drives the bar:
+
+```go
+loader := asset.NewLoader(fs, 0) // 0 workers means one per core
+defer loader.Close()
+level := asset.Load(loader, "levels/1.json", parseLevel)
+...
+done, total := loader.Progress()
+g.bar = float32(done) / float32(total)
+if level.Ready() {
+	g.level, err = level.Get()
+}
+```
+
 ## Saves and settings
 
 [save](../pkg/save.html) writes JSON documents into the platform's data
@@ -32,6 +72,27 @@ atomically, so a crash mid-write never corrupts a save. `Load` reads a
 document over defaults, so new settings fields get sensible values when
 a file predates them. Whole ECS worlds are saved through
 `ecs.World.Save`, described in the ECS guide.
+
+```go
+type settings struct {
+	Volume     float32
+	Fullscreen bool
+}
+
+store, err := save.Open("my-game") // Application Support, AppData or XDG
+if err != nil {
+	return err
+}
+s, err := save.Load(store, "settings", settings{Volume: 0.8}) // defaults for a missing file
+if err != nil {
+	return err
+}
+s.Fullscreen = true
+store.Write("settings", s)
+names, _ := store.List() // the save slots, for a load menu
+```
+
+`save.OpenAt(dir)` takes any directory, which is what tests use.
 
 ## Translation
 
@@ -43,14 +104,47 @@ back through languages for keys a translation lacks, `Missing` lists
 what a translator still has to do, and `For` gives a `Translator` whose
 `T` and `N` the game calls.
 
+```go
+b := locale.NewBundle("en") // English last, for keys another language lacks
+for _, lang := range []string{"en", "ru"} {
+	data, err := fs.Read("lang/" + lang + ".json")
+	if err != nil {
+		return err
+	}
+	if err := b.Load(lang, data); err != nil {
+		return err
+	}
+}
+
+t := b.For("ru")
+t.T("menu.play")            // "Играть", or English if Russian lacks the key
+t.T("greet", "who", "Ada")  // fills the {who} placeholder
+t.N("inv.arrows", 3)        // the plural form Russian uses for 3
+b.Missing("ru", "en")       // keys the translator still has to do
+```
+
 ## Random numbers
 
 [rng](../pkg/rng.html) is a seedable PCG32 generator. The same seed
 gives the same sequence on every platform; `Fork` gives a subsystem its
 own stream, so adding a call in one place never changes what another
 produces; `State` and `Restore` put the generator in a save file.
-`Pick`, `Shuffle`, `Roll` (dice notation) and `WeightedIndex` cover
-the usual game needs.
+`Pick`, `Shuffle`, `Roll` and `WeightedIndex` cover the usual game needs.
+
+```go
+r := rng.New(g.seed)
+loot := r.Fork() // its own stream: rolling here never moves the other one
+
+damage := r.Roll(2, 6) + 1 // 2d6+1
+if loot.Chance(0.1) {
+	drop := rng.Pick(loot, g.rareItems)
+	_ = drop
+}
+i := rng.WeightedIndex(loot, []float32{5, 3, 1}) // common, uncommon, rare
+rng.Shuffle(loot, g.deck)
+
+state, inc := r.State() // into the save file; r.Restore(state, inc) on load
+```
 
 ## Timers, sequences and tweens
 
@@ -59,16 +153,62 @@ the usual game needs.
 own, a paused game stops its timers by not calling `Update`, and a
 replay runs them identically.
 
+```go
+func (g *game) Update(ctx *bunyip.Context) error {
+	if !g.paused {
+		g.timers.Update(ctx.Delta) // g.timers is a timer.Scheduler
+		if g.round.Update(ctx.Delta) {
+			g.endRound() // the Countdown reached zero on this update
+		}
+	}
+	return nil
+}
+
+g.timers.After(1.5, func() { g.door.Open() })
+spawns := g.timers.Every(3, g.spawnWave)
+g.timers.Cancel(spawns)
+g.round.Start(90) // g.round is a timer.Countdown; Running says time remains
+```
+
 `timer.Sequence` writes a cutscene, a turn's animation or a boss pattern
 as a list of steps instead of a state machine: `Do` something, `Wait` a
 second, wait `Until` a condition holds, `Run` a function each update
 until it reports it is done, and `Loop` for patrols. `Skip` jumps to the
 end for a player who presses through.
 
+```go
+g.cutscene = timer.NewSequence().
+	Do(func() { g.camera.PanTo(g.door) }).
+	Until(func() bool { return g.camera.Arrived() }).
+	Wait(0.5).
+	Do(g.door.Open).
+	Run(func(dt float32) bool { return g.hero.WalkTo(g.door, dt) })
+
+// From Update; it reports whether the sequence has finished.
+g.cutscene.Update(float32(ctx.Delta))
+if ctx.Input.KeyPressed(input.KeySpace) {
+	g.cutscene.Skip()
+}
+```
+
 [tween](../pkg/tween.html) eases a value from one number to another
 with the usual curves, repeats and yo-yos; `Sequence` chains tweens, and
 `Of` (with `NewVec2` and `NewVec3`) tweens vectors, colours or any
 value that has a blend function.
+
+```go
+g.menuX = tween.New(-300, 40, 0.4, tween.OutQuad) // slide the panel in
+g.pulse = tween.New(1, 1.2, 0.3, tween.InOutSine)
+g.pulse.Repeat, g.pulse.YoYo = -1, true // forever, back and forth
+g.fade = tween.NewOf(gfx.Transparent, gfx.White, 0.5, tween.OutQuad, gfx.Color.Lerp)
+
+// From Update.
+x := g.menuX.Update(float32(ctx.Delta))
+tint := g.fade.Update(float32(ctx.Delta))
+if g.menuX.Done() {
+	g.ready = true
+}
+```
 
 ## Grids
 
@@ -76,6 +216,35 @@ value that has a blend function.
 with four- or eight-way movement and per-step costs, `Dijkstra` maps
 with `Downhill` for chasing and fleeing, Bresenham `Line`, shadowcasting
 `FOV` and `FloodFill`.
+
+```go
+walls := grid.New[bool](64, 48)
+walls.Set(10, 10, true)
+cost := func(from, to grid.Point) float32 {
+	if walls.At(to.X, to.Y) {
+		return grid.Blocked
+	}
+	return 1
+}
+
+path := grid.AStar(64, 48, g.player, g.exit, true, cost) // true is eight-way
+
+// One Dijkstra map moves the whole crowd: every monster steps downhill.
+dist := grid.Dijkstra(64, 48, []grid.Point{g.player}, true, cost)
+for i, m := range g.monsters {
+	if next, ok := grid.Downhill(dist, m, true); ok {
+		g.monsters[i] = next
+	}
+}
+
+// Cells off the map count as opaque, so sight stops at the edge.
+opaque := func(p grid.Point) bool { return !walls.In(p.X, p.Y) || walls.At(p.X, p.Y) }
+seen := map[grid.Point]bool{}
+grid.FOV(g.player, 9, opaque, func(p grid.Point) { seen[p] = true })
+```
+
+The algorithms take a cost or passability function over points, not a
+`Grid`, so they work against whatever the game keeps its map in.
 
 ## Networking
 
@@ -85,10 +254,75 @@ over UDP for real-time state. A `Registry` names the message types both
 ends agree on; events arrive through `Poll` once per frame, and
 `SetOnActivity` can wake a sleeping turn-based game.
 
+Messages are plain structs. Both ends build the same registry in the
+same order:
+
+```go
+type Chat struct{ From, Text string }
+type Move struct{ X, Y int }
+
+reg := network.NewRegistry().Register(Chat{}, Move{})
+```
+
+The server listens and drains its events each update:
+
+```go
+server, err := network.Listen(":7777", reg)
+if err != nil {
+	return err
+}
+server.SetOnActivity(ctx.Wake) // turn-based: wake the loop when a message lands
+
+for _, ev := range server.Poll() {
+	switch ev.Kind {
+	case network.Connected:
+		g.log("joined:", ev.Conn.Addr())
+	case network.Disconnected:
+		g.drop(ev.Conn)
+	case network.Message:
+		if m, ok := ev.Msg.(*Move); ok {
+			server.Broadcast(m, ev.Conn) // to everyone but the sender
+		}
+	}
+}
+```
+
+The client is the same shape, with `Send` on the connection it embeds:
+
+```go
+client, err := network.Dial("gameserver:7777", reg, 5*time.Second)
+if err != nil {
+	return err
+}
+defer client.Close()
+client.Send(Chat{From: g.name, Text: "hello"})
+
+for _, ev := range client.Poll() {
+	if m, ok := ev.Msg.(*Chat); ok {
+		g.lines = append(g.lines, m.From+": "+m.Text)
+	}
+}
+```
+
 `ListenTLS` and `DialTLS` encrypt TCP. `SelfSignedConfig` makes a
 certificate for a LAN game together with a client configuration pinned
 to it, and `Fingerprint` with `PinnedConfig` lets a player on another
 machine pin the same certificate.
+
+```go
+serverCfg, clientCfg, err := network.SelfSignedConfig("localhost", "192.168.1.20")
+if err != nil {
+	return err
+}
+server, err := network.ListenTLS(":7777", reg, serverCfg)
+...
+// On the host's own machine clientCfg already trusts it.
+client, err := network.DialTLS(addr, reg, clientCfg, 5*time.Second)
+
+// Elsewhere: the host reads out this string and the player pins it.
+print := network.Fingerprint(serverCfg)
+client, err = network.DialTLS(addr, reg, network.PinnedConfig(print), 5*time.Second)
+```
 
 A UDP `Peer` has two ways to send. `Send` fires a packet that may be
 lost, for state that is replaced every frame. `SendReliable` resends
@@ -98,6 +332,23 @@ and `Stats` reports a link's round trip, loss and pending count. Peers
 say hello and keep alive, so a `Peer` raises `Connected` and
 `Disconnected` for UDP addresses (after `SetTimeout` of silence, a
 goodbye, or a restart), and `Peers` lists who is there.
+
+```go
+peer, err := network.ListenUDP(":7778", reg)
+if err != nil {
+	return err
+}
+defer peer.Close()
+peer.SetTimeout(5 * time.Second)
+
+host, err := network.Resolve("gameserver:7778")
+peer.Send(host, Move{X: g.x, Y: g.y})    // every frame; a lost one does not matter
+peer.SendReliable(host, Chat{Text: "gg"}) // resent until it arrives, in order
+
+if s, ok := peer.Stats(host); ok {
+	g.ping = s.RTT // with s.Loss and s.Pending, for the netgraph
+}
+```
 
 The remaining helpers are the standard techniques of real-time
 netcode. An `Interpolator` draws other players a little behind the
@@ -111,3 +362,31 @@ baseline; `SnapshotBuffer` picks each client's baseline from what it
 last acknowledged, with `SnapshotReceiver` on the other end. `Interest`
 chooses which entities are near enough to a viewer to be worth sending,
 with hysteresis at the edge so nothing flickers in and out.
+
+Prediction is the one with the most moving parts. `Step` must be the
+same function the server runs, so the replay lands where the server did:
+
+```go
+step := func(s playerState, in playerInput) playerState { return s.move(in) }
+g.pred = network.NewPredictor(playerState{}, step)
+
+// Each update: apply locally at once and send the input with its sequence.
+in := playerInput{Dx: axis, Jump: jump}
+seq := g.pred.Apply(in)
+peer.Send(host, inputMsg{Seq: seq, In: in})
+g.drawAt = g.pred.State() // already moved, no wait for the server
+
+// When the server's state arrives, rewind and replay what it has not seen.
+g.pred.Reconcile(m.Ack, m.State)
+```
+
+Other players go through an `Interpolator` instead, drawn a little
+behind the newest snapshot:
+
+```go
+g.remote.Delay = 0.1        // two or three send intervals
+g.remote.Add(m.Time, m.Pos) // g.remote is a network.Interpolator[lin.Vec2]
+
+// At subtracts Delay itself; the time is the server's, from a Clock.
+pos, ok := g.remote.At(g.clock.ServerTime(ctx.Time), lin.Vec2.Lerp)
+```

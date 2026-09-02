@@ -24,6 +24,27 @@ and `Seek` read and move the playhead, `Sound.Duration` is its length,
 and `Voice.OnDone` runs a callback when the voice ends, for chaining
 clips.
 
+```go
+pcm, err := audio.Decode(data) // WAV, Ogg Vorbis or MP3 bytes
+if err != nil {
+	return err
+}
+hit, err := ctx.Audio.NewSound(pcm)
+if err != nil {
+	return err
+}
+v := ctx.Audio.Play(hit, audio.PlayOptions{Volume: 0.8, Pan: -0.3, Pitch: 1.1, FadeIn: 0.05})
+v.OnDone(func() { ctx.Audio.Play(g.ricochet, audio.PlayOptions{}) })
+
+// Later, while it plays.
+v.SetVolume(0.4)
+v.SetLowPass(1200)
+v.FadeOut(0.5)
+```
+
+`audio.Sine(440, 0.3, ctx.Audio.Rate())` makes a `PCM` without a file,
+which is how the examples and tests get something to play.
+
 ## Buses
 
 Voices play through a `Bus`, and a settings screen binds its sliders to
@@ -31,6 +52,20 @@ buses rather than to every voice. `Music`, `Effects` and `Dialogue` come
 ready; `NewBus` makes more. A bus has its own volume, pause, mute, solo
 and reverb, applied with the same ramps. Set `PlayOptions.Bus` to choose
 one.
+
+```go
+m := ctx.Audio
+m.Music().SetVolume(0.4) // the settings screen's music slider
+m.Effects().SetVolume(0.9)
+
+steps := m.NewBus("footsteps")
+m.Play(g.step, audio.PlayOptions{Bus: steps, Volume: 0.6})
+m.Play(g.line, audio.PlayOptions{Bus: m.Dialogue(), Priority: 100})
+steps.SetVolume(0.3) // the whole group at once, ramped
+```
+
+`Mixer.Bus(name)` finds a bus made earlier, so the settings screen does
+not have to be handed one.
 
 ## Pausing
 
@@ -40,6 +75,15 @@ window loses focus. `Bus.SetPaused` and `Voice.SetPaused` hold less. A
 pause fades out over the block it lands in and the resume fades back in,
 so neither clicks. Each level is kept separately: resuming the mixer
 leaves a paused bus paused.
+
+```go
+if ctx.Input.KeyPressed(input.KeyEscape) {
+	g.menu = !g.menu
+	ctx.Audio.SetPaused(g.menu) // everything holds where it is
+}
+ctx.Audio.Effects().SetPaused(true) // one bus: the world stops, the music plays on
+g.engine.SetPaused(true)            // one voice
+```
 
 ## Mute and solo
 
@@ -51,6 +95,16 @@ soloed only soloed buses (a voice on no bus counts as a bus of its own).
 `Voice.SetSolo` and `Bus.SetSolo` set it, and clearing the last solo
 brings everything back.
 
+```go
+music := ctx.Audio.Music()
+music.SetMute(!music.Muted()) // the mute button: it keeps playing, silently
+
+// A mixing screen auditions one bus at a time; g.audition is "" for none.
+for _, b := range []*audio.Bus{ctx.Audio.Music(), ctx.Audio.Effects(), ctx.Audio.Dialogue()} {
+	b.SetSolo(b.Name() == g.audition)
+}
+```
+
 ## Music
 
 `OpenMusic` streams a WAV, Ogg or MP3 file, decoding a couple of seconds
@@ -59,12 +113,44 @@ ahead on its own goroutine; `PlayStream` plays it, and `Close` stops it.
 Anything implementing `Stream` (fill a buffer of stereo frames) plays the
 same way, which is how procedural music and the tracker player plug in.
 
+```go
+f, err := os.Open("music/theme.ogg")
+if err != nil {
+	return err
+}
+if g.music, err = ctx.Audio.OpenMusic(f, true); err != nil { // true loops
+	return err
+}
+g.theme = ctx.Audio.PlayStream(g.music, audio.PlayOptions{Bus: ctx.Audio.Music(), Volume: 0.5})
+...
+g.music.Seek(30)  // jump half a minute in
+g.music.Close()   // in Shutdown; the voice playing it ends
+```
+
+`asset.Music(ctx.Audio, fs, "music/theme.ogg", true)` does the same
+through the asset sources, so a packed or embedded track opens the same
+way as a loose one.
+
 ## Positional audio
 
 Set `Positional` and a `Position` on a voice, and put the listener where
 the camera is each frame with `SetListener` (or `SetListener2D` for a 2D
 game). Volume falls with distance between `MinDistance` and
 `MaxDistance`, and the voice pans by direction.
+
+```go
+// 2D: the listener goes where the camera is looking.
+ctx.Audio.SetListener2D(g.camX, g.camY)
+
+// 3D: position and orientation.
+ctx.Audio.SetListener(audio.Listener{Position: g.eye, Forward: g.dir, Up: lin.V3(0, 1, 0)})
+
+torch := ctx.Audio.Play(g.fire, audio.PlayOptions{
+	Loop: true, Positional: true,
+	Position: lin.V3(4, 1, -8), MinDistance: 2, MaxDistance: 40,
+})
+torch.SetPosition(lin.V3(6, 1, -8)) // when the source moves
+```
 
 ### Doppler
 
@@ -79,6 +165,16 @@ keep the effect subtle. The factor scales the shift, so 0.5 halves it and
 0 (the default) is off. Streams have no pitch, so Doppler leaves them
 alone.
 
+```go
+ctx.Audio.SetDoppler(1)
+ctx.Audio.SetSpeedOfSound(3000) // pixels, not metres, so the shift stays subtle
+
+l := ctx.Audio.Listener()
+l.Position, l.Velocity = g.ship.Pos, g.ship.Vel
+ctx.Audio.SetListener(l)
+train.SetVelocity(lin.V3(0, 0, -40)) // world units per second
+```
+
 ### Occlusion
 
 A sound behind a wall is quieter and duller than one in the open.
@@ -88,12 +184,32 @@ between on a decibel scale. The mixer has no scene, so the game decides:
 cast a physics ray from the listener to the source each frame and set the
 occlusion from what it hits, or fade it as a door opens.
 
+```go
+// g.wallBetween is the game's own ray against the level.
+for _, s := range g.sources {
+	occ := float32(0)
+	if g.wallBetween(g.eye, s.pos) {
+		occ = 0.8
+	}
+	s.voice.SetOcclusion(occ)
+}
+```
+
 ## Reverb
 
 `SetReverb` configures the mixer's shared reverb, a Freeverb-style comb
 and all-pass network; voices feed it through their `Reverb` send, and the
 tail is mixed on top of the dry output. `ReverbSettings` has a room size,
 damping, stereo width and wet level, and its zero value is no reverb.
+
+```go
+ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: 0.7, Damping: 0.4, Wet: 0.3})
+
+// The send decides how much of each voice reaches it.
+ctx.Audio.Play(g.shot, audio.PlayOptions{Reverb: 1})
+ctx.Audio.Play(g.click, audio.PlayOptions{Bus: g.menu}) // no send: stays dry
+g.pad.SetReverb(0.5)                                    // change it while it plays
+```
 
 ### Reverb zones
 
@@ -107,6 +223,20 @@ that sounds the same everywhere but its threshold. Where zones overlap
 the one the listener is furthest inside wins. `Mixer.Reverb` reports what
 is in effect, for a debug overlay.
 
+```go
+ctx.Audio.SetReverbZones([]audio.ReverbZone{
+	{
+		Center: lin.V3(0, 0, -40), Radius: 20, Fade: 5, // the cave
+		Settings: audio.ReverbSettings{RoomSize: 0.95, Damping: 0.2, Wet: 0.8},
+	},
+	{
+		Center: lin.V3(30, 0, 0), Radius: 8, // the stairwell
+		Settings: audio.ReverbSettings{RoomSize: 0.6, Wet: 0.5},
+	},
+})
+here := ctx.Audio.Reverb() // what the listener is hearing now
+```
+
 ### Bus reverb
 
 `Bus.SetReverb` gives a bus a reverb of its own, and voices on that bus
@@ -114,11 +244,28 @@ send to it instead of the shared one. That keeps the music dry while the
 cave's effects ring, or gives dialogue a small room while the world has a
 large one.
 
+```go
+// The cave rings; the music stays dry because it is on another bus.
+ctx.Audio.Effects().SetReverb(audio.ReverbSettings{RoomSize: 0.95, Damping: 0.2, Wet: 0.6})
+ctx.Audio.Dialogue().SetReverb(audio.ReverbSettings{RoomSize: 0.3, Wet: 0.2})
+ctx.Audio.Play(g.step, audio.PlayOptions{Bus: ctx.Audio.Effects(), Reverb: 1})
+```
+
 ## Voice limits
 
 `SetMaxVoices` caps the number of voices playing at once. When the cap
 is reached, a new voice replaces the quietest voice whose priority is no
 higher than its own, so a footstep never steals from the dialogue.
+
+```go
+ctx.Audio.SetMaxVoices(32)
+
+// Dialogue outranks the world, which outranks incidental noise.
+ctx.Audio.Play(g.line, audio.PlayOptions{Bus: ctx.Audio.Dialogue(), Priority: 100})
+ctx.Audio.Play(g.explosion, audio.PlayOptions{Priority: 50})
+ctx.Audio.Play(g.step, audio.PlayOptions{Priority: 0, Volume: 0.3})
+n := ctx.Audio.Playing() // for the debug overlay
+```
 
 ## Tracker music
 
@@ -127,6 +274,20 @@ and IT modules with one engine: envelopes, new-note actions, loops, the
 IT filter and ProTracker's quirks. The player is a `Stream`, so
 `PlayStream` plays it. `bunyip-play` plays any supported file from the
 command line and can dump what the device received for comparison.
+
+```go
+mod, err := tracker.Load(data) // the format is sniffed from the bytes
+if err != nil {
+	return err
+}
+g.player = tracker.NewPlayer(mod, ctx.Audio.Rate())
+g.player.Loop = true
+g.song = ctx.Audio.PlayStream(g.player, audio.PlayOptions{Bus: ctx.Audio.Music(), Volume: 0.6})
+```
+
+`asset.Tracker(fs, "music/level1.xm")` loads a module through the asset
+sources. `Module.Title`, `Channels` and `Patterns` are there for a
+player screen or for driving visuals from the pattern data.
 
 ### Tracker control
 
@@ -140,3 +301,16 @@ silences a pattern channel while the song plays on, `Solo` auditions
 one, and `Channels` says how many there are. A game that drops the drums
 while the player hides mutes their channel and unmutes it later without
 a break.
+
+```go
+p := g.player
+order, row := p.Position()
+g.hud = fmt.Sprintf("%d/%d row %d of %d", order, p.Length(), row, p.Rows(order))
+if g.enteredBossRoom {
+	p.Seek(3, 0) // the boss section starts at song position 3
+}
+p.Mute(g.drums, g.hiding) // the drums drop out while the player hides
+for ch := range p.Channels() {
+	g.lit[ch] = !p.Muted(ch) // a channel strip for the overlay
+}
+```

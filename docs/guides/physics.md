@@ -40,6 +40,24 @@ the velocity at once with `AddImpulse`. `GravityScale` makes a body
 float or sink, `LockRotation` keeps a character upright, and setting
 `Sleeping` freezes a body until the game clears it again.
 
+```go
+// 2D: a paddle that moves under the game's control and pushes what it meets.
+paddle := w.SpawnWith(gfx.At2(700, 500), phys.Kinematic2(),
+	phys.Collider2{Shape: phys.Box2{HalfW: 90, HalfH: 10}})
+if b, ok := ecs.Get[phys.Body2](w, paddle); ok {
+	b.Vel = lin.V2(200, 0)
+}
+
+// 3D: a bouncy crate, shoved once at spawn.
+crate := phys.Dynamic3(2)
+crate.Restitution, crate.Friction, crate.LinearDamping = 0.4, 0.6, 0.1
+e := w.SpawnWith(gfx.At(0, 5, 0), crate,
+	phys.Collider3{Shape: phys.Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
+if b, ok := ecs.Get[phys.Body3](w, e); ok {
+	b.AddImpulse(lin.V3(0, 0, -6))
+}
+```
+
 ## Shapes
 
 2D: `Circle`, `Box2`, convex `Polygon2`, `Capsule2`, and for terrain
@@ -58,6 +76,23 @@ Each collider has an `Offset` from the transform, a `Trigger` flag and
 `Layers`. Two colliders meet only when each one's `Layer` bits appear
 in the other's `Mask`, which is how bullets pass through their own
 team.
+
+```go
+// 2D: a terrain outline and a triangle that lands on it.
+w.SpawnWith(gfx.Transform2{}, phys.Collider2{Shape: phys.Chain2{
+	Points: []lin.Vec2{{X: 0, Y: 300}, {X: 200, Y: 260}, {X: 400, Y: 330}}}})
+w.SpawnWith(gfx.At2(120, 40), phys.Dynamic2(1), phys.Collider2{
+	Shape: phys.Polygon2{Points: []lin.Vec2{{X: 0, Y: -20}, {X: 17, Y: 10}, {X: -17, Y: 10}}}})
+
+// 3D: a static level mesh, and a hammer made of two boxes on one body.
+w.SpawnWith(gfx.Transform{}, phys.Collider3{Shape: phys.NewMeshShape(vertices, indices)})
+w.SpawnWith(gfx.At(0, 4, 0), phys.Dynamic3(5), phys.Collider3{
+	Shape: phys.Compound3{Parts: []phys.Part3{
+		{Shape: phys.Box3{Half: lin.V3(0.06, 0.5, 0.06)}},
+		{Shape: phys.Box3{Half: lin.V3(0.3, 0.12, 0.12)}, Offset: lin.V3(0, 0.5, 0)},
+	}},
+	Layers: phys.Layers{Layer: 2, Mask: 1}})
+```
 
 ## Collisions and triggers
 
@@ -87,6 +122,24 @@ direction and report the first thing it would hit and how far along the
 sweep it got. `Nearest2` and `Nearest3` find the closest collider to a
 point within a radius.
 
+```go
+// The body under the pointer.
+ray := gr.ScreenRay(mx, my)
+if hit, ok := phys.Raycast3(w, phys.Ray3{Origin: ray.Origin, Dir: ray.Dir.Mul(200)}, 0); ok {
+	hover = hit.Entity
+}
+
+// Everything an explosion caught, pushed away from the blast.
+for _, h := range phys.OverlapSphere3(w, blast, 5, 0) {
+	if b, ok := ecs.Get[phys.Body3](w, h.Entity); ok {
+		b.AddImpulse(h.Point.Sub(blast).Norm().Mul(20))
+	}
+}
+
+// A 2D ground check: sweep the player's circle a little way down.
+_, grounded := phys.ShapeCast2(w, phys.Circle{Radius: 12}, pos, 0, lin.V2(0, 4), 0)
+```
+
 ## Joints
 
 A joint is a component on its own entity that ties two bodies together,
@@ -98,6 +151,14 @@ hip. `SpringJoint2` and `SpringJoint3` have stiffness and damping.
 `FixedJoint2` and `FixedJoint3` weld. Joints are solved in the same
 iterations as the contacts, so a chain of hinges hangs and swings
 without drifting apart.
+
+```go
+// 2D: a crate on a rope from a fixed point, and a wheel sprung to a cart.
+w.SpawnWith(phys.DistanceJoint2{A: crate, B: ecs.None,
+	AnchorB: lin.V2(400, 100), Max: 150})
+w.SpawnWith(phys.SpringJoint2{A: cart, B: wheel,
+	RestLength: 40, Stiffness: 30, Damping: 4})
+```
 
 A hinge or revolute joint measures its angle from the pose on its first
 step, positive by the right-hand rule about the axis; `Angle(w)` reads
@@ -154,6 +215,15 @@ have crossed, and its bounding sphere is swept against the other moving
 bodies so two fast bodies meet rather than cross. The second test is
 coarse, so two long thin bodies can still miss each other.
 
+```go
+bullet := phys.Dynamic3(0.02)
+bullet.CCD = true
+bullet.GravityScale = 0.1
+bullet.Vel = lin.V3(0, 0, -300)
+w.SpawnWith(gfx.At(0, 1.5, 0), bullet,
+	phys.Collider3{Shape: phys.Sphere{Radius: 0.02}})
+```
+
 ## Sleeping
 
 When `Settings.SleepTime` is set, bodies that stay at rest for that long
@@ -164,6 +234,22 @@ boxes at the default solver quality jitters slightly and may never
 settle below the threshold; raise `Substeps` and `Iterations` for
 stacks that should sleep.
 
+```go
+ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0),
+	Substeps: 8, Iterations: 16, SleepTime: 0.5})
+
+// How much of the world has settled, for a debug readout.
+resting := 0
+ecs.Each(w, func(e ecs.Entity, b *phys.Body3) {
+	if b.Asleep() {
+		resting++
+	}
+})
+if b, ok := ecs.Get[phys.Body3](w, crate); ok {
+	b.Wake() // the player kicked it
+}
+```
+
 ## Character controllers
 
 `CharacterController3` and `CharacterController2` move a capsule the way
@@ -173,6 +259,19 @@ no taller than `StepHeight`, refuses slopes steeper than `MaxSlope`, and
 reports `Grounded` and the `GroundNormal`. A controller is kinematic:
 it pushes nothing and nothing pushes it. Give the character a trigger
 collider for the things that should notice it.
+
+```go
+hero := w.SpawnWith(gfx.At(1, 3.5, -8))
+ctrl := phys.CharacterController3{Radius: 0.35, HalfHeight: 0.45,
+	StepHeight: 0.45, MaxSlope: 50}
+
+// Each update: walk, and fall until the sweep finds ground.
+vel := lin.V3(2.5*dir, -6, 0)
+ctrl.Move(w, hero, vel, float32(ctx.Delta))
+if ctrl.Grounded && jump {
+	// launch, then integrate the vertical velocity yourself
+}
+```
 
 ## Tuning
 
@@ -188,6 +287,16 @@ motion and tall stacks; `Iterations` (default 8) stiffens contacts and
 joints. Five hundred boxes step in a few milliseconds at the defaults.
 Keep the sizes and masses of interacting bodies within a factor of a
 hundred or so of each other, as with every impulse solver.
+
+```go
+// 2D at pixel scale, with a stiffer solver than the defaults.
+ecs.SetResource(w, phys.Settings2{Gravity: lin.V2(0, 900), Substeps: 6, Iterations: 12})
+
+// The step costs what it costs; measure it rather than guess.
+done := ctx.Profile("physics")
+w.Update(ctx.Delta)
+done()
+```
 
 ## Beyond rigid bodies
 

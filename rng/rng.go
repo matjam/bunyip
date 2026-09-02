@@ -8,7 +8,7 @@
 // their own and adding a call to one never changes what another
 // produces, which keeps seeds shareable and replays exact. Beyond the
 // integer and float draws there are the game helpers: Roll for dice
-// notation ("2d6+1"), Chance, Range and Between, Pick, WeightedIndex,
+// (Roll(2, 6) is 2d6), Chance, Range and Between, Pick, WeightedIndex,
 // Shuffle and Normal. State and Restore put the generator into a save
 // file. Sources are not safe for concurrent use; fork one per goroutine.
 package rng

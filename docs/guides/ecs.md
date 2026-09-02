@@ -96,6 +96,19 @@ Events let systems talk without coupling. A producer calls
 `ecs.Events[Cleared](w)`. Events are cleared at the start of the next
 Update, and `Draw` still sees what the last Update emitted.
 
+```go
+ecs.SetResource(w, Score{})
+w.AddSystem("rules", func(w *ecs.World, dt float64) {
+	ecs.Emit(w, Cleared{Rows: 2})
+})
+w.AddSystem("score", func(w *ecs.World, dt float64) {
+	for _, ev := range ecs.Events[Cleared](w) {
+		ecs.Resource[Score](w).Points += 100 * ev.Rows
+	}
+})
+w.Update(ctx.Delta) // runs both, in registration order
+```
+
 ## Hierarchy
 
 `SetParent` links entities; `WorldMatrix` composes their
@@ -103,6 +116,19 @@ Update, and `Draw` still sees what the last Update emitted.
 despawns its children. The solar example's moons orbit their planets
 this way: each moon has a small orbit component relative to its parent
 and the hierarchy does the rest.
+
+```go
+planet := w.SpawnWith(gfx.At(80, 0, 0))
+moon := w.SpawnWith(gfx.At(4, 0, 0)) // relative to the planet
+ecs.SetParent(w, moon, planet)
+
+// Drawing composes the chain from the root down.
+gr.DrawMesh(mesh, mat, ecs.WorldMatrix(w, moon).Mul(lin.Scale(size)))
+for _, child := range ecs.ChildrenOf(w, planet) {
+	highlight(child)
+}
+w.Despawn(planet) // the moon goes with it
+```
 
 ## Saving and loading
 
@@ -167,6 +193,18 @@ would save what it built.
 under the same parent; `CloneTree` copies the descendants as well and
 keeps the hierarchy between the copies. A field that referred to
 something in the copied tree refers to its copy afterwards.
+
+```go
+tank := w.SpawnWith(Position{0, 0}, Health{10})
+turret := w.SpawnWith(Position{0, 1})
+ecs.SetParent(w, turret, tank)
+
+second := ecs.CloneTree(w, tank) // the tank and its turret
+if h, ok := ecs.Get[Health](w, second); ok {
+	h.HP = 3 // the original still has 10
+}
+spark := ecs.Clone(w, muzzleFlash) // one entity, no descendants
+```
 
 Copies are deep through exported fields: slices, maps, pointers and
 interface values get their own storage, so an inventory slice in the

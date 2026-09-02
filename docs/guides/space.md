@@ -33,12 +33,38 @@ later := orbit.Propagate(s, mu, el.Period(mu)/2) // at apoapsis
 `EscapeVelocity`, `VisViva`, `Hohmann` and `SphereOfInfluence` give
 the numbers a player wants to see and the burns a planner needs.
 
+```go
+// Real units: low Earth orbit to geostationary, and the elements of a
+// state vector measured relative to the primary.
+dv1, dv2, coast := orbit.Hohmann(sol.MuEarth, 6678e3, 42164e3)
+fmt.Printf("%.2f km/s, coast %.1f h, %.2f km/s\n", dv1/1000, coast/3600, dv2/1000)
+
+now := orbit.ElementsOf(orbit.State{Pos: rel, Vel: relVel}, sol.MuEarth)
+soon := now.AtTime(sol.MuEarth, 600) // where it is ten minutes on
+```
+
 ## Many bodies, numerically
 
 `Simulation` integrates bodies under their mutual gravity with a
 symplectic leapfrog, which keeps the energy of a system steady over
 long runs. `RK4` steps a single particle through an acceleration field,
 the right tool for a ship whose engine is part of the force.
+
+```go
+// Two stars of equal mass circling each other, in game units.
+sim := orbit.Simulation{G: 1, Bodies: []orbit.Body{
+	{Pos: orbit.V3(-5, 0, 0), Vel: orbit.V3(0, -5, 0), Mass: 500},
+	{Pos: orbit.V3(5, 0, 0), Vel: orbit.V3(0, 5, 0), Mass: 500},
+}}
+for range 1000 {
+	sim.Step(0.01)
+}
+
+// A ship falling through that field with its engine burning.
+pos, vel = orbit.RK4(pos, vel, dt, func(p, v orbit.Vec3) orbit.Vec3 {
+	return sim.FieldAt(p).Add(thrust)
+})
+```
 
 ## In the ECS
 
@@ -76,6 +102,18 @@ rather than a streak across the sky. `Around` reports which body
 dominates a ship and its orbital elements relative to it, for a readout;
 pass its primary to `PredictRelative`.
 
+```go
+// Draw a lap and a half of the ship's path around whatever holds it.
+primary, el, mu, ok := orbit.Around(w, ship)
+horizon := 60.0
+if ok && el.Eccentricity < 1 {
+	horizon = min(1.5*el.Period(mu), 600)
+}
+for _, p := range orbit.PredictRelative(w, ship, primary, horizon, 90) {
+	gr.DrawMesh(dot, mat, lin.Translate(p).Mul(lin.Scale(dotSize)))
+}
+```
+
 Ships are integrated with an adaptive step: never longer than a small
 fraction of the local orbital timescale, with the Kepler bodies moved
 along their orbits at each step. A ship in a twenty-second orbit stays
@@ -94,9 +132,27 @@ from the ship's hull to the whole system. With `G = 1` and a star of
 mass 175 the inner planet takes two minutes to go round and the outer
 one an hour, so the time warp slider is how you watch the system move.
 
+```go
+// From examples/space: the time warp, and the focused body pinned to the
+// floating origin so the scene near the camera stays precise.
+settings := ecs.Resource[orbit.Settings](w)
+settings.TimeScale = float64(warp)
+if fb, ok := ecs.Get[orbit.Body](w, focus); ok {
+	settings.Origin = fb.Pos
+}
+w.Update(ctx.Delta)
+```
+
 ## Choosing units
 
 Stay consistent and the equations do not care. With `G = 1`, a star of
 mass 5000 and a planet at distance 55, the planet's period is
 2π·√(55³/5000) ≈ 36 time units. Pick masses and distances that make the
 periods you want, then set `TimeScale` for how fast it should feel.
+
+```go
+const g, starMass = 1.0, 5000.0
+year := orbit.Elements{SemiMajorAxis: 55}.Period(g * starMass) // ≈ 36
+ecs.SetResource(w, orbit.Settings{G: g, TimeScale: year / 10, Scale: 1})
+// One lap of the inner planet every ten seconds of play.
+```
