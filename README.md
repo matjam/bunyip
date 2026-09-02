@@ -6,14 +6,25 @@ anything else that wants 2D sprites and 3D models on the same screen.
 - Vulkan rendering through a generated, cgo-free binding (MoltenVK on macOS).
 - Native window, input and audio layers per platform; no SDL, no GLFW.
 - `CGO_ENABLED=0` everywhere. Native libraries are opened at runtime with purego.
-- Physically based rendering with shadow maps, bloom and tone mapping; sprites and scalable SDF text on top.
-- Immediate-mode, themeable UI. glTF 2.0 models. Fullscreen, cursor capture, gamepads.
-- Audio mixer with WAV, Ogg Vorbis, MP3, and a tracker player for MOD, S3M, XM and IT.
+- Physically based rendering with cascaded shadow maps, SSAO, bloom, FXAA and
+  tone mapping; skeletal animation; automatic instancing; render textures;
+  picking. Sprites, tilemaps, cameras and scalable SDF text on top.
+- Immediate-mode, themeable UI with scroll areas, drop-downs, tooltips and
+  keyboard or gamepad navigation. glTF 2.0 models. Fullscreen, cursor
+  capture, gamepads, IME text input.
+- Audio mixer with streamed WAV, Ogg Vorbis and MP3, positional voices,
+  reverb and filters, priorities, and a tracker player for MOD, S3M, XM and IT.
+- Game services: entity store, assets and packs with async loading and hot
+  reload, saves and settings, seeded RNG, timers and tweens, grids with
+  pathfinding and field of view, TCP and UDP messaging.
 - Two loop modes: fixed-timestep real time, or turn-based where the process
-  sleeps in the OS until input arrives.
+  sleeps in the OS until input (or `Context.Wake`) arrives. A frame-timing
+  overlay on F3 and optional pprof.
 
-macOS is the first target; Linux and Windows follow behind the same
-`internal/platform` and `internal/audioout` interfaces.
+macOS is the tested target. Windows (Win32, WASAPI, XInput) and Linux (X11
+through xcb, ALSA, joystick devices) layers exist behind the same
+`internal/platform` and `internal/audioout` interfaces; they cross-compile
+and vet but have not yet run on hardware. Wayland desktops use XWayland.
 
 ## Packages
 
@@ -24,9 +35,16 @@ macOS is the first target; Linux and Windows follow behind the same
 | `ui` | immediate-mode widgets with a `Theme` |
 | `audio` | mixer, voices, streams; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
 | `audio/tracker` | MOD, S3M, XM and IT loader and player |
-| `input` | key codes, modifiers, mouse buttons, per-update `State` |
+| `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State` |
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
 | `lin` | vectors, matrices, quaternions |
+| `scene` | entity store with typed components and a transform hierarchy |
+| `asset` | files from directories and pack files, async loading, hot reload |
+| `save` | JSON saves and settings in the platform's data directory |
+| `rng` | seeded PCG32 with forks, dice, picks and shuffles |
+| `timer`, `tween` | game-time timers; eased value animation |
+| `grid` | cell grids, A*, Dijkstra maps, lines, field of view, flood fill |
+| `network` | typed messages over TCP (ordered) and UDP (fast) |
 | `internal/vk` | generated Vulkan binding plus hand-written loader |
 | `internal/render` | Vulkan backend: device, swapchain, frames in flight, pipelines, uploads, readback |
 | `internal/platform` | per-OS window, events, surface creation |
@@ -70,9 +88,11 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites |
 | `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
-| `go run ./examples/gallery [-beep]` | every UI widget, theme switch, audio beep |
+| `go run ./examples/gallery [-beep] [-debug]` | every UI widget, theme switch, audio beep, frame-timing overlay |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |
+| `go run ./cmd/bunyip-pack -o assets.pak assets/` | bundles an asset directory into a pack file |
+| `go run ./cmd/bunyip-bundle -name "Game" -exe ./game -assets assets/` | makes a macOS .app with MoltenVK inside, or a folder elsewhere |
 
 ## Requirements
 
@@ -80,6 +100,10 @@ macOS: the Vulkan loader and MoltenVK (`brew install vulkan-loader molten-vk`),
 or the LunarG Vulkan SDK. Optional: `brew install vulkan-validationlayers`
 for validation in tests and examples. Set `BUNYIP_VULKAN_LIBRARY` to point at
 a specific library.
+
+Linux: a Vulkan driver, `libxcb`, and `libasound`; `libxkbcommon` and
+`libxkbcommon-x11` for text input. Windows: a Vulkan driver (`vulkan-1.dll`
+ships with GPU drivers).
 
 ## Developing
 
