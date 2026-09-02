@@ -19,11 +19,16 @@ structure the game loop. `SetParent` builds a hierarchy and
 
 ## Files: asset
 
-[asset](../pkg/asset.html) resolves names across loose directories and
-pack files, directories first so a developer's copy overrides the packed
-one. A `Loader` decodes on worker goroutines behind a progress counter,
-and a `Watcher` reports loose files that changed on disk for hot reload.
-`bunyip-pack` builds pack files.
+[asset](../pkg/asset.html) resolves names across loose directories,
+pack files and any `fs.FS` such as an `embed.FS`, in the order given, so
+a developer's copy overrides the packed or embedded one. `Open` takes
+paths; `OpenFS` takes `Dir`, `PackFile` and `FSSource` sources. One-call
+loaders turn a name into an engine object: `asset.Texture`,
+`asset.Font`, `asset.SDFFont`, `asset.Sound`, `asset.Music`,
+`asset.Model` (with the model's buffers and images resolved through the
+same files) and `asset.Tracker`. A `Loader` decodes on worker goroutines
+behind a progress counter, and a `Watcher` reports loose files that
+changed on disk for hot reload. `bunyip-pack` builds pack files.
 
 ## Saves and settings: save
 

@@ -96,8 +96,11 @@ func runOnce(cfg Config, game Game) error {
 			defer dev.Close()
 		}
 	}
-	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1}}
+	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1, focused: true}}
 	l.overlay.on = cfg.Debug
+	if cfg.Icon != nil {
+		win.SetIcon(cfg.Icon)
+	}
 	defer l.overlay.destroy() // before g.Destroy, which was deferred earlier
 	if cfg.Pprof != "" && !cfg.recovering {
 		servePprof(cfg.Pprof, l.ctx)
@@ -251,6 +254,7 @@ func (l *loop) update() error {
 	l.updateTime += time.Since(start)
 	l.updates++
 	l.ctx.Input.EndUpdate()
+	l.ctx.closeReq = false // the game has seen it
 	return err
 }
 
@@ -331,12 +335,22 @@ func (l *loop) handleEvents(events []platform.Event) {
 	for _, e := range events {
 		switch e.Kind {
 		case platform.EventClose:
-			l.ctx.quit = true
+			if l.cfg.HandleClose {
+				l.ctx.closeReq = true
+			} else {
+				l.ctx.quit = true
+			}
 		case platform.EventResize:
 			l.applySize()
 		case platform.EventFocus:
+			l.ctx.focused = e.Focused
 			if !e.Focused {
 				in.FeedFocusLost()
+			}
+		case platform.EventMouseEnter:
+			// The system resets the pointer's shape at the window's edge.
+			if l.ctx.cursor != CursorArrow {
+				l.win.SetCursor(platform.CursorShape(l.ctx.cursor))
 			}
 		case platform.EventKeyDown:
 			in.FeedKey(e.Key, true, e.Repeat, e.Mods)

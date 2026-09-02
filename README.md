@@ -18,6 +18,9 @@ anything else that wants 2D sprites and 3D models on the same screen.
   resources and events; assets and packs with async loading and hot reload,
   saves and settings, seeded RNG, timers and tweens, grids with pathfinding
   and field of view, TCP and UDP messaging.
+- A fixed view scaled into the window (fit, integer or stretch), an
+  interpolation factor for smooth motion, window title, icon, cursor and
+  clipboard control, and headless runs for tests and screenshots.
 - Two loop modes: fixed-timestep real time, or turn-based where the process
   sleeps in the OS until input (or `Context.Wake`) arrives. A frame-timing
   overlay on F3 and optional pprof.

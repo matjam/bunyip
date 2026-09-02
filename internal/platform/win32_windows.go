@@ -249,6 +249,12 @@ type Window struct {
 	inputRect textRect
 	mouseX    float64
 	mouseY    float64
+
+	minW, minH, maxW, maxH int // content size limits in points; zero is none
+	cursorHidden           bool
+	shape                  CursorShape
+	hcursor                uintptr
+	hicon                  uintptr
 }
 
 type textRect struct{ X, Y, W, H float64 }
@@ -372,6 +378,16 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 		return r
 	}
 	switch message {
+	case wmGetMinMaxInfo:
+		if w.minW > 0 || w.minH > 0 || w.maxW > 0 || w.maxH > 0 {
+			w.minMax(*(**minMaxInfo)(unsafe.Pointer(&lparam)))
+			return 0
+		}
+	case wmSetCursor:
+		if w.hcursor != 0 && lparam&0xffff == htClient {
+			procSetCursor.Call(w.hcursor)
+			return 1
+		}
 	case wmClose:
 		a.push(Event{Kind: EventClose, Window: w})
 		return 0 // the game decides when to close

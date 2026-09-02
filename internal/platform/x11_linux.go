@@ -198,6 +198,10 @@ type xlib struct {
 	freePixmap         func(c unsafe.Pointer, pid uint32) xcbCookie
 	createCursor       func(c unsafe.Pointer, cid, source, mask uint32, foreR, foreG, foreB, backR, backG, backB uint16, x, y uint16) xcbCookie
 	changeWindowAttrs  func(c unsafe.Pointer, w uint32, mask uint32, values *uint32) xcbCookie
+	openFont           func(c unsafe.Pointer, fid uint32, nameLen uint16, name *byte) xcbCookie
+	closeFont          func(c unsafe.Pointer, fid uint32) xcbCookie
+	createGlyphCursor  func(c unsafe.Pointer, cid, sourceFont, maskFont uint32, sourceChar, maskChar uint16, foreR, foreG, foreB, backR, backG, backB uint16) xcbCookie
+	freeCursor         func(c unsafe.Pointer, cid uint32) xcbCookie
 	free               func(p unsafe.Pointer)
 
 	// xkbcommon, optional.
@@ -241,6 +245,8 @@ func loadX11() (*xlib, error) {
 		"xcb_send_event": &x.sendEvent, "xcb_grab_pointer": &x.grabPointer, "xcb_ungrab_pointer": &x.ungrabPointer,
 		"xcb_warp_pointer": &x.warpPointer, "xcb_create_pixmap": &x.createPixmap, "xcb_free_pixmap": &x.freePixmap,
 		"xcb_create_cursor": &x.createCursor, "xcb_change_window_attributes": &x.changeWindowAttrs,
+		"xcb_open_font": &x.openFont, "xcb_close_font": &x.closeFont, "xcb_create_glyph_cursor": &x.createGlyphCursor,
+		"xcb_free_cursor": &x.freeCursor,
 	} {
 		if err := load(xcb, name, fptr); err != nil {
 			return nil, err
@@ -382,6 +388,12 @@ type Window struct {
 	mouseX    float64
 	mouseY    float64
 	warping   bool
+
+	minW, minH, maxW, maxH int // content size limits; zero is none
+	cursorHidden           bool
+	shape                  CursorShape
+	shapeCursor            uint32 // the glyph cursor in force, or 0
+	blankCursor            uint32 // the invisible cursor while hidden, or 0
 }
 
 type textRect struct{ X, Y, W, H float64 }

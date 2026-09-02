@@ -17,12 +17,24 @@ pan, loop, pitch, a fade-in, a low-pass cutoff, a reverb send and a
 priority. The voice can be adjusted while it runs: `SetVolume`, `FadeTo`,
 `FadeOut`, `SetPitch`, `SetPaused`, `SetLowPass`, `SetPosition`.
 
-Gains ramp across each block, so changes never click.
+Gains ramp across each block, so changes never click. `Voice.Position`
+and `Seek` read and move the playhead, `Sound.Duration` is its length,
+and `Voice.OnDone` runs a callback when the voice ends, for chaining
+clips.
+
+## Buses
+
+Voices play through a `Bus`, and a settings screen binds its sliders to
+buses rather than to every voice. `Music`, `Effects` and `Dialogue` come
+ready; `NewBus` makes more. A bus has its own volume and pause, applied
+with the same ramps, and `Mixer.SetPaused` holds everything at once when
+the window loses focus. Set `PlayOptions.Bus` to choose one.
 
 ## Music
 
 `OpenMusic` streams a WAV, Ogg or MP3 file, decoding a couple of seconds
 ahead on its own goroutine; `PlayStream` plays it, and `Close` stops it.
+`Music.Duration` and `Music.Seek` work for all three formats.
 Anything implementing `Stream` (fill a buffer of stereo frames) plays the
 same way, which is how procedural music and the tracker player plug in.
 

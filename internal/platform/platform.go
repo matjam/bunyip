@@ -11,7 +11,11 @@
 // main OS thread in init, because window systems require it.
 package platform
 
-import "github.com/matjam/bunyip/input"
+import (
+	"errors"
+
+	"github.com/matjam/bunyip/input"
+)
 
 // Config describes a window to open.
 type Config struct {
@@ -41,6 +45,25 @@ const (
 	EventMouseLeave           // the pointer left the content area
 	EventWake                 // App.Wake was called from another goroutine
 )
+
+// CursorShape names a system cursor.
+type CursorShape uint8
+
+const (
+	CursorArrow CursorShape = iota
+	CursorHand
+	CursorIBeam
+	CursorCrosshair
+	CursorResizeH
+	CursorResizeV
+	CursorGrab
+	CursorGrabbing
+	CursorNotAllowed
+	cursorShapeCount
+)
+
+// ErrNoClipboard is returned where the platform layer has no clipboard.
+var ErrNoClipboard = errors.New("platform: clipboard is not available on this platform")
 
 // GamepadState is one controller's inputs as read this poll.
 type GamepadState struct {

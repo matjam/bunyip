@@ -71,6 +71,9 @@ Change the theme at any time; the next frame draws with it.
 
 ## Skins
 
+`ui.Rect` is `lin.Rect` and `ui.Slice` is `gfx.NineSlice`, so the values
+the interface uses draw outside it too.
+
 A theme may carry a `Skin` of nine-slice textures for panels, buttons in
 three states, fields, checkboxes, tracks, fills, knobs and scroll thumbs.
 Any slice left nil falls back to the theme's flat colours, so a skin can

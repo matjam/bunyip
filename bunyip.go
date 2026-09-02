@@ -11,12 +11,14 @@
 package bunyip
 
 import (
+	"image"
 	"log/slog"
 	"time"
 
 	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/internal/platform"
 )
 
 // Config describes the window and the loop.
@@ -42,6 +44,13 @@ type Config struct {
 	// Width by Height and Context.Screenshot still works, for tests and
 	// screenshot runs on a build machine.
 	Headless bool
+
+	// Icon is the window's or application's icon; nil keeps the default.
+	// HandleClose leaves the window open when the user asks to close it
+	// and sets Context.CloseRequested instead, so the game can save or
+	// ask first and then Quit.
+	Icon        image.Image
+	HandleClose bool
 
 	Validation bool // enable Vulkan validation when installed
 	NoAudio    bool // skip opening the audio device
@@ -129,17 +138,27 @@ type Context struct {
 	// Stats holds the previous frame's timings.
 	Stats Stats
 
-	scopes []Scope
-	app    waker
-	quit   bool
-	redraw bool
-	shot   string
-	win    windowControl
+	scopes   []Scope
+	app      clipboardWaker
+	quit     bool
+	redraw   bool
+	shot     string
+	win      windowControl
+	focused  bool
+	closeReq bool
+	cursor   Cursor
 }
 
 // waker is what the context needs from the platform app.
 type waker interface {
 	Wake()
+}
+
+// clipboardWaker adds the clipboard to what the context needs.
+type clipboardWaker interface {
+	waker
+	Clipboard() (string, error)
+	SetClipboard(string) error
 }
 
 // Wake makes a turn-based game run an Update and Draw even though no
@@ -159,7 +178,65 @@ type windowControl interface {
 	SetCursorCaptured(bool)
 	CursorCaptured() bool
 	SetTextInputRect(x, y, w, h float64)
+	SetTitle(string)
+	SetSizeLimits(minW, minH, maxW, maxH int)
+	SetCursorVisible(bool)
+	SetCursor(platform.CursorShape)
+	SetIcon(image.Image)
 }
+
+// Cursor is a pointer shape for SetCursor.
+type Cursor uint8
+
+const (
+	CursorArrow      Cursor = Cursor(platform.CursorArrow)
+	CursorHand       Cursor = Cursor(platform.CursorHand)
+	CursorIBeam      Cursor = Cursor(platform.CursorIBeam)
+	CursorCrosshair  Cursor = Cursor(platform.CursorCrosshair)
+	CursorResizeH    Cursor = Cursor(platform.CursorResizeH)
+	CursorResizeV    Cursor = Cursor(platform.CursorResizeV)
+	CursorGrab       Cursor = Cursor(platform.CursorGrab)
+	CursorGrabbing   Cursor = Cursor(platform.CursorGrabbing)
+	CursorNotAllowed Cursor = Cursor(platform.CursorNotAllowed)
+)
+
+// SetTitle changes the window's title.
+func (c *Context) SetTitle(title string) { c.win.SetTitle(title) }
+
+// SetIcon sets the window's or application's icon from an image; 256
+// pixels square is a good size.
+func (c *Context) SetIcon(img image.Image) { c.win.SetIcon(img) }
+
+// SetSizeLimits bounds the window's content size in points; zero lifts a
+// bound.
+func (c *Context) SetSizeLimits(minW, minH, maxW, maxH int) {
+	c.win.SetSizeLimits(minW, minH, maxW, maxH)
+}
+
+// SetCursorVisible shows or hides the pointer over the window.
+func (c *Context) SetCursorVisible(on bool) { c.win.SetCursorVisible(on) }
+
+// SetCursor picks the pointer's shape over the window.
+func (c *Context) SetCursor(shape Cursor) {
+	c.cursor = shape
+	c.win.SetCursor(platform.CursorShape(shape))
+}
+
+// Focused reports whether the window has keyboard focus.
+func (c *Context) Focused() bool { return c.focused }
+
+// CloseRequested reports that the user asked to close the window since
+// the last Update. With Config.HandleClose the loop keeps running and the
+// game decides: save, ask, then Quit. Without it the loop quits on its
+// own and this is never true.
+func (c *Context) CloseRequested() bool { return c.closeReq }
+
+// Clipboard returns the system clipboard's text, empty when it holds
+// none. Linux under X11 has no clipboard yet and returns an error.
+func (c *Context) Clipboard() (string, error) { return c.app.Clipboard() }
+
+// SetClipboard puts text on the system clipboard.
+func (c *Context) SetClipboard(text string) error { return c.app.SetClipboard(text) }
 
 // SetTextInputRect tells the operating system's input method where text
 // is being entered, in view units from the top-left, so that candidate

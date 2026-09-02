@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -24,8 +25,8 @@ func (h *HDRImage) At(x, y int) (r, g, b float32) {
 
 // DecodeHDR reads a Radiance RGBE (.hdr) file, flat or run-length
 // encoded, as most panoramas are distributed.
-func DecodeHDR(r io.Reader) (*HDRImage, error) {
-	br := bufio.NewReader(r)
+func DecodeHDR(data []byte) (*HDRImage, error) {
+	br := bufio.NewReader(bytes.NewReader(data))
 	magic, err := br.ReadString('\n')
 	if err != nil || !strings.HasPrefix(magic, "#?") {
 		return nil, fmt.Errorf("gfx: not a Radiance HDR file")

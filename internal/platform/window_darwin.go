@@ -21,6 +21,9 @@ type Window struct {
 	closed   bool
 	captured bool
 
+	cursorHidden bool
+	shape        CursorShape
+
 	marked    string   // the input method's uncommitted text
 	inputRect textRect // where the game is taking text
 }

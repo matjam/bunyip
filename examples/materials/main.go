@@ -13,6 +13,7 @@ import (
 	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"math"
 	"os"
 	"strings"
@@ -109,7 +110,11 @@ func loadEnvironment(gr *gfx.Graphics, path string) (*gfx.Environment, error) {
 	}
 	defer f.Close()
 	if strings.HasSuffix(strings.ToLower(path), ".hdr") {
-		img, err := gfx.DecodeHDR(f)
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return nil, err
+		}
+		img, err := gfx.DecodeHDR(data)
 		if err != nil {
 			return nil, err
 		}

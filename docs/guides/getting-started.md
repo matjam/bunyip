@@ -74,6 +74,32 @@ per batch of events. A timer, a network message or a finished asset load
 can wake it with `ctx.Wake()`, and `ctx.RequestRedraw()` asks for another
 frame while an animation is running.
 
+When the display runs faster than the update rate, `ctx.Alpha` during
+`Draw` says how far the clock has run past the last update as a fraction
+of a step. Drawing a body at `previous + (current - previous) * Alpha`
+keeps motion smooth at any frame rate.
+
+## A fixed view
+
+By default the view is the window's size in points and follows it. A
+game that designs for one resolution sets `Config.ViewWidth` and
+`ViewHeight`; the engine scales that view into the window by
+`Config.Scaling` and centres it. `ScaleFit` keeps the aspect ratio with
+black bars, `ScaleInteger` uses whole multiples so pixel art stays crisp,
+and `ScaleStretch` fills the window. `ctx.Width` and `ctx.Height` are
+then the view's size, pointer positions arrive in view units, and the 3D
+scene renders at the viewport's size.
+
+## The window
+
+`ctx.SetTitle`, `ctx.SetIcon` (or `Config.Icon`), `ctx.SetSizeLimits`,
+`ctx.SetFullscreen`, `ctx.SetCursorVisible`, `ctx.SetCursor` and
+`ctx.SetCursorCaptured` control the window; `ctx.Focused` says whether it
+has focus. `ctx.Clipboard` and `ctx.SetClipboard` reach the system
+clipboard on macOS and Windows. With `Config.HandleClose` the close
+button no longer quits: `ctx.CloseRequested` becomes true for an update
+and the game saves, asks, and calls `ctx.Quit` itself.
+
 ## Input and the frame
 
 `ctx.Input` reports what is held (`KeyDown`), what changed (`KeyPressed`,
@@ -86,7 +112,9 @@ already consumed.
 
 Every example accepts `-seconds N` to exit after N seconds and
 `-shot file.png` to save a screenshot halfway through, so each one can
-verify itself in a script. Try a few:
+verify itself in a script. `Config.Headless` runs a game with no window
+at all, rendering offscreen, so the same screenshots come out of a
+build machine or a test. Try a few:
 
 ```
 go run ./examples/gallery -skin -theme nord

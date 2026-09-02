@@ -1,6 +1,7 @@
 package bunyip
 
 import (
+	"image"
 	"time"
 
 	"github.com/matjam/bunyip/internal/platform"
@@ -22,6 +23,8 @@ type eventSource interface {
 	waker
 	Poll(wait bool) []platform.Event
 	Gamepads() []platform.GamepadState
+	Clipboard() (string, error)
+	SetClipboard(string) error
 }
 
 // headlessWindow is a window without a window: a size and a few flags.
@@ -42,10 +45,18 @@ func (w *headlessWindow) SetFullscreen(on bool)               { w.full = on }
 func (w *headlessWindow) CursorCaptured() bool                { return w.captured }
 func (w *headlessWindow) SetCursorCaptured(on bool)           { w.captured = on }
 func (w *headlessWindow) SetTextInputRect(_, _, _, _ float64) {}
+func (w *headlessWindow) SetTitle(string)                     {}
+func (w *headlessWindow) SetSizeLimits(_, _, _, _ int)        {}
+func (w *headlessWindow) SetCursorVisible(bool)               {}
+func (w *headlessWindow) SetCursor(platform.CursorShape)      {}
+func (w *headlessWindow) SetIcon(image.Image)                 {}
 
 // headlessApp delivers no events; a waiting poll sleeps one step so a
 // turn-based headless game still ticks.
-type headlessApp struct{ step time.Duration }
+type headlessApp struct {
+	step time.Duration
+	clip string
+}
 
 func (a *headlessApp) Poll(wait bool) []platform.Event {
 	if wait {
@@ -55,3 +66,5 @@ func (a *headlessApp) Poll(wait bool) []platform.Event {
 }
 func (a *headlessApp) Gamepads() []platform.GamepadState { return nil }
 func (a *headlessApp) Wake()                             {}
+func (a *headlessApp) Clipboard() (string, error)        { return a.clip, nil }
+func (a *headlessApp) SetClipboard(s string) error       { a.clip = s; return nil }

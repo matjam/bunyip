@@ -4,6 +4,7 @@ package platform
 
 import (
 	"errors"
+	"image"
 
 	"github.com/matjam/bunyip/internal/vk"
 )
@@ -31,5 +32,12 @@ func (w *Window) SetFullscreen(bool)                           {}
 func (w *Window) SetCursorCaptured(bool)                       {}
 func (w *Window) SetTextInputRect(x, y, width, height float64) {}
 func (w *Window) CursorCaptured() bool                         { return false }
+func (w *Window) SetTitle(string)                              {}
+func (w *Window) SetSizeLimits(minW, minH, maxW, maxH int)     {}
+func (w *Window) SetCursorVisible(bool)                        {}
+func (w *Window) SetCursor(CursorShape)                        {}
+func (w *Window) SetIcon(image.Image)                          {}
 func (a *App) Gamepads() []GamepadState                        { return nil }
 func (a *App) Wake()                                           {}
+func (a *App) Clipboard() (string, error)                      { return "", ErrNoClipboard }
+func (a *App) SetClipboard(string) error                       { return ErrNoClipboard }

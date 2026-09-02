@@ -16,6 +16,11 @@
 //	w.SpawnWith(gfx.Transform{}, phys.Collider3{Shape: phys.Box3{Half: lin.V3(10, 0.5, 10)}}) // static floor
 //	w.AddSystem("physics", phys.System3)
 //
+// Names carry their dimension as a suffix where a type exists in both
+// (Body2 and Body3, Box2 and Box3, Collider2 and Collider3, the events,
+// the systems and the settings); shapes that exist in one dimension only
+// are plain words (Circle, Polygon2 for the 2D polygon, Sphere).
+//
 // For orbits and spaceflight, see the orbit package; it works with the
 // same transforms at astronomical scale.
 package phys

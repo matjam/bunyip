@@ -1,3 +1,11 @@
+// Package input is the keyboard, mouse and gamepads as a game reads them:
+// what is held, what changed this update, where the pointer is and what
+// text was typed, in view units.
+//
+// Engine plumbing. The Feed methods, EndUpdate, EndFrame and SetDrawing
+// exist for the engine loop and the platform layer, which push events in
+// and mark frame boundaries; a game under bunyip.Run never calls them,
+// though a test scripting input may.
 package input
 
 import "github.com/matjam/bunyip/lin"

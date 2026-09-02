@@ -12,7 +12,7 @@ func TestDecodeHDR(t *testing.T) {
 	var b bytes.Buffer
 	b.WriteString("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 2\n")
 	b.Write([]byte{128, 64, 32, 129, 0, 0, 0, 0, 255, 255, 255, 130, 128, 128, 128, 128})
-	img, err := DecodeHDR(&b)
+	img, err := DecodeHDR(b.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestDecodeHDR(t *testing.T) {
 	for _, v := range []byte{128, 64, 32, 129} {
 		b.Write([]byte{128 + 8, v})
 	}
-	if img, err = DecodeHDR(&b); err != nil {
+	if img, err = DecodeHDR(b.Bytes()); err != nil {
 		t.Fatal(err)
 	}
 	if img.Width != 8 || img.Pix[0] != 1 || img.Pix[1] != 0.5 || img.Pix[2] != 0.25 || img.Pix[21] != 1 {

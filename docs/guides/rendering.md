@@ -12,9 +12,16 @@ text composite on top.
 ## 2D
 
 **Textures and sprites.** `NewTexture` uploads an `image.Image`; the
-options choose nearest or linear filtering, mipmaps and repeat. `Draw`
-places a `Sprite`: position, size, a UV window, a tint, rotation and
-origin. `DrawTexture` and `FillRect` cover the common cases.
+options choose nearest or linear filtering, mipmaps and repeat.
+`NewBlankTexture` makes an empty one and `Texture.Write` replaces a
+region of pixels later, for painting, video and procedural maps;
+`Texture.Read` copies pixels back. `Draw` places a `Sprite`: position,
+size, a UV window, a tint, rotation and origin. `DrawTexture` and
+`FillRect` cover the common cases. A `Region` names a rectangle of a
+texture, from `NewRegion` or `Sheet.Region`, and `DrawRegion` draws it.
+`DrawNineSlice` stretches a `NineSlice` over a rectangle with its corners
+kept, and `DebugText` prints in the engine's own font without loading
+one.
 
 **Sheets, animation and tilemaps.** A `Sheet` divides a texture into
 frames; `DrawFrame` draws one. `Animation` and `AnimState` step through
@@ -34,10 +41,12 @@ HarfBuzz, so kerning, ligatures, mark placement and Arabic joining are
 right, right-to-left runs are reordered, and lines break by the Unicode
 rules. `FontOptions` adds fallback fonts for scripts the main one lacks,
 OpenType features (`"smcp"`, `"-liga"`) and variable-font axes;
-`TextOptions` sets the direction (automatic, left to right, right to
-left, or vertical) and language. `Font.Shape` returns positioned glyphs
-for custom drawing or hit-testing. `NewSDFFont` builds a signed-distance
-atlas that `DrawTextSized` scales and rotates without blur.
+`TextOptions` sets the size, a rotation angle, baseline placement, the
+direction (automatic, left to right, right to left, or vertical) and
+language; `Font.Measure` takes the same options. `Font.Shape` returns
+positioned glyphs for custom drawing or hit-testing. `NewSDFFont` builds
+a signed-distance atlas that stays sharp at any size and angle, where a
+bitmap font resamples.
 
 **Paths.** A `Path` collects lines, Bézier curves and arcs, with `Rect`,
 `RoundRect`, `Circle`, `Ellipse` and `Polygon` helpers. `FillPath` fills
@@ -58,7 +67,9 @@ rotate, scale and shear compose with `Mul`.
 shape mesh surfaces; the [Shaders](shaders.html) guide covers them.
 
 **Clipping.** `Clip` (or `PushClip` and `PopClip`) limits drawing to a
-rectangle, which is how scroll areas work.
+`lin.Rect`, which is how scroll areas work. Every rectangle in the
+engine is a `lin.Rect`: clips, the interface's widgets, a camera's
+visible area, a texture region.
 
 ## 3D
 
@@ -71,7 +82,9 @@ albedo texture, metallic and roughness factors or a texture, a normal
 map, emissive strength, and flags for blending and double-sided drawing.
 
 **Camera and lights.** `SetCamera` takes a `Camera` (position, target,
-field of view); `OrbitCamera` builds one from yaw, pitch and distance.
+field of view, or `Ortho` for an orthographic view where distance does
+not shrink things, as isometric strategy games want); `OrbitCamera`
+builds one from yaw, pitch and distance.
 `SetLight` sets the directional light with sky and ground ambient and
 optional cascaded shadow maps; `AddPointLight` adds up to eight local
 lights per frame.
@@ -135,8 +148,15 @@ saturation, contrast, ambient occlusion and FXAA. `DrawTo` renders into a
 `RenderTexture` that later draws like any texture: minimaps, portals,
 reflections.
 
-**Picking.** `ScreenRay` turns a screen point into a world ray, and
-`Mesh.Intersect` or `Model.Intersect` report where it hits.
+**Picking and labels.** `ScreenRay` turns a screen point into a world
+ray, and `Mesh.Intersect` or `Model.Intersect` report where it hits.
+`Project` goes the other way, from a world point to the view, which is
+where a label or a health bar belongs.
+
+**Debug drawing.** `DrawLine3D`, `DrawWireBox`, `DrawWireCube`,
+`DrawWireSphere` and `DrawAxes` draw lines over the scene that ignore
+depth, so colliders, paths, rays and bones can be seen while a game is
+being written.
 
 ## Verifying without eyes
 
