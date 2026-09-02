@@ -1,5 +1,6 @@
 ---
 title: Building Tetris
+group: Start
 order: 3
 summary: a complete game on the entity component system, step by step
 ---

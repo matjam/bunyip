@@ -1,6 +1,7 @@
 ---
 title: Shaders
-order: 9
+group: Graphics
+order: 3
 summary: fragment shaders written by the game, for sprites and for mesh surfaces
 ---
 

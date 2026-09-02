@@ -45,7 +45,7 @@ hardware.
 | `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface and audio output. `*_darwin.go` is the reference; Windows and Linux mirror it. |
 | `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
 | `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless. |
-| `docs/guides/` | The guides, Markdown with front matter (`title`, `order`, `summary`); images sit beside them. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
+| `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
 
 ## Core concepts
 
@@ -151,7 +151,11 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   changed; the guide that covers the area in `docs/guides/`;
   `README.md` if a feature list or the examples table is affected;
   `docs/design/gaps.md` if a listed gap closed or a new one opened; and
-  this file if a concept, path or rule changed. Doc comments follow the
+  this file if a concept, path or rule changed. A new guide needs
+  `group:` and `order:` in its front matter beside `title:` and
+  `summary:`; the groups are Start, Engine, Graphics, Simulation and
+  Audio, and a guide with no group or an unknown one is listed last
+  under Other. Doc comments follow the
   house style: short sentences, no em-dashes, say what a thing is for,
   state the zero-value default.
 - Commit messages describe what changed and why in prose; every commit

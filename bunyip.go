@@ -163,7 +163,11 @@ type Context struct {
 	// Clear is the frame's background colour; set it whenever you like.
 	Clear gfx.Color
 
-	// Width and Height are the view size in points; Scale is pixels per point.
+	// Width and Height are the view's size and Scale is pixels per point.
+	// With Config.ViewWidth and ViewHeight set, Width and Height are that
+	// fixed view in view units and stay put as the window resizes, and
+	// Scale is the pixels a view unit covers; without them the view is the
+	// window's content size in points and follows it.
 	Width, Height float32
 	Scale         float32
 
@@ -232,6 +236,10 @@ type windowControl interface {
 	SetAlwaysOnTop(bool)
 	SetCursorImage(img image.Image, hotX, hotY int)
 }
+
+// Window controls. Every method from here to Screenshot must be called
+// from Update or Draw, on the goroutine that called Run; Wake above is
+// the exception and is safe from any goroutine.
 
 // SetPosition moves the window so its content's top-left corner sits at
 // a point on the screen, in points from the screen's top-left: a

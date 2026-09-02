@@ -1,6 +1,7 @@
 ---
 title: The interface
-order: 10
+group: Graphics
+order: 5
 summary: immediate-mode widgets, layout, keyboard and gamepad navigation, drag and drop, themes and skins
 ---
 

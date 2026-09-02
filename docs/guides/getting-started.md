@@ -1,5 +1,6 @@
 ---
 title: Getting started
+group: Start
 order: 2
 summary: install the Vulkan driver, open a window, learn the loop and the window controls
 ---
@@ -87,34 +88,15 @@ thinks. A timer, a network message or a finished asset load can wake it
 with `ctx.Wake`, and `ctx.RequestRedraw` asks for another frame while
 an animation is playing.
 
-## A fixed view
-
-By default the view is the window's size in points and follows the
-window. A game designed for one resolution sets `Config.ViewWidth` and
-`ViewHeight`; the engine scales that view into the window by
-`Config.Scaling` and centres it. `ScaleFit` keeps the aspect ratio with
-black bars, `ScaleInteger` scales by whole numbers so pixel art stays
-crisp, and `ScaleStretch` fills the window. `ctx.Width` and `ctx.Height`
-are then the view's size, pointer positions arrive in view units, and
-the 3D scene renders at the viewport's size.
-
 ## The window
 
-`ctx.SetTitle`, `ctx.SetIcon` (or `Config.Icon`), `ctx.SetSizeLimits`,
-`ctx.SetFullscreen`, `ctx.SetCursorVisible`, `ctx.SetCursor`,
-`ctx.SetCursorImage` and `ctx.SetCursorCaptured` control the window;
-`ctx.Focused` says whether it has keyboard focus. `ctx.SetPosition`,
-`ctx.Position` and `ctx.SetAlwaysOnTop` place it on the screen, and
-`ctx.Clipboard` and `ctx.SetClipboard` reach the system clipboard.
-`bunyip.OpenURL` opens a web address in the player's browser.
-
-With `Config.HandleClose` the close button no longer quits: instead
-`ctx.CloseRequested` is true for one update, and the game saves, asks,
-and calls `ctx.Quit` itself.
-
-Position, always-on-top and cursor images work on macOS today; the
-Windows and X11 layers accept the calls and do nothing. The clipboard
-works on macOS and Windows.
+`Config` sizes the window at the start and `Context` controls it while
+the game runs: the title, the icon, size limits, the pointer's shape and
+visibility, full screen, the window's place on the screen, and a fixed
+view that the engine scales and letterboxes for you. The
+[window guide](window.html) covers all of it, along with what a resize
+does to coordinates, which controls each platform supports, and what a
+headless run gives you instead.
 
 ## Input
 

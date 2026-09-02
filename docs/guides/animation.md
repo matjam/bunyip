@@ -1,6 +1,7 @@
 ---
 title: Animation
-order: 5
+group: Graphics
+order: 4
 summary: keyframe clips for 2D sprites and 3D transforms, flipbooks, skeletons with crossfades, events, root motion, layers, blend spaces, IK and morph targets
 ---
 

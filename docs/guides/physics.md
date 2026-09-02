@@ -1,6 +1,7 @@
 ---
 title: Physics
-order: 6
+group: Simulation
+order: 1
 summary: rigid bodies in 2D and 3D: shapes, collisions, queries, joints, ragdolls and character controllers
 ---
 

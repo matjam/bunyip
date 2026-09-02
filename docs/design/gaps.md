@@ -72,6 +72,27 @@ and a draw budget warning are in.
 
 - 2D shadows cast by occluders from the point lights; lit sprites take
   light from every direction today.
+- Post-processing on a 2D-only frame. Bloom, ambient occlusion,
+  vignette, the LUT and FXAA all run in the composite pass, which
+  `renderQueue` skips when the frame has no 3D draws, no background and
+  no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
+  `RenderTexture` and blits it with its own sprite shader instead.
+- Culling of sprites. Tilemaps cull against `Camera2D.VisibleRect` and
+  meshes against the frustum, but every sprite queued goes into the
+  stream; a game off-screen-tests its own draws against `VisibleRect`.
+- A sort key per draw within a layer. The 2D stream sorts by layer
+  only and keeps submission order inside one, so y-sorting means the
+  game orders its own slice before drawing it.
+- An `asset.Atlas` loader. `asset` loads textures, fonts, sounds,
+  music, models and tracker modules in one call; an atlas is three
+  steps by hand (`gfx.ParseAtlas` on the JSON, load the image it names,
+  `AtlasData.Bind`).
+- Camera follow and screen shake on `Camera2D`, which carries position,
+  zoom and rotation and no motion of its own.
+- Atlas tags driving sprite animation. `Atlas.Tag` returns regions and
+  `Atlas.Durations` per-frame times, while `Animation`, `AnimState` and
+  `anim.Flipbook` play sheet frame indices at one frame rate, so
+  playing an Aseprite tag with its own timings is game code.
 - GPU-instanced particles for very large counts; the system is CPU
   simulated and drawn through the sprite stream, which is fine for
   thousands.
@@ -106,7 +127,17 @@ nearest or repeating sampling for render textures are in.
   spot lights a frame cast shadows.
 - Occlusion culling, and impostors (billboards baked from a model).
 - Clustered lighting for hundreds of lights; a frame keeps its first
-  thirty-two.
+  thirty-two. `AddPointLight` and `AddSpot` drop the rest in silence:
+  `MaxLights` is exported but `FrameStats` does not count what was
+  dropped, so a game cannot tell it went over.
+- A world matrix for a model's nodes. `Model` names and walks them
+  (`NodeIndex`, `NodeName`, `NodeParent`), but `NodeMatrix` is on
+  `AnimPlayer`, so a socket on a static model needs a player made for
+  it.
+- `Project` and `ScreenRay` are on `Graphics` and read the current
+  queue's camera and view size, so they only answer while drawing.
+  `Camera` has no `Project` or `ScreenRay` of its own for picking from
+  `Update`.
 - Terrain splat maps and heightfield LOD as built-ins; a game does both
   with `HeightfieldMesh`, a mesh shader and `LOD` today.
 - Global illumination beyond one environment map: light probes, baked
@@ -131,6 +162,9 @@ texture transforms, decals, outlines and x-ray are in.
 
 - Iridescence, anisotropy, specular colour and the specular-glossiness
   workflow from glTF extensions.
+- A material override on `DrawModel`, which draws every part with the
+  material glTF gave it. Changing one part means walking `Model.Parts`
+  and calling `DrawMesh` for each.
 - Per-material stencil state beyond outlines and x-ray.
 - Hair, fur and cloth shading (anisotropic highlights, shell rendering).
 - OpenEXR panoramas for environments. Radiance `.hdr` and LDR images

@@ -59,6 +59,11 @@ var groups = []struct {
 	{"Example programs", []string{"examples/"}},
 }
 
+// guideGroups orders the guide sections, from a guide's `group` front
+// matter key. A guide with no group, or with a group not listed here,
+// falls into a trailing "Other" section.
+var guideGroups = []string{"Start", "Engine", "Graphics", "Simulation", "Audio"}
+
 func main() {
 	out := flag.String("out", "site", "output directory")
 	guides := flag.String("guides", "docs/guides", "directory of Markdown guides")
@@ -79,12 +84,13 @@ func main() {
 
 // Site is everything rendered.
 type Site struct {
-	Guides   []*Guide
-	Packages []*Package
-	Groups   []Group
-	Base     string // the published URL, with a trailing slash
-	pages    map[string][]byte
-	symbols  []symbol
+	Guides      []*Guide
+	GuideGroups []GuideGroup
+	Packages    []*Package
+	Groups      []Group
+	Base        string // the published URL, with a trailing slash
+	pages       map[string][]byte
+	symbols     []symbol
 }
 
 // Group is a sidebar section of packages.
@@ -93,13 +99,19 @@ type Group struct {
 	Packages []*Package
 }
 
+// GuideGroup is a sidebar section of guides.
+type GuideGroup struct {
+	Title  string
+	Guides []*Guide
+}
+
 // Guide is one Markdown page.
 type Guide struct {
-	Title, Slug, Summary string
-	Order                int
-	Body                 template.HTML
-	Markdown             string // the source, with the front matter replaced by a heading
-	Headings             []heading
+	Title, Slug, Summary, Group string
+	Order                       int
+	Body                        template.HTML
+	Markdown                    string // the source, with the front matter replaced by a heading
+	Headings                    []heading
 }
 
 type heading struct{ ID, Text string }
@@ -574,6 +586,8 @@ func (s *Site) loadGuides(dir string) error {
 						g.Order, _ = strconv.Atoi(v)
 					case "summary":
 						g.Summary = v
+					case "group":
+						g.Group = v
 					}
 				}
 				body = body[4+end+4:]
@@ -590,8 +604,44 @@ func (s *Site) loadGuides(dir string) error {
 		g.Headings = collectHeadings(rendered)
 		s.Guides = append(s.Guides, g)
 	}
-	sort.Slice(s.Guides, func(i, j int) bool { return s.Guides[i].Order < s.Guides[j].Order })
+	s.groupGuides()
 	return nil
+}
+
+// groupGuides sorts the guides into their sections: the sections in the
+// order guideGroups lists them with "Other" last, and inside a section
+// by order then title. Site.Guides ends up in the same order, so the
+// pages that read it flat follow the grouping too.
+func (s *Site) groupGuides() {
+	index := func(g *Guide) int {
+		for i, title := range guideGroups {
+			if g.Group == title {
+				return i
+			}
+		}
+		return len(guideGroups)
+	}
+	sort.Slice(s.Guides, func(i, j int) bool {
+		a, b := s.Guides[i], s.Guides[j]
+		if ai, bi := index(a), index(b); ai != bi {
+			return ai < bi
+		}
+		if a.Order != b.Order {
+			return a.Order < b.Order
+		}
+		return a.Title < b.Title
+	})
+	for i, title := range append(append([]string{}, guideGroups...), "Other") {
+		grp := GuideGroup{Title: title}
+		for _, g := range s.Guides {
+			if index(g) == i {
+				grp.Guides = append(grp.Guides, g)
+			}
+		}
+		if len(grp.Guides) > 0 {
+			s.GuideGroups = append(s.GuideGroups, grp)
+		}
+	}
 }
 
 var (
@@ -748,9 +798,14 @@ func (s *Site) llmsIndex() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Bunyip\n\n%s\n\n", llmsIntro)
 	fmt.Fprintf(&b, "The whole documentation in one file: %sllms-full.txt\n\n", s.Base)
-	b.WriteString("## Guides\n\n")
-	for _, g := range s.Guides {
-		fmt.Fprintf(&b, "- [%s](%sguides/%s.md): %s\n", g.Title, s.Base, g.Slug, g.Summary)
+	for i, grp := range s.GuideGroups {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "## %s guides\n\n", grp.Title)
+		for _, g := range grp.Guides {
+			fmt.Fprintf(&b, "- [%s](%sguides/%s.md): %s\n", g.Title, s.Base, g.Slug, g.Summary)
+		}
 	}
 	for _, grp := range s.Groups {
 		fmt.Fprintf(&b, "\n## %s\n\n", grp.Title)
@@ -872,10 +927,10 @@ const layoutTmpl = `{{define "layout"}}<!doctype html>
 </header>
 <div class="shell">
 <nav class="side">
-<section><h4>Guides</h4><ul>
-{{range .Site.Guides}}<li><a href="{{$.Root}}guides/{{.Slug}}.html"{{if $.Active (printf "guides/%s.html" .Slug)}} class="active"{{end}}>{{.Title}}</a></li>
+{{range .Site.GuideGroups}}<section><h4>{{.Title}} guides</h4><ul>
+{{range .Guides}}<li><a href="{{$.Root}}guides/{{.Slug}}.html"{{if $.Active (printf "guides/%s.html" .Slug)}} class="active"{{end}}>{{.Title}}</a></li>
 {{end}}</ul></section>
-{{range .Site.Groups}}<section><h4>{{.Title}}</h4><ul>
+{{end}}{{range .Site.Groups}}<section><h4>{{.Title}}</h4><ul>
 {{range .Packages}}<li><a href="{{$.Root}}{{.URL}}"{{if $.Active .URL}} class="active"{{end}}>{{short .Rel}}</a></li>
 {{end}}</ul></section>
 {{end}}</nav>
@@ -901,10 +956,10 @@ const indexTmpl = `{{define "index"}}{{template "layout" .}}{{end}}
 <a class="card" href="pkg/ecs.html"><h3>Game services</h3><p>An archetype-based entity component system with systems, resources and events, assets with packs and hot reload, saves and settings, seeded random numbers, timers and tweens, grids with pathfinding, and TCP and UDP messaging.</p></a>
 </div>
 <h2>Guides</h2>
-<ul class="guide-list">
-{{range .Site.Guides}}<li><a href="guides/{{.Slug}}.html">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
+{{range .Site.GuideGroups}}<h3>{{.Title}}</h3><ul class="guide-list">
+{{range .Guides}}<li><a href="guides/{{.Slug}}.html">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
 {{end}}</ul>
-<h2>Packages</h2>
+{{end}}<h2>Packages</h2>
 {{range .Site.Groups}}<h3>{{.Title}}</h3><table class="pkgs">
 {{range .Packages}}<tr><td><a href="{{.URL}}">{{short .Rel}}</a></td><td>{{.Synopsis}}</td></tr>
 {{end}}</table>

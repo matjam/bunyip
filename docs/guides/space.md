@@ -1,6 +1,7 @@
 ---
 title: Orbits and space
-order: 7
+group: Simulation
+order: 2
 summary: celestial mechanics for any star system: Kepler orbits, N-body gravity, ships under thrust
 ---
 

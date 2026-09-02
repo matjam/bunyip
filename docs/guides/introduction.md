@@ -1,5 +1,6 @@
 ---
 title: Introduction
+group: Start
 order: 1
 summary: what Bunyip is, how it is put together, and what to read next
 ---
@@ -92,18 +93,15 @@ touches: graphics, input, audio, timing and the window.
 
 ## Reading order
 
-1. [Getting started](getting-started.html) installs the Vulkan driver,
-   opens a window and explains the loop, the view and the window
-   controls.
-2. [Building Tetris](tetris.html) writes a complete game on the entity
-   component system, using input, timers, drawing, the interface and
-   sound along the way.
-3. [Entities and systems](ecs.html) explains how the ECS stores data and
-   how to structure a game around queries, systems, resources and
-   events.
-4. The remaining guides each cover one area: [rendering](rendering.html),
-   [shaders](shaders.html), [animation](animation.html),
-   [physics](physics.html), [orbits](space.html), the
-   [interface](ui.html), [audio](audio.html), [input](input.html) and
-   the [game services](services.html). Read the one you need before its
-   API reference.
+The guides come in five groups. Read Start first, then the group you
+need before its API reference.
+
+1. **Start**: [getting started](getting-started.html),
+   [building Tetris](tetris.html).
+2. **Engine**: [the window](window.html), [input](input.html),
+   [entities and systems](ecs.html), [game services](services.html).
+3. **Graphics**: [2D graphics](graphics-2d.html),
+   [3D graphics](graphics-3d.html), [shaders](shaders.html),
+   [animation](animation.html), [the interface](ui.html).
+4. **Simulation**: [physics](physics.html), [orbits](space.html).
+5. **Audio**: [audio](audio.html).

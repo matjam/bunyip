@@ -64,7 +64,10 @@ https://matjam.github.io/bunyip/ by the Docs workflow on each push to
 `main`. The site is built by `go run ./cmd/bunyip-docs -out site` from
 the Markdown in `docs/guides` and the packages' godoc, so `go doc ./gfx`
 shows the same text and `go test ./...` runs every example that prints
-output.
+output. The guides are grouped: Start (introduction, getting started,
+Tetris), Engine (the window, input, entities and systems, game
+services), Graphics (2D graphics, 3D graphics, shaders, animation, the
+interface), Simulation (physics, orbits) and Audio.
 
 Every page is also published as Markdown for language models and other
 tools: the guides at `guides/<name>.md`, each package at

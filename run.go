@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/matjam/bunyip/audio"
@@ -23,6 +24,13 @@ import (
 
 // audioRate is the mixer and device sample rate.
 const audioRate = 48000
+
+// platformApp returns the process's one connection to the window system.
+// platform.NewApp may only run once: it registers Objective-C classes on
+// macOS and a window class on Windows, and both refuse a second
+// registration. Run rebuilds the window and the renderer after a device
+// loss, so the app it hangs them on has to be reused.
+var platformApp = sync.OnceValues(platform.NewApp)
 
 // Run opens the window, drives game until it quits or the window closes,
 // and tears everything down. It must be called from the main goroutine.
@@ -42,6 +50,9 @@ func Run(cfg Config, game Game) (err error) {
 				panic(r)
 			}
 		}()
+	}
+	if cfg.Log == nil {
+		cfg.Log = slog.Default() // the loss below logs through it
 	}
 	for {
 		err := runOnce(cfg, game)
@@ -83,7 +94,7 @@ func runOnce(cfg Config, game Game) error {
 		app = &headlessApp{step: cfg.FixedStep}
 		surfaceExts, makeSurface = render.HeadlessSurfaceExtensions(), render.NewHeadlessSurface
 	} else {
-		pa, err := platform.NewApp()
+		pa, err := platformApp()
 		if err != nil {
 			return err
 		}
