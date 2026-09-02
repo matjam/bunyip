@@ -116,10 +116,14 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/physics2d` | balls, boxes and triangles in a pit with a ramp, a kinematic paddle, a trigger zone and a raycast |
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
+| `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
+| `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |
+| `go run ./examples/text [-font file.ttf]` | HarfBuzz-shaped text: kerning and ligatures, Arabic joining, right-to-left and mixed lines, a fallback font, Unicode wrapping, vertical text, distance-field text |
 | `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |
 | `go run ./cmd/bunyip-pack -o assets.pak assets/` | bundles an asset directory into a pack file |
+| `go run ./cmd/bunyip-shader [-kind mesh] -o out.spv in.glsl` | compiles a game's sprite or mesh shader against the engine's prelude |
 | `go run ./cmd/bunyip-bundle -name "Game" -exe ./game -assets assets/` | makes a macOS .app with MoltenVK inside, or a folder elsewhere |
 
 ## Requirements

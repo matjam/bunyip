@@ -27,10 +27,35 @@ mouse back into the world. `ScreenSpace` returns to view coordinates for
 the HUD. `SetLayer` orders sprites across calls; within a layer,
 submission order wins.
 
-**Text.** `NewFont` rasterises a TrueType font at one size into an atlas;
-`DrawText` draws a line and `DrawTextBlock` wraps and aligns paragraphs.
-`NewSDFFont` builds a signed-distance atlas that `DrawTextSized` scales
-and rotates without blur.
+**Text.** `NewFont` parses an OpenType font and rasterises glyphs from
+its outlines at one size into an atlas; `DrawText` draws a line and
+`DrawTextBlock` wraps and aligns paragraphs. Text is shaped with
+HarfBuzz, so kerning, ligatures, mark placement and Arabic joining are
+right, right-to-left runs are reordered, and lines break by the Unicode
+rules. `FontOptions` adds fallback fonts for scripts the main one lacks,
+OpenType features (`"smcp"`, `"-liga"`) and variable-font axes;
+`TextOptions` sets the direction (automatic, left to right, right to
+left, or vertical) and language. `Font.Shape` returns positioned glyphs
+for custom drawing or hit-testing. `NewSDFFont` builds a signed-distance
+atlas that `DrawTextSized` scales and rotates without blur.
+
+**Paths.** A `Path` collects lines, Bézier curves and arcs, with `Rect`,
+`RoundRect`, `Circle`, `Ellipse` and `Polygon` helpers. `FillPath` fills
+it under the non-zero or even-odd rule, optionally with a texture;
+`StrokePath` outlines it with a width, caps and joins. Both are
+anti-aliased and go through the same stream as sprites, so they sort by
+layer and clip like everything else. `FillCircle`, `StrokeRect` and
+`StrokeLine` cover the quick cases, and `DrawTriangles` takes raw
+geometry.
+
+**Blending and transforms.** `Blended` (or `SetBlend`) picks a blend mode
+for a stretch of drawing: additive glows, multiplied shadows, screen,
+lighten, darken, replace or erase. `Transformed` (or `PushTransform`)
+maps everything drawn inside it through a `lin.Affine`: translate,
+rotate, scale and shear compose with `Mul`.
+
+**Shaders.** Fragment shaders written by the game colour sprites and
+shape mesh surfaces; the [Shaders](shaders.html) guide covers them.
 
 **Clipping.** `Clip` (or `PushClip` and `PopClip`) limits drawing to a
 rectangle, which is how scroll areas work.

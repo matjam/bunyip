@@ -337,6 +337,10 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, extent vk.VkExtent2D)
 // must be destroyed first or are leaked with the device.
 func (g *Graphics) Destroy() {
 	_ = g.r.Device.WaitIdle()
+	for _, t := range g.retired {
+		t.Destroy()
+	}
+	g.retired = nil
 	if g.main != nil {
 		g.main.destroy()
 	}

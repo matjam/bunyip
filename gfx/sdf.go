@@ -2,12 +2,9 @@ package gfx
 
 import (
 	"image"
-	"image/draw"
 	"math"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
+	"github.com/go-text/typesetting/font"
 
 	"github.com/matjam/bunyip/lin"
 )
@@ -23,103 +20,58 @@ const (
 // NewSDFFont prepares a scalable font. Size is a nominal em size in view
 // units used by DrawText; DrawTextSized draws at any size.
 func (g *Graphics) NewSDFFont(ttf []byte, size float32, opts FontOptions) (*Font, error) {
-	parsed, err := opentype.Parse(ttf)
-	if err != nil {
-		return nil, err
-	}
-	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: sdfEmPixels * sdfOversample, DPI: 72, Hinting: font.HintingNone})
-	if err != nil {
-		return nil, err
-	}
-	side := opts.AtlasSize
-	if side <= 0 {
-		side = 1024
-	}
-	metrics := face.Metrics()
 	// scale is face pixels per view unit at the nominal size; the atlas is
 	// sdfOversample times coarser than the face.
 	scale := float32(sdfEmPixels*sdfOversample) / size
-	f := &Font{
-		Size:       size,
-		LineHeight: fixedToFloat(metrics.Height) / scale,
-		Ascent:     fixedToFloat(metrics.Ascent) / scale,
-		glyphs:     map[rune]glyph{},
-		face:       face,
-		scale:      scale,
-		sdf:        true,
-		packer:     shelfPacker{width: side, height: side, pad: 1},
-		pix:        image.NewRGBA(image.Rect(0, 0, side, side)),
-		g:          g,
-	}
-	for r := rune(32); r < 127; r++ {
-		f.add(r)
-	}
-	for _, r := range opts.Preload {
-		f.add(r)
-	}
-	for _, rg := range opts.Ranges {
-		for r := rg[0]; r <= rg[1]; r++ {
-			f.add(r)
-		}
-	}
-	if err := f.flush(); err != nil {
-		return nil, err
-	}
-	return f, nil
+	return g.newFont(ttf, size, opts, scale, sdfEmPixels*sdfOversample, true)
 }
 
 // addSDF rasterises a glyph mask at sdfOversample times the atlas size,
 // converts it to distances with a linear-time transform and downsamples,
 // so the stored edge position is accurate to a fraction of an atlas pixel.
-func (f *Font) addSDF(r rune) {
-	bounds, advance, ok := f.face.GlyphBounds(r)
-	if !ok {
-		bounds, advance, _ = f.face.GlyphBounds(0xFFFD)
-	}
+func (f *Font) addSDF(face uint8, gid font.GID) glyph {
 	const os = sdfOversample
-	gl := glyph{advance: fixedToFloat(advance) / f.scale}
-	gw := (bounds.Max.X - bounds.Min.X).Ceil()
-	gh := (bounds.Max.Y - bounds.Min.Y).Ceil()
-	if gw <= 0 || gh <= 0 {
-		gl.empty = true
-		f.glyphs[r] = gl
-		return
-	}
-	// Atlas cell, then the oversampled mask that fills it exactly.
-	w := (gw+os-1)/os + 2*sdfSpread
-	h := (gh+os-1)/os + 2*sdfSpread
-	x, y, ok := f.packer.place(w, h)
+	k := f.pxPerEm / f.faces[face].upem
+	mask, ox, oy, ok := f.rasterise(face, gid, k, sdfSpread*os)
 	if !ok {
-		gl.empty = true
-		f.glyphs[r] = gl
-		return
+		return glyph{empty: true}
 	}
-	mw, mh := w*os, h*os
-	mask := image.NewAlpha(image.Rect(0, 0, mw, mh))
-	dot := fixed.Point26_6{X: -bounds.Min.X + fixed.I(sdfSpread*os), Y: -bounds.Min.Y + fixed.I(sdfSpread*os)}
-	dr, maskImg, maskPt, _, _ := f.face.Glyph(dot, r)
-	if maskImg != nil {
-		draw.Draw(mask, dr, maskImg, maskPt, draw.Src)
+	// Round the mask up to whole atlas cells.
+	mw, mh := mask.Rect.Dx(), mask.Rect.Dy()
+	w, h := (mw+os-1)/os, (mh+os-1)/os
+	x, y, placed := f.packer.place(w, h)
+	if !placed {
+		return glyph{empty: true}
 	}
 	field := distanceField(mask, sdfSpread*os)
 	for yy := range h {
 		for xx := range w {
 			var sum float64
+			n := 0
 			for sy := range os {
 				for sx := range os {
-					sum += field[(yy*os+sy)*mw+xx*os+sx]
+					px, py := xx*os+sx, yy*os+sy
+					if px < mw && py < mh {
+						sum += field[py*mw+px]
+						n++
+					}
 				}
 			}
-			f.pix.SetRGBA(x+xx, y+yy, rgbaPremul(uint8(math.Round(sum/(os*os)*255))))
+			v := 0.0
+			if n > 0 {
+				v = sum / float64(n)
+			}
+			f.pix.SetRGBA(x+xx, y+yy, rgbaPremul(uint8(math.Round(v*255))))
 		}
 	}
 	side := float32(f.packer.width)
-	gl.uv0 = lin.V2(float32(x)/side, float32(y)/side)
-	gl.uv1 = lin.V2(float32(x+w)/side, float32(y+h)/side)
-	gl.size = lin.V2(float32(w*os)/f.scale, float32(h*os)/f.scale)
-	gl.bearing = lin.V2((fixedToFloat(bounds.Min.X)-sdfSpread*os)/f.scale, (fixedToFloat(bounds.Min.Y)-sdfSpread*os)/f.scale)
-	f.glyphs[r] = gl
 	f.dirty = true
+	return glyph{
+		uv0:     lin.V2(float32(x)/side, float32(y)/side),
+		uv1:     lin.V2(float32(x+w)/side, float32(y+h)/side),
+		size:    lin.V2(float32(w*os)/f.scale, float32(h*os)/f.scale),
+		bearing: lin.V2(float32(ox)/f.scale, float32(oy)/f.scale),
+	}
 }
 
 // distanceField turns a coverage mask into signed distances in 0..1 with
@@ -218,31 +170,24 @@ func edt(inside []bool, w, h int, invert bool) []float64 {
 // rotated by angle radians about the text's top-left corner.
 func (g *Graphics) DrawTextSized(f *Font, text string, x, y, size, angle float32, c Color) {
 	k := size / f.Size
-	sin, cos := float32(math.Sin(float64(angle))), float32(math.Cos(float64(angle)))
-	pen := float32(0)
-	base := f.Ascent * k
-	var prev rune
-	for _, r := range text {
-		f.add(r)
-		if prev != 0 {
-			pen += fixedToFloat(f.face.Kern(prev, r)) / f.scale * k
-		}
-		gl := f.glyphs[r]
-		if !gl.empty {
-			lx, ly := pen+gl.bearing.X*k, base+gl.bearing.Y*k
-			g.Draw(f.atlas, Sprite{
-				Pos:  lin.V2(x+lx*cos-ly*sin, y+lx*sin+ly*cos),
-				Size: gl.size.Mul(k),
-				UV0:  gl.uv0, UV1: gl.uv1,
-				Color:    c,
-				Rotation: angle,
-			})
-		}
-		pen += gl.advance * k
-		prev = r
+	glyphs := f.Shape(text, TextOptions{})
+	if angle == 0 {
+		g.DrawGlyphs(f, glyphs, x, y, k, c)
+		return
 	}
-	if f.dirty {
-		_ = f.flush()
+	sin, cos := sin32(angle), cos32(angle)
+	for _, gl := range glyphs {
+		if gl.Empty {
+			continue
+		}
+		lx, ly := gl.Pos.X*k, gl.Pos.Y*k
+		g.Draw(f.atlas, Sprite{
+			Pos:  lin.V2(x+lx*cos-ly*sin, y+lx*sin+ly*cos),
+			Size: gl.Size.Mul(k),
+			UV0:  gl.UV0, UV1: gl.UV1,
+			Color:    c,
+			Rotation: angle,
+		})
 	}
 }
 

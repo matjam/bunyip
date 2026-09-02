@@ -111,7 +111,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	p.MoveTo(40, 340).QuadTo(140, 220, 240, 340).CubicTo(300, 420, 360, 220, 420, 340)
 	gr.StrokePath(&p, gfx.RGB(120, 220, 160), gfx.StrokeOptions{Width: 6, Cap: gfx.CapRound})
 	p.Reset()
-	p.MoveTo(470, 340).ArcTo(560, 240, 650, 340, 60).LineTo(700, 340)
+	p.MoveTo(470, 340).ArcTo(560, 240, 650, 340, 60).LineTo(650, 340).LineTo(700, 340)
 	gr.StrokePath(&p, gfx.RGB(220, 140, 220), gfx.StrokeOptions{Width: 6})
 	p.Reset()
 	p.Arc(760, 300, 50, math.Pi, math.Pi*1.5*(0.6+0.4*float32(math.Sin(float64(t)))))
@@ -146,8 +146,12 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	modes := []gfx.Blend{gfx.BlendAlpha, gfx.BlendAdd, gfx.BlendMultiply, gfx.BlendScreen, gfx.BlendLighten, gfx.BlendDarken, gfx.BlendErase}
 	for i, m := range modes {
 		x := 100 + float32(i)*100
+		c := gfx.RGBA(80, 140, 230, 200)
+		if m == gfx.BlendErase {
+			c = gfx.White // erase removes by the source's alpha: opaque cuts a hole
+		}
 		gr.Blended(m, func() {
-			gr.FillCircle(x, 640, 38, gfx.RGBA(80, 140, 230, 200))
+			gr.FillCircle(x, 640, 38, c)
 		})
 		g.label(gr, m.String(), x-20, 700)
 	}

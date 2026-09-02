@@ -1,92 +1,203 @@
 package gfx
 
 import (
+	"bytes"
 	"fmt"
 	"image"
-	"image/draw"
+	"math"
+	"strings"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
+	"github.com/go-text/typesetting/font"
+	ot "github.com/go-text/typesetting/font/opentype"
+	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
+	"golang.org/x/image/vector"
 
 	"github.com/matjam/bunyip/lin"
 )
 
-// Font is a TrueType/OpenType face rasterised into a glyph atlas at one
-// size. Glyphs are rendered at the framebuffer's pixel density at creation
-// time and drawn in view units, so text is crisp on high-DPI displays.
+// Font is an OpenType face (with optional fallbacks) rasterised into a
+// glyph atlas at one size. Text is shaped with HarfBuzz, so kerning,
+// ligatures, mark placement, Arabic joining and right-to-left order all
+// come out right; glyphs are rendered from the font's outlines at the
+// framebuffer's pixel density and drawn in view units, so text is crisp
+// on high-DPI displays.
 type Font struct {
 	Size       float32 // in view units
 	LineHeight float32
 	Ascent     float32
-	atlas      *Texture
-	glyphs     map[rune]glyph
-	face       font.Face
-	scale      float32 // atlas pixels per view unit
-	packer     shelfPacker
-	pix        *image.RGBA
-	dirty      bool
-	sdf        bool
-	g          *Graphics
+
+	faces    []*fontFace // the main face first, then fallbacks
+	features []shaping.FontFeature
+	atlas    *Texture
+	glyphs   map[glyphKey]glyph
+	scale    float32 // atlas pixels per view unit
+	pxPerEm  float32 // face pixels per em, the shaping size
+	packer   shelfPacker
+	pix      *image.RGBA
+	dirty    bool
+	sdf      bool
+	g        *Graphics
+	shaper   shaping.HarfbuzzShaper
+	seg      shaping.Segmenter
+	wrapper  shaping.LineWrapper
+	runs     map[runKey][]shaping.Output
+	lines    map[lineKey][]shaping.Line
+	rast     *vector.Rasterizer
+}
+
+// fontFace is one parsed face and the metrics it contributes.
+type fontFace struct {
+	face *font.Face
+	upem float32
+}
+
+type glyphKey struct {
+	face uint8
+	gid  font.GID
 }
 
 type glyph struct {
 	uv0, uv1 lin.Vec2
 	size     lin.Vec2 // in view units
-	bearing  lin.Vec2 // offset from the pen position to the glyph's top-left, view units
-	advance  float32
+	bearing  lin.Vec2 // offset from the glyph origin to its top-left, view units
 	empty    bool
 }
 
-// FontOptions tunes rasterisation.
+// FontOptions tunes a font.
 type FontOptions struct {
 	AtlasSize int       // texture side in pixels; default 1024
 	Preload   []rune    // glyphs rendered up front; ASCII is always included
 	Ranges    [][2]rune // inclusive ranges rendered up front
+
+	// Fallbacks are further TTF/OTF fonts consulted, in order, for runs of
+	// text the main font has no glyphs for: a CJK or Arabic font behind a
+	// Latin one, for example.
+	Fallbacks [][]byte
+	// Features turns OpenType features on ("smcp", "frac", "ss01") or off
+	// ("-liga", "-kern") for all text drawn with the font.
+	Features []string
+	// Variations sets variable font axes, such as "wght": 650 or "wdth": 90.
+	Variations map[string]float32
 }
 
 // NewFont parses TTF/OTF bytes and prepares an atlas for size view units.
 func (g *Graphics) NewFont(ttf []byte, size float32, opts FontOptions) (*Font, error) {
-	parsed, err := opentype.Parse(ttf)
-	if err != nil {
-		return nil, fmt.Errorf("gfx: parse font: %w", err)
-	}
 	scale := g.pixelScale()
-	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: float64(size * scale), DPI: 72, Hinting: font.HintingNone})
-	if err != nil {
-		return nil, fmt.Errorf("gfx: font face: %w", err)
+	return g.newFont(ttf, size, opts, scale, size*scale, false)
+}
+
+// newFont parses the faces and rasterises the preload set. pxPerEm is the
+// pixel size glyphs are shaped and rasterised at; scale is atlas pixels
+// per view unit.
+func (g *Graphics) newFont(ttf []byte, size float32, opts FontOptions, scale, pxPerEm float32, sdf bool) (*Font, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("gfx: font size must be positive")
 	}
 	side := opts.AtlasSize
 	if side <= 0 {
 		side = 1024
 	}
-	metrics := face.Metrics()
 	f := &Font{
-		Size:       size,
-		LineHeight: fixedToFloat(metrics.Height) / scale,
-		Ascent:     fixedToFloat(metrics.Ascent) / scale,
-		glyphs:     map[rune]glyph{},
-		face:       face,
-		scale:      scale,
-		packer:     shelfPacker{width: side, height: side, pad: 1},
-		pix:        image.NewRGBA(image.Rect(0, 0, side, side)),
-		g:          g,
+		Size:    size,
+		glyphs:  map[glyphKey]glyph{},
+		scale:   scale,
+		pxPerEm: pxPerEm,
+		sdf:     sdf,
+		packer:  shelfPacker{width: side, height: side, pad: 1},
+		pix:     image.NewRGBA(image.Rect(0, 0, side, side)),
+		g:       g,
+		runs:    map[runKey][]shaping.Output{},
+		lines:   map[lineKey][]shaping.Line{},
+	}
+	for i, data := range append([][]byte{ttf}, opts.Fallbacks...) {
+		face, err := font.ParseTTF(bytes.NewReader(data))
+		if err != nil {
+			if i == 0 {
+				return nil, fmt.Errorf("gfx: parse font: %w", err)
+			}
+			return nil, fmt.Errorf("gfx: parse fallback font %d: %w", i, err)
+		}
+		if len(opts.Variations) > 0 {
+			var vars []font.Variation
+			for tag, v := range opts.Variations {
+				if len(tag) == 4 {
+					vars = append(vars, font.Variation{Tag: ot.MustNewTag(tag), Value: v})
+				}
+			}
+			face.SetVariations(vars)
+		}
+		f.faces = append(f.faces, &fontFace{face: face, upem: float32(face.Upem())})
+	}
+	for _, feat := range opts.Features {
+		value := uint32(1)
+		tag := feat
+		if strings.HasPrefix(tag, "-") {
+			value, tag = 0, tag[1:]
+		}
+		if len(tag) == 4 {
+			f.features = append(f.features, shaping.FontFeature{Tag: ot.MustNewTag(tag), Value: value})
+		}
+	}
+	main := f.faces[0]
+	k := pxPerEm / main.upem / scale // view units per font unit
+	if ext, ok := main.face.FontHExtents(); ok {
+		f.Ascent = ext.Ascender * k
+		f.LineHeight = (ext.Ascender - ext.Descender + ext.LineGap) * k
+	} else {
+		f.Ascent = size * 0.8
+		f.LineHeight = size * 1.2
 	}
 	for r := rune(32); r < 127; r++ {
-		f.add(r)
+		f.preload(r)
 	}
 	for _, r := range opts.Preload {
-		f.add(r)
+		f.preload(r)
 	}
 	for _, rg := range opts.Ranges {
 		for r := rg[0]; r <= rg[1]; r++ {
-			f.add(r)
+			f.preload(r)
 		}
 	}
 	if err := f.flush(); err != nil {
 		return nil, err
 	}
 	return f, nil
+}
+
+// preload rasterises the nominal glyph of a rune from the first face
+// that has it.
+func (f *Font) preload(r rune) {
+	for i, ff := range f.faces {
+		if gid, ok := ff.face.NominalGlyph(r); ok {
+			f.glyph(uint8(i), gid)
+			return
+		}
+	}
+}
+
+// ResolveFace picks the first face with a glyph for the rune, which is
+// how shaping chooses fallbacks. It implements shaping.Fontmap.
+func (f *Font) ResolveFace(r rune) *font.Face {
+	for _, ff := range f.faces[1:] {
+		if _, ok := f.faces[0].face.NominalGlyph(r); ok {
+			break
+		}
+		if _, ok := ff.face.NominalGlyph(r); ok {
+			return ff.face
+		}
+	}
+	return f.faces[0].face
+}
+
+// faceIndex finds which of the font's faces a shaped run used.
+func (f *Font) faceIndex(face *font.Face) uint8 {
+	for i, ff := range f.faces {
+		if ff.face == face {
+			return uint8(i)
+		}
+	}
+	return 0
 }
 
 // pixelScale is framebuffer pixels per view unit along X.
@@ -99,53 +210,116 @@ func (g *Graphics) pixelScale() float32 {
 
 func fixedToFloat(v fixed.Int26_6) float32 { return float32(v) / 64 }
 
-// add rasterises one glyph into the CPU atlas. Missing glyphs get the
-// face's notdef box, which is what the user wants to see.
-func (f *Font) add(r rune) {
-	if _, ok := f.glyphs[r]; ok {
-		return
+// glyph returns a glyph's atlas entry, rasterising it on first use.
+func (f *Font) glyph(face uint8, gid font.GID) glyph {
+	key := glyphKey{face, gid}
+	if gl, ok := f.glyphs[key]; ok {
+		return gl
 	}
+	var gl glyph
 	if f.sdf {
-		f.addSDF(r)
-		return
+		gl = f.addSDF(face, gid)
+	} else {
+		gl = f.add(face, gid)
 	}
-	bounds, advance, ok := f.face.GlyphBounds(r)
+	f.glyphs[key] = gl
+	return gl
+}
+
+// outline flattens a glyph's outline into the rasteriser at k pixels per
+// font unit, shifted by (dx, dy) pixels, y down. It reports the outline's
+// pixel bounds when the rasteriser is nil.
+func (f *Font) outline(face uint8, gid font.GID, k, dx, dy float32, r *vector.Rasterizer) (minX, minY, maxX, maxY float32, ok bool) {
+	ol, has := f.faces[face].face.GlyphData(gid).(font.GlyphOutline)
+	if !has || len(ol.Segments) == 0 {
+		return 0, 0, 0, 0, false
+	}
+	minX, minY, maxX, maxY = math.MaxFloat32, math.MaxFloat32, -math.MaxFloat32, -math.MaxFloat32
+	pt := func(p ot.SegmentPoint) (float32, float32) {
+		x, y := p.X*k+dx, -p.Y*k+dy
+		minX, minY, maxX, maxY = min(minX, x), min(minY, y), max(maxX, x), max(maxY, y)
+		return x, y
+	}
+	for _, s := range ol.Segments {
+		switch s.Op {
+		case ot.SegmentOpMoveTo:
+			x, y := pt(s.Args[0])
+			if r != nil {
+				r.MoveTo(x, y)
+			}
+		case ot.SegmentOpLineTo:
+			x, y := pt(s.Args[0])
+			if r != nil {
+				r.LineTo(x, y)
+			}
+		case ot.SegmentOpQuadTo:
+			cx, cy := pt(s.Args[0])
+			x, y := pt(s.Args[1])
+			if r != nil {
+				r.QuadTo(cx, cy, x, y)
+			}
+		case ot.SegmentOpCubeTo:
+			c1x, c1y := pt(s.Args[0])
+			c2x, c2y := pt(s.Args[1])
+			x, y := pt(s.Args[2])
+			if r != nil {
+				r.CubeTo(c1x, c1y, c2x, c2y, x, y)
+			}
+		}
+	}
+	if r != nil {
+		r.ClosePath()
+	}
+	return minX, minY, maxX, maxY, true
+}
+
+// rasterise renders a glyph's coverage at k pixels per font unit,
+// returning the mask and the pixel offset of its top-left from the
+// glyph origin (on the baseline).
+func (f *Font) rasterise(face uint8, gid font.GID, k float32, pad int) (mask *image.Alpha, ox, oy int, ok bool) {
+	minX, minY, maxX, maxY, has := f.outline(face, gid, k, 0, 0, nil)
+	if !has || maxX <= minX || maxY <= minY {
+		return nil, 0, 0, false
+	}
+	ox = int(math.Floor(float64(minX))) - pad
+	oy = int(math.Floor(float64(minY))) - pad
+	w := int(math.Ceil(float64(maxX))) - ox + pad + 1
+	h := int(math.Ceil(float64(maxY))) - oy + pad + 1
+	if f.rast == nil || f.rast.Bounds().Dx() < w || f.rast.Bounds().Dy() < h {
+		f.rast = vector.NewRasterizer(max(w, 64), max(h, 64))
+	}
+	f.rast.Reset(w, h)
+	f.outline(face, gid, k, float32(-ox), float32(-oy), f.rast)
+	mask = image.NewAlpha(image.Rect(0, 0, w, h))
+	f.rast.Draw(mask, mask.Bounds(), image.Opaque, image.Point{})
+	return mask, ox, oy, true
+}
+
+// add rasterises one glyph into the CPU atlas at the font's size.
+func (f *Font) add(face uint8, gid font.GID) glyph {
+	k := f.pxPerEm / f.faces[face].upem
+	mask, ox, oy, ok := f.rasterise(face, gid, k, 0)
 	if !ok {
-		bounds, advance, _ = f.face.GlyphBounds(0xFFFD)
+		return glyph{empty: true}
 	}
-	gl := glyph{advance: fixedToFloat(advance) / f.scale}
-	w := (bounds.Max.X - bounds.Min.X).Ceil() + 1
-	h := (bounds.Max.Y - bounds.Min.Y).Ceil() + 1
-	if w <= 1 || h <= 1 {
-		gl.empty = true
-		f.glyphs[r] = gl
-		return
-	}
-	x, y, ok := f.packer.place(w, h)
-	if !ok {
-		gl.empty = true // atlas full; drawn as nothing rather than garbage
-		f.glyphs[r] = gl
-		return
-	}
-	mask := image.NewAlpha(image.Rect(0, 0, w, h))
-	dot := fixed.Point26_6{X: -bounds.Min.X, Y: -bounds.Min.Y}
-	dr, maskImg, maskPt, _, _ := f.face.Glyph(dot, r)
-	if maskImg != nil {
-		draw.Draw(mask, dr, maskImg, maskPt, draw.Src)
+	w, h := mask.Rect.Dx(), mask.Rect.Dy()
+	x, y, placed := f.packer.place(w, h)
+	if !placed {
+		return glyph{empty: true} // atlas full; drawn as nothing rather than garbage
 	}
 	for yy := range h {
 		for xx := range w {
-			a := mask.AlphaAt(xx, yy).A
-			f.pix.SetRGBA(x+xx, y+yy, rgbaPremul(a))
+			f.pix.SetRGBA(x+xx, y+yy, rgbaPremul(mask.Pix[yy*mask.Stride+xx]))
 		}
 	}
 	side := float32(f.packer.width)
-	gl.uv0 = lin.V2(float32(x)/side, float32(y)/side)
-	gl.uv1 = lin.V2(float32(x+w)/side, float32(y+h)/side)
-	gl.size = lin.V2(float32(w)/f.scale, float32(h)/f.scale)
-	gl.bearing = lin.V2(fixedToFloat(bounds.Min.X)/f.scale, fixedToFloat(bounds.Min.Y)/f.scale)
-	f.glyphs[r] = gl
 	f.dirty = true
+	return glyph{
+		uv0:     lin.V2(float32(x)/side, float32(y)/side),
+		uv1:     lin.V2(float32(x+w)/side, float32(y+h)/side),
+		size:    lin.V2(float32(w)/f.scale, float32(h)/f.scale),
+		bearing: lin.V2(float32(ox)/f.scale, float32(oy)/f.scale),
+	}
 }
 
 // flush uploads the CPU atlas when glyphs were added.
@@ -156,7 +330,11 @@ func (f *Font) flush() error {
 	if f.atlas != nil {
 		// Sprites queued this frame still point at the old atlas, so it is
 		// destroyed after the frame is submitted rather than now.
-		f.g.retire(f.atlas)
+		if f.g.frame != nil {
+			f.g.retire(f.atlas)
+		} else {
+			f.atlas.Destroy()
+		}
 	}
 	tex, err := f.g.NewTexture(f.pix, TextureOptions{Linear: true, Data: true})
 	if err != nil {
@@ -168,52 +346,16 @@ func (f *Font) flush() error {
 	return nil
 }
 
+// Texture returns the glyph atlas, for drawing glyphs from Shape by
+// hand. It is replaced when new glyphs are rasterised, so fetch it each
+// frame rather than keeping it.
+func (f *Font) Texture() *Texture { return f.atlas }
+
 // Destroy frees the atlas.
 func (f *Font) Destroy() {
 	if f.atlas != nil {
 		f.atlas.Destroy()
 		f.atlas = nil
-	}
-}
-
-// Measure returns the width and height of text as one line.
-func (f *Font) Measure(text string) (w, h float32) {
-	var prev rune
-	for _, r := range text {
-		f.add(r)
-		if prev != 0 {
-			w += fixedToFloat(f.face.Kern(prev, r)) / f.scale
-		}
-		w += f.glyphs[r].advance
-		prev = r
-	}
-	return w, f.LineHeight
-}
-
-// DrawText draws one line with its top-left corner at (x, y).
-func (g *Graphics) DrawText(f *Font, text string, x, y float32, c Color) {
-	pen := x
-	base := y + f.Ascent
-	var prev rune
-	for _, r := range text {
-		f.add(r)
-		if prev != 0 {
-			pen += fixedToFloat(f.face.Kern(prev, r)) / f.scale
-		}
-		gl := f.glyphs[r]
-		if !gl.empty {
-			g.Draw(f.atlas, Sprite{
-				Pos:  lin.V2(pen+gl.bearing.X, base+gl.bearing.Y),
-				Size: gl.size, UV0: gl.uv0, UV1: gl.uv1, Color: c,
-			})
-		}
-		pen += gl.advance
-		prev = r
-	}
-	if f.dirty {
-		// New glyphs were rasterised this frame; the atlas uploads for the
-		// next one. Losing one frame of a rare glyph beats stalling.
-		_ = f.flush()
 	}
 }
 
