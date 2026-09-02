@@ -341,7 +341,53 @@ func (l *loader) materials() []Material {
 	for _, m := range l.j.Materials {
 		mat := Material{Name: m.Name, BaseColor: [4]float32{1, 1, 1, 1}, Image: -1, Metallic: 1, Roughness: 1,
 			MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1, OcclusionImage: -1, OcclusionStrength: 1,
-			AlphaCutoff: 0.5, DoubleSided: m.DoubleSided, Unlit: m.Extensions.Unlit != nil}
+			AlphaCutoff: 0.5, DoubleSided: m.DoubleSided, Unlit: m.Extensions.Unlit != nil, UVScale: [2]float32{1, 1},
+			IOR: 1.5, AttenuationColor: [3]float32{1, 1, 1}}
+		if tr := m.Extensions.Transmission; tr != nil && tr.Factor != nil {
+			mat.Transmission = *tr.Factor
+		}
+		if ior := m.Extensions.IOR; ior != nil && ior.IOR != nil {
+			mat.IOR = *ior.IOR
+		}
+		if vol := m.Extensions.Volume; vol != nil {
+			if vol.Thickness != nil {
+				mat.Thickness = *vol.Thickness
+			}
+			if vol.AttenuationDistance != nil {
+				mat.AttenuationDistance = *vol.AttenuationDistance
+			}
+			if len(vol.AttenuationColor) == 3 {
+				copy(mat.AttenuationColor[:], vol.AttenuationColor)
+			}
+		}
+		if cc := m.Extensions.Clearcoat; cc != nil {
+			if cc.Factor != nil {
+				mat.Clearcoat = *cc.Factor
+			}
+			if cc.RoughnessFactor != nil {
+				mat.ClearcoatRoughness = *cc.RoughnessFactor
+			}
+		}
+		if sh := m.Extensions.Sheen; sh != nil {
+			if len(sh.ColorFactor) == 3 {
+				copy(mat.SheenColor[:], sh.ColorFactor)
+			}
+			mat.SheenRoughness = 0.5
+			if sh.RoughnessFactor != nil {
+				mat.SheenRoughness = *sh.RoughnessFactor
+			}
+		}
+		if m.PBR != nil && m.PBR.BaseColorTexture != nil {
+			if tr := m.PBR.BaseColorTexture.Extensions.Transform; tr != nil {
+				if len(tr.Offset) == 2 {
+					copy(mat.UVOffset[:], tr.Offset)
+				}
+				if len(tr.Scale) == 2 {
+					copy(mat.UVScale[:], tr.Scale)
+				}
+				mat.UVRotation = tr.Rotation
+			}
+		}
 		switch m.AlphaMode {
 		case "MASK":
 			mat.AlphaMode = AlphaMask
@@ -356,6 +402,7 @@ func (l *loader) materials() []Material {
 			if m.OcclusionTexture.Strength != nil {
 				mat.OcclusionStrength = *m.OcclusionTexture.Strength
 			}
+			mat.OcclusionUV2 = m.OcclusionTexture.TexCoord == 1
 		}
 		if m.PBR != nil {
 			if len(m.PBR.BaseColorFactor) == 4 {

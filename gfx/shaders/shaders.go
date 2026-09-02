@@ -39,10 +39,22 @@ var (
 //go:generate glslangValidator -V -o ssao.frag.spv ssao.frag
 //go:generate glslangValidator -V -o aoblur.frag.spv aoblur.frag
 //go:generate glslangValidator -V -o sky.frag.spv sky.frag
+//go:generate glslangValidator -V -o outline.vert.spv outline.vert
+//go:generate glslangValidator -V -o solid.frag.spv solid.frag
+//go:generate glslangValidator -V -o decal.vert.spv decal.vert
+//go:generate glslangValidator -V -o decal.frag.spv decal.frag
 
 var (
 	//go:embed sky.frag.spv
 	SkyFrag []byte
+	//go:embed outline.vert.spv
+	OutlineVert []byte
+	//go:embed solid.frag.spv
+	SolidFrag []byte
+	//go:embed decal.vert.spv
+	DecalVert []byte
+	//go:embed decal.frag.spv
+	DecalFrag []byte
 	//go:embed pbr.frag.spv
 	PBRFrag []byte
 	//go:embed pbr.vert.spv
@@ -133,22 +145,39 @@ void main() {
 const meshPostlude = `
 void main() {
     Surface s;
-    vec4 albedoSample = texture(albedoTex, vUV) * vBaseColor;
+    vec2 uv = uvTransform(vUV);
+    vec4 albedoSample = texture(albedoTex, uv) * vBaseColor * vColor;
     s.albedo = albedoSample.rgb;
     s.alpha = albedoSample.a;
-    vec3 mr = texture(metalRoughTex, vUV).rgb;
+    vec3 mr = texture(metalRoughTex, uv).rgb;
     s.metallic = clamp(vMaterial.x * mr.b, 0.0, 1.0);
     s.roughness = clamp(vMaterial.y * mr.g, 0.04, 1.0);
     vec3 n = normalize(vNormal);
     if (!gl_FrontFacing) n = -n;
-    if (mod(vMaterial.w, 2.0) >= 1.0) n = perturbNormal(n, vWorldPos, vUV);
+    float flags = vMaterial.w;
+    if (mod(flags, 2.0) >= 1.0) n = perturbNormal(n, vWorldPos, uv);
     s.normal = n;
-    s.uv = vUV;
+    s.uv = uv;
+    s.uv2 = vUV2;
+    s.color = vColor;
     s.worldPos = vWorldPos;
     s.viewDir = normalize(frame.camPos.xyz - vWorldPos);
-    s.emissive = texture(emissiveTex, vUV).rgb * vMaterial.z;
-    s.occlusion = mix(1.0, texture(occlusionTex, vUV).r, vExtra.z);
-    s.unlit = vMaterial.w >= 2.0;
+    vec3 glow = mod(flags, 16.0) >= 8.0 ? albedoSample.rgb : texture(emissiveTex, uv).rgb;
+    s.emissive = glow * vMaterial.z;
+    vec2 aoUV = mod(flags, 8.0) >= 4.0 ? vUV2 : uv;
+    s.occlusion = mix(1.0, texture(occlusionTex, aoUV).r, vExtra.z);
+    s.unlit = mod(flags, 4.0) >= 2.0;
+    s.clearcoat = vUVT1.z;
+    s.clearcoatRoughness = vUVT1.w;
+    s.sheen = vSheen.rgb;
+    s.sheenRoughness = vSheen.w;
+    s.subsurface = vExtra.w;
+    s.thickness = texture(thicknessTex, uv).r;
+    s.transmission = vVolume.x;
+    s.ior = vVolume.y;
+    s.volume = vVolume.z * s.thickness;
+    s.attenuation = vAtten.rgb;
+    s.attenuationDistance = vVolume.w;
     surface(s);
     if (vExtra.y > 0.0 && s.alpha < vExtra.y) discard;
     vec3 color = s.unlit ? s.albedo : light(s);
@@ -173,9 +202,16 @@ layout(location = 3) out float vViewDepth;
 layout(location = 4) flat out vec4 vBaseColor;
 layout(location = 5) flat out vec4 vMaterial;
 layout(location = 6) flat out vec4 vExtra;
+layout(location = 7) out vec2 vUV2;
+layout(location = 8) out vec4 vColor;
+layout(location = 9) flat out vec4 vUVT0;
+layout(location = 10) flat out vec4 vUVT1;
+layout(location = 11) flat out vec4 vSheen;
+layout(location = 12) flat out vec4 vVolume;
+layout(location = 13) flat out vec4 vAtten;
 
 void main() {
-    VertexData v = VertexData(iPos, iNormal, iUV);
+    VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
     vertex(v);
     mat4 m = model()SKIN;
     vec4 world = m * vec4(v.position, 1.0);
@@ -183,10 +219,17 @@ void main() {
     vWorldPos = world.xyz;
     vNormal = normalize(mat3(m) * v.normal);
     vUV = v.uv;
+    vUV2 = v.uv2;
+    vColor = v.color;
     vViewDepth = -(frame.view * world).z;
     vBaseColor = iBaseColor;
     vMaterial = iMaterial;
     vExtra = iExtra;
+    vUVT0 = iUVT0;
+    vUVT1 = iUVT1;
+    vSheen = iSheen;
+    vVolume = iVolume;
+    vAtten = iAtten;
 }
 `
 
@@ -199,12 +242,12 @@ layout(location = 0) out vec2 vUV;
 layout(location = 1) flat out vec2 vCutout; // x base alpha, y cutoff
 
 void main() {
-    VertexData v = VertexData(iPos, iNormal, iUV);
+    VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
     vertex(v);
     mat4 m = model()SKIN;
     gl_Position = frame.lightViewProj[pc.cascade] * m * vec4(v.position, 1.0);
-    vUV = v.uv;
-    vCutout = vec2(iBaseColor.a, iExtra.y);
+    vUV = uvTransform(v.uv);
+    vCutout = vec2(iBaseColor.a * v.color.a, iExtra.y);
 }
 `
 

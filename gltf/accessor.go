@@ -171,6 +171,30 @@ func (l *loader) primitive(p jsonPrimitive) (Primitive, error) {
 			prim.UVs[i] = lin.V2(uv[i*2], uv[i*2+1])
 		}
 	}
+	if uvIdx, ok := p.Attributes["TEXCOORD_1"]; ok {
+		uv, n, err := l.floats(uvIdx)
+		if err != nil || n != 2 || len(uv) != count*2 {
+			return prim, fmt.Errorf("TEXCOORD_1: %v", err)
+		}
+		prim.UVs2 = make([]lin.Vec2, count)
+		for i := range prim.UVs2 {
+			prim.UVs2[i] = lin.V2(uv[i*2], uv[i*2+1])
+		}
+	}
+	if cIdx, ok := p.Attributes["COLOR_0"]; ok {
+		c, n, err := l.floats(cIdx)
+		if err != nil || (n != 3 && n != 4) || len(c) != count*n {
+			return prim, fmt.Errorf("COLOR_0: %v", err)
+		}
+		prim.Colors = make([]lin.Vec4, count)
+		for i := range prim.Colors {
+			a := float32(1)
+			if n == 4 {
+				a = c[i*4+3]
+			}
+			prim.Colors[i] = lin.V4(c[i*n], c[i*n+1], c[i*n+2], a)
+		}
+	}
 	if nIdx, ok := p.Attributes["NORMAL"]; ok {
 		nm, n, err := l.floats(nIdx)
 		if err != nil || n != 3 || len(nm) != count*3 {

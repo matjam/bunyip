@@ -24,7 +24,34 @@ import (
 
 const count = 500
 
-type cube struct{ Color gfx.Color }
+type cube struct{ Material gfx.Material }
+
+// palette is the cube colours: strong hues so each surface reads.
+var palette = []gfx.Color{
+	gfx.RGB(220, 50, 50), gfx.RGB(240, 140, 30), gfx.RGB(240, 220, 60), gfx.RGB(60, 190, 80),
+	gfx.RGB(40, 200, 200), gfx.RGB(50, 110, 240), gfx.RGB(150, 70, 230), gfx.RGB(240, 100, 180),
+	gfx.RGB(240, 240, 240),
+}
+
+// cubeMaterial picks one of seven kinds of surface in a colour: matte
+// plastic, brushed metal, gold, car paint, velvet, glass and a glowing one.
+func cubeMaterial(kind int, c gfx.Color) gfx.Material {
+	switch kind {
+	case 0:
+		return gfx.Material{BaseColor: c, Metallic: 1, Roughness: 0.25}
+	case 1:
+		return gfx.Material{BaseColor: gfx.RGB(255, 200, 90), Metallic: 1, Roughness: 0.1}
+	case 2:
+		return gfx.Material{BaseColor: c, Roughness: 0.5, Clearcoat: 1, ClearcoatRoughness: 0.05}
+	case 3:
+		return gfx.Material{BaseColor: c, Roughness: 0.95, Sheen: gfx.RGB(255, 255, 255), SheenRoughness: 0.5}
+	case 4:
+		return gfx.Material{Roughness: 0.05, Transmission: 1, IOR: 1.5, Thickness: 1, AttenuationColor: c, AttenuationDistance: 2}
+	case 5:
+		return gfx.Material{BaseColor: c, Roughness: 0.6, Emissive: 1.2}
+	}
+	return gfx.Material{BaseColor: c, Roughness: 0.7}
+}
 
 type game struct {
 	seconds float64
@@ -85,12 +112,12 @@ func (g *game) drop() {
 		y := 3 + float32(i/64)*2.5 + g.random.Between(0, 1)
 		body := phys.Dynamic3(1)
 		body.Friction, body.Restitution = 0.6, 0.05
-		shade := uint8(150 + g.random.Intn(100))
+		c := palette[g.random.Intn(len(palette))]
 		w.SpawnWith(
 			gfx.Transform{Position: lin.V3(x, y, z), Rotation: lin.AxisAngle(lin.V3(g.random.Float(), g.random.Float(), g.random.Float()).Norm(), g.random.Float()*3)},
 			body,
 			phys.Collider3{Shape: phys.Box3{Half: lin.V3(0.5, 0.5, 0.5)}},
-			cube{Color: gfx.RGB(shade, uint8(90+g.random.Intn(80)), uint8(255-shade))},
+			cube{Material: cubeMaterial(g.random.Intn(9), c)},
 		)
 	}
 }
@@ -150,7 +177,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		g.hover = hit.Entity
 	}
 	g.cubes.Each(func(e ecs.Entity, t *gfx.Transform, c *cube) {
-		mat := gfx.Material{BaseColor: c.Color, Roughness: 0.5}
+		mat := c.Material
 		if e == g.hover {
 			mat.Emissive = 1.5
 		}
@@ -158,12 +185,12 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	})
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("500 cubes", ui.Rect{X: 12, Y: ctx.Height - 120, W: 300, H: 108}, func() {
+		u.Panel("500 cubes", ui.Rect{X: 12, Y: ctx.Height - 140, W: 340, H: 128}, func() {
 			ms := 0.0
 			if len(ctx.Stats.Scopes) > 0 {
 				ms = ctx.Stats.Scopes[0].MS
 			}
-			u.Label(fmt.Sprintf("physics %.2f ms/frame; drag orbits, scroll zooms", ms))
+			u.Label(fmt.Sprintf("physics %.2f ms/frame; drag orbits, scroll zooms; plastic, metal, gold, car paint, velvet, glass and glowing cubes", ms))
 			if u.Button("Drop again (R)") {
 				g.drop()
 			}

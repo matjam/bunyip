@@ -78,7 +78,15 @@ type jsonSampler struct {
 }
 
 type jsonTextureRef struct {
-	Index int `json:"index"`
+	Index      int `json:"index"`
+	TexCoord   int `json:"texCoord"`
+	Extensions struct {
+		Transform *struct {
+			Offset   []float32 `json:"offset"`
+			Rotation float32   `json:"rotation"`
+			Scale    []float32 `json:"scale"`
+		} `json:"KHR_texture_transform"`
+	} `json:"extensions"`
 }
 
 type jsonMaterial struct {
@@ -95,6 +103,7 @@ type jsonMaterial struct {
 	EmissiveFactor   []float32       `json:"emissiveFactor"`
 	OcclusionTexture *struct {
 		Index    int      `json:"index"`
+		TexCoord int      `json:"texCoord"`
 		Strength *float32 `json:"strength"`
 	} `json:"occlusionTexture"`
 	AlphaMode   string   `json:"alphaMode"`
@@ -105,6 +114,25 @@ type jsonMaterial struct {
 		EmissiveStrength *struct {
 			Strength float32 `json:"emissiveStrength"`
 		} `json:"KHR_materials_emissive_strength"`
+		Clearcoat *struct {
+			Factor          *float32 `json:"clearcoatFactor"`
+			RoughnessFactor *float32 `json:"clearcoatRoughnessFactor"`
+		} `json:"KHR_materials_clearcoat"`
+		Sheen *struct {
+			ColorFactor     []float32 `json:"sheenColorFactor"`
+			RoughnessFactor *float32  `json:"sheenRoughnessFactor"`
+		} `json:"KHR_materials_sheen"`
+		Transmission *struct {
+			Factor *float32 `json:"transmissionFactor"`
+		} `json:"KHR_materials_transmission"`
+		IOR *struct {
+			IOR *float32 `json:"ior"`
+		} `json:"KHR_materials_ior"`
+		Volume *struct {
+			Thickness           *float32  `json:"thicknessFactor"`
+			AttenuationDistance *float32  `json:"attenuationDistance"`
+			AttenuationColor    []float32 `json:"attenuationColor"`
+		} `json:"KHR_materials_volume"`
 	} `json:"extensions"`
 }
 

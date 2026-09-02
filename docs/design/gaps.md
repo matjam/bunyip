@@ -32,15 +32,13 @@ items are done; the list is meant to be edited as work lands.
 
 ## 3D rendering and materials
 
-- Transmission and refraction (glass, water, ice): needs the opaque scene
-  as a texture during the blended pass.
-- Clearcoat, sheen, iridescence, anisotropy, specular colour and the
-  specular-glossiness workflow from glTF extensions.
-- Subsurface scattering for skin, wax and leaves.
-- Vertex colours and a second UV set in the vertex format; glTF texture
-  transforms (KHR_texture_transform).
-- Decals projected onto geometry.
-- Outlines and x-ray through stencil; per-material stencil state.
+- Iridescence, anisotropy, specular colour and the specular-glossiness
+  workflow from glTF extensions. (Clearcoat, sheen, subsurface,
+  transmission with volume attenuation, vertex colours, a second UV set,
+  texture transforms, decals, outlines and x-ray are in.)
+- Transmission textures and the glTF thickness texture's green channel;
+  only the factors load from KHR_materials_transmission and volume.
+- Per-material stencil state beyond outlines and x-ray.
 - Hair, fur and cloth shading (anisotropic highlights, shell rendering).
 - Terrain: heightfield meshes with LOD, splat maps as a built-in.
 - Level of detail for meshes and impostors; frustum and occlusion culling
@@ -54,8 +52,8 @@ items are done; the list is meant to be edited as work lands.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
 - Depth of field, motion blur, colour grading LUTs, lens effects.
 - Order-independent transparency; blended draws are sorted per mesh.
-- HDR panorama formats (.hdr, .exr) for environments; only LDR images
-  decode today.
+- OpenEXR panoramas for environments; Radiance .hdr and LDR images decode
+  today.
 
 ## Animation
 

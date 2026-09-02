@@ -203,8 +203,9 @@ func (c *Commands) Add(e Entity, comps ...any) {
 	})
 }
 
-// RemoveCmd records detaching a T from an entity.
-func RemoveCmd[T any](c *Commands, e Entity) {
+// RemoveLater records detaching a T from an entity, the deferred form
+// of Remove; methods cannot be generic, so it is a function on Commands.
+func RemoveLater[T any](c *Commands, e Entity) {
 	c.ops = append(c.ops, func(w *World) { Remove[T](w, e) })
 }
 

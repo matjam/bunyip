@@ -11,6 +11,7 @@ import (
 type drawQueue struct {
 	stream     stream2D
 	draws      []meshDraw
+	decals     []decal
 	camera     Camera
 	light      Light
 	hasCam     bool
@@ -38,6 +39,7 @@ type drawQueue struct {
 func (q *drawQueue) reset() {
 	q.stream.reset()
 	q.draws = q.draws[:0]
+	q.decals = q.decals[:0]
 	q.points = q.points[:0]
 	q.joints = q.joints[:0]
 	q.hasCam = false

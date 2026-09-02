@@ -173,8 +173,8 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
 		vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
-	imageBarrier(f.cb, r.depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
-		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+	imageBarrier(f.cb, r.depth.Handle, depthAspect(r.DepthFormat),
+		vk.VK_IMAGE_LAYOUT_UNDEFINED, depthLayout(r.DepthFormat),
 		vk.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, 0,
 		vk.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
 		vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
@@ -184,12 +184,13 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 	*depthClear.DepthStencil() = vk.VkClearDepthStencilValue{Depth: 1}
 	depthAttachment := vk.VkRenderingAttachmentInfo{
 		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		ImageView:   r.depth.View,
-		ImageLayout: vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		ImageView:   r.depth.AttachView,
+		ImageLayout: depthLayout(r.DepthFormat),
 		LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
 		StoreOp:     vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
 		ClearValue:  depthClear,
 	}
+	stencilAttachment := depthAttachment
 	color := vk.VkRenderingAttachmentInfo{
 		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		ImageView:   r.Swapchain.Views[fr.ImageIndex],
@@ -205,6 +206,9 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 		ColorAttachmentCount: 1,
 		PColorAttachments:    &color,
 		PDepthAttachment:     &depthAttachment,
+	}
+	if HasStencil(r.DepthFormat) {
+		rendering.PStencilAttachment = &stencilAttachment
 	}
 	vk.VkCmdBeginRendering(f.cb, &rendering)
 	SetViewport(f.cb, r.Swapchain.Extent)

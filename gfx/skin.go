@@ -8,16 +8,25 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
-// SkinVertex is a vertex with up to four joint influences.
+// SkinVertex is a Vertex with up to four joint influences.
 type SkinVertex struct {
 	Pos     lin.Vec3
 	Normal  lin.Vec3
 	UV      lin.Vec2
+	UV2     lin.Vec2
+	Color   Color // zero means white
 	Joints  [4]uint8
 	Weights [4]float32
 }
 
-const skinVertexSize = 52
+// gpuSkinVertex is the skinned vertex as the GPU reads it.
+type gpuSkinVertex struct {
+	gpuVertex
+	joints  [4]uint8
+	weights [4]float32
+}
+
+const skinVertexSize = 64
 
 // NewSkinnedMesh uploads skinned geometry; draw it with DrawSkinned or
 // through an animated model.
@@ -26,10 +35,12 @@ func (g *Graphics) NewSkinnedMesh(verts []SkinVertex, indices []uint32) (*Mesh, 
 		return nil, fmt.Errorf("gfx: skinned mesh needs vertices and a whole number of triangles")
 	}
 	plain := make([]Vertex, len(verts))
+	packed := make([]gpuSkinVertex, len(verts))
 	for i, v := range verts {
-		plain[i] = Vertex{Pos: v.Pos, Normal: v.Normal, UV: v.UV}
+		plain[i] = Vertex{Pos: v.Pos, Normal: v.Normal, UV: v.UV, UV2: v.UV2, Color: v.Color}
+		packed[i] = gpuSkinVertex{gpuVertex: plain[i].gpu(), joints: v.Joints, weights: v.Weights}
 	}
-	m, err := g.newMesh(plain, indices, unsafe.Slice((*byte)(unsafe.Pointer(&verts[0])), len(verts)*skinVertexSize))
+	m, err := g.newMesh(plain, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*skinVertexSize))
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +53,8 @@ func skinVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 	bindings, attrs := meshVertexLayout()
 	bindings[0].Stride = skinVertexSize
 	attrs = append(attrs,
-		vk.VkVertexInputAttributeDescription{Location: 10, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UINT, Offset: 32},
-		vk.VkVertexInputAttributeDescription{Location: 11, Binding: 0, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 36},
+		vk.VkVertexInputAttributeDescription{Location: 16, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UINT, Offset: 44},
+		vk.VkVertexInputAttributeDescription{Location: 17, Binding: 0, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 48},
 	)
 	return bindings, attrs
 }

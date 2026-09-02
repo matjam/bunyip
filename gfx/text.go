@@ -283,8 +283,9 @@ func (g *Graphics) DrawText(f *Font, text string, x, y float32, c Color) {
 }
 
 // DrawGlyphs draws glyphs from Shape with the text's origin at (x, y),
-// scaled by k (1 for the font's own size).
-func (g *Graphics) DrawGlyphs(f *Font, glyphs []Glyph, x, y, k float32, c Color) {
+// scaled by scale (1, or zero, for the font's own size).
+func (g *Graphics) DrawGlyphs(f *Font, glyphs []Glyph, x, y, scale float32, c Color) {
+	k := scale
 	if k <= 0 {
 		k = 1
 	}

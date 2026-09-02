@@ -21,7 +21,9 @@ type PipelineDesc struct {
 	Factors          *BlendFactors // blend equation when Blend is set
 	DepthTest        bool
 	DepthWrite       bool
-	PushConstantSize uint32 // bytes visible to all stages, 0 for none
+	DepthCompare     vk.VkCompareOp // zero means less-or-equal
+	Stencil          *StencilState  // stencil test and write, when the depth format has stencil
+	PushConstantSize uint32         // bytes visible to all stages, 0 for none
 	SetLayouts       []vk.VkDescriptorSetLayout
 	NoColor          bool    // depth-only pass (shadow maps)
 	DepthBias        float32 // constant depth bias, for shadow passes
@@ -42,6 +44,26 @@ type BlendFactors struct {
 var PremultipliedOver = BlendFactors{
 	SrcColor: vk.VK_BLEND_FACTOR_ONE, DstColor: vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, ColorOp: vk.VK_BLEND_OP_ADD,
 	SrcAlpha: vk.VK_BLEND_FACTOR_ONE, DstAlpha: vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, AlphaOp: vk.VK_BLEND_OP_ADD,
+}
+
+// StencilState is a stencil test applied to both faces: fragments pass
+// when (stencil & 0xff) Compare Ref, and passing fragments apply Pass
+// to the stored value when Write is set.
+type StencilState struct {
+	Compare vk.VkCompareOp
+	Ref     uint32
+	Write   bool
+	Pass    vk.VkStencilOp
+}
+
+// StencilWrite marks every fragment drawn with ref.
+func StencilWrite(ref uint32) *StencilState {
+	return &StencilState{Compare: vk.VK_COMPARE_OP_ALWAYS, Ref: ref, Write: true, Pass: vk.VK_STENCIL_OP_REPLACE}
+}
+
+// StencilNotEqual passes only where the stored value differs from ref.
+func StencilNotEqual(ref uint32) *StencilState {
+	return &StencilState{Compare: vk.VK_COMPARE_OP_NOT_EQUAL, Ref: ref, Pass: vk.VK_STENCIL_OP_KEEP}
 }
 
 // Pipeline is a graphics pipeline and its layout.
@@ -129,11 +151,26 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		raster.DepthBiasSlopeFactor = desc.DepthSlopeBias
 	}
 	multisample := vk.VkPipelineMultisampleStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, RasterizationSamples: vk.VK_SAMPLE_COUNT_1_BIT}
+	compare := desc.DepthCompare
+	if compare == 0 {
+		compare = vk.VK_COMPARE_OP_LESS_OR_EQUAL
+	}
 	depth := vk.VkPipelineDepthStencilStateCreateInfo{
 		SType:            vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		DepthTestEnable:  boolean(desc.DepthTest),
 		DepthWriteEnable: boolean(desc.DepthWrite),
-		DepthCompareOp:   vk.VK_COMPARE_OP_LESS_OR_EQUAL,
+		DepthCompareOp:   compare,
+	}
+	if s := desc.Stencil; s != nil && HasStencil(desc.DepthFormat) {
+		op := vk.VkStencilOpState{
+			FailOp: vk.VK_STENCIL_OP_KEEP, PassOp: s.Pass, DepthFailOp: vk.VK_STENCIL_OP_KEEP,
+			CompareOp: s.Compare, CompareMask: 0xff, Reference: s.Ref,
+		}
+		if s.Write {
+			op.WriteMask = 0xff
+		}
+		depth.StencilTestEnable = vk.VK_TRUE
+		depth.Front, depth.Back = op, op
 	}
 	blendAttachment := vk.VkPipelineColorBlendAttachmentState{
 		ColorWriteMask: vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
@@ -163,6 +200,9 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		ColorAttachmentCount:    1,
 		PColorAttachmentFormats: &desc.ColorFormat,
 		DepthAttachmentFormat:   desc.DepthFormat,
+	}
+	if HasStencil(desc.DepthFormat) {
+		rendering.StencilAttachmentFormat = desc.DepthFormat
 	}
 	if desc.NoColor {
 		rendering.ColorAttachmentCount = 0

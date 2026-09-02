@@ -83,6 +83,8 @@ type Primitive struct {
 	Material  int        // index into Document.Materials, or -1
 	Joints    [][4]uint8 // per vertex, when skinned
 	Weights   [][4]float32
+	Colors    []lin.Vec4 // COLOR_0, linear RGBA; nil when the file has none
+	UVs2      []lin.Vec2 // TEXCOORD_1; nil when the file has none
 }
 
 // Skinned reports whether the primitive carries joint weights.
@@ -108,6 +110,23 @@ type Material struct {
 	AlphaCutoff float32 // for AlphaMask; default 0.5
 	DoubleSided bool
 	Unlit       bool // KHR_materials_unlit: draw the base colour without lighting
+
+	OcclusionUV2 bool // the occlusion texture uses TEXCOORD_1
+	// UVOffset, UVRotation and UVScale are the base colour texture's
+	// KHR_texture_transform; Scale is 1,1 without one.
+	UVOffset   [2]float32
+	UVRotation float32
+	UVScale    [2]float32
+
+	Clearcoat           float32    // KHR_materials_clearcoat factor
+	ClearcoatRoughness  float32    // default 0
+	SheenColor          [3]float32 // KHR_materials_sheen; zero for none
+	SheenRoughness      float32
+	Transmission        float32    // KHR_materials_transmission factor; zero for opaque
+	IOR                 float32    // KHR_materials_ior; default 1.5
+	Thickness           float32    // KHR_materials_volume thickness factor
+	AttenuationDistance float32    // zero for no absorption
+	AttenuationColor    [3]float32 // default white
 }
 
 // AlphaMode is how a material's alpha is used.

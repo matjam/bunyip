@@ -1,8 +1,8 @@
 
 // Skinned meshes: joints and weights per vertex, joint matrices from a
 // storage buffer indexed by the instance's joint base.
-layout(location = 10) in uvec4 iJoints;
-layout(location = 11) in vec4 iWeights;
+layout(location = 16) in uvec4 iJoints;
+layout(location = 17) in vec4 iWeights;
 
 layout(std430, set = 3, binding = 0) readonly buffer Joints { mat4 joints[]; };
 

@@ -6,10 +6,11 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
-// chooseDepthFormat picks the first depth format the GPU can render to.
-// D32_SFLOAT is universal on Apple GPUs, which lack D24_UNORM_S8.
+// chooseDepthFormat picks the first depth format the GPU can render to,
+// preferring one with a stencil aspect (outlines and x-ray need it).
+// D32_SFLOAT_S8 is universal on Apple GPUs, which lack D24_UNORM_S8.
 func (d *Device) chooseDepthFormat() (vk.VkFormat, error) {
-	for _, f := range []vk.VkFormat{vk.VK_FORMAT_D32_SFLOAT, vk.VK_FORMAT_D32_SFLOAT_S8_UINT, vk.VK_FORMAT_D24_UNORM_S8_UINT} {
+	for _, f := range []vk.VkFormat{vk.VK_FORMAT_D32_SFLOAT_S8_UINT, vk.VK_FORMAT_D24_UNORM_S8_UINT, vk.VK_FORMAT_D32_SFLOAT} {
 		var props vk.VkFormatProperties
 		vk.VkGetPhysicalDeviceFormatProperties(d.Physical(), f, &props)
 		if props.OptimalTilingFeatures&vk.VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT != 0 {

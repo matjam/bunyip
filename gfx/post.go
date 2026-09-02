@@ -63,6 +63,7 @@ type sceneTargets struct {
 	ldr       *render.Target
 	aoA       *render.Target
 	aoB       *render.Target
+	scene     *render.Image // the opaque scene with blurred mips, for transmission
 	hdrSet    vk.VkDescriptorSet
 	depthSet  vk.VkDescriptorSet
 	bloomASet vk.VkDescriptorSet
@@ -117,6 +118,17 @@ func (g *Graphics) initPost() error {
 	}); err != nil {
 		return err
 	}
+	// Decals read the scene depth through the same single-sampler layout.
+	decalBindings, decalAttrs := meshVertexLayout()
+	if g.meshes.decalPipe, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.DecalVert, Frag: shaders.DecalFrag, ColorFormat: hdrFormat,
+		Bindings: decalBindings[:1], Attributes: decalAttrs[:1],
+		CullMode: vk.VK_CULL_MODE_FRONT_BIT, Blend: true,
+		PushConstantSize: uint32(unsafe.Sizeof(decalPush{})),
+		SetLayouts:       []vk.VkDescriptorSetLayout{p.singles.Layout, g.meshes.uniformLayout.Layout, g.descriptors.Layout},
+	}); err != nil {
+		return err
+	}
 	if p.ssao, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.SSAOFrag, ColorFormat: aoFormat,
 		PushConstantSize: uint32(unsafe.Sizeof(ssaoPush{})), SetLayouts: single,
@@ -160,7 +172,7 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 		t.destroy(g)
 		return nil, err
 	}
-	if t.hdr, err = dev.NewTarget(extent, hdrFormat, g.r.DepthFormat); err != nil {
+	if t.hdr, err = dev.NewTargetCopyable(extent, hdrFormat, g.r.DepthFormat); err != nil {
 		return fail(err)
 	}
 	half := vk.VkExtent2D{Width: max(extent.Width/2, 1), Height: max(extent.Height/2, 1)}
@@ -179,8 +191,19 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 	if t.aoB, err = dev.NewTargetSampled(half, aoFormat, vk.VK_FORMAT_UNDEFINED); err != nil {
 		return fail(err)
 	}
-	// The composite always binds the AO image; give it white until a pass runs.
-	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearColorForSampling(cb, t.aoB.Color) }); err != nil {
+	// Transmissive materials read the opaque scene through this copy; six
+	// levels give enough blur for the roughest glass.
+	sceneUsage := vk.VkImageUsageFlags(vk.VK_IMAGE_USAGE_SAMPLED_BIT | vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+	if t.scene, err = dev.NewImageMips(extent, hdrFormat, sceneUsage, vk.VK_IMAGE_ASPECT_COLOR_BIT, min(render.MipLevels(extent), 6)); err != nil {
+		return fail(err)
+	}
+	// The composite always binds the AO image; give it white until a pass
+	// runs. Every material set binds the scene copy, so it must be readable
+	// before the first transmissive draw.
+	if err := dev.OneShot(func(cb vk.VkCommandBuffer) {
+		render.ClearColorForSampling(cb, t.aoB.Color)
+		render.ClearColorForSampling(cb, t.scene)
+	}); err != nil {
 		return fail(err)
 	}
 	if t.hdrSet, err = p.singles.Allocate(t.hdr.Color.View, g.linear); err != nil {
@@ -230,6 +253,10 @@ func (t *sceneTargets) destroy(g *Graphics) {
 		if tg != nil {
 			tg.Destroy()
 		}
+	}
+	if t.scene != nil {
+		g.forgetScene(t.scene)
+		t.scene.Destroy()
 	}
 	*t = sceneTargets{}
 }

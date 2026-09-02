@@ -84,9 +84,14 @@ vec4 finish(vec4 lit, Surface s) { return lit; } // optional
 ```
 
 `Surface` has `albedo`, `alpha`, `normal` (world space), `metallic`,
-`roughness`, `emissive`, `occlusion`, `unlit`, `uv`, `worldPos` and
-`viewDir`, filled in from the material's textures and factors before
-`surface` runs. Everything else is the standard pipeline: the shadowed
+`roughness`, `emissive`, `occlusion`, `unlit`, `uv`, `uv2`, `color`
+(the vertex colour), `worldPos` and `viewDir`, then the layered
+material's `clearcoat`, `clearcoatRoughness`, `sheen`,
+`sheenRoughness`, `subsurface`, `thickness`, `transmission`, `ior`,
+`volume` (thickness in world units), `attenuation` and
+`attenuationDistance`, all filled in from the material's textures and
+factors before `surface` runs; change any of them and the lighting
+follows. Everything else is the standard pipeline: the shadowed
 directional light, point lights, hemisphere ambient, alpha cutout,
 bloom and anti-aliasing. Compile with `-kind mesh`, create it with
 `NewMeshShader`, and set it on a material:

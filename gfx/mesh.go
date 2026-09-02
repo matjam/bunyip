@@ -11,14 +11,40 @@ import (
 
 var _ = vk.VK_TRUE
 
-// Vertex is the mesh vertex layout: position, normal and one UV set.
+// Vertex is a mesh vertex: position, normal, a texture coordinate, an
+// optional second set (UV2, for lightmaps and occlusion) and an optional
+// colour that multiplies the material's base colour (zero means white).
 type Vertex struct {
 	Pos    lin.Vec3
 	Normal lin.Vec3
 	UV     lin.Vec2
+	UV2    lin.Vec2
+	Color  Color
 }
 
-const vertexSize = 32
+// gpuVertex is the vertex as the GPU reads it: the colour packed to
+// four bytes.
+type gpuVertex struct {
+	pos    lin.Vec3
+	normal lin.Vec3
+	uv     lin.Vec2
+	uv2    lin.Vec2
+	color  uint32
+}
+
+const vertexSize = 44
+
+func packColor(c Color) uint32 {
+	if c == (Color{}) {
+		c = White
+	}
+	to := func(v float32) uint32 { return uint32(lin.Clamp(v, 0, 1)*255 + 0.5) }
+	return to(c.R) | to(c.G)<<8 | to(c.B)<<16 | to(c.A)<<24
+}
+
+func (v Vertex) gpu() gpuVertex {
+	return gpuVertex{pos: v.Pos, normal: v.Normal, uv: v.UV, uv2: v.UV2, color: packColor(v.Color)}
+}
 
 // Mesh is indexed triangle geometry in device memory.
 type Mesh struct {
@@ -35,7 +61,11 @@ func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
 	if len(verts) == 0 {
 		return nil, fmt.Errorf("gfx: mesh needs vertices")
 	}
-	return g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&verts[0])), len(verts)*vertexSize))
+	packed := make([]gpuVertex, len(verts))
+	for i, v := range verts {
+		packed[i] = v.gpu()
+	}
+	return g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
 }
 
 // newMesh uploads the GPU vertex bytes (plain or skinned layout) and keeps
@@ -88,7 +118,7 @@ type Material struct {
 	MetalRoughTexture *Texture // glTF layout: G roughness, B metallic; data, not colour
 	NormalTexture     *Texture // tangent-space normal map; data, not colour
 	EmissiveTexture   *Texture // sRGB, scaled by Emissive
-	Emissive          float32
+	Emissive          float32  // glow strength; without a texture the mesh glows in its base colour
 	// OcclusionTexture darkens ambient light by its red channel, for baked
 	// crevice shadows; OcclusionStrength scales it (zero means 1).
 	OcclusionTexture  *Texture
@@ -104,6 +134,51 @@ type Material struct {
 
 	NoDepthTest  bool // draw over everything already drawn: overlays, highlights through walls
 	NoDepthWrite bool // leave the depth buffer alone: ghosts, additive effects
+
+	// UVTransform maps texture coordinates before sampling the material's
+	// textures: scrolling, tiling, rotation. Zero means identity.
+	UVTransform lin.Affine
+	// OcclusionUV2 samples the occlusion map with the vertices' second
+	// texture coordinates, the lightmap convention.
+	OcclusionUV2 bool
+
+	// Clearcoat adds a glossy varnish layer of that strength (0..1) with
+	// its own roughness: car paint, lacquer, wet surfaces.
+	Clearcoat          float32
+	ClearcoatRoughness float32
+	// Sheen adds soft back-scattered light at grazing angles in that colour,
+	// the look of velvet and cloth; zero means none.
+	Sheen          Color
+	SheenRoughness float32 // zero means 0.5
+	// Subsurface (0..1) lets light through thin parts, tinted by the base
+	// colour: leaves, wax, skin. ThicknessTexture (red channel, 1 = thick)
+	// shapes it; nil is uniformly thin.
+	Subsurface       float32
+	ThicknessTexture *Texture
+
+	// Transmission (0..1) is how much light passes through the surface:
+	// glass, water, ice. The scene behind shows through, refracted by IOR
+	// (zero means 1.5) across Thickness world units of material, blurred
+	// by the roughness and tinted by the base colour. AttenuationColor is
+	// what white light becomes after AttenuationDistance units inside the
+	// volume; a zero distance means no absorption. ThicknessTexture scales
+	// Thickness; with a Thickness and no map the mesh is uniformly thick.
+	// Transmissive meshes draw after the opaque ones, like Blend.
+	Transmission        float32
+	IOR                 float32
+	Thickness           float32
+	AttenuationColor    Color
+	AttenuationDistance float32
+
+	// Outline draws a line of that many pixels around the mesh's
+	// silhouette in OutlineColor (zero means black): selection rings,
+	// cartoon edges. It needs a depth format with stencil, which every
+	// desktop GPU has.
+	Outline      float32
+	OutlineColor Color
+	// XRay tints the parts of the mesh hidden behind other geometry, so a
+	// unit shows through walls; zero means none.
+	XRay Color
 
 	// Shader is a mesh shader from NewMeshShader that adjusts the surface
 	// before lighting; nil is the standard material.
@@ -187,10 +262,18 @@ type meshDraw struct {
 
 // meshInstance is the per-instance vertex stream: see pbr.vert.
 type meshInstance struct {
-	model     lin.Mat4
+	model     [3]lin.Vec4 // the model matrix's three rows (it is affine)
 	baseColor [4]float32
-	material  [4]float32 // metallic, roughness, emissive, flags (1 normal map, 2 unlit)
-	extra     [4]float32 // joint base index, alpha cutoff, occlusion strength
+	material  [4]float32 // metallic, roughness, emissive, flags (1 normal map, 2 unlit, 4 occlusion on UV2, 8 emissive from the base colour)
+	extra     [4]float32 // joint base index, alpha cutoff, occlusion strength, subsurface
+	uvT0      [4]float32 // texture transform a, b, c, d
+	uvT1      [4]float32 // texture transform e, f; clearcoat, clearcoat roughness
+	sheen     [4]float32 // sheen colour, sheen roughness
+	volume    [4]float32 // transmission, ior, thickness, attenuation distance
+	atten     [4]float32 // attenuation colour
 }
 
-const meshInstanceSize = 112
+const meshInstanceSize = 176
+
+// blended reports whether a material draws after the opaque scene.
+func (m Material) blended() bool { return m.Blend || m.Transmission > 0 }

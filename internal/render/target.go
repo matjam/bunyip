@@ -25,6 +25,12 @@ func (d *Device) NewTargetSampled(extent vk.VkExtent2D, colorFormat, depthFormat
 	return d.newTarget(extent, colorFormat, depthFormat, vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 }
 
+// NewTargetCopyable is NewTarget with a colour image that transfers can
+// read, for snapshots taken with CopyColorForSampling.
+func (d *Device) NewTargetCopyable(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkFormat) (*Target, error) {
+	return d.newTarget(extent, colorFormat, depthFormat, vk.VkImageUsageFlags(vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
+}
+
 func (d *Device) newTarget(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkFormat, extra vk.VkImageUsageFlags) (*Target, error) {
 	t := &Target{Extent: extent, dev: d}
 	var err error
@@ -63,6 +69,8 @@ type PassDesc struct {
 	ClearColor [4]float32
 	ClearDepth float32 // 1 for a normal depth pass
 	LoadColor  bool    // keep existing colour instead of clearing
+	LoadDepth  bool    // keep existing depth (and stencil) instead of clearing
+	NoDepth    bool    // render without the depth attachment, leaving the depth image readable
 }
 
 // BeginTargetPass transitions the target's images for rendering and opens a
@@ -79,8 +87,14 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 		LayerCount: 1,
 	}
 	if t.Color != nil {
+		// Loading keeps the contents, so the transition must start from the
+		// layout the last pass left rather than discarding with UNDEFINED.
+		was := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
+		if p.LoadColor {
+			was = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		}
 		imageBarrier(cb, t.Color.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			was, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
 			vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
 		var clear vk.VkClearValue
@@ -99,9 +113,15 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 		info.ColorAttachmentCount = 1
 		info.PColorAttachments = &color
 	}
-	if t.Depth != nil {
-		imageBarrier(cb, t.Depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
-			vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+	var stencil vk.VkRenderingAttachmentInfo
+	if t.Depth != nil && !p.NoDepth {
+		format := t.Depth.Format
+		was := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
+		if p.LoadDepth {
+			was = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		}
+		imageBarrier(cb, t.Depth.Handle, depthAspect(format),
+			was, depthLayout(format),
 			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
 			vk.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
 			vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
@@ -109,13 +129,20 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 		*clear.DepthStencil() = vk.VkClearDepthStencilValue{Depth: p.ClearDepth}
 		depth = vk.VkRenderingAttachmentInfo{
 			SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			ImageView:   t.Depth.View,
-			ImageLayout: vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			ImageView:   t.Depth.AttachView,
+			ImageLayout: depthLayout(format),
 			LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
 			StoreOp:     vk.VK_ATTACHMENT_STORE_OP_STORE,
 			ClearValue:  clear,
 		}
+		if p.LoadDepth {
+			depth.LoadOp = vk.VK_ATTACHMENT_LOAD_OP_LOAD
+		}
 		info.PDepthAttachment = &depth
+		if HasStencil(format) {
+			stencil = depth
+			info.PStencilAttachment = &stencil
+		}
 	}
 	vk.VkCmdBeginRendering(cb, &info)
 	SetViewport(cb, t.Extent)
@@ -123,6 +150,14 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 
 // EndTargetPass closes the pass and makes the images readable by shaders.
 func EndTargetPass(cb vk.VkCommandBuffer, t *Target) {
+	EndTargetPassDesc(cb, PassDesc{Target: t})
+}
+
+// EndTargetPassDesc is EndTargetPass for a pass begun with the same
+// description, so a pass without a depth attachment leaves the depth
+// image as it was.
+func EndTargetPassDesc(cb vk.VkCommandBuffer, p PassDesc) {
+	t := p.Target
 	vk.VkCmdEndRendering(cb)
 	if t.Color != nil {
 		imageBarrier(cb, t.Color.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
@@ -130,9 +165,10 @@ func EndTargetPass(cb vk.VkCommandBuffer, t *Target) {
 			vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
 			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 	}
-	if t.Depth != nil {
-		imageBarrier(cb, t.Depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
-			vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	if t.Depth != nil && !p.NoDepth {
+		format := t.Depth.Format
+		imageBarrier(cb, t.Depth.Handle, depthAspect(format),
+			depthLayout(format), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 	}
@@ -142,31 +178,63 @@ func EndTargetPass(cb vk.VkCommandBuffer, t *Target) {
 // leaves it in shader-read-only layout, for shadow maps that are bound
 // before any shadow pass has run.
 func ClearDepthForSampling(cb vk.VkCommandBuffer, depth *Image) {
-	imageBarrier(cb, depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+	aspect := depthAspect(depth.Format)
+	imageBarrier(cb, depth.Handle, aspect,
 		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
 		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
 	value := vk.VkClearDepthStencilValue{Depth: 1}
-	rng := vk.VkImageSubresourceRange{AspectMask: vk.VK_IMAGE_ASPECT_DEPTH_BIT, LevelCount: 1, LayerCount: 1}
+	rng := vk.VkImageSubresourceRange{AspectMask: aspect, LevelCount: 1, LayerCount: 1}
 	vk.VkCmdClearDepthStencilImage(cb, depth.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &rng)
-	imageBarrier(cb, depth.Handle, vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+	imageBarrier(cb, depth.Handle, aspect,
 		vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 }
 
-// ClearColorForSampling clears a colour image to black and leaves it in
-// shader-read-only layout, so it can be sampled before its first pass.
+// ClearColorForSampling clears a colour image (every mip level) to black
+// and leaves it in shader-read-only layout, so it can be sampled before
+// its first pass.
 func ClearColorForSampling(cb vk.VkCommandBuffer, img *Image) {
-	imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+	mips := max(img.Mips, 1)
+	imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
 		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
 		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
 	var value vk.VkClearColorValue
-	rng := vk.VkImageSubresourceRange{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LevelCount: 1, LayerCount: 1}
+	rng := vk.VkImageSubresourceRange{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LevelCount: mips, LayerCount: 1}
 	vk.VkCmdClearColorImage(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &rng)
-	imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+	imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
 		vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_CLEAR_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+}
+
+// CopyColorForSampling copies a colour image that a finished pass left in
+// shader-read-only layout into dst, fills dst's mip chain with blurred
+// copies, and leaves both readable by shaders. dst may be a different
+// size; the copy is a linear blit.
+func CopyColorForSampling(cb vk.VkCommandBuffer, src, dst *Image) {
+	imageBarrier(cb, src.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+		vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		vk.VK_PIPELINE_STAGE_2_BLIT_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT)
+	mips := max(dst.Mips, 1)
+	imageBarrierLevels(cb, dst.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
+		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+		vk.VK_PIPELINE_STAGE_2_BLIT_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
+	blit := vk.VkImageBlit{
+		SrcSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+		DstSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+	}
+	blit.SrcOffsets[1] = vk.VkOffset3D{X: int32(src.Extent.Width), Y: int32(src.Extent.Height), Z: 1}
+	blit.DstOffsets[1] = vk.VkOffset3D{X: int32(dst.Extent.Width), Y: int32(dst.Extent.Height), Z: 1}
+	vk.VkCmdBlitImage(cb, src.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, vk.VK_FILTER_LINEAR)
+	imageBarrier(cb, src.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+		vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_BLIT_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,
+		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT|vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
+	generateMips(cb, dst)
 }

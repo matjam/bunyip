@@ -48,16 +48,28 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 			mesh, ok := uploaded[k]
 			if !ok {
 				var err error
+				vertex := func(i int) Vertex {
+					v := Vertex{Pos: p.Positions[i], Normal: p.Normals[i], UV: p.UVs[i]}
+					if p.UVs2 != nil {
+						v.UV2 = p.UVs2[i]
+					}
+					if p.Colors != nil {
+						c := p.Colors[i]
+						v.Color = Color{c.X, c.Y, c.Z, c.W}
+					}
+					return v
+				}
 				if p.Skinned() && inst.Skin >= 0 {
 					verts := make([]SkinVertex, len(p.Positions))
 					for i := range verts {
-						verts[i] = SkinVertex{Pos: p.Positions[i], Normal: p.Normals[i], UV: p.UVs[i], Joints: p.Joints[i], Weights: p.Weights[i]}
+						v := vertex(i)
+						verts[i] = SkinVertex{Pos: v.Pos, Normal: v.Normal, UV: v.UV, UV2: v.UV2, Color: v.Color, Joints: p.Joints[i], Weights: p.Weights[i]}
 					}
 					mesh, err = g.NewSkinnedMesh(verts, p.Indices)
 				} else {
 					verts := make([]Vertex, len(p.Positions))
 					for i := range verts {
-						verts[i] = Vertex{Pos: p.Positions[i], Normal: p.Normals[i], UV: p.UVs[i]}
+						verts[i] = vertex(i)
 					}
 					mesh, err = g.NewMesh(verts, p.Indices)
 				}
@@ -80,8 +92,24 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				mat.Emissive = max(src.Emissive[0], src.Emissive[1], src.Emissive[2])
 				mat.OcclusionTexture = m.texture(src.OcclusionImage)
 				mat.OcclusionStrength = src.OcclusionStrength
+				mat.OcclusionUV2 = src.OcclusionUV2
 				mat.DoubleSided = src.DoubleSided
 				mat.Unlit = src.Unlit
+				mat.Clearcoat, mat.ClearcoatRoughness = src.Clearcoat, src.ClearcoatRoughness
+				mat.Sheen = Color{src.SheenColor[0], src.SheenColor[1], src.SheenColor[2], 1}
+				if src.SheenColor == [3]float32{} {
+					mat.Sheen = Color{}
+				}
+				mat.SheenRoughness = src.SheenRoughness
+				if src.Transmission > 0 {
+					mat.Transmission, mat.IOR, mat.Thickness = src.Transmission, src.IOR, src.Thickness
+					mat.AttenuationDistance = src.AttenuationDistance
+					mat.AttenuationColor = Color{src.AttenuationColor[0], src.AttenuationColor[1], src.AttenuationColor[2], 1}
+				}
+				if src.UVOffset != [2]float32{} || src.UVRotation != 0 || src.UVScale != [2]float32{1, 1} {
+					// glTF: uv' = T · R · S · uv.
+					mat.UVTransform = lin.Translate2(src.UVOffset[0], src.UVOffset[1]).Mul(lin.Rotate2(-src.UVRotation)).Mul(lin.Scale2(src.UVScale[0], src.UVScale[1]))
+				}
 				switch src.AlphaMode {
 				case gltf.AlphaMask:
 					mat.AlphaCutoff = src.AlphaCutoff

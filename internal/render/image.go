@@ -5,14 +5,39 @@ import (
 )
 
 // Image is a VkImage with allocator memory and a view over every level.
+// A depth image with a stencil aspect has two views: View covers depth
+// alone, for sampling, and AttachView covers both aspects, for rendering.
 type Image struct {
-	Handle vk.VkImage
-	View   vk.VkImageView
-	Format vk.VkFormat
-	Extent vk.VkExtent2D
-	Mips   uint32
-	mem    allocation
-	dev    *Device
+	Handle     vk.VkImage
+	View       vk.VkImageView
+	AttachView vk.VkImageView
+	Format     vk.VkFormat
+	Extent     vk.VkExtent2D
+	Mips       uint32
+	mem        allocation
+	dev        *Device
+}
+
+// HasStencil reports whether a depth format carries a stencil aspect.
+func HasStencil(f vk.VkFormat) bool {
+	return f == vk.VK_FORMAT_D32_SFLOAT_S8_UINT || f == vk.VK_FORMAT_D24_UNORM_S8_UINT || f == vk.VK_FORMAT_D16_UNORM_S8_UINT
+}
+
+// depthAspect is the aspect mask a depth format's whole image uses in
+// barriers: depth, plus stencil when present.
+func depthAspect(f vk.VkFormat) vk.VkImageAspectFlags {
+	if HasStencil(f) {
+		return vk.VK_IMAGE_ASPECT_DEPTH_BIT | vk.VK_IMAGE_ASPECT_STENCIL_BIT
+	}
+	return vk.VK_IMAGE_ASPECT_DEPTH_BIT
+}
+
+// depthLayout is the attachment layout for a depth format.
+func depthLayout(f vk.VkFormat) vk.VkImageLayout {
+	if HasStencil(f) {
+		return vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+	}
+	return vk.VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
 }
 
 // NewImage creates a 2D image with one mip level, binds memory and makes a view.
@@ -63,6 +88,13 @@ func (d *Device) NewImageMips(extent vk.VkExtent2D, format vk.VkFormat, usage vk
 		img.Destroy()
 		return nil, err
 	}
+	img.AttachView = img.View
+	if aspect == vk.VK_IMAGE_ASPECT_DEPTH_BIT && HasStencil(format) {
+		if img.AttachView, err = d.newImageViewMips(img.Handle, format, depthAspect(format), mips); err != nil {
+			img.Destroy()
+			return nil, err
+		}
+	}
 	return img, nil
 }
 
@@ -111,6 +143,10 @@ func (d *Device) NewTextureImage(extent vk.VkExtent2D, format vk.VkFormat, pixel
 }
 
 func (i *Image) Destroy() {
+	if i.AttachView != 0 && i.AttachView != i.View {
+		vk.VkDestroyImageView(i.dev.Handle, i.AttachView, nil)
+	}
+	i.AttachView = 0
 	if i.View != 0 {
 		vk.VkDestroyImageView(i.dev.Handle, i.View, nil)
 		i.View = 0

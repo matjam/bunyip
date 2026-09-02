@@ -12,6 +12,8 @@
 layout(location = 0) in vec3 iPos;
 layout(location = 1) in vec3 iNormal;
 layout(location = 2) in vec2 iUV;
+layout(location = 3) in vec2 iUV2;
+layout(location = 4) in vec4 iColor;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -29,16 +31,22 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 pointColor[8];
     vec4 sh[9];        // environment irradiance as spherical harmonics
     vec4 env;          // x intensity, y mip count, z = 1 when an environment is set
+    mat4 invViewProj;
 } frame;
 
-// Per-instance stream: model matrix columns, base colour and material params.
-layout(location = 3) in vec4 iModel0;
-layout(location = 4) in vec4 iModel1;
-layout(location = 5) in vec4 iModel2;
-layout(location = 6) in vec4 iModel3;
-layout(location = 7) in vec4 iBaseColor;
-layout(location = 8) in vec4 iMaterial; // x metallic, y roughness, z emissive strength, w flags
-layout(location = 9) in vec4 iExtra;    // x joint base, y alpha cutoff, z occlusion strength
+// Per-instance stream: the model matrix's rows, base colour, material
+// parameters, texture transform, clearcoat and sheen.
+layout(location = 5) in vec4 iModel0;
+layout(location = 6) in vec4 iModel1;
+layout(location = 7) in vec4 iModel2;
+layout(location = 8) in vec4 iBaseColor;
+layout(location = 9) in vec4 iMaterial; // x metallic, y roughness, z emissive strength, w flags
+layout(location = 10) in vec4 iExtra;   // x joint base, y alpha cutoff, z occlusion strength, w subsurface
+layout(location = 11) in vec4 iUVT0;    // texture transform a, b, c, d
+layout(location = 12) in vec4 iUVT1;    // texture transform e, f; z clearcoat, w clearcoat roughness
+layout(location = 13) in vec4 iSheen;   // sheen colour, w sheen roughness
+layout(location = 14) in vec4 iVolume;  // x transmission, y ior, z thickness, w attenuation distance
+layout(location = 15) in vec4 iAtten;   // attenuation colour
 
 // The material's textures and the shader's images are visible here too,
 // for displacement maps.
@@ -52,6 +60,8 @@ layout(set = 0, binding = 6) uniform sampler2D image1;
 layout(set = 0, binding = 7) uniform sampler2D image2;
 layout(set = 0, binding = 8) uniform sampler2D image3;
 layout(set = 0, binding = 9) uniform samplerCube envMap;
+layout(set = 0, binding = 10) uniform sampler2D thicknessTex;
+layout(set = 0, binding = 11) uniform sampler2D sceneTex;
 
 #define UNIFORMS layout(set = 4, binding = 0)
 
@@ -60,6 +70,8 @@ struct VertexData {
     vec3 position;
     vec3 normal;
     vec2 uv;
+    vec2 uv2;
+    vec4 color;
 };
 
 // Surface is declared so a shader's fragment code compiles in this
@@ -74,14 +86,34 @@ struct Surface {
     float occlusion;
     bool unlit;
     vec2 uv;
+    vec2 uv2;
+    vec4 color;
     vec3 worldPos;
     vec3 viewDir;
+    float clearcoat;
+    float clearcoatRoughness;
+    vec3 sheen;
+    float sheenRoughness;
+    float subsurface;
+    float thickness;
+    float transmission;
+    float ior;
+    float volume;
+    vec3 attenuation;
+    float attenuationDistance;
 };
 
 // time is seconds since the game started.
 float time() { return frame.params.w; }
 // model is this instance's model matrix.
-mat4 model() { return mat4(iModel0, iModel1, iModel2, iModel3); }
+mat4 model() {
+    return mat4(vec4(iModel0.x, iModel1.x, iModel2.x, 0.0), vec4(iModel0.y, iModel1.y, iModel2.y, 0.0),
+                vec4(iModel0.z, iModel1.z, iModel2.z, 0.0), vec4(iModel0.w, iModel1.w, iModel2.w, 1.0));
+}
+// uvTransform maps a texture coordinate through the material's transform.
+vec2 uvTransform(vec2 uv) {
+    return vec2(iUVT0.x * uv.x + iUVT0.y * uv.y + iUVT0.z, iUVT0.w * uv.x + iUVT1.x * uv.y + iUVT1.y);
+}
 
 // Fragment-stage helpers, stubbed so shader code that calls them still
 // compiles here; they are never called from the vertex stage.

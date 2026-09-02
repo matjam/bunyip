@@ -77,17 +77,40 @@ optional cascaded shadow maps; `AddPointLight` adds up to eight local
 lights per frame.
 
 **Environments.** `NewEnvironment` turns an equirectangular panorama
-into image-based lighting, and `NewSkyEnvironment` makes one from a
-zenith, horizon and ground colour. Set it as `Light.Environment` and
+into image-based lighting, `NewEnvironmentHDR` does the same for a
+Radiance `.hdr` panorama read with `DecodeHDR` so bright skies keep
+their range, and `NewSkyEnvironment` makes one from a zenith, horizon
+and ground colour. Set it as `Light.Environment` and
 metals reflect it, rough surfaces take its tint from every direction
 (nine spherical harmonics for the diffuse part, a prefiltered cube map
 for the specular part), and `Light.Background` draws it as the sky.
 
 **Material features.** Beyond textures and factors, a `Material` has
 `AlphaCutoff` for hard-edged cutouts that cut their shadows too,
-`OcclusionTexture` for baked ambient occlusion, `Unlit`, `DoubleSided`,
-`NoDepthTest` and `NoDepthWrite`, and a `Shader` hook; the
-[Shaders](shaders.html) guide covers the hook.
+`OcclusionTexture` for baked ambient occlusion (on the second UV set
+with `OcclusionUV2`), `UVTransform` to scroll, tile or rotate its
+textures, `Unlit`, `DoubleSided`, `NoDepthTest` and `NoDepthWrite`, and
+a `Shader` hook; the [Shaders](shaders.html) guide covers the hook.
+Vertices carry a colour and a second UV set, and glTF files bring in
+COLOR_0, TEXCOORD_1 and KHR_texture_transform.
+
+**Layered materials.** `Clearcoat` adds a varnish lobe with its own
+`ClearcoatRoughness` for car paint and lacquer. `Sheen` adds soft
+grazing light in a colour for velvet and cloth. `Subsurface` lets light
+through thin parts shaped by a `ThicknessTexture`, for leaves, wax and
+skin. `Transmission` makes glass, water and ice: the opaque scene shows
+through, refracted by `IOR` across `Thickness` units of material,
+blurred by the roughness and absorbed towards `AttenuationColor` over
+`AttenuationDistance`. Transmissive meshes draw after the opaque scene
+like blended ones. All of these load from the matching glTF extensions.
+
+**Outlines, x-ray and decals.** `Outline` draws a silhouette line of
+that many pixels in `OutlineColor` through the stencil buffer, for
+selection rings and cartoon edges. `XRay` tints the parts of a mesh
+hidden behind other geometry so a unit shows through walls. `DrawDecal`
+projects a texture onto whatever lies inside a box, for bullet holes,
+blood and road markings; it fades on surfaces facing away from the
+box's axis. The `materials` example shows every one of these.
 
 **Instancing and sorting.** Draws sharing a mesh and material are
 batched into one instanced call automatically, so hundreds of asteroids
