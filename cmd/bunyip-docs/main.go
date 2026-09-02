@@ -50,7 +50,7 @@ var groups = []struct {
 	Paths []string
 }{
 	{"Engine", []string{"bunyip", "input"}},
-	{"Graphics", []string{"gfx", "ui", "gltf", "lin"}},
+	{"Graphics", []string{"gfx", "anim", "ui", "gltf", "lin"}},
 	{"Audio", []string{"audio", "audio/tracker"}},
 	{"Services", []string{"ecs", "asset", "save", "rng", "timer", "tween", "grid", "network"}},
 	{"Tools", []string{"cmd/"}},

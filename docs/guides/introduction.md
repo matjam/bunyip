@@ -64,7 +64,7 @@ touches: graphics, input, audio, timing and the window.
 | Area | Packages |
 |---|---|
 | Engine | [bunyip](../pkg/bunyip.html) (loop, context), [input](../pkg/input.html) |
-| Graphics | [gfx](../pkg/gfx.html) (2D, 3D, text, post-processing), [ui](../pkg/ui.html), [gltf](../pkg/gltf.html), [lin](../pkg/lin.html) |
+| Graphics | [gfx](../pkg/gfx.html) (2D, 3D, text, post-processing), [anim](../pkg/anim.html), [ui](../pkg/ui.html), [gltf](../pkg/gltf.html), [lin](../pkg/lin.html) |
 | Audio | [audio](../pkg/audio.html) (mixer, music, effects), [audio/tracker](../pkg/audio/tracker.html) |
 | Services | [ecs](../pkg/ecs.html), [asset](../pkg/asset.html), [save](../pkg/save.html), [rng](../pkg/rng.html), [timer](../pkg/timer.html), [tween](../pkg/tween.html), [grid](../pkg/grid.html), [network](../pkg/network.html) |
 | Tools | `bunyip-info`, `bunyip-play`, `bunyip-pack`, `bunyip-bundle`, `bunyip-docs` |

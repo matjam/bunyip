@@ -63,7 +63,11 @@ func (c *Context) Checkbox(label string, value *bool) bool {
 // Slider drags *value across [lo, hi] and reports a change.
 func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 	id := c.id(label)
-	r := c.next(c.Theme.RowHeight)
+	// The caption sits above the track inside the widget's own space, so
+	// it never collides with the row before.
+	_, captionH := c.Theme.Font.Measure(label)
+	full := c.next(c.Theme.RowHeight + captionH)
+	r := Rect{X: full.X, Y: full.Y + captionH, W: full.W, H: full.H - captionH}
 	_, held, _ := c.interact(id, r)
 	changed := false
 	if held {
@@ -85,8 +89,7 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 	}
 	c.box(sk.Knob, knob, c.Theme.Text, gfx.Color{})
 	caption := fmt.Sprintf("%s: %.2f", label, *value)
-	_, h := c.Theme.Font.Measure(caption)
-	c.text(caption, r.X, r.Y-h+4, c.Theme.TextDim)
+	c.text(caption, full.X, full.Y, c.Theme.TextDim)
 	return changed
 }
 
