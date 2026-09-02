@@ -52,10 +52,33 @@ type Context struct {
 	clipDepth   int
 
 	// Keyboard and gamepad navigation: focusables are collected each
-	// frame in submission order; navFocus is the highlighted one.
-	focusables []focusable
-	navFocus   widgetID
-	activate   bool // the focused widget was activated this frame
+	// frame in submission order; navFocus is the highlighted one. A
+	// container (a list, a row of tabs) submits its items under a group,
+	// which Tab treats as one stop and the arrows move within.
+	focusables     []focusable
+	lastFocusables []focusable // the previous frame's, for scrolling into view
+	navFocus       widgetID
+	activate       bool     // the focused widget was activated this frame
+	group          navGroup // the container whose items are being submitted
+	groupFocus     map[widgetID]widgetID
+	navMoved       bool // the keys or d-pad moved focus this frame
+	navMovedNext   bool // a widget moved the focused item; scroll to it next frame
+	scrollID       widgetID
+	noFocus        bool // widgets submitted while set are not navigation stops
+	noRing         bool // the focus ring is drawn by the caller instead
+
+	// Drag and drop: where the button went down, the drag in progress and
+	// a list being reordered.
+	pressSource    widgetID
+	pressX, pressY float32
+	drag           *dragging
+	reorder        *reorderState
+	bounds         []bounds
+	dropHover      bool
+
+	// DragGhost, when set, draws what follows the pointer during a drag
+	// in place of the source's label.
+	DragGhost func(label string, payload any, x, y float32)
 
 	// Clipboard, when set, is what text fields cut, copy and paste
 	// through; the engine's Context satisfies it.
@@ -78,14 +101,34 @@ type Context struct {
 }
 
 type focusable struct {
-	id   widgetID
-	rect Rect
+	id     widgetID
+	rect   Rect
+	group  widgetID // the container navigated with the arrows, or 0
+	keys   navKeys  // which arrows move within the container
+	page   int      // rows a PageUp or PageDown moves
+	scroll widgetID // the enclosing ScrollArea, or 0
 }
+
+// navGroup is a container whose items the arrows move between.
+type navGroup struct {
+	id   widgetID
+	keys navKeys
+	page int
+}
+
+// navKeys says which arrow pairs move within a container.
+type navKeys uint8
+
+const (
+	navUpDown navKeys = 1 << iota
+	navLeftRight
+)
 
 // New makes a context drawing with g under theme.
 func New(g *gfx.Graphics, theme Theme) *Context {
 	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}, scroll: map[widgetID]*scrollState{},
-		edits: map[widgetID]*editState{}, expanded: map[widgetID]bool{}, drags: map[widgetID]*dragState{}, hues: map[widgetID]float32{}}
+		edits: map[widgetID]*editState{}, expanded: map[widgetID]bool{}, drags: map[widgetID]*dragState{}, hues: map[widgetID]float32{},
+		groupFocus: map[widgetID]widgetID{}}
 }
 
 // Begin runs one frame of interface: body calls the widget methods, and
@@ -115,29 +158,46 @@ func (c *Context) begin(in *input.State) {
 	c.deferred = c.deferred[:0]
 	if c.pressed {
 		c.focus = 0 // clicking anywhere else drops keyboard focus
+		c.pressSource = 0
+		c.pressX, c.pressY = c.mouseX, c.mouseY
+	}
+	if in.KeyPressed(input.KeyEscape) && (c.drag != nil || c.reorder != nil) {
+		c.drag, c.reorder = nil, nil // cancelled: nothing is dropped
+		c.pressSource = 0
 	}
 	c.navigate()
-	c.focusables = c.focusables[:0]
+	c.lastFocusables, c.focusables = c.focusables, c.lastFocusables[:0]
+	c.group = navGroup{}
+	c.scrollID = 0
+	c.noFocus, c.noRing = false, false
+	c.bounds = c.bounds[:0]
+	c.dropHover = false
 	c.modal = 0
 	c.nodes = c.nodes[:0]
 }
 
-// end finishes the frame: deferred overlays draw above everything and
-// the press state settles.
+// end finishes the frame: deferred overlays draw above everything, the
+// drag ghost above those, and the press state settles.
 func (c *Context) end() {
 	for i := 0; i < len(c.deferred); i++ {
 		c.deferred[i]() // an overlay may add more overlays
 	}
+	c.drawGhost()
 	if c.released {
 		c.active = 0
+		c.drag = nil
+		c.pressSource = 0
 	}
 	c.activate = false
 	c.lastNodes = append(c.lastNodes[:0], c.nodes...)
 }
 
-// WantsMouse reports whether the pointer is over a panel, so the game can
-// ignore clicks the interface consumed.
+// WantsMouse reports whether the pointer is over a panel or a drag is in
+// progress, so the game can ignore clicks the interface consumed.
 func (c *Context) WantsMouse() bool {
+	if c.drag != nil || c.reorder != nil {
+		return true
+	}
 	for _, r := range c.frameRects {
 		if r.Contains(lin.V2(c.mouseX, c.mouseY)) {
 			return true
@@ -176,20 +236,21 @@ func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
 	if c.modal != 0 && !c.inModal {
 		return false, false, false // a modal owns every input
 	}
-	c.focusables = append(c.focusables, focusable{id: id, rect: r})
+	c.register(id, r)
 	if c.navFocus == id {
-		fw := c.Theme.FocusWidth
-		if fw <= 0 {
-			fw = 2
+		if !c.noRing {
+			c.focusRing(r)
 		}
-		c.ring(Rect{X: r.X - fw, Y: r.Y - fw, W: r.W + 2*fw, H: r.H + 2*fw}, fw, c.Theme.Accent)
 		if c.activate {
 			clicked = true
 		}
 	}
 	over := r.Contains(lin.V2(c.mouseX, c.mouseY))
-	if c.open != 0 && c.open != id {
+	if c.open != 0 && c.open != id && c.group.id != c.open {
 		over = false // an open dropdown list owns the pointer
+	}
+	if c.drag != nil || c.reorder != nil {
+		over = false // a drag owns the pointer until it is released
 	}
 	if over {
 		c.nextHot = id
@@ -201,9 +262,36 @@ func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
 	held = c.active == id && c.down
 	if c.active == id && c.released && over {
 		clicked = true
-		c.navFocus = id
+		c.setFocus(id)
 	}
 	return hover, held, clicked
+}
+
+// register adds a navigation stop for id at r under the current group,
+// unless a modal excludes it or the caller asked for none.
+func (c *Context) register(id widgetID, r Rect) {
+	if c.modal != 0 && !c.inModal || c.noFocus {
+		return
+	}
+	c.focusables = append(c.focusables, focusable{id: id, rect: r, group: c.group.id, keys: c.group.keys, page: c.group.page, scroll: c.scrollID})
+}
+
+// setFocus moves the navigation focus to id, remembering it for the
+// current group so Tab returns to it.
+func (c *Context) setFocus(id widgetID) {
+	c.navFocus = id
+	if c.group.id != 0 {
+		c.groupFocus[c.group.id] = id
+	}
+}
+
+// focusRing outlines r as the focused widget.
+func (c *Context) focusRing(r Rect) {
+	fw := c.Theme.FocusWidth
+	if fw <= 0 {
+		fw = 2
+	}
+	c.ring(Rect{X: r.X - fw, Y: r.Y - fw, W: r.W + 2*fw, H: r.H + 2*fw}, fw, c.Theme.Accent)
 }
 
 func (c *Context) fill(r Rect, col gfx.Color) { c.g.FillRect(r.X, r.Y, r.W, r.H, col) }

@@ -29,7 +29,9 @@ func (c *Context) ScrollArea(label string, r Rect, contentHeight float32, conten
 		thumbH := max(r.H*r.H/contentHeight, 20)
 		thumbY := r.Y + (r.H-thumbH)*(st.offset/maxScroll)
 		thumb := Rect{X: track.X, Y: thumbY, W: barW, H: thumbH}
+		c.noFocus = true // the thumb is for the pointer; keys move the contents
 		hover, held, _ := c.interact(id, thumb)
+		c.noFocus = false
 		if held {
 			if !st.dragging {
 				st.dragging, st.dragStart, st.dragOffset = true, c.mouseY, st.offset
@@ -46,17 +48,33 @@ func (c *Context) ScrollArea(label string, r Rect, contentHeight float32, conten
 		}
 		c.box(or(sk.Thumb, sk.Knob), thumb, col, gfx.Color{})
 	}
-	st.offset = max(0, min(st.offset, maxScroll))
 	inner := Rect{X: r.X, Y: r.Y, W: r.W - barW - c.Theme.Spacing, H: r.H}
+	// A row the keys or d-pad moved focus to is brought into view, from
+	// where it was last frame.
+	if c.navMoved {
+		if f, ok := c.lastFocusable(c.navFocus); ok && f.scroll == id {
+			st.offset += scrollDelta(f.rect, inner)
+		}
+	}
+	st.offset = max(0, min(st.offset, maxScroll))
 	c.g.PushClip(inner)
 	c.frameRects = append(c.frameRects, r)
 	p := &panel{id: id, rect: Rect{X: inner.X, Y: inner.Y - st.offset, W: inner.W, H: contentHeight}, cursor: inner.Y - st.offset}
 	c.panels = append(c.panels, p)
 	c.clipDepth++
+	outer := c.scrollID
+	c.scrollID = id
 	contents()
+	c.scrollID = outer
 	c.clipDepth--
 	c.panels = c.panels[:len(c.panels)-1]
 	c.g.PopClip()
+	// Where the row moved this frame, the correction lands next frame.
+	if c.navMoved {
+		if f, ok := c.thisFocusable(c.navFocus); ok && f.scroll == id {
+			st.offset = max(0, min(st.offset+scrollDelta(f.rect, inner), maxScroll))
+		}
+	}
 }
 
 type scrollState struct {
@@ -67,16 +85,22 @@ type scrollState struct {
 }
 
 // Dropdown shows the selected option and opens a list on click; it
-// reports a change to *selected.
+// reports a change to *selected. While the list is open the arrows move
+// through it, Enter chooses and Escape closes it.
 func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 	id := c.id("dropdown:" + label)
 	r := c.next(c.Theme.RowHeight)
 	hover, _, clicked := c.interact(id, r)
+	itemID := func(i int) widgetID { return id + widgetID(i+1) }
 	if clicked {
 		if c.open == id {
 			c.open = 0
 		} else {
 			c.open = id
+			// Focus starts on the chosen option; the activation that opened
+			// the list must not also choose it.
+			c.navFocus = itemID(max(*selected, 0))
+			c.activate = false
 		}
 	}
 	col := c.Theme.Field
@@ -95,30 +119,48 @@ func (c *Context) Dropdown(label string, selected *int, options []string) bool {
 	if c.open != id {
 		return false
 	}
-	// The list draws after everything else so it overlaps later widgets.
+	if c.keyNav() && c.in.KeyPressed(input.KeyEscape) {
+		c.open = 0
+		c.navFocus = id
+		return false
+	}
+	// The options take input now, in order, and draw at End so the list
+	// overlaps later widgets.
+	listH := float32(len(options)) * c.Theme.RowHeight
+	list := Rect{X: r.X, Y: r.Y + r.H, W: r.W, H: listH}
+	rows := make([]Rect, len(options))
+	hovers := make([]bool, len(options))
 	changed := false
+	saved := c.beginGroup(id, navUpDown, len(options))
+	c.noRing = true
+	for i := range options {
+		rows[i] = Rect{X: list.X, Y: list.Y + float32(i)*c.Theme.RowHeight, W: list.W, H: c.Theme.RowHeight}
+		var chosen bool
+		hovers[i], _, chosen = c.interact(itemID(i), rows[i])
+		if chosen {
+			*selected = i
+			c.open = 0
+			changed = true
+			c.navFocus = id
+		}
+	}
+	c.noRing = false
+	c.endGroup(saved)
+	if c.pressed && !list.Contains(lin.V2(c.mouseX, c.mouseY)) && !r.Contains(lin.V2(c.mouseX, c.mouseY)) {
+		c.open = 0
+	}
 	c.deferred = append(c.deferred, func() {
-		listH := float32(len(options)) * c.Theme.RowHeight
-		list := Rect{X: r.X, Y: r.Y + r.H, W: r.W, H: listH}
 		c.frameRects = append(c.frameRects, list)
 		c.box(c.skin().Panel, list, c.Theme.Panel, c.Theme.PanelBorder)
 		for i, opt := range options {
-			row := Rect{X: list.X, Y: list.Y + float32(i)*c.Theme.RowHeight, W: list.W, H: c.Theme.RowHeight}
-			over := row.Contains(lin.V2(c.mouseX, c.mouseY))
-			if over {
-				c.fill(row, c.Theme.ButtonHover)
-				c.nextHot = 0
-				if c.released {
-					*selected = i
-					c.open = 0
-					changed = true
-				}
+			if hovers[i] {
+				c.fill(rows[i], c.Theme.ButtonHover)
+			}
+			if c.navFocus == itemID(i) {
+				c.focusRing(rows[i])
 			}
 			_, oh := c.Theme.Font.Measure(opt, gfx.TextOptions{})
-			c.text(opt, row.X+c.Theme.Padding, row.Y+(row.H-oh)/2, c.Theme.Text)
-		}
-		if c.pressed && !list.Contains(lin.V2(c.mouseX, c.mouseY)) && !r.Contains(lin.V2(c.mouseX, c.mouseY)) {
-			c.open = 0
+			c.text(opt, rows[i].X+c.Theme.Padding, rows[i].Y+(rows[i].H-oh)/2, c.Theme.Text)
 		}
 	})
 	return changed
@@ -171,43 +213,4 @@ func (c *Context) Columns(weights []float32, body func()) {
 func (c *Context) Separator() {
 	r := c.next(c.Theme.Spacing * 2)
 	c.fill(Rect{X: r.X, Y: r.Y + r.H/2, W: r.W, H: 1}, c.Theme.PanelBorder)
-}
-
-// navigate moves keyboard and gamepad focus between interactive widgets.
-func (c *Context) navigate() {
-	if c.in == nil || len(c.focusables) == 0 {
-		return
-	}
-	next, prev, activate := false, false, false
-	if c.in.KeyPressed(input.KeyTab) {
-		if c.in.Mods()&input.ModShift != 0 {
-			prev = true
-		} else {
-			next = true
-		}
-	}
-	if pad := c.in.Gamepad(0); pad.Connected {
-		next = next || pad.Pressed(input.ButtonDpadDown)
-		prev = prev || pad.Pressed(input.ButtonDpadUp)
-		activate = pad.Pressed(input.ButtonA)
-	}
-	if c.focus == 0 || !c.WantsKeyboard() {
-		activate = activate || c.in.KeyPressed(input.KeyEnter) || c.in.KeyPressed(input.KeySpace)
-	}
-	idx := -1
-	for i, f := range c.focusables {
-		if f.id == c.navFocus {
-			idx = i
-		}
-	}
-	switch {
-	case next:
-		idx = (idx + 1) % len(c.focusables)
-	case prev:
-		idx = (idx - 1 + len(c.focusables)) % len(c.focusables)
-	}
-	if idx >= 0 {
-		c.navFocus = c.focusables[idx].id
-	}
-	c.activate = activate && idx >= 0
 }

@@ -21,12 +21,13 @@ import (
 )
 
 type gallery struct {
-	seconds float64
-	shot    string
-	beep    bool
-	skinned bool
-	theme   string
-	tone    *audio.Sound
+	seconds  float64
+	shot     string
+	beep     bool
+	skinned  bool
+	theme    string
+	tone     *audio.Sound
+	startTab int
 
 	font     *gfx.Font
 	big      *gfx.Font
@@ -56,6 +57,9 @@ type gallery struct {
 	tint     gfx.Color
 	confirm  bool
 	about    bool
+	order    []string
+	drops    int
+	lastDrop string
 }
 
 func (g *gallery) Init(ctx *bunyip.Context) error {
@@ -73,6 +77,8 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	g.win = ui.Rect{X: 560, Y: 200, W: 320, H: 350}
 	g.lives, g.players, g.sel = 3, 2, 1
 	g.tint = gfx.RGB(255, 140, 40)
+	g.order = []string{"Scout", "Archer", "Knight", "Mage"}
+	g.tab = g.startTab
 	g.notes = "Multi-line notes wrap here.\nSelect with Shift and the arrows, cut, copy, paste and undo."
 	names := ui.ThemeNames()
 	for i, n := range names {
@@ -158,7 +164,7 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 			})
 		})
 		u.Window("More widgets (drag me)", &g.win, func() {
-			u.Tabs([]string{"Widgets", "Text", "Colour"}, &g.tab)
+			u.Tabs([]string{"Widgets", "Text", "Colour", "Drag"}, &g.tab)
 			switch g.tab {
 			case 0:
 				u.Row(3, func() {
@@ -188,6 +194,22 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 						u.Cell(fmt.Sprintf("%.2f", vals[row]))
 					}
 				})
+			case 3:
+				// Rows drag to a new place (or Ctrl and an arrow move the
+				// focused one); the buttons drag onto the label below.
+				if from, to, ok := u.ReorderableList("Turn order", g.order, 100); ok {
+					ui.Move(g.order, from, to)
+				}
+				u.Row(3, func() {
+					for _, item := range []string{"Sword", "Shield", "Potion"} {
+						u.DragSource(item, item, func() { u.Button(item) })
+					}
+				})
+				u.Label(fmt.Sprintf("Drop here: %d (%s)", g.drops, g.lastDrop))
+				if p, ok := u.DropTarget("chest", nil); ok {
+					g.drops++
+					g.lastDrop = p.(string)
+				}
 			}
 		})
 		u.Modal("Quit?", ui.Rect{X: ctx.Width/2 - 140, Y: ctx.Height/2 - 60, W: 280, H: 110}, &g.confirm, func() {
@@ -326,9 +348,10 @@ func main() {
 	debug := flag.Bool("debug", false, "show the frame-timing overlay (F3 toggles it)")
 	skin := flag.Bool("skin", false, "start with the texture skin on")
 	theme := flag.String("theme", "dark", "starting theme: "+fmt.Sprint(ui.ThemeNames()))
+	tab := flag.Int("tab", 0, "the tab of the More widgets window to open on (0-3)")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true, Debug: *debug},
-		&gallery{seconds: *seconds, shot: *shot, beep: *beep, skinned: *skin, theme: *theme})
+		&gallery{seconds: *seconds, shot: *shot, beep: *beep, skinned: *skin, theme: *theme, startTab: *tab})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)
 		os.Exit(1)

@@ -1,7 +1,11 @@
 package ui
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/matjam/bunyip/gfx"
+	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -58,9 +62,13 @@ func Split(area Rect, t float32, gap float32) (first, second Rect) {
 }
 
 // Tabs draws a row of tabs and keeps *selected on the clicked one,
-// reporting a change; the widgets that follow belong to that tab.
+// reporting a change; the widgets that follow belong to that tab. The
+// row is one Tab stop: the left and right arrows move along it and
+// Enter selects.
 func (c *Context) Tabs(labels []string, selected *int) bool {
 	changed := false
+	saved := c.beginGroup(c.id("tabs:"+strings.Join(labels, "|")), navLeftRight, len(labels))
+	defer c.endGroup(saved)
 	c.Row(len(labels), func() {
 		for i, l := range labels {
 			id := c.id("tab:" + l)
@@ -91,8 +99,12 @@ func (c *Context) Tabs(labels []string, selected *int) bool {
 
 // Table lays out a header row and rows of cells in columns; weights give
 // the columns' relative widths (nil for equal) and cell draws each cell
-// with the usual widgets. Rows alternate in shade.
-func (c *Context) Table(columns []string, weights []float32, rows int, cell func(row, col int)) {
+// with the usual widgets. Rows alternate in shade. The rows are one Tab
+// stop that the arrows move through; it returns the row clicked or
+// activated with Enter this frame, or -1. Widgets inside cells are
+// their own Tab stops.
+func (c *Context) Table(columns []string, weights []float32, rows int, cell func(row, col int)) (clicked int) {
+	clicked = -1
 	if weights == nil {
 		weights = make([]float32, len(columns))
 		for i := range weights {
@@ -107,17 +119,31 @@ func (c *Context) Table(columns []string, weights []float32, rows int, cell func
 			c.text(col, r.X+c.Theme.Padding/2, r.Y+(r.H-h)/2, c.Theme.Title)
 		}
 	})
+	id := c.id("table:" + strings.Join(columns, "|"))
 	for row := range rows {
-		p := c.currentPanel()
-		if p != nil && row%2 == 1 {
-			c.fill(Rect{X: p.rect.X + c.Theme.Padding, Y: p.cursor - c.Theme.Spacing/2, W: p.rect.W - 2*c.Theme.Padding, H: c.Theme.RowHeight + c.Theme.Spacing}, c.Theme.Field.WithAlpha(0.35))
+		saved := c.beginGroup(id, navUpDown, 10)
+		if p := c.currentPanel(); p != nil {
+			r := Rect{X: p.rect.X + c.Theme.Padding, Y: p.cursor - c.Theme.Spacing/2, W: p.rect.W - 2*c.Theme.Padding, H: c.Theme.RowHeight + c.Theme.Spacing}
+			hover, _, click := c.interact(id+widgetID(row+1), r)
+			if click {
+				clicked = row
+			}
+			switch {
+			case hover:
+				c.fill(r, c.Theme.ButtonHover.WithAlpha(0.5))
+			case row%2 == 1:
+				c.fill(r, c.Theme.Field.WithAlpha(0.35))
+			}
+			c.noteAt("row", fmt.Sprint(row), "", false, r, id+widgetID(row+1))
 		}
+		c.endGroup(saved)
 		c.Columns(weights, func() {
 			for col := range columns {
 				cell(row, col)
 			}
 		})
 	}
+	return clicked
 }
 
 // Cell draws a plain text cell, for tables of values.
@@ -135,6 +161,9 @@ func (c *Context) Tree(label string, body func()) { c.tree(label, false, body) }
 // TreeOpen is Tree starting open.
 func (c *Context) TreeOpen(label string, body func()) { c.tree(label, true, body) }
 
+// tree draws one node. The outermost node of a tree makes the tree one
+// Tab stop whose nodes (and the widgets inside them) the up and down
+// arrows move through; Right opens the focused node and Left closes it.
 func (c *Context) tree(label string, openAtFirst bool, body func()) {
 	id := c.id("tree:" + label)
 	open, seen := c.expanded[id]
@@ -142,11 +171,22 @@ func (c *Context) tree(label string, openAtFirst bool, body func()) {
 		open = openAtFirst
 		c.expanded[id] = open
 	}
+	saved := c.group
+	if saved.id == 0 {
+		c.group = navGroup{id: id, keys: navUpDown, page: 10}
+		defer c.endGroup(saved)
+	}
 	r := c.next(c.Theme.RowHeight)
 	hover, _, clicked := c.interact(id, r)
 	if clicked {
 		open = !open
 		c.expanded[id] = open
+	}
+	if c.navFocus == id && c.keyNav() {
+		if c.in.KeyPressed(input.KeyRight) && !open || c.in.KeyPressed(input.KeyLeft) && open {
+			open = !open
+			c.expanded[id] = open
+		}
 	}
 	if hover {
 		c.fill(r, c.Theme.ButtonHover.WithAlpha(0.5))

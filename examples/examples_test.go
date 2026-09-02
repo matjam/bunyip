@@ -17,6 +17,7 @@ import (
 var skip = map[string]string{
 	"network": "needs a peer to talk to",
 	"clear":   "clears to one colour by design",
+	"window":  "the platform layer's own smoke test, without the engine's screenshot",
 }
 
 func TestExamplesRun(t *testing.T) {

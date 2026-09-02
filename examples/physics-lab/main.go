@@ -1,7 +1,8 @@
 // Command physics-lab shows the newer parts of the phys package in one
 // scene: capsules, convex hulls, spheres and boxes tumbling onto a
 // heightfield terrain mesh, a chain of hinge joints with a ball on the
-// end, and a character controller walking back and forth over a
+// end, a paddle wheel turned by a hinge motor, a ragdoll dropped from
+// the sky, and a character controller walking back and forth over a
 // staircase on a timer. Every collider is drawn as a wire outline on top
 // of the scene; sleeping bodies turn grey and contacts draw their
 // normals. Drag to orbit, scroll to zoom, R drops the bodies again,
@@ -88,9 +89,13 @@ type debris struct{ Color gfx.Color }
 // link marks one link of the hinge chain.
 type link struct{}
 
+// paddle marks the motorised wheel.
+type paddle struct{}
+
 type game struct {
 	seconds float64
 	shot    string
+	ragdoll bool
 
 	font      *gfx.Font
 	ui        *ui.Context
@@ -100,6 +105,9 @@ type game struct {
 	terrain   *gfx.Mesh
 	cube      *gfx.Mesh
 	sphere    *gfx.Mesh
+	cylinder  *gfx.Mesh
+	doll      *phys.Ragdoll3
+	wheel     ecs.Entity
 	random    *rng.Rand
 	hero      ecs.Entity
 	ctrl      phys.CharacterController3
@@ -127,6 +135,10 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	sv, si := gfx.SphereMesh(12, 18)
 	if g.sphere, err = ctx.Gfx.NewMesh(sv, si); err != nil {
+		return err
+	}
+	yv, yi := gfx.CylinderMesh(18)
+	if g.cylinder, err = ctx.Gfx.NewMesh(yv, yi); err != nil {
 		return err
 	}
 	tv, pts, idx := heightfield()
@@ -167,15 +179,35 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	ball.LinearDamping = 0.2
 	b := w.SpawnWith(gfx.At(-1, 12, 4), ball, phys.Collider3{Shape: phys.Sphere{Radius: 0.6}, Layers: phys.Layers{Layer: 2, Mask: 1}}, link{})
 	w.SpawnWith(phys.HingeJoint3{A: prev, AnchorA: lin.V3(0.5, 0, 0), B: b, AnchorB: lin.V3(-0.6, 0, 0), AxisA: lin.V3(0, 0, 1), AxisB: lin.V3(0, 0, 1)})
+	// A paddle wheel on a world hinge, turned by the hinge's motor; it
+	// bats the debris that lands in it.
+	wheelAt := lin.V3(-2, 2.4, 8)
+	wheel := phys.Dynamic3(8)
+	wheel.AngularDamping = 0.2
+	g.wheel = w.SpawnWith(gfx.Transform{Position: wheelAt}, wheel, phys.Collider3{Shape: phys.Compound3{Parts: []phys.Part3{
+		{Shape: phys.Box3{Half: lin.V3(1.6, 0.12, 0.5)}},
+		{Shape: phys.Box3{Half: lin.V3(0.12, 1.6, 0.5)}},
+	}}}, paddle{})
+	w.SpawnWith(phys.HingeJoint3{A: ecs.None, AnchorA: wheelAt, B: g.wheel, AxisA: lin.V3(0, 0, 1), AxisB: lin.V3(0, 0, 1), MotorSpeed: 1.5, MaxMotorTorque: 400})
 	w.AddSystem("physics", phys.System3)
 	g.drop()
 	return nil
 }
 
-// drop respawns the tumbling bodies above the terrain.
+// drop respawns the tumbling bodies above the terrain, and a ragdoll
+// twice life size in front of the camera, tipped over so it lands in a
+// heap.
 func (g *game) drop() {
 	w := g.world
 	g.debris.Each(func(e ecs.Entity, _ *gfx.Transform, _ *debris) { w.Despawn(e) })
+	if g.doll != nil {
+		g.doll.Despawn(w)
+		g.doll = nil
+	}
+	if g.ragdoll {
+		tilt := lin.AxisAngle(lin.V3(1, 0, 0), 0.7).Mul(lin.AxisAngle(lin.V3(0, 0, 1), 0.4))
+		g.doll = phys.NewRagdoll3(w, phys.RagdollSpec{Position: lin.V3(5, 6, 10), Rotation: tilt, Height: 3.6})
+	}
 	palette := []gfx.Color{gfx.RGB(240, 140, 30), gfx.RGB(60, 190, 80), gfx.RGB(50, 110, 240), gfx.RGB(240, 100, 180), gfx.RGB(240, 220, 60)}
 	for i := range 48 {
 		x := g.random.Between(-12, 4)
@@ -209,6 +241,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.terrain.Destroy()
 	g.cube.Destroy()
 	g.sphere.Destroy()
+	g.cylinder.Destroy()
 	g.font.Destroy()
 }
 
@@ -323,8 +356,44 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				gr.DrawMesh(g.sphere, gfx.Material{BaseColor: gfx.RGB(220, 60, 60), Roughness: 0.4}, lin.TRS(t.Position, t.Rotation, lin.V3(sh.Radius, sh.Radius, sh.Radius)))
 			}
 		}
+		if _, ok := ecs.Get[paddle](w, e); ok {
+			if sh, ok := c.Shape.(phys.Compound3); ok {
+				for _, p := range sh.Parts {
+					if box, ok := p.Shape.(phys.Box3); ok {
+						gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(180, 120, 60), Roughness: 0.7}, lin.TRS(t.Position.Add(t.Rotation.Rotate(p.Offset)), t.Rotation, box.Half.Mul(2)))
+					}
+				}
+			}
+		}
 		wireShape(gr, c.Shape, *t, col)
 	})
+	// The ragdoll's capsules as a cylinder with a sphere at each end.
+	if g.doll != nil {
+		skin := gfx.Material{BaseColor: gfx.RGB(230, 180, 140), Roughness: 0.8}
+		for _, e := range g.doll.Entities() {
+			t, ok := ecs.Get[gfx.Transform](w, e)
+			if !ok {
+				continue
+			}
+			c, ok := ecs.Get[phys.Collider3](w, e)
+			if !ok {
+				continue
+			}
+			if cap, ok := c.Shape.(phys.Capsule); ok {
+				rot := t.Rotation
+				if rot == (lin.Quat{}) {
+					rot = lin.QuatIdentity()
+				}
+				r := lin.V3(cap.Radius, cap.Radius, cap.Radius)
+				up := rot.Rotate(lin.V3(0, cap.HalfHeight, 0))
+				gr.DrawMesh(g.sphere, skin, lin.TRS(t.Position.Add(up), rot, r))
+				gr.DrawMesh(g.sphere, skin, lin.TRS(t.Position.Sub(up), rot, r))
+				if cap.HalfHeight > 0 {
+					gr.DrawMesh(g.cylinder, skin, lin.TRS(t.Position, rot, lin.V3(cap.Radius, cap.HalfHeight, cap.Radius)))
+				}
+			}
+		}
+	}
 	ecs.Each2(w, func(e ecs.Entity, t *gfx.Transform, c *phys.Collider3) {
 		if ecs.Has[phys.Body3](w, e) {
 			return
@@ -334,20 +403,22 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			wireShape(gr, c.Shape, *t, gfx.RGB(90, 200, 255))
 		}
 	})
-	// Hinge anchors as short lines between the links they join.
-	ecs.Each(w, func(e ecs.Entity, j *phys.HingeJoint3) {
+	// Joint anchors as short lines between the bodies they join.
+	drawJoint := func(ea, eb ecs.Entity, anchorA, anchorB lin.Vec3) {
 		var a lin.Vec3
-		if j.A == ecs.None {
-			a = j.AnchorA
-		} else if ta, ok := ecs.Get[gfx.Transform](w, j.A); ok {
-			a = ta.Position.Add(ta.Rotation.Rotate(j.AnchorA))
+		if ea == ecs.None {
+			a = anchorA
+		} else if ta, ok := ecs.Get[gfx.Transform](w, ea); ok {
+			a = ta.Position.Add(ta.Rotation.Rotate(anchorA))
 		}
-		if tb, ok := ecs.Get[gfx.Transform](w, j.B); ok {
-			b := tb.Position.Add(tb.Rotation.Rotate(j.AnchorB))
+		if tb, ok := ecs.Get[gfx.Transform](w, eb); ok {
+			b := tb.Position.Add(tb.Rotation.Rotate(anchorB))
 			gr.DrawLine3D(a, b, gfx.RGB(255, 255, 255))
 			gr.DrawWireSphere(b, 0.08, gfx.RGB(255, 80, 80))
 		}
-	})
+	}
+	ecs.Each(w, func(e ecs.Entity, j *phys.HingeJoint3) { drawJoint(j.A, j.B, j.AnchorA, j.AnchorB) })
+	ecs.Each(w, func(e ecs.Entity, j *phys.BallJoint3) { drawJoint(j.A, j.B, j.AnchorA, j.AnchorB) })
 	// The character: a green capsule with its ground normal.
 	if ht, ok := ecs.Get[gfx.Transform](w, g.hero); ok {
 		col := gfx.RGB(80, 255, 120)
@@ -378,7 +449,11 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 					asleep++
 				}
 			})
-			u.Label(fmt.Sprintf("physics %.2f ms/frame, %d bodies asleep; capsules, hulls and spheres on a mesh terrain, a hinge chain, and a character climbing stairs (grounded: %v)", ms, asleep, g.ctrl.Grounded))
+			var spin float32
+			if wb, ok := ecs.Get[phys.Body3](w, g.wheel); ok {
+				spin = wb.AngVel.Z
+			}
+			u.Label(fmt.Sprintf("physics %.2f ms/frame, %d bodies asleep; capsules, hulls and spheres on a mesh terrain, a hinge chain, a motorised paddle wheel (%.1f rad/s), a ragdoll, and a character climbing stairs (grounded: %v)", ms, asleep, spin, g.ctrl.Grounded))
 			if u.Button("Drop again (R)") {
 				g.drop()
 			}
@@ -390,9 +465,10 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
+	ragdoll := flag.Bool("ragdoll", true, "drop a ragdoll with the debris")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot})
+		&game{seconds: *seconds, shot: *shot, ragdoll: *ragdoll})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "physics-lab:", err)
 		os.Exit(1)

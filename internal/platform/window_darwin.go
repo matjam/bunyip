@@ -22,6 +22,7 @@ type Window struct {
 	captured bool
 
 	cursorHidden bool
+	cursorImage  objc.ID // the custom NSCursor in use, kept alive; 0 for a system shape
 	shape        CursorShape
 
 	marked    string   // the input method's uncommitted text

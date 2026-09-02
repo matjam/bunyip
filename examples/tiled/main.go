@@ -4,6 +4,9 @@
 // coloured tiles with an arrow so flipped cells show their flips, and a
 // two-frame animated water tile. Objects from the map's object layer are
 // outlined. The arrow keys move the camera; Escape quits.
+//
+// With -map, a .tmx or .tmj file is loaded from disk instead, with its
+// tileset images read from next to it.
 package main
 
 import (
@@ -12,8 +15,10 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	_ "image/png"
 	"math"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/image/font/gofont/goregular"
 
@@ -45,6 +50,7 @@ type game struct {
 	seconds  float64
 	shot     string
 	shotDone bool
+	mapFile  string
 
 	font  *gfx.Font
 	level *tiled.Level
@@ -56,12 +62,20 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
 	}
-	m, err := tiled.Parse(levelJSON, nil)
+	var m *tiled.Map
+	// The embedded map names tiles.png; the image comes from makeTiles
+	// instead. A map from disk reads its images from its own directory.
+	images := func(string) (image.Image, error) { return makeTiles(), nil }
+	if g.mapFile != "" {
+		m, err = tiled.Load(g.mapFile)
+		images = fileImages(filepath.Dir(g.mapFile))
+	} else {
+		m, err = tiled.Parse(levelJSON, nil)
+	}
 	if err != nil {
 		return err
 	}
-	// The map names tiles.png; the image comes from makeTiles instead.
-	g.level, err = tiled.Build(ctx.Gfx, m, func(string) (image.Image, error) { return makeTiles(), nil })
+	g.level, err = tiled.Build(ctx.Gfx, m, images)
 	if err != nil {
 		return err
 	}
@@ -123,6 +137,20 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		g.level.Map.Properties.String("title"), g.level.Map.Width, g.level.Map.Height, len(g.level.Layers))
 	gr.DrawText(g.font, text, 12, 12, gfx.RGB(240, 235, 220))
 	return nil
+}
+
+// fileImages reads tileset images from disk, relative to the map's
+// directory.
+func fileImages(dir string) tiled.Images {
+	return func(p string) (image.Image, error) {
+		f, err := os.Open(filepath.Join(dir, filepath.FromSlash(p)))
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		img, _, err := image.Decode(f)
+		return img, err
+	}
 }
 
 // drawObject outlines a map object so its placement can be checked.
@@ -209,9 +237,10 @@ func makeTiles() image.Image {
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
+	mapFile := flag.String("map", "", "load this .tmx or .tmj map instead of the embedded one")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip tiled", Width: 960, Height: 640, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot})
+		&game{seconds: *seconds, shot: *shot, mapFile: *mapFile})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tiled:", err)
 		os.Exit(1)

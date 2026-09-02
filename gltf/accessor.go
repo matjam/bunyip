@@ -24,6 +24,9 @@ func (l *loader) floats(index int) ([]float32, int, error) {
 	if n == 0 || size == 0 {
 		return nil, 0, fmt.Errorf("accessor %d: unsupported type %s/%d", index, a.Type, a.ComponentType)
 	}
+	if a.Count < 0 || a.ByteOffset < 0 || a.Count > 1<<28 {
+		return nil, 0, fmt.Errorf("accessor %d: bad count %d or offset %d", index, a.Count, a.ByteOffset)
+	}
 	out := make([]float32, a.Count*n)
 	if a.BufferView == nil {
 		return out, n, nil // all zeros, per spec
@@ -100,6 +103,12 @@ func (l *loader) indices(index int) ([]uint32, error) {
 	}
 	if stride == 0 {
 		stride = size
+	}
+	if a.Count < 0 || a.ByteOffset < 0 || a.Count > 1<<28 {
+		return nil, fmt.Errorf("index accessor %d: bad count %d or offset %d", index, a.Count, a.ByteOffset)
+	}
+	if a.Count > 0 && a.ByteOffset+(a.Count-1)*stride+size > len(data) {
+		return nil, fmt.Errorf("index accessor %d overruns its buffer view", index)
 	}
 	out := make([]uint32, a.Count)
 	for i := range a.Count {

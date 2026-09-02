@@ -1,7 +1,7 @@
 ---
 title: Animation
 order: 5
-summary: keyframe clips for 2D sprites and 3D transforms, flipbooks, skeletons with crossfades, events, root motion, layers, IK and morph targets
+summary: keyframe clips for 2D sprites and 3D transforms, flipbooks, skeletons with crossfades, events, root motion, layers, blend spaces, IK and morph targets
 ---
 
 The [anim](../pkg/anim.html) package animates entities in the
@@ -193,6 +193,73 @@ whatever is underneath, which is how a breathing loop or a recoil goes
 over any base clip. Change `Weight` over time to fade a layer in and
 out; `Play` and `CrossFade` leave layers alone.
 
+## Blend spaces
+
+Locomotion is rarely one clip: the speed the controller wants falls
+between a walk and a run, and a strafe is some mix of forward and
+sideways. A blend space places clips along a parameter and mixes the
+ones around its value, and it is plain data with JSON tags, so a game
+can build one in code or load it from a file beside the model.
+
+A `BlendSpace1D` places clips along one parameter: idle at 0, walk at
+1, run at 2. At 1.5 the walk and the run each get half the pose; past
+the ends the nearest clip plays alone.
+
+```go
+locomotion := &anim.BlendSpace1D{Parameter: "speed", Clips: []anim.BlendPoint1D{
+	{Clip: "idle", At: 0}, {Clip: "walk", At: 1}, {Clip: "run", At: 2},
+}}
+```
+
+A `BlendSpace2D` places clips at points in a plane of two parameters,
+for a strafe set read from the velocity: idle at the centre, forward,
+back, left and right around it. Weights are gradient bands, so a clip
+at the current point plays alone, a point on the line between two clips
+blends them linearly, and clips drop out as the point moves past them.
+
+```go
+strafe := &anim.BlendSpace2D{X: "vx", Y: "vy", Clips: []anim.BlendPoint2D{
+	{Clip: "idle", At: lin.V2(0, 0)}, {Clip: "forward", At: lin.V2(0, 1)}, {Clip: "back", At: lin.V2(0, -1)},
+	{Clip: "left", At: lin.V2(-1, 0)}, {Clip: "right", At: lin.V2(1, 0)},
+}}
+```
+
+A `BlendTree` composes them: a node is a clip, a 1D or 2D space, or
+children placed along a parameter and mixed like a 1D space. A crouch
+amount fading a standing locomotion space into a crouched one is a tree
+of two children.
+
+```go
+tree := &anim.BlendTree{Parameter: "crouch", Children: []anim.BlendChild{
+	{At: 0, Tree: anim.BlendTree{Space1D: locomotion}},
+	{At: 1, Tree: anim.BlendTree{Space1D: crouched}},
+}}
+```
+
+A `Blend` plays a space or tree on a `gfx.AnimPlayer`. It holds the
+parameters, evaluates the tree every update and keeps the mixed clips in
+step: all of them run at one phase of their own length, and the phase
+advances at the rate of the blended cycle, so a walk's and a run's feet
+land together instead of sliding. Clips in a blend loop. The `Skeleton`
+component drives a `Blend` set on it from the ECS, with `SetParameter`
+to feed it; on its own, call `Advance` in place of the player's.
+
+```go
+hero := w.SpawnWith(gfx.Transform{}, anim.Skeleton{Player: player, Blend: anim.NewBlend(tree)})
+// from the controller, each update
+skel, _ := ecs.Get[anim.Skeleton](w, hero)
+skel.SetParameter("speed", velocity.Len())
+skel.SetParameter("crouch", crouchAmount)
+```
+
+Under it is the player's `SetBlend`, which plays a list of clips with
+weights and times in place of the main clip; events fire and root
+motion accrues for every clip in the blend by its weight, and layers
+play over it as over a clip. `Play` and `CrossFade` drop a blend, so a
+jump from a locomotion blend snaps into its clip; when a game needs the
+blend to fade out it can keep a second player in the blend and mix the
+poses itself.
+
 ## Inverse kinematics and node overrides
 
 After the clips are blended, `PostPose` runs with the pose built and
@@ -254,6 +321,7 @@ so two characters with the same face can pull different expressions.
 
 Clips are Go values, so they can be written by hand as above, built
 from data (a JSON list of keys is a loop over `At`), or generated: the
-animation example builds eight orbit clips from a formula. Curves also
-work outside the ECS; `Sample` is a plain function, handy for camera
-moves and UI transitions.
+animation example builds eight orbit clips from a formula. Blend spaces
+and trees decode straight from JSON. Curves also work outside the ECS;
+`Sample` is a plain function, handy for camera moves and UI
+transitions.

@@ -14,33 +14,38 @@ import (
 var controlSel struct {
 	once sync.Once
 
-	NSBitmapImageRep, NSImage, NSPasteboard objc.Class
+	NSBitmapImageRep, NSImage, NSPasteboard, NSScreen objc.Class
 
 	setContentMinSize, setContentMaxSize, set,
 	arrowCursor, pointingHandCursor, IBeamCursor, crosshairCursor, openHandCursor, closedHandCursor,
 	resizeLeftRightCursor, resizeUpDownCursor, operationNotAllowedCursor,
 	initWithBitmapDataPlanes, bitmapData, initWithSize, addRepresentation, setApplicationIconImage,
-	generalPasteboard, clearContents, setStringForType, stringForType objc.SEL
+	generalPasteboard, clearContents, setStringForType, stringForType,
+	setFrameOrigin, setLevel, mainScreen, initWithImageHotSpot objc.SEL
 }
 
 func controls() *struct {
 	once sync.Once
 
-	NSBitmapImageRep, NSImage, NSPasteboard objc.Class
+	NSBitmapImageRep, NSImage, NSPasteboard, NSScreen objc.Class
 
 	setContentMinSize, setContentMaxSize, set,
 	arrowCursor, pointingHandCursor, IBeamCursor, crosshairCursor, openHandCursor, closedHandCursor,
 	resizeLeftRightCursor, resizeUpDownCursor, operationNotAllowedCursor,
 	initWithBitmapDataPlanes, bitmapData, initWithSize, addRepresentation, setApplicationIconImage,
-	generalPasteboard, clearContents, setStringForType, stringForType objc.SEL
+	generalPasteboard, clearContents, setStringForType, stringForType,
+	setFrameOrigin, setLevel, mainScreen, initWithImageHotSpot objc.SEL
 } {
 	s := &controlSel
 	s.once.Do(func() {
 		s.NSBitmapImageRep = objc.GetClass("NSBitmapImageRep")
 		s.NSImage = objc.GetClass("NSImage")
 		s.NSPasteboard = objc.GetClass("NSPasteboard")
+		s.NSScreen = objc.GetClass("NSScreen")
 		for name, dst := range map[string]*objc.SEL{
-			"setContentMinSize:": &s.setContentMinSize, "setContentMaxSize:": &s.setContentMaxSize, "set": &s.set,
+			"setFrameOrigin:": &s.setFrameOrigin, "setLevel:": &s.setLevel, "mainScreen": &s.mainScreen,
+			"initWithImage:hotSpot:": &s.initWithImageHotSpot,
+			"setContentMinSize:":     &s.setContentMinSize, "setContentMaxSize:": &s.setContentMaxSize, "set": &s.set,
 			"arrowCursor": &s.arrowCursor, "pointingHandCursor": &s.pointingHandCursor, "IBeamCursor": &s.IBeamCursor,
 			"crosshairCursor": &s.crosshairCursor, "openHandCursor": &s.openHandCursor, "closedHandCursor": &s.closedHandCursor,
 			"resizeLeftRightCursor": &s.resizeLeftRightCursor, "resizeUpDownCursor": &s.resizeUpDownCursor,
@@ -118,11 +123,8 @@ func (w *Window) SetCursor(shape CursorShape) {
 	objc.ID(w.app.c.NSCursor).Send(sel).Send(s.set)
 }
 
-// SetIcon sets the application's Dock icon from an image.
-func (w *Window) SetIcon(img image.Image) {
-	if img == nil {
-		return
-	}
+// nsImage builds an NSImage from a Go image; the caller releases it.
+func (w *Window) nsImage(img image.Image) objc.ID {
 	s := controls()
 	b := img.Bounds()
 	rgba := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
@@ -130,17 +132,87 @@ func (w *Window) SetIcon(img image.Image) {
 	rep := objc.ID(s.NSBitmapImageRep).Send(w.app.c.sel.alloc).Send(s.initWithBitmapDataPlanes,
 		uintptr(0), b.Dx(), b.Dy(), 8, 4, true, false, w.app.c.nsString("NSDeviceRGBColorSpace"), uint64(0), b.Dx()*4, 32)
 	if rep == 0 {
-		return
+		return 0
 	}
 	data := objc.Send[unsafe.Pointer](rep, s.bitmapData)
 	if data != nil {
 		copy(unsafe.Slice((*byte)(data), len(rgba.Pix)), rgba.Pix)
 	}
-	icon := objc.ID(s.NSImage).Send(w.app.c.sel.alloc).Send(s.initWithSize, nsSize{Width: float64(b.Dx()), Height: float64(b.Dy())})
-	icon.Send(s.addRepresentation, rep)
-	w.app.nsApp.Send(s.setApplicationIconImage, icon)
+	ns := objc.ID(s.NSImage).Send(w.app.c.sel.alloc).Send(s.initWithSize, nsSize{Width: float64(b.Dx()), Height: float64(b.Dy())})
+	ns.Send(s.addRepresentation, rep)
 	rep.Send(w.app.c.sel.release)
+	return ns
+}
+
+// SetIcon sets the application's Dock icon from an image.
+func (w *Window) SetIcon(img image.Image) {
+	if img == nil {
+		return
+	}
+	icon := w.nsImage(img)
+	if icon == 0 {
+		return
+	}
+	w.app.nsApp.Send(controls().setApplicationIconImage, icon)
 	icon.Send(w.app.c.sel.release)
+}
+
+// SetCursorImage makes the pointer an image with a hot spot; a later
+// SetCursor restores a system shape.
+func (w *Window) SetCursorImage(img image.Image, hotX, hotY int) {
+	if img == nil {
+		return
+	}
+	s := controls()
+	ns := w.nsImage(img)
+	if ns == 0 {
+		return
+	}
+	cursor := objc.ID(w.app.c.NSCursor).Send(w.app.c.sel.alloc).Send(s.initWithImageHotSpot, ns, nsPoint{X: float64(hotX), Y: float64(hotY)})
+	ns.Send(w.app.c.sel.release)
+	if cursor == 0 {
+		return
+	}
+	if w.cursorImage != 0 {
+		w.cursorImage.Send(w.app.c.sel.release)
+	}
+	w.cursorImage = cursor
+	cursor.Send(s.set)
+}
+
+// screenHeight is the main screen's height in points, for flipping
+// between AppKit's bottom-up coordinates and top-down ones.
+func (w *Window) screenHeight() float64 {
+	s := controls()
+	screen := objc.ID(s.NSScreen).Send(s.mainScreen)
+	if screen == 0 {
+		return 0
+	}
+	return objc.Send[nsRect](screen, w.app.c.sel.frame).Size.Height
+}
+
+// SetPosition moves the window's frame so its top-left is at (x, y)
+// points from the screen's top-left.
+func (w *Window) SetPosition(x, y int) {
+	frame := objc.Send[nsRect](w.nsWindow, w.app.c.sel.frame)
+	origin := nsPoint{X: float64(x), Y: w.screenHeight() - float64(y) - frame.Size.Height}
+	w.nsWindow.Send(controls().setFrameOrigin, origin)
+}
+
+// Position returns the window frame's top-left in points from the
+// screen's top-left.
+func (w *Window) Position() (int, int) {
+	frame := objc.Send[nsRect](w.nsWindow, w.app.c.sel.frame)
+	return int(frame.Origin.X), int(w.screenHeight() - frame.Origin.Y - frame.Size.Height)
+}
+
+// SetAlwaysOnTop floats the window above other applications' windows.
+func (w *Window) SetAlwaysOnTop(on bool) {
+	level := 0 // NSNormalWindowLevel
+	if on {
+		level = 3 // NSFloatingWindowLevel
+	}
+	w.nsWindow.Send(controls().setLevel, level)
 }
 
 // Clipboard returns the text on the general pasteboard.

@@ -188,7 +188,7 @@ void main() {
     s.sheenRoughness = vSheen.w;
     s.subsurface = vExtra.w;
     s.thickness = texture(thicknessTex, uv).r;
-    s.transmission = vVolume.x;
+    s.transmission = vVolume.x * texture(transmissionTex, uv).r;
     s.ior = vVolume.y;
     s.volume = vVolume.z * s.thickness;
     s.attenuation = vAtten.rgb;
@@ -262,7 +262,8 @@ void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
     vertex(v);
     mat4 m = model()SKIN;
-    gl_Position = frame.lightViewProj[pc.cascade] * m * vec4(v.position, 1.0);
+    mat4 lightProj = pc.cascade < 3 ? frame.lightViewProj[pc.cascade] : frame.spotViewProj[pc.cascade - 3];
+    gl_Position = lightProj * m * vec4(v.position, 1.0);
     vUV = uvTransform(v.uv);
     vCutout = vec2(iBaseColor.a * v.color.a, iExtra.y);
 }

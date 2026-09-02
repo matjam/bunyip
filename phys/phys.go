@@ -39,12 +39,17 @@
 //
 // Joints are components on their own entities that name the bodies they
 // connect: DistanceJoint2 and DistanceJoint3 (rods and ropes),
-// RevoluteJoint2 and HingeJoint3 (pins), SpringJoint2 and SpringJoint3
-// (damped springs) and FixedJoint2 and FixedJoint3 (welds). They are
-// solved with the contacts, in entity order. A body with CCD set is
-// swept against static geometry every substep so it cannot tunnel, and
-// with Settings.SleepTime set, bodies that rest for that long sleep
-// until touched or pushed (Body.Asleep, Body.Wake).
+// RevoluteJoint2 and HingeJoint3 (pins, with angle limits and a motor),
+// BallJoint3 (a shoulder or hip, with cone and twist limits),
+// SpringJoint2 and SpringJoint3 (damped springs) and FixedJoint2 and
+// FixedJoint3 (welds). They are solved with the contacts, in entity
+// order. NewRagdoll3 spawns a humanoid of capsules on limited joints
+// from a RagdollSpec and Ragdoll3.Pose places it from an animated
+// character's bones. A body with CCD set is swept against static
+// geometry every substep so it cannot tunnel, and its bounding sphere
+// against the other moving bodies; with Settings.SleepTime set, bodies
+// that rest for that long sleep until touched or pushed (Body.Asleep,
+// Body.Wake).
 //
 // CharacterController2 and CharacterController3 move an upright capsule
 // by sweeps rather than dynamics: sliding along walls, climbing steps up

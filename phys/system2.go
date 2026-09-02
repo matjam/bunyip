@@ -350,6 +350,7 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
 			continue
 		}
+		s.sweepDynamic(e, h)
 		delta := e.b.Vel.Mul(h)
 		length := delta.Len()
 		if length < 1e-6 {
@@ -450,6 +451,44 @@ func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
 		}
 	}
 	return best, found
+}
+
+// sweepDynamic is the speculative contact between a CCD body and the
+// other moving bodies: for each pair whose bounding circles meet along
+// their relative motion this substep, the body's shape is swept against
+// the other's and both are held at the moment they would touch, so the
+// next substep's contact catches them.
+func (s *state2) sweepDynamic(e *entry2, h float32) {
+	ca, ra := circleOfBounds2(e.lo, e.hi)
+	ext := e.hi.Sub(e.lo)
+	minHalf := min(ext.X, ext.Y) / 2
+	for i := range s.entries {
+		o := &s.entries[i]
+		if o == e || o.b == nil || o.b.invMass == 0 || o.c.Trigger || !e.c.Layers.collides(o.c.Layers) {
+			continue
+		}
+		if o.b.CCD && o.e.ID() < e.e.ID() {
+			continue // the pair was swept from the other side
+		}
+		cb, rb := circleOfBounds2(o.lo, o.hi)
+		d := cb.Sub(ca)
+		delta := e.b.Vel.Sub(o.b.Vel).Mul(h) // e's motion as o sees it
+		length := delta.Len()
+		if length < 1e-6 || !spheresMeet(d.Dot(d), -d.Dot(delta), length*length, ra+rb) {
+			continue
+		}
+		oext := o.hi.Sub(o.lo)
+		if t, _, ok := marchSweep2(e.c.Shape, e.pos, e.t.Rotation, delta, minHalf, o.c.Shape, o.pos, o.t.Rotation, min(oext.X, oext.Y)/2, 1); ok && t < 1 {
+			f := min(1, t+0.5*slop/length)
+			e.b.fraction = min(e.b.fraction, f)
+			o.b.fraction = min(o.b.fraction, f)
+		}
+	}
+}
+
+// circleOfBounds2 is the circle around a bounding box.
+func circleOfBounds2(lo, hi lin.Vec2) (lin.Vec2, float32) {
+	return lo.Add(hi).Mul(0.5), hi.Sub(lo).Len() / 2
 }
 
 // arbiter2 holds a pair's contacts through the solver iterations.

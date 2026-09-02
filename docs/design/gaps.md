@@ -23,12 +23,8 @@ comments) has landed. What remains:
   plumbing now; before a 1.0 they should move behind an internal hook
   package registered from `init`, so the game-facing surface is all a
   game sees.
-- Atlas formats with named frames (TexturePacker, Aseprite JSON) on top
-  of `Region`, so exported atlases drop in without UV pairs.
 - The X11 clipboard: serving selections needs a request loop the
   platform layer does not run yet; macOS and Windows have it.
-- `tween` only tweens `float32`; vectors and colours go through `anim`
-  curves.
 
 ## Platforms and window
 
@@ -37,14 +33,13 @@ comments) has landed. What remains:
   plausible common target. The largest single gap.
 - Windows and Linux have been cross-compiled and vetted but never run on
   real machines. Native Wayland is not written (XWayland works meanwhile).
-- Window control beyond title, icon, size limits and fullscreen:
-  position, decorations, always on top, transparent and click-through
-  windows, choice of monitor, starting fullscreen or unfocused.
-- A way to keep or stop updating when unfocused; focus state and close
-  interception exist.
-- Custom cursor images; the system shapes and visibility exist.
-- Drag and drop of files onto the window, opening a URL in the browser,
-  native file dialogs.
+- Window position, always on top and custom cursor images work on
+  macOS (`SetPosition`, `Position`, `SetAlwaysOnTop`, `SetCursorImage`)
+  and are no-ops on Windows and X11 until those layers run on
+  hardware. Decorations, transparent and click-through windows, choice
+  of monitor, starting fullscreen or unfocused are not written.
+- Drag and drop of files onto the window and native file dialogs;
+  `OpenURL` opens the browser on every platform.
 - Multiple windows.
 - Windows IME and X input methods; only macOS composes text natively.
 - App bundling for Windows and Linux (installers, AppImage); code signing.
@@ -84,11 +79,12 @@ filtering, gradients, dashed strokes, text on paths, indexed draws, the
 - GPU-instanced particles for very large counts; the system is CPU
   simulated and drawn through the sprite stream, fine for thousands.
 - A particle editor in the gallery.
-- Tiled's XML forms (.tmx, .tsx) and zstd-compressed layers; the JSON
-  forms with CSV, base64, zlib and gzip load.
-- A draw-call budget warning in the overlay; the counts are shown.
+- Tiled's zstd-compressed layers (a pure-Go zstd would be a new
+  dependency); the JSON and XML forms with CSV, base64, zlib and gzip
+  load.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.
+  `Config.DrawBudget` turns the overlay's counts into a warning.
 
 ## Text
 
@@ -110,8 +106,8 @@ ground fog, frustum culling with a public `Frustum`, levels of detail,
 spot lights, thirty-two lights a frame, heightfield and primitive
 meshes, and dynamic mesh updates are in. What remains:
 
-- Point and spot light shadows (cube and single shadow maps); only the
-  directional light casts shadows.
+- Point light shadows (cube maps); the directional light and up to four
+  spot lights a frame cast shadows.
 - Occlusion culling; impostors (billboards baked from a model).
 - Clustered lighting for hundreds of lights; a frame keeps its first
   thirty-two.
@@ -122,7 +118,7 @@ meshes, and dynamic mesh updates are in. What remains:
 - Volumetrics: god rays, atmospheric scattering for the sky rather than
   the parametric gradient; fog is a per-pixel fade, not a medium.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
-- Depth of field, motion blur, colour grading LUTs, lens effects.
+- Depth of field, motion blur, lens effects; colour grading LUTs are in.
 - Order-independent transparency; blended draws are sorted per mesh.
 - Render texture options beyond nearest and repeat sampling: colour
   format, no depth, multisampling, and reading its depth.
@@ -136,9 +132,8 @@ meshes, and dynamic mesh updates are in. What remains:
   workflow from glTF extensions. (Clearcoat, sheen, subsurface,
   transmission with volume attenuation, vertex colours, a second UV set,
   texture transforms, decals, outlines and x-ray are in.)
-- Transmission textures and the glTF thickness texture's green channel;
-  only the factors load from KHR_materials_transmission and volume.
-- Per-material stencil state beyond outlines and x-ray.
+- Per-material stencil state beyond outlines and x-ray. (Transmission
+  textures and glTF thickness textures load now.)
 - Hair, fur and cloth shading (anisotropic highlights, shell rendering).
 - OpenEXR panoramas for environments; Radiance .hdr and LDR images decode
   today, and the procedural sky covers most outdoor and space scenes
@@ -147,12 +142,12 @@ meshes, and dynamic mesh updates are in. What remains:
 ## Animation
 
 Animation events, root motion, layers with masks (override and
-additive), two-bone IK and look-at through node overrides, and morph
-targets from glTF (blended on the CPU and uploaded when weights change)
-are in. What remains:
+additive), two-bone IK and look-at through node overrides, morph
+targets from glTF (blended on the CPU and uploaded when weights change),
+and blend spaces and trees as data (`BlendSpace1D`, `BlendSpace2D`,
+`BlendTree`, phase-synchronised so feet do not slide) are in. What
+remains:
 
-- Blend trees as data (a 2D blend space of walk, run and strafe); the
-  layers and weights exist to build one in code.
 - GPU morph targets; the CPU blend is fine for a few characters with a
   few thousand vertices each.
 - Sprite animation authoring from Aseprite or similar beyond the atlas
@@ -177,11 +172,13 @@ integer sliders, spinners, list boxes, colour pickers, images, icon
 buttons, rich labels with links, and an accessibility tree are in. What
 remains:
 
+Arrow, Home, End and page navigation inside lists, tables, trees,
+tabs, radios and open dropdowns, drag and drop between widgets
+(`DragSource`, `DropTarget`) and `ReorderableList` are in as well.
+What remains:
+
 - Handing the accessibility tree to a platform screen reader; the tree
   is there, the bridge to VoiceOver and friends is not.
-- Keyboard navigation inside lists, tables and trees (Tab reaches each
-  row; arrows do not yet move within them).
-- Drag and drop between widgets, and reordering lists.
 
 ## Physics
 
@@ -192,12 +189,13 @@ collision for fast bodies, sleeping, and character controllers are in;
 the physics-lab example draws colliders and contacts with the 3D debug
 lines. What remains:
 
-- Ragdolls as a built-in (the joints exist; a ragdoll is a game's
-  arrangement of them with limits, which hinges do not have yet).
-- Joint limits and motors.
-- Dynamic bodies against each other with continuous collision; CCD
-  sweeps against static colliders only.
+Hinge and revolute limits and motors, ball joints with cone and twist
+limits, `NewRagdoll3` and continuous collision between two fast
+dynamic bodies are in as well. What remains:
+
 - Soft bodies, cloth simulation, fluids.
+- Prismatic (slider) joints and 2D wheel joints; a distance joint with
+  a spring covers most suspensions.
 - A stack of four boxes at the default solver quality jitters just
   above the sleep threshold; raise `Substeps` and `Iterations` for
   stacks that should sleep.
@@ -218,21 +216,28 @@ package (string tables, placeholders, plural rules, fallbacks) and
 ## Networking
 
 `Interpolator`, `Predictor`, `History` and `Clock` cover interpolation,
-prediction with reconciliation, lag compensation and server time. What
-remains:
+prediction with reconciliation, lag compensation and server time;
+`SendReliable` gives reliable-ordered delivery over UDP with connection
+events and link statistics; `ListenTLS`, `DialTLS` and
+`SelfSignedConfig` encrypt TCP with a pinned certificate; `EncodeDelta`
+with `SnapshotBuffer` sends only what changed; `Interest` picks what is
+near enough to send. What remains:
 
-- Reliable-ordered channels over UDP; NAT traversal; matchmaking.
-- Snapshot delta compression and interest management.
-- Encryption and authentication.
+- NAT traversal and matchmaking, which need a server on the internet.
+- Accounts and authentication beyond a pinned certificate.
 
 ## Tooling and workflow
 
-- An in-engine debug camera and console; a frame profiler with GPU
-  timestamps (CPU scopes exist).
+`bunyip.FlyCamera` is the debug camera, `Config.LogFile` writes the
+log and a panic's stack to a file for crash reports, and shader hot
+reload is `Shader.Reload` behind an `asset.Watcher`. What remains:
+
+- An in-engine console; a frame profiler with GPU timestamps (CPU
+  scopes exist).
 - An asset pipeline that converts textures to compressed GPU formats
   (BC, ASTC) and generates mip chains offline.
-- Material and shader hot reload during development.
-- Crash reporting and structured logging to a file.
+- Material hot reload as a built-in; a game reloads a material's
+  textures through the watcher today.
 
 ## Quality and process
 
@@ -240,10 +245,10 @@ remains:
 - Screenshot comparison for the examples; `examples/examples_test.go`
   runs each one headless (`BUNYIP_HEADLESS=1`) and checks it drew
   something, but not what.
-- Fuzzing of the glTF and Tiled tileset loaders; the sound decoders,
-  tracker loaders, HDR, atlas, rich text and Tiled map parsers have fuzz
-  targets (run `go test -fuzz=Fuzz ./audio/...` and friends), and the
-  first runs found two third-party decoder panics now turned into
-  errors.
+- Longer fuzzing campaigns; every parser (glTF, the sound decoders,
+  tracker loaders, HDR, atlas, rich text, Tiled maps and tilesets in
+  both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
+  package, and the first runs found two third-party decoder panics now
+  turned into errors.
 - A public API stability policy once the engine tags 1.0, after the
   plumbing above is hidden.

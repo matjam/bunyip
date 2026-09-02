@@ -37,6 +37,10 @@ func (w *Window) SetSizeLimits(minW, minH, maxW, maxH int)     {}
 func (w *Window) SetCursorVisible(bool)                        {}
 func (w *Window) SetCursor(CursorShape)                        {}
 func (w *Window) SetIcon(image.Image)                          {}
+func (w *Window) SetPosition(x, y int)                         {}
+func (w *Window) Position() (int, int)                         { return 0, 0 }
+func (w *Window) SetAlwaysOnTop(bool)                          {}
+func (w *Window) SetCursorImage(image.Image, int, int)         {}
 func (a *App) Gamepads() []GamepadState                        { return nil }
 func (a *App) Wake()                                           {}
 func (a *App) Clipboard() (string, error)                      { return "", ErrNoClipboard }

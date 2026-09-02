@@ -2,6 +2,8 @@ package gfx
 
 import (
 	"fmt"
+	"image"
+	"image/color"
 	"slices"
 
 	"github.com/matjam/bunyip/gltf"
@@ -200,7 +202,18 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 	m := &Model{nodes: doc.Nodes, skins: doc.Skins, clips: doc.Animations}
 	m.Min, m.Max = doc.Bounds()
 	m.order = topoOrder(doc.Nodes)
+	// glTF keeps thickness in a texture's green channel; the material
+	// reads red, so those images are swizzled once here.
+	thickness := map[int]bool{}
+	for _, mat := range doc.Materials {
+		if mat.ThicknessImage >= 0 {
+			thickness[mat.ThicknessImage] = true
+		}
+	}
 	for i, img := range doc.Images {
+		if thickness[i] {
+			img = greenToRed(img)
+		}
 		tex, err := g.NewTexture(img, TextureOptions{Linear: true, Data: doc.IsDataImage(i)})
 		if err != nil {
 			m.Destroy()
@@ -298,6 +311,8 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 					mat.Transmission, mat.IOR, mat.Thickness = src.Transmission, src.IOR, src.Thickness
 					mat.AttenuationDistance = src.AttenuationDistance
 					mat.AttenuationColor = Color{src.AttenuationColor[0], src.AttenuationColor[1], src.AttenuationColor[2], 1}
+					mat.TransmissionTexture = m.texture(src.TransmissionImage)
+					mat.ThicknessTexture = m.texture(src.ThicknessImage)
 				}
 				if src.UVOffset != [2]float32{} || src.UVRotation != 0 || src.UVScale != [2]float32{1, 1} {
 					// glTF: uv' = T · R · S · uv.
@@ -326,6 +341,21 @@ func (m *Model) restWeights(node int, mesh gltf.Mesh) []float32 {
 		copy(w, mesh.Weights)
 	}
 	return w
+}
+
+// greenToRed copies an image with its green channel in red, for glTF
+// thickness maps, which store thickness in green.
+func greenToRed(src image.Image) image.Image {
+	b := src.Bounds()
+	out := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			_, g, _, _ := src.At(x, y).RGBA()
+			v := uint8(g >> 8)
+			out.SetRGBA(x-b.Min.X, y-b.Min.Y, color.RGBA{v, v, v, 255})
+		}
+	}
+	return out
 }
 
 func (m *Model) texture(i int) *Texture {

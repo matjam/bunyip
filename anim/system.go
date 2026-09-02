@@ -118,6 +118,27 @@ type Skeleton struct {
 	// KeepRootMotion leaves the transform alone so the game reads
 	// Player.RootMotion itself, for a physics-driven body.
 	KeepRootMotion bool
+	// Blend, when set, chooses and times the player's clips from its
+	// parameters every update instead of Play and CrossFade: a
+	// locomotion blend space driven by SetParameter. Nil plays whatever
+	// the player was told to.
+	Blend *Blend
+}
+
+// SetParameter sets a blend parameter, such as the speed a locomotion
+// space reads; without a Blend it does nothing.
+func (s *Skeleton) SetParameter(name string, v float32) {
+	if s.Blend != nil {
+		s.Blend.Set(name, v)
+	}
+}
+
+// Parameter reads a blend parameter; 0 without a Blend or when unset.
+func (s *Skeleton) Parameter(name string) float32 {
+	if s.Blend == nil {
+		return 0
+	}
+	return s.Blend.Get(name)
 }
 
 // SkeletonEvent is emitted when a Skeleton's player crosses an event
@@ -195,7 +216,11 @@ func System(w *ecs.World, dt float64) {
 		if speed == 0 {
 			speed = 1
 		}
-		s.Player.Advance(dt * speed)
+		if s.Blend != nil {
+			s.Blend.Advance(s.Player, dt*speed)
+		} else {
+			s.Player.Advance(dt * speed)
+		}
 		for _, ev := range s.Player.Events() {
 			ecs.Emit(w, SkeletonEvent{Entity: e, Event: ev})
 		}

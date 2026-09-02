@@ -1,6 +1,8 @@
 package gfx
 
 import (
+	"image"
+	"image/color"
 	"unsafe"
 
 	"github.com/matjam/bunyip/gfx/shaders"
@@ -25,6 +27,37 @@ type PostSettings struct {
 	OcclusionRadius float32
 	// ShowOcclusion displays the occlusion buffer instead of the scene, for tuning.
 	ShowOcclusion bool
+	// LUT grades the final colours through a lookup table: a strip of n
+	// slices of n by n, n by n squared pixels wide, as NeutralLUT lays it
+	// out and image editors export it after grading a screenshot. Load it
+	// with NewLUT; nil grades nothing. LUTStrength blends towards the
+	// graded colour; zero means 1.
+	LUT         *Texture
+	LUTStrength float32
+}
+
+// NeutralLUT returns an identity colour lookup table of n slices (16 or
+// 32 are usual): grade a screenshot with it pasted in the corner, crop
+// it back out, and every frame gets the same grade through
+// PostSettings.LUT.
+func NeutralLUT(n int) *image.RGBA {
+	n = max(n, 2)
+	img := image.NewRGBA(image.Rect(0, 0, n*n, n))
+	for b := range n {
+		for g := range n {
+			for r := range n {
+				v := func(i int) uint8 { return uint8(i * 255 / (n - 1)) }
+				img.SetRGBA(b*n+r, g, color.RGBA{v(r), v(g), v(b), 255})
+			}
+		}
+	}
+	return img
+}
+
+// NewLUT uploads a colour lookup table for PostSettings.LUT: linear
+// filtering, no colour-space conversion.
+func (g *Graphics) NewLUT(img image.Image) (*Texture, error) {
+	return g.NewTexture(img, TextureOptions{Linear: true, Data: true})
 }
 
 // DefaultPost is the starting PostSettings.
@@ -114,7 +147,7 @@ func (g *Graphics) initPost() error {
 	if p.composite, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.PostFrag,
 		ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
-		PushConstantSize: push, SetLayouts: []vk.VkDescriptorSetLayout{p.triples.Layout},
+		PushConstantSize: push, SetLayouts: []vk.VkDescriptorSetLayout{p.triples.Layout, g.descriptors.Layout},
 	}); err != nil {
 		return err
 	}
@@ -314,9 +347,19 @@ func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom, ao b
 	if ao {
 		aoStrength = s.AmbientOcclusion
 	}
+	lut, lutStrength := g.white, float32(0)
+	if s.LUT != nil && s.LUT.set != 0 {
+		lut = s.LUT
+		lutStrength = s.LUTStrength
+		if lutStrength <= 0 {
+			lutStrength = 1
+		}
+	}
+	lutSet := lut.set
+	vk.VkCmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.composite.Layout, 1, 1, &lutSet, 0, nil)
 	fullscreen(cb, p.composite, set, postPush{
 		a: [4]float32{s.Exposure, strength, s.Vignette, s.Saturation},
-		b: [4]float32{s.Contrast, aoStrength, boolFloat(s.ShowOcclusion), 0},
+		b: [4]float32{s.Contrast, aoStrength, boolFloat(s.ShowOcclusion), lutStrength},
 	})
 }
 

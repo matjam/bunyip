@@ -7,8 +7,9 @@ anything else that wants 2D sprites and 3D models on the same screen.
 - Native window, input and audio layers per platform; no SDL, no GLFW.
 - `CGO_ENABLED=0` everywhere. Native libraries are opened at runtime with purego.
 - Physically based rendering with clearcoat, sheen, subsurface and glass,
-  cascaded shadow maps, point and spot lights, a procedural sky or
-  image-based lighting, fog, SSAO, bloom, FXAA and tone mapping; skeletal
+  cascaded shadow maps, point lights, spot lights with shadows, a
+  procedural sky or image-based lighting, fog, SSAO, bloom, FXAA, tone
+  mapping and colour grading LUTs; skeletal
   animation; automatic instancing and frustum culling; levels of detail;
   billboards and labels in the world; decals, outlines and x-ray; dynamic
   meshes and terrain; render textures; picking. Sprites, tilemaps, vector
@@ -16,8 +17,9 @@ anything else that wants 2D sprites and 3D models on the same screen.
   game-written sprite and surface shaders.
 - Immediate-mode, themeable UI: panels, windows, tabs, tables, trees,
   menus and modals; text fields with selection, clipboard and undo;
-  sliders, spinners, list boxes, colour pickers, tooltips; keyboard or
-  gamepad navigation and an accessibility tree. glTF 2.0 models.
+  sliders, spinners, list boxes, colour pickers, tooltips, drag and drop
+  and reorderable lists; keyboard or gamepad navigation inside lists and
+  tables and an accessibility tree. glTF 2.0 models.
   Fullscreen, cursor capture, gamepads, IME text input, action maps with
   rebinding.
 - Audio mixer with streamed WAV, Ogg Vorbis and MP3, positional voices,
@@ -57,7 +59,7 @@ output.
 | `gfx` | textures, sprites, paths, text, meshes, materials, cameras, lights, fog, culling, LOD, billboards, models, post-processing |
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
 | `particle` | CPU particle systems drawn through the sprite batch |
-| `tiled` | maps from the Tiled editor, built into drawable levels |
+| `tiled` | maps from the Tiled editor in JSON or XML form, built into drawable levels |
 | `audio` | mixer, voices, streams; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
 | `audio/tracker` | MOD, S3M, XM and IT loader and player |
 | `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State`, action maps |
@@ -73,7 +75,7 @@ output.
 | `timer`, `tween` | game-time timers and step sequences for cutscenes; eased value animation |
 | `locale` | string tables with placeholders, plural rules and fallbacks |
 | `grid` | cell grids, A*, Dijkstra maps, lines, field of view, flood fill |
-| `network` | typed messages over TCP (ordered) and UDP (fast); interpolation, prediction, lag compensation and clock sync helpers |
+| `network` | typed messages over TCP (ordered, optionally TLS) and UDP (fast, with reliable-ordered channels); interpolation, prediction, lag compensation, clock sync, snapshot deltas and interest management |
 | `internal/vk` | generated Vulkan binding plus hand-written loader |
 | `internal/render` | Vulkan backend: device, swapchain, frames in flight, pipelines, uploads, readback |
 | `internal/platform` | per-OS window, events, surface creation |
@@ -123,13 +125,13 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/solar` | the ECS driving a scene: hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
 | `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, a procedural sky with a slider that climbs to orbit, image-based lighting from a panorama, every post-processing setting on a slider, glTF animation clips |
 | `go run ./examples/pathfinding` | A*, Dijkstra maps, field of view, flood fill and lines on a paintable grid; save and load through the save package |
-| `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic |
+| `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic; `-reliable` sends chat over reliable UDP and shows the link's round trip and loss |
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |
 | `go run ./examples/inputs` | keys, mouse, wheel, cursor capture, fullscreen, typed text with IME composition, gamepads |
 | `go run ./examples/animation` | keyframe clips on 2D sprites and 3D transforms, a flipbook walker, crossfades between a hero's clips, Finished events chaining back to idle, a robot arm firing an animation event and another reaching a target by two-bone IK |
 | `go run ./examples/physics3d` | five hundred cubes of plastic, metal, gold, car paint, velvet, glass and glowing materials dropped into a pile, with a raycast highlighting the one under the pointer |
 | `go run ./examples/physics2d` | balls, boxes and triangles in a pit with a ramp, a kinematic paddle, a trigger zone and a raycast |
-| `go run ./examples/physics-lab` | capsules, hulls and spheres tumbling onto a mesh terrain, a hinge chain, a character controller climbing stairs, colliders and contacts drawn with debug lines |
+| `go run ./examples/physics-lab` | capsules, hulls and spheres tumbling onto a mesh terrain, a hinge chain, a motorised paddle wheel, a ragdoll, a character controller climbing stairs, colliders and contacts drawn with debug lines |
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |

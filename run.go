@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/matjam/bunyip/audio"
@@ -24,7 +25,23 @@ const audioRate = 48000
 
 // Run opens the window, drives game until it quits or the window closes,
 // and tears everything down. It must be called from the main goroutine.
-func Run(cfg Config, game Game) error {
+func Run(cfg Config, game Game) (err error) {
+	if cfg.Log == nil && cfg.LogFile != "" {
+		f, ferr := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if ferr != nil {
+			return fmt.Errorf("bunyip: log file: %w", ferr)
+		}
+		defer f.Close()
+		cfg.Log = slog.New(slog.NewTextHandler(f, nil))
+		// A crash is the report a player can send: log the panic with its
+		// stack before it takes the process down.
+		defer func() {
+			if r := recover(); r != nil {
+				cfg.Log.Error("bunyip: panic", "err", fmt.Sprint(r), "stack", string(debug.Stack()))
+				panic(r)
+			}
+		}()
+	}
 	for {
 		err := runOnce(cfg, game)
 		if !errors.Is(err, render.ErrDeviceLost) {
@@ -101,6 +118,7 @@ func runOnce(cfg Config, game Game) error {
 	}
 	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1, focused: true}}
 	l.overlay.on = cfg.Debug
+	l.overlay.budget = cfg.DrawBudget
 	if cfg.Icon != nil {
 		win.SetIcon(cfg.Icon)
 	}

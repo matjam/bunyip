@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/lin"
@@ -34,18 +35,22 @@ func (c *Context) Radio(label string, value *int, option int) bool {
 	return clicked && on
 }
 
-// RadioGroup stacks a radio button per option and reports a change.
+// RadioGroup stacks a radio button per option and reports a change. The
+// group is one Tab stop; the arrows move between its buttons.
 func (c *Context) RadioGroup(value *int, options []string) bool {
 	changed := false
+	saved := c.beginGroup(c.id("radios:"+strings.Join(options, "|")), navUpDown|navLeftRight, len(options))
 	for i, o := range options {
 		if c.Radio(o, value, i) {
 			changed = true
 		}
 	}
+	c.endGroup(saved)
 	return changed
 }
 
-// IntSlider drags *value across [lo, hi] in whole steps.
+// IntSlider drags *value across [lo, hi] in whole steps; while focused
+// the left and right arrows (or the d-pad) step it by one.
 func (c *Context) IntSlider(label string, value *int, lo, hi int) bool {
 	f := float32(*value)
 	id := c.id(label)
@@ -57,6 +62,14 @@ func (c *Context) IntSlider(label string, value *int, lo, hi int) bool {
 	if held && hi > lo {
 		t := lin.Clamp((c.mouseX-r.X)/r.W, 0, 1)
 		v := lo + int(math.Round(float64(t)*float64(hi-lo)))
+		if v != *value {
+			*value = v
+			changed = true
+		}
+		f = float32(*value)
+	}
+	if d := c.stepKeys(id); d != 0 {
+		v := max(lo, min(*value+d, hi))
 		if v != *value {
 			*value = v
 			changed = true
@@ -79,24 +92,34 @@ func (c *Context) IntSlider(label string, value *int, lo, hi int) bool {
 }
 
 // Spinner shows *value between minus and plus buttons that step it
-// within [lo, hi]; the label sits before it.
+// within [lo, hi]; the label sits before it. The value is the Tab stop;
+// while focused the left and right arrows (or the d-pad) step it.
 func (c *Context) Spinner(label string, value *int, lo, hi, step int) bool {
 	if step <= 0 {
 		step = 1
 	}
+	id := c.id("spinner:" + label)
 	changed := false
 	c.Columns([]float32{3, 1, 1.4, 1}, func() {
 		r := c.next(c.Theme.RowHeight)
 		_, h := c.Theme.Font.Measure(label, gfx.TextOptions{})
 		c.text(label, r.X, r.Y+(r.H-h)/2, c.Theme.Text)
-		if c.Button("-") && *value-step >= lo {
+		c.noFocus = true
+		minus := c.Button("-")
+		c.noFocus = false
+		v := c.next(c.Theme.RowHeight)
+		c.interact(id, v)
+		c.box(c.skin().Field, v, c.Theme.Field, c.Theme.FieldBorder)
+		c.textCentred(fmt.Sprint(*value), v, c.Theme.Text)
+		c.noFocus = true
+		plus := c.Button("+")
+		c.noFocus = false
+		d := c.stepKeys(id)
+		if (minus || d < 0) && *value-step >= lo {
 			*value -= step
 			changed = true
 		}
-		v := c.next(c.Theme.RowHeight)
-		c.box(c.skin().Field, v, c.Theme.Field, c.Theme.FieldBorder)
-		c.textCentred(fmt.Sprint(*value), v, c.Theme.Text)
-		if c.Button("+") && *value+step <= hi {
+		if (plus || d > 0) && *value+step <= hi {
 			*value += step
 			changed = true
 		}
@@ -107,16 +130,23 @@ func (c *Context) Spinner(label string, value *int, lo, hi, step int) bool {
 
 // ListBox shows items in a scrolling box of the given height with one
 // selected; clicking selects and reports a change. selected may be -1.
+// The list is one Tab stop: the arrows, Home, End, PageUp and PageDown
+// move through it, Enter selects, and the focused row scrolls into view.
 func (c *Context) ListBox(label string, height float32, items []string, selected *int) bool {
+	gid := c.id("listbox:" + label)
 	r := c.next(height)
 	c.box(c.skin().Field, r, c.Theme.Field, c.Theme.FieldBorder)
 	changed := false
 	inner := Rect{X: r.X + 2, Y: r.Y + 2, W: r.W - 4, H: r.H - 4}
-	rowH := c.Theme.RowHeight
-	c.ScrollArea("list:"+label, inner, float32(len(items))*rowH+c.Theme.Spacing, func() {
+	pitch := c.Theme.RowHeight + c.Theme.Spacing
+	saved := c.beginGroup(gid, navUpDown, max(int(inner.H/pitch), 1))
+	c.ScrollArea("list:"+label, inner, float32(len(items))*pitch, func() {
 		for i, item := range items {
 			id := c.id("listitem:" + item)
-			row := c.next(rowH - c.Theme.Spacing)
+			if _, ok := c.groupFocus[gid]; !ok && *selected == i {
+				c.groupFocus[gid] = id // Tab lands on the selection
+			}
+			row := c.next(c.Theme.RowHeight)
 			hover, _, clicked := c.interact(id, row)
 			if clicked && *selected != i {
 				*selected = i
@@ -132,6 +162,8 @@ func (c *Context) ListBox(label string, height float32, items []string, selected
 			c.text(item, row.X+c.Theme.Padding/2, row.Y+(row.H-h)/2, c.Theme.Text)
 		}
 	})
+	c.endGroup(saved)
+	c.lastRect, c.lastID = r, gid
 	sel := ""
 	if *selected >= 0 && *selected < len(items) {
 		sel = items[*selected]

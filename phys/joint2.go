@@ -24,11 +24,48 @@ type DistanceJoint2 struct {
 }
 
 // RevoluteJoint2 pins two bodies together at an anchor so they turn
-// freely about it. With B set to ecs.None the pin is fixed to the world
-// at AnchorB.
+// freely about it. A side set to ecs.None fixes that anchor in the
+// world.
+//
+// The angle is how far B has turned relative to A since the first
+// step, anticlockwise positive, in (-π, π]. MinAngle and MaxAngle
+// limit it; both zero means unlimited. A motor drives the angle at
+// MotorSpeed radians per second with up to MaxMotorTorque; zero torque
+// means no motor.
 type RevoluteJoint2 struct {
-	A, B             ecs.Entity
-	AnchorA, AnchorB lin.Vec2
+	A, B               ecs.Entity
+	AnchorA, AnchorB   lin.Vec2
+	MinAngle, MaxAngle float32
+	MotorSpeed         float32
+	MaxMotorTorque     float32
+
+	rel      float32 // B's rotation less A's on the first step
+	measured bool
+}
+
+// Angle is the joint angle: how far B has turned relative to A since
+// the first step, in radians.
+func (j *RevoluteJoint2) Angle(w *ecs.World) float32 {
+	ra, rb := entityRot2(w, j.A), entityRot2(w, j.B)
+	j.measure(ra, rb)
+	return wrapAngle(rb - ra - j.rel)
+}
+
+func (j *RevoluteJoint2) measure(ra, rb float32) {
+	if !j.measured {
+		j.rel, j.measured = rb-ra, true
+	}
+}
+
+// entityRot2 is an entity's rotation, or zero for the world.
+func entityRot2(w *ecs.World, e ecs.Entity) float32 {
+	if e == ecs.None {
+		return 0
+	}
+	if t, ok := ecs.Get[gfx.Transform2](w, e); ok {
+		return t.Rotation
+	}
+	return 0
 }
 
 // SpringJoint2 pulls two anchors toward a rest length with a damped
@@ -261,19 +298,107 @@ func (p *pointSolver2) solve(a, b *jointSide2) {
 	b.impulse(lambda, p.rB, 1)
 }
 
+// angularLimit2 is a one-sided angular constraint. With sign +1 the
+// impulse may only turn B anticlockwise relative to A, with -1
+// clockwise, and with 0 either way.
+type angularLimit2 struct {
+	mass    float32
+	bias    float32
+	impulse float32
+	sign    float32
+	active  bool
+}
+
+// prepare sets the limit up with position error c (positive past an
+// upper limit, negative past a lower one).
+func (l *angularLimit2) prepare(a, b *jointSide2, c, sign, h float32) {
+	k := a.invI + b.invI
+	l.active = k > 1e-12
+	if !l.active {
+		return
+	}
+	l.mass, l.bias, l.sign, l.impulse = 1/k, jointBaumgarte/h*c, sign, 0
+}
+
+func (l *angularLimit2) solve(a, b *jointSide2) {
+	if !l.active {
+		return
+	}
+	cdot := b.angVel() - a.angVel()
+	old := l.impulse
+	l.impulse -= l.mass * (cdot + l.bias)
+	if l.sign > 0 {
+		l.impulse = max(l.impulse, 0)
+	} else if l.sign < 0 {
+		l.impulse = min(l.impulse, 0)
+	}
+	a.angularImpulse(l.impulse-old, -1)
+	b.angularImpulse(l.impulse-old, 1)
+}
+
+// motor2 drives the relative angular speed toward a target with a
+// bounded accumulated impulse.
+type motor2 struct {
+	mass       float32
+	speed      float32
+	maxImpulse float32
+	impulse    float32
+	active     bool
+}
+
+func (m *motor2) prepare(a, b *jointSide2, speed, maxImpulse float32) {
+	k := a.invI + b.invI
+	m.active = maxImpulse > 0 && k > 1e-12
+	if !m.active {
+		return
+	}
+	m.mass, m.speed, m.maxImpulse, m.impulse = 1/k, speed, maxImpulse, 0
+}
+
+func (m *motor2) solve(a, b *jointSide2) {
+	if !m.active {
+		return
+	}
+	cdot := b.angVel() - a.angVel()
+	old := m.impulse
+	m.impulse = lin.Clamp(old+m.mass*(m.speed-cdot), -m.maxImpulse, m.maxImpulse)
+	a.angularImpulse(m.impulse-old, -1)
+	b.angularImpulse(m.impulse-old, 1)
+}
+
 type revoluteSolver2 struct {
-	j     *RevoluteJoint2
-	a, b  jointSide2
-	point pointSolver2
+	j            *RevoluteJoint2
+	a, b         jointSide2
+	point        pointSolver2
+	motor        motor2
+	lower, upper angularLimit2
 }
 
 func (s *revoluteSolver2) sides() (ecs.Entity, ecs.Entity) { return s.j.A, s.j.B }
 
 func (s *revoluteSolver2) prepare(h float32) {
-	s.point.prepare(&s.a, &s.b, s.j.AnchorA, s.j.AnchorB, h)
+	j := s.j
+	s.point.prepare(&s.a, &s.b, j.AnchorA, j.AnchorB, h)
+	j.measure(s.a.rot, s.b.rot)
+	angle := wrapAngle(s.b.rot - s.a.rot - j.rel)
+	s.motor.prepare(&s.a, &s.b, j.MotorSpeed, j.MaxMotorTorque*h)
+	s.lower.active, s.upper.active = false, false
+	if j.MinAngle != 0 || j.MaxAngle != 0 {
+		if angle <= j.MinAngle {
+			s.lower.prepare(&s.a, &s.b, angle-j.MinAngle, 1, h)
+		}
+		if angle >= j.MaxAngle {
+			s.upper.prepare(&s.a, &s.b, angle-j.MaxAngle, -1, h)
+		}
+	}
 }
 
-func (s *revoluteSolver2) solve() { s.point.solve(&s.a, &s.b) }
+func (s *revoluteSolver2) solve() {
+	s.motor.solve(&s.a, &s.b)
+	s.lower.solve(&s.a, &s.b)
+	s.upper.solve(&s.a, &s.b)
+	s.point.solve(&s.a, &s.b)
+}
 
 type fixedSolver2 struct {
 	j     *FixedJoint2

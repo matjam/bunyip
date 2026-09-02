@@ -16,14 +16,30 @@ const (
 	shadowMapSize  = 2048
 	shadowCascades = 3
 	maxPointLights = 32
+	maxSpotShadows = 4    // spot lights with shadow maps in one frame
+	spotShadowSize = 1024 // pixels across a spot light's shadow map
+	// shadowAtlasSize is one depth image holding the three cascades and
+	// the spot maps, so the shadows cost one sampler binding: Metal allows
+	// sixteen samplers a stage and the material set uses thirteen.
+	shadowAtlasSize = 4096
 )
+
+// shadowRegion is where a shadow map lives in the atlas: cascades in
+// three quadrants, the spot maps sharing the fourth.
+func shadowRegion(index int) vk.VkRect2D {
+	if index < shadowCascades {
+		return vk.VkRect2D{Offset: vk.VkOffset2D{X: int32(index%2) * shadowMapSize, Y: int32(index/2) * shadowMapSize}, Extent: vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}}
+	}
+	k := index - shadowCascades
+	return vk.VkRect2D{Offset: vk.VkOffset2D{X: shadowMapSize + int32(k%2)*spotShadowSize, Y: shadowMapSize + int32(k/2)*spotShadowSize}, Extent: vk.VkExtent2D{Width: spotShadowSize, Height: spotShadowSize}}
+}
 
 // meshPass owns the 3D pipelines, targets and per-frame uniforms.
 type meshPass struct {
 	defaultShader *Shader // the standard material, whose pipelines are its variants
 	jointLayout   *render.StorageSets
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
-	shadow        [shadowCascades]*render.Target
+	shadowAtlas   *render.Target      // every shadow map, see shadowRegion
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
@@ -92,6 +108,8 @@ type pointLight struct {
 	spot               bool
 	dir                lin.Vec3
 	cosInner, cosOuter float32
+	outer              float32 // the outer cone's full angle, for the shadow projection
+	shadow             bool    // wants a shadow map; the first maxSpotShadows get one
 }
 
 // frameUniforms mirrors the Frame block in pbr.vert (std140).
@@ -113,18 +131,20 @@ type frameUniforms struct {
 	sh            [9]lin.Vec4              // environment irradiance
 	env           lin.Vec4                 // intensity, mip count, kind (1 image, 2 procedural sky)
 	invViewProj   lin.Mat4
-	horizon       lin.Vec4 // sky at the horizon, w = air (1 - vacuum)
-	skyUp         lin.Vec4 // up axis, w = stars
-	sun           lin.Vec4 // towards the sun, w = angular radius
-	sunColor      lin.Vec4 // the drawn disc's radiance
-	fog           lin.Vec4 // fog colour, w = exponential density
-	fogRange      lin.Vec4 // linear start, end; ground fog height, falloff
+	horizon       lin.Vec4                 // sky at the horizon, w = air (1 - vacuum)
+	skyUp         lin.Vec4                 // up axis, w = stars
+	sun           lin.Vec4                 // towards the sun, w = angular radius
+	sunColor      lin.Vec4                 // the drawn disc's radiance
+	fog           lin.Vec4                 // fog colour, w = exponential density
+	fogRange      lin.Vec4                 // linear start, end; ground fog height, falloff
+	spotViewProj  [maxSpotShadows]lin.Mat4 // each shadowed spot light's projection
+	spotInfo      [maxPointLights]lin.Vec4 // x = shadow map index or -1, y = range
 }
 
 // materialKey identifies a material descriptor set: its textures, the
 // shader's images and the frame's environment map.
 type materialKey struct {
-	tex   [10]*Texture // five material textures, four shader images, the thickness map
+	tex   [11]*Texture // five material textures, four shader images, the thickness and transmission maps
 	env   *Environment
 	scene *render.Image // the output's opaque scene copy, for transmission
 }
@@ -142,7 +162,7 @@ func (g *Graphics) initMeshPass() error {
 	if mp.jointLayout, err = dev.NewStorageSets(64, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
 		return err
 	}
-	if mp.materials, err = dev.NewSamplerDescriptors(12, 1024); err != nil {
+	if mp.materials, err = dev.NewSamplerDescriptors(13, 1024); err != nil {
 		return err
 	}
 	var blackFace [6][]byte
@@ -202,21 +222,17 @@ func (g *Graphics) initMeshPass() error {
 	if mp.shadowSamp, err = dev.NewShadowSampler(); err != nil {
 		return err
 	}
-	if mp.shadowDesc, err = dev.NewImmutableSamplerDescriptors(shadowCascades, 4, mp.shadowSamp); err != nil {
+	if mp.shadowDesc, err = dev.NewImmutableSamplerDescriptors(1, 4, mp.shadowSamp); err != nil {
 		return err
 	}
-	shadowBindings := make([]render.SamplerBinding, shadowCascades)
-	for c := range mp.shadow {
-		if mp.shadow[c], err = dev.NewTarget(vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}, vk.VK_FORMAT_UNDEFINED, g.r.DepthFormat); err != nil {
-			return err
-		}
-		depth := mp.shadow[c].Depth
-		if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, depth) }); err != nil {
-			return err
-		}
-		shadowBindings[c] = render.SamplerBinding{View: depth.View, Sampler: mp.shadowSamp}
+	if mp.shadowAtlas, err = dev.NewTarget(vk.VkExtent2D{Width: shadowAtlasSize, Height: shadowAtlasSize}, vk.VK_FORMAT_UNDEFINED, g.r.DepthFormat); err != nil {
+		return err
 	}
-	if mp.shadowSet, err = mp.shadowDesc.AllocateMany(shadowBindings); err != nil {
+	atlasDepth := mp.shadowAtlas.Depth
+	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
+		return err
+	}
+	if mp.shadowSet, err = mp.shadowDesc.AllocateMany([]render.SamplerBinding{{View: atlasDepth.View, Sampler: mp.shadowSamp}}); err != nil {
 		return err
 	}
 	if mp.flatNormal, err = g.newTexture(1, 1, []byte{128, 128, 255, 255}, TextureOptions{Data: true}); err != nil {
@@ -315,20 +331,65 @@ const MaxLights = maxPointLights
 // hard-edged cone, a zero outer angle means 45 degrees). Spot lights
 // count against the same limit as point lights.
 func (g *Graphics) AddSpotLight(pos, dir lin.Vec3, c Color, rng, innerAngle, outerAngle float32) {
+	g.AddSpot(SpotLight{Position: pos, Direction: dir, Color: c, Range: rng, InnerAngle: innerAngle, OuterAngle: outerAngle})
+}
+
+// SpotLight is a cone of light for AddSpot, with the option of a shadow
+// map: a flashlight that throws the bars' shadows, a lamp over a
+// table. The first four shadowed spot lights a frame get maps
+// (MaxSpotShadows), the rest shine without; add the nearest first.
+type SpotLight struct {
+	Position  lin.Vec3
+	Direction lin.Vec3
+	Color     Color
+	Range     float32 // fades to nothing this far away
+	// InnerAngle and OuterAngle are the cone's full angles in radians: full
+	// inside the inner, fading to nothing at the outer; zero outer means
+	// 45 degrees.
+	InnerAngle, OuterAngle float32
+	Shadows                bool // render a shadow map for this light
+}
+
+// MaxSpotShadows is how many spot lights cast shadows in one frame.
+const MaxSpotShadows = maxSpotShadows
+
+// AddSpot adds a spot light for this frame.
+func (g *Graphics) AddSpot(s SpotLight) {
 	if len(g.cur.points) >= maxPointLights {
 		return
 	}
-	if outerAngle <= 0 {
-		outerAngle = lin.Radians(45)
+	if s.OuterAngle <= 0 {
+		s.OuterAngle = lin.Radians(45)
 	}
-	if innerAngle > outerAngle {
-		innerAngle = outerAngle
+	if s.InnerAngle > s.OuterAngle {
+		s.InnerAngle = s.OuterAngle
 	}
 	g.cur.points = append(g.cur.points, pointLight{
-		pos: pos, color: c, rng: rng, spot: true, dir: dir.Norm(),
-		cosInner: float32(math.Cos(float64(innerAngle) / 2)),
-		cosOuter: float32(math.Cos(float64(outerAngle) / 2)),
+		pos: s.Position, color: s.Color, rng: s.Range, spot: true, dir: s.Direction.Norm(),
+		cosInner: float32(math.Cos(float64(s.InnerAngle) / 2)),
+		cosOuter: float32(math.Cos(float64(s.OuterAngle) / 2)),
+		outer:    s.OuterAngle, shadow: s.Shadows,
 	})
+}
+
+// spotShadows lists the lights that get shadow maps this frame, in map
+// order, and each one's projection.
+func (q *drawQueue) spotShadows() (lights []int, mats []lin.Mat4) {
+	for i, p := range q.points {
+		if !p.spot || !p.shadow || len(lights) >= maxSpotShadows {
+			continue
+		}
+		up := lin.V3(0, 1, 0)
+		if abs32(p.dir.Y) > 0.95 {
+			up = lin.V3(0, 0, 1)
+		}
+		rng := max(p.rng, 0.5)
+		// A little wider than the cone, so the soft edge has depth to read.
+		proj := lin.Perspective(min(p.outer*1.1, lin.Radians(170)), 1, 0.05, rng)
+		lights = append(lights, i)
+		mats = append(mats, proj.Mul(lin.LookAt(p.pos, p.pos.Add(p.dir), up)))
+	}
+	return lights, mats
 }
 
 // DrawMesh queues a mesh with a material and a model matrix. Draws that
@@ -362,7 +423,7 @@ func (g *Graphics) queueMesh(d meshDraw) {
 func (g *Graphics) materialSet(mat Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, error) {
 	mp := &g.meshes
 	key := materialKey{env: env, scene: scene}
-	key.tex = [10]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
+	key.tex = [11]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
 	if mat.Shader != nil {
 		for i, t := range mat.Shader.images {
 			key.tex[5+i] = t
@@ -373,12 +434,13 @@ func (g *Graphics) materialSet(mat Material, env *Environment, scene *render.Ima
 		thin = g.white // ...but the full Thickness for a volume
 	}
 	key.tex[9] = orTex(mat.ThicknessTexture, thin)
+	key.tex[10] = orTex(mat.TransmissionTexture, g.white)
 	if set, ok := mp.matSets[key]; ok {
 		return set, nil
 	}
 	// Bindings 0..8 are the material and image textures, 9 the environment
-	// cube, 10 the thickness map, 11 the scene copy.
-	bindings := make([]render.SamplerBinding, 12)
+	// cube, 10 the thickness map, 11 the scene copy, 12 the transmission map.
+	bindings := make([]render.SamplerBinding, 13)
 	for i, t := range key.tex[:9] {
 		if t == nil {
 			t = g.white
@@ -393,6 +455,8 @@ func (g *Graphics) materialSet(mat Material, env *Environment, scene *render.Ima
 	thick := key.tex[9]
 	bindings[10] = render.SamplerBinding{View: thick.img.View, Sampler: g.sampler(!thick.nearest, thick.repeat)}
 	bindings[11] = render.SamplerBinding{View: scene.View, Sampler: g.linear}
+	trans := key.tex[10]
+	bindings[12] = render.SamplerBinding{View: trans.img.View, Sampler: g.sampler(!trans.nearest, trans.repeat)}
 	set, err := mp.materials.AllocateMany(bindings)
 	if err != nil {
 		return 0, err
@@ -561,10 +625,16 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
 		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 2)
 		u.spotDir[i] = lin.V4(0, 0, 0, -2)
+		u.spotInfo[i] = lin.V4(-1, p.rng, 0, 0)
 		if p.spot {
 			u.pointColor[i].W = p.cosInner
 			u.spotDir[i] = p.dir.Vec4(p.cosOuter)
 		}
+	}
+	lights, spotMats := q.spotShadows()
+	for k, i := range lights {
+		u.spotViewProj[k] = spotMats[k]
+		u.spotInfo[i].X = float32(k)
 	}
 	if f := l.Fog; f.End > f.Start || f.Density > 0 {
 		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
@@ -843,15 +913,29 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		return err
 	}
 	seen, seenBlended := opaque[:q.visOpaque], blended[:q.visBlended]
-	if q.light.Shadows {
-		for c := range mp.shadow {
-			render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow[c], ClearDepth: 1})
-			cascade := int32(c)
-			if err := g.drawRuns(cb, fr, q, opaque, 0, &cascade); err != nil {
+	// Every shadow map is a region of one atlas: the cascades, then the
+	// spot maps, each drawn with its own viewport. The vertex program
+	// picks the projection by index, spot lights past the cascades.
+	spotLights, _ := q.spotShadows()
+	if q.light.Shadows || len(spotLights) > 0 {
+		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadowAtlas, ClearDepth: 1})
+		var maps []int
+		if q.light.Shadows {
+			maps = append(maps, 0, 1, 2)
+		}
+		for k := range spotLights {
+			maps = append(maps, shadowCascades+k)
+		}
+		for _, index := range maps {
+			region := shadowRegion(index)
+			render.SetViewportRect(cb, region)
+			render.SetScissorRect(cb, region)
+			pc := int32(index)
+			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc); err != nil {
 				return err
 			}
-			render.EndTargetPass(cb, mp.shadow[c])
 		}
+		render.EndTargetPass(cb, mp.shadowAtlas)
 	}
 	c := q.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
@@ -981,6 +1065,9 @@ func (mp *meshPass) destroy(g *Graphics) {
 	if mp.quad != nil {
 		mp.quad.Destroy()
 	}
+	if mp.shadowAtlas != nil {
+		mp.shadowAtlas.Destroy()
+	}
 	if mp.blackCube != nil {
 		mp.blackCube.Destroy()
 	}
@@ -989,11 +1076,6 @@ func (mp *meshPass) destroy(g *Graphics) {
 	}
 	if mp.black != nil {
 		mp.black.Destroy()
-	}
-	for _, t := range mp.shadow {
-		if t != nil {
-			t.Destroy()
-		}
 	}
 	if mp.shadowSamp != 0 {
 		vk.VkDestroySampler(dev, mp.shadowSamp, nil)

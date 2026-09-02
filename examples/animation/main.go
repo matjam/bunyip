@@ -2,9 +2,10 @@
 // keyframe clips drive sprite positions, sizes, rotations and tints and
 // 3D transforms; a flipbook plays sprite-sheet frames; buttons
 // crossfade the hero cube between clips, with a Finished event sending
-// it back to idle; and two robot arms from a generated glTF model show
-// a skeletal clip with an animation event and two-bone IK reaching for
-// a moving target. Escape quits.
+// it back to idle; and three robot arms from a generated glTF model show
+// a skeletal clip with an animation event, two-bone IK reaching for a
+// moving target, and a 1D blend space mixing a slow swing into a fast
+// one by a slider. Escape quits.
 package main
 
 import (
@@ -54,13 +55,17 @@ type game struct {
 	log    []string
 	yaw    float32
 
-	// Two arms of one skeletal model: one swings a clip with an event,
-	// the other reaches for a target by IK.
+	// Three arms of one skeletal model: one swings a clip with an
+	// event, one reaches for a target by IK, and one blends the swing
+	// into a faster stride by a pace parameter.
 	arms   *gfx.Model
 	swing  *gfx.AnimPlayer
 	reach  *gfx.AnimPlayer
 	ikOn   bool
 	target lin.Vec3 // the reaching arm's goal, relative to its base
+	stride *gfx.AnimPlayer
+	blend  *anim.Blend
+	pace   float32
 
 	sprites  *ecs.Query2[gfx.Sprite, sprite2D]
 	meshes   *ecs.Query2[gfx.Transform, mesh3D]
@@ -172,6 +177,14 @@ func (g *game) Init(ctx *bunyip.Context) error {
 			anim.SolveTwoBoneIK(p, shoulder, elbow, hand, g.target, lin.V3(0, 0.8, 2))
 		}
 	}
+	// The third arm plays a 1D blend space: the two-second swing at pace
+	// 0, the one-second stride at pace 1. In between, both clips run at
+	// one shared phase, so the arm neither stutters nor doubles back.
+	g.stride = g.arms.NewAnimPlayer()
+	g.blend = anim.NewBlend(&anim.BlendSpace1D{Parameter: "pace", Clips: []anim.BlendPoint1D{
+		{Clip: "swing", At: 0}, {Clip: "stride", At: 1},
+	}})
+	g.pace = 0.5
 
 	w.AddSystem("anim", anim.System)
 	// When a one-shot clip finishes, fade the hero back to idle.
@@ -222,6 +235,8 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	g.target = lin.V3(0.9*float32(math.Cos(float64(t)*1.3)), 0.9+0.5*float32(math.Sin(float64(t)*0.7)), 0.7*float32(math.Sin(float64(t)*1.3)))
 	g.swing.Advance(ctx.Delta * float64(g.speed))
 	g.reach.Advance(ctx.Delta * float64(g.speed))
+	g.blend.Set("pace", g.pace)
+	g.blend.Advance(g.stride, ctx.Delta*float64(g.speed))
 	g.yaw += float32(ctx.Delta) * 0.2
 	return nil
 }
@@ -238,6 +253,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	})
 	gr.DrawModelAnimated(g.arms, gfx.At(-2.2, -0.5, 0), g.swing)
 	gr.DrawModelAnimated(g.arms, gfx.At(2.2, -0.5, 0), g.reach)
+	gr.DrawModelAnimated(g.arms, gfx.At(0, -0.5, -2.4), g.stride)
 	gr.DrawMesh(g.sphere, gfx.Material{BaseColor: gfx.RGB(120, 220, 140), Emissive: 0.4},
 		lin.Translate(g.target.Add(lin.V3(2.2, -0.5, 0))).Mul(lin.Scale(lin.V3(0.08, 0.08, 0.08))))
 	// 2D entities draw at their offset plus the animated position.
@@ -254,7 +270,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	})
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Animation", ui.Rect{X: 12, Y: ctx.Height - 260, W: 300, H: 248}, func() {
+		u.Panel("Animation", ui.Rect{X: 12, Y: ctx.Height - 292, W: 300, H: 280}, func() {
 			u.Label("Hero clip: " + anim.PlayerOf(w, g.hero).Clip.Name)
 			u.Row(3, func() {
 				if u.Button("Idle") {
@@ -268,6 +284,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				}
 			})
 			u.Slider("Speed", &g.speed, 0, 3)
+			u.Slider("Back arm pace (swing to stride)", &g.pace, 0, 1)
 			u.Checkbox("Right arm reaches by IK", &g.ikOn)
 			for _, l := range g.log {
 				u.Label(l)
@@ -317,8 +334,9 @@ func walkerSheet() image.Image {
 }
 
 // armDocument builds a two-bone arm as a glTF document in memory: a box
-// per bone, nodes shoulder, elbow and hand, and a "swing" clip that
-// rocks both joints. Straight up is the rest pose.
+// per bone, nodes shoulder, elbow and hand, a "swing" clip that rocks
+// both joints over two seconds and a "stride" clip that rocks them
+// wider in one. Straight up is the rest pose.
 func armDocument() *gltf.Document {
 	cv, ci := gfx.CubeMesh()
 	prim := gltf.Primitive{Indices: ci, Material: -1}
@@ -344,10 +362,16 @@ func armDocument() *gltf.Document {
 		q := lin.AxisAngle(lin.V3(0, 0, 1), lin.Radians(deg))
 		return lin.V4(q.X, q.Y, q.Z, q.W)
 	}
-	doc.Animations = []gltf.Animation{{Name: "swing", Duration: 2, Channels: []gltf.Channel{
-		{Node: 0, Path: gltf.PathRotation, Times: []float32{0, 1, 2}, Values: []lin.Vec4{aboutZ(-35), aboutZ(35), aboutZ(-35)}},
-		{Node: 1, Path: gltf.PathRotation, Times: []float32{0, 1, 2}, Values: []lin.Vec4{aboutZ(20), aboutZ(-50), aboutZ(20)}},
-	}}}
+	doc.Animations = []gltf.Animation{
+		{Name: "swing", Duration: 2, Channels: []gltf.Channel{
+			{Node: 0, Path: gltf.PathRotation, Times: []float32{0, 1, 2}, Values: []lin.Vec4{aboutZ(-35), aboutZ(35), aboutZ(-35)}},
+			{Node: 1, Path: gltf.PathRotation, Times: []float32{0, 1, 2}, Values: []lin.Vec4{aboutZ(20), aboutZ(-50), aboutZ(20)}},
+		}},
+		{Name: "stride", Duration: 1, Channels: []gltf.Channel{
+			{Node: 0, Path: gltf.PathRotation, Times: []float32{0, 0.5, 1}, Values: []lin.Vec4{aboutZ(-70), aboutZ(60), aboutZ(-70)}},
+			{Node: 1, Path: gltf.PathRotation, Times: []float32{0, 0.5, 1}, Values: []lin.Vec4{aboutZ(45), aboutZ(-90), aboutZ(45)}},
+		}},
+	}
 	return doc
 }
 

@@ -9,10 +9,11 @@ import (
 
 // AnimPlayer plays a model's animation clips over its node hierarchy. One
 // player per animated instance; it holds the current pose. Play and
-// CrossFade choose the main clip, Layer plays more clips over parts of
-// the skeleton, AddEvent marks moments to be told about, SetRootMotion
-// hands the root's movement to the game, and PostPose with the node
-// setters adjusts the pose before it is drawn.
+// CrossFade choose the main clip, SetBlend mixes several clips in its
+// place, Layer plays more clips over parts of the skeleton, AddEvent
+// marks moments to be told about, SetRootMotion hands the root's
+// movement to the game, and PostPose with the node setters adjusts the
+// pose before it is drawn.
 type AnimPlayer struct {
 	// OnEvent, when set, is called from Advance for every event playback
 	// crosses; Events lists the same after Advance returns.
@@ -24,10 +25,11 @@ type AnimPlayer struct {
 
 	model  *Model
 	speed  float64
-	cur    animTrack // the main clip
-	prev   animTrack // the clip fading out under a crossfade
-	fade   float64   // seconds of fade left
-	fadeD  float64   // the fade's length
+	cur    animTrack   // the main clip
+	prev   animTrack   // the clip fading out under a crossfade
+	fade   float64     // seconds of fade left
+	fadeD  float64     // the fade's length
+	blend  []animBlend // the weighted clips set by SetBlend, in place of cur
 	layers []*AnimLayer
 
 	rest  animPose // the rest pose and default morph weights
@@ -64,6 +66,21 @@ type animTrack struct {
 	time  float64
 	loop  bool
 	fresh bool // just started: events at the start time fire on the next Advance
+}
+
+// AnimBlend is one clip's share of a blended pose, for SetBlend: the
+// clip, its weight against the others and the time to sample it at.
+type AnimBlend struct {
+	Clip   string
+	Weight float32
+	Time   float64
+}
+
+// animBlend is a clip in the blend set by SetBlend.
+type animBlend struct {
+	track  animTrack
+	weight float32
+	last   float64 // the clip time at the previous Advance
 }
 
 // AnimLayer plays a clip over part of the skeleton on top of the main
@@ -163,8 +180,11 @@ func (m *Model) clipIndex(name string) int {
 	return -1
 }
 
-// Play starts a clip by name from its beginning, dropping any crossfade;
-// unknown names return false.
+// Model is the model the player animates.
+func (p *AnimPlayer) Model() *Model { return p.model }
+
+// Play starts a clip by name from its beginning, dropping any crossfade
+// or blend; unknown names return false.
 func (p *AnimPlayer) Play(name string, loop bool) bool {
 	i := p.model.clipIndex(name)
 	if i < 0 {
@@ -182,12 +202,13 @@ func (p *AnimPlayer) PlayIndex(i int, loop bool) {
 	p.cur = animTrack{clip: i, loop: loop, fresh: true}
 	p.prev.clip = -1
 	p.fade, p.fadeD = 0, 0
+	p.blend = p.blend[:0]
 	p.Advance(0)
 }
 
 // CrossFade starts a clip while the current one blends out over the
 // given seconds, so a run does not snap out of a walk. With nothing
-// playing, or a zero fade, it is Play.
+// playing, a blend playing, or a zero fade, it is Play.
 func (p *AnimPlayer) CrossFade(name string, loop bool, seconds float64) bool {
 	i := p.model.clipIndex(name)
 	if i < 0 {
@@ -204,10 +225,55 @@ func (p *AnimPlayer) CrossFade(name string, loop bool, seconds float64) bool {
 	return true
 }
 
-// Stop drops the main clip, leaving the pose where it is; layers keep
-// playing.
+// Stop drops the main clip or blend, leaving the pose where it is;
+// layers keep playing.
 func (p *AnimPlayer) Stop() {
 	p.cur.clip, p.prev.clip = -1, -1
+	p.blend = p.blend[:0]
+}
+
+// SetBlend plays a weighted mix of clips in place of the main clip, each
+// sampled at its own time: what a blend space produces. The weights are
+// scaled to sum to 1; entries with no weight, or an unknown clip, are
+// skipped, and an empty list stops the blend. The caller owns the times
+// and sets them again before every Advance; a time that moved backwards
+// counts as having looped. Events fire and root motion accrues for
+// every clip in the blend by its weight. Play, CrossFade and Stop drop
+// the blend; layers play over it as they do over a clip.
+func (p *AnimPlayer) SetBlend(clips []AnimBlend) {
+	old := p.blend
+	p.blend = make([]animBlend, 0, len(clips))
+	for _, c := range clips {
+		i := p.model.clipIndex(c.Clip)
+		if i < 0 || c.Weight <= 0 {
+			continue
+		}
+		b := animBlend{track: animTrack{clip: i, loop: true, fresh: true, time: c.Time}, weight: c.Weight, last: c.Time}
+		for _, o := range old {
+			if o.track.clip == i {
+				b.track.fresh, b.last = o.track.fresh, o.track.time
+				break
+			}
+		}
+		p.blend = append(p.blend, b)
+	}
+	if len(p.blend) > 0 {
+		p.cur.clip, p.prev.clip = -1, -1
+		p.fade, p.fadeD = 0, 0
+	}
+}
+
+// Blend lists the clips SetBlend is playing with their weights as given
+// and their times, in a new slice; nil when no blend plays.
+func (p *AnimPlayer) Blend() []AnimBlend {
+	if len(p.blend) == 0 {
+		return nil
+	}
+	out := make([]AnimBlend, len(p.blend))
+	for i, b := range p.blend {
+		out[i] = AnimBlend{Clip: p.model.clips[b.track.clip].Name, Weight: b.weight, Time: b.track.time}
+	}
+	return out
 }
 
 // Clip is the name of the main clip, or "" when none plays.
@@ -228,6 +294,9 @@ func (p *AnimPlayer) Finished() bool {
 
 // SetSpeed scales playback; 1 is normal, negative runs clips backwards.
 func (p *AnimPlayer) SetSpeed(s float64) { p.speed = s }
+
+// Speed is the playback scale set by SetSpeed; 1 by default.
+func (p *AnimPlayer) Speed() float64 { return p.speed }
 
 // Time is the main clip's current time in seconds.
 func (p *AnimPlayer) Time() float64 { return p.cur.time }
@@ -326,12 +395,12 @@ func (p *AnimPlayer) RootMotion() (delta lin.Vec3, yaw float32) {
 }
 
 // Advance moves playback forward by dt seconds and rebuilds the pose:
-// the main clip, its crossfade, the layers, root motion, events and
-// PostPose, in that order.
+// the main clip or blend, its crossfade, the layers, root motion,
+// events and PostPose, in that order.
 func (p *AnimPlayer) Advance(dt float64) {
 	p.fired = p.fired[:0]
 	p.rootDelta, p.rootYaw = lin.Vec3{}, 0
-	if p.cur.clip < 0 && p.prev.clip < 0 && len(p.layers) == 0 {
+	if p.cur.clip < 0 && p.prev.clip < 0 && len(p.blend) == 0 && len(p.layers) == 0 {
 		// Nothing plays: the pose, and any overrides on it, stay.
 		if p.PostPose != nil {
 			p.PostPose(p)
@@ -365,6 +434,28 @@ func (p *AnimPlayer) Advance(dt float64) {
 		p.pose.blend(&p.tmp, &p.rest, weight, nil, false)
 		d, y := p.rootMotionOf(&p.cur, from, to, wrapped, forward)
 		rootDelta, rootYaw = rootDelta.Add(d.Mul(weight)), rootYaw+y*weight
+	}
+	if len(p.blend) > 0 {
+		var total float32
+		for _, b := range p.blend {
+			total += b.weight
+		}
+		// Each clip blends over the ones before it by its share of the
+		// weight so far, which leaves the pose the weighted mean.
+		var sofar float32
+		for i := range p.blend {
+			b := &p.blend[i]
+			from, to := b.last, b.track.time
+			wrapped := (forward && to < from) || (!forward && to > from)
+			p.fire(&b.track, from, to, wrapped, forward)
+			w := b.weight / total
+			sofar += w
+			p.sample(&b.track, &p.tmp)
+			p.pose.blend(&p.tmp, &p.rest, w/sofar, nil, false)
+			d, y := p.rootMotionOf(&b.track, from, to, wrapped, forward)
+			rootDelta, rootYaw = rootDelta.Add(d.Mul(w)), rootYaw+y*w
+			b.last = to
+		}
 	}
 	for _, l := range p.layers {
 		l.track.loop = l.Loop

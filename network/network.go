@@ -1,13 +1,23 @@
 // Package network moves typed messages between game instances over TCP
-// (ordered, reliable: turn-based games, lobbies, chat) and UDP
-// (unordered, fast: real-time state). A Registry names the message
-// types both ends agree on; messages are plain Go structs encoded as
-// JSON unless they implement encoding.BinaryMarshaler.
+// (ordered, reliable: turn-based games, lobbies, chat; encrypted with
+// ListenTLS and DialTLS) and UDP (fast: real-time state with Send,
+// reliable and ordered when it must arrive with SendReliable). A
+// Registry names the message types both ends agree on; messages are
+// plain Go structs encoded as JSON unless they implement
+// encoding.BinaryMarshaler.
 //
 // Every connection delivers Events through a channel that a game drains
 // once per frame with Poll, so no locking is needed in game code; a
 // turn-based game can set OnActivity to Context.Wake so it wakes up
-// when a message arrives.
+// when a message arrives. UDP peers get Connected and Disconnected
+// events too, from a hello and keepalive exchange with a timeout.
+//
+// For real-time state the helpers cover the usual techniques:
+// Interpolator, Predictor, History and Clock for smoothing, prediction,
+// lag compensation and server time; EncodeDelta with SnapshotBuffer and
+// SnapshotReceiver for sending only what changed since the snapshot a
+// client acknowledged; and Interest for choosing which entities a
+// viewer needs at all.
 package network
 
 import (
@@ -108,8 +118,8 @@ func (r *Registry) decode(data []byte) (any, error) {
 type EventKind uint8
 
 const (
-	Connected    EventKind = iota + 1 // a peer joined (server) or the dial completed (client)
-	Disconnected                      // the peer went away; Err says why, nil for a clean close
+	Connected    EventKind = iota + 1 // a peer joined (server), the dial completed (client) or a UDP address sent its first packet
+	Disconnected                      // the peer went away; Err says why, nil for a clean close or goodbye
 	Message                           // Msg holds a pointer to a decoded message
 )
 
@@ -117,7 +127,7 @@ const (
 type Event struct {
 	Kind EventKind
 	Conn *Conn // TCP connection, when applicable
-	From *Addr // UDP sender, when applicable
+	From *Addr // UDP address, when applicable
 	Msg  any   // *T for a registered T
 	Err  error
 }

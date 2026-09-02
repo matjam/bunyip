@@ -118,6 +118,14 @@ func (w *Window) SetCursor(shape CursorShape) {
 }
 
 // SetIcon sets _NET_WM_ICON: width, height and ARGB pixels as cardinals.
+// SetPosition, Position, SetAlwaysOnTop and SetCursorImage are not
+// implemented on X11 yet; the window stays where the window manager put
+// it and keeps the system pointer.
+func (w *Window) SetPosition(x, y int)                 {}
+func (w *Window) Position() (int, int)                 { return 0, 0 }
+func (w *Window) SetAlwaysOnTop(bool)                  {}
+func (w *Window) SetCursorImage(image.Image, int, int) {}
+
 func (w *Window) SetIcon(img image.Image) {
 	if img == nil {
 		return

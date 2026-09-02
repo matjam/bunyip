@@ -129,9 +129,13 @@ func Listen(addr string, reg *Registry) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("network: %w", err)
 	}
+	return newServer(ln, reg), nil
+}
+
+func newServer(ln net.Listener, reg *Registry) *Server {
 	s := &Server{ln: ln, reg: reg, events: make(chan Event, 1024), conns: map[int]*Conn{}, closed: make(chan struct{})}
 	go s.accept()
-	return s, nil
+	return s
 }
 
 // Addr is the address the server is listening on, useful after ":0".
@@ -219,12 +223,16 @@ func Dial(addr string, reg *Registry, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("network: %w", err)
 	}
+	return newClient(nc, reg), nil
+}
+
+func newClient(nc net.Conn, reg *Registry) *Client {
 	events := make(chan Event, 1024)
 	c := &Conn{c: nc, reg: reg, events: events, closed: make(chan struct{})}
 	cl := &Client{Conn: c, events: events}
 	c.emit(Event{Kind: Connected, Conn: c})
 	go c.readLoop()
-	return cl, nil
+	return cl
 }
 
 // SetOnActivity runs fn on a network goroutine whenever an event is

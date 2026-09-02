@@ -123,15 +123,17 @@ type jsonMaterial struct {
 			RoughnessFactor *float32  `json:"sheenRoughnessFactor"`
 		} `json:"KHR_materials_sheen"`
 		Transmission *struct {
-			Factor *float32 `json:"transmissionFactor"`
+			Factor  *float32        `json:"transmissionFactor"`
+			Texture *jsonTextureRef `json:"transmissionTexture"`
 		} `json:"KHR_materials_transmission"`
 		IOR *struct {
 			IOR *float32 `json:"ior"`
 		} `json:"KHR_materials_ior"`
 		Volume *struct {
-			Thickness           *float32  `json:"thicknessFactor"`
-			AttenuationDistance *float32  `json:"attenuationDistance"`
-			AttenuationColor    []float32 `json:"attenuationColor"`
+			Thickness           *float32        `json:"thicknessFactor"`
+			ThicknessTexture    *jsonTextureRef `json:"thicknessTexture"`
+			AttenuationDistance *float32        `json:"attenuationDistance"`
+			AttenuationColor    []float32       `json:"attenuationColor"`
 		} `json:"KHR_materials_volume"`
 	} `json:"extensions"`
 }

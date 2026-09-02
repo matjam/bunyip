@@ -24,11 +24,11 @@ import (
 type Resolver func(path string) ([]byte, error)
 
 // ErrUnsupported reports a map feature this package does not read, such
-// as zstd-compressed layer data or XML tilesets.
+// as zstd-compressed layer data.
 var ErrUnsupported = errors.New("tiled: unsupported")
 
-// Load reads a .tmj or .json map, resolving external tilesets next to
-// it.
+// Load reads a map in either form (.tmj or .json, .tmx), resolving
+// external tilesets next to it.
 func Load(name string) (*Map, error) {
 	data, err := os.ReadFile(name)
 	if err != nil {
@@ -44,12 +44,14 @@ func Load(name string) (*Map, error) {
 	return m, nil
 }
 
-// Parse decodes a map from memory. resolve may be nil when every tileset
-// is embedded. Paths in the result (tileset images, image layers) are
-// relative to the map's directory, as the resolver's are.
+// Parse decodes a map from memory, JSON or XML by its first byte.
+// resolve may be nil when every tileset is embedded; an external
+// tileset may be in either form whatever the map's. Paths in the result
+// (tileset images, image layers) are relative to the map's directory,
+// as the resolver's are.
 func Parse(data []byte, resolve Resolver) (*Map, error) {
 	if isXML(data) {
-		return nil, fmt.Errorf("%w: XML maps; save as JSON", ErrUnsupported)
+		return parseXML(data, resolve)
 	}
 	var j jsonMap
 	if err := json.Unmarshal(data, &j); err != nil {
@@ -71,7 +73,7 @@ func Parse(data []byte, resolve Resolver) (*Map, error) {
 		}
 		m.Tilesets = append(m.Tilesets, ts)
 	}
-	sort.SliceStable(m.Tilesets, func(a, b int) bool { return m.Tilesets[a].FirstGID < m.Tilesets[b].FirstGID })
+	sortTilesets(m)
 	var err error
 	if m.Layers, err = layers(j.Layers); err != nil {
 		return nil, err
@@ -79,31 +81,64 @@ func Parse(data []byte, resolve Resolver) (*Map, error) {
 	return m, nil
 }
 
+// ParseTileset decodes a standalone tileset (.tsj or .json, .tsx) from
+// memory. FirstGID is zero; paths stay relative to the tileset's own
+// directory.
+func ParseTileset(data []byte) (*Tileset, error) {
+	ts, err := parseTileset(data, "")
+	if err != nil {
+		return nil, err
+	}
+	return &ts, nil
+}
+
+// parseTileset decodes a tileset document in either form, with the
+// paths it names rebased from dir to the map's directory.
+func parseTileset(data []byte, dir string) (Tileset, error) {
+	if isXML(data) {
+		return parseXMLTileset(data, dir)
+	}
+	var j jsonTileset
+	if err := json.Unmarshal(data, &j); err != nil {
+		return Tileset{}, fmt.Errorf("parse JSON: %w", err)
+	}
+	return convertJSONTileset(j, dir)
+}
+
+// externalTileset reads a tileset file a map names through the
+// resolver. The file may be in either form.
+func externalTileset(src string, first uint32, resolve Resolver) (Tileset, error) {
+	if resolve == nil {
+		return Tileset{}, fmt.Errorf("external tileset %q needs a resolver", src)
+	}
+	data, err := resolve(src)
+	if err != nil {
+		return Tileset{}, fmt.Errorf("%s: %w", src, err)
+	}
+	ts, err := parseTileset(data, path.Dir(src))
+	if err != nil {
+		return Tileset{}, fmt.Errorf("%s: %w", src, err)
+	}
+	ts.FirstGID = first
+	return ts, nil
+}
+
+func sortTilesets(m *Map) {
+	sort.SliceStable(m.Tilesets, func(a, b int) bool { return m.Tilesets[a].FirstGID < m.Tilesets[b].FirstGID })
+}
+
 func isXML(data []byte) bool {
 	return bytes.HasPrefix(bytes.TrimSpace(data), []byte("<"))
 }
 
 func tileset(j jsonTileset, resolve Resolver) (Tileset, error) {
-	dir := ""
 	if j.Source != "" {
-		if resolve == nil {
-			return Tileset{}, fmt.Errorf("external tileset %q needs a resolver", j.Source)
-		}
-		data, err := resolve(j.Source)
-		if err != nil {
-			return Tileset{}, fmt.Errorf("%s: %w", j.Source, err)
-		}
-		if isXML(data) {
-			return Tileset{}, fmt.Errorf("%s: %w: XML tilesets; save as JSON", j.Source, ErrUnsupported)
-		}
-		first, src := j.FirstGID, j.Source
-		j = jsonTileset{}
-		if err := json.Unmarshal(data, &j); err != nil {
-			return Tileset{}, fmt.Errorf("%s: %w", src, err)
-		}
-		j.FirstGID = first
-		dir = path.Dir(src)
+		return externalTileset(j.Source, j.FirstGID, resolve)
 	}
+	return convertJSONTileset(j, "")
+}
+
+func convertJSONTileset(j jsonTileset, dir string) (Tileset, error) {
 	ts := Tileset{
 		FirstGID: j.FirstGID, Name: j.Name, Image: rebase(dir, j.Image),
 		ImageWidth: j.ImageWidth, ImageHeight: j.ImageHeight,
@@ -208,45 +243,66 @@ func layers(js []jsonLayer) ([]Layer, error) {
 }
 
 // tileData fills a tile layer's cells from its data or, for infinite
-// maps, from its chunks flattened into one grid over their bounds.
+// maps, from its chunks.
 func tileData(l *Layer, j jsonLayer) error {
 	if len(j.Chunks) == 0 {
 		cells, err := decodeCells(j.Data, j.Encoding, j.Compression)
 		if err != nil {
 			return err
 		}
-		if len(cells) != l.Width*l.Height {
-			return fmt.Errorf("%d cells for a %dx%d layer", len(cells), l.Width, l.Height)
-		}
-		l.Data = cells
-		return nil
+		return setCells(l, cells)
 	}
-	x0, y0 := j.Chunks[0].X, j.Chunks[0].Y
-	x1, y1 := x0, y0
-	for _, c := range j.Chunks {
-		x0, y0 = min(x0, c.X), min(y0, c.Y)
-		x1, y1 = max(x1, c.X+c.Width), max(y1, c.Y+c.Height)
-	}
-	l.StartX, l.StartY, l.Width, l.Height = x0, y0, x1-x0, y1-y0
-	l.Data = make([]uint32, l.Width*l.Height)
-	for _, c := range j.Chunks {
+	chunks := make([]chunk, len(j.Chunks))
+	for i, c := range j.Chunks {
 		cells, err := decodeCells(c.Data, j.Encoding, j.Compression)
 		if err != nil {
 			return fmt.Errorf("chunk (%d,%d): %w", c.X, c.Y, err)
 		}
-		if len(cells) != c.Width*c.Height {
-			return fmt.Errorf("chunk (%d,%d): %d cells for %dx%d", c.X, c.Y, len(cells), c.Width, c.Height)
+		chunks[i] = chunk{x: c.X, y: c.Y, width: c.Width, height: c.Height, cells: cells}
+	}
+	return flattenChunks(l, chunks)
+}
+
+// chunk is one decoded block of an infinite map's layer.
+type chunk struct {
+	x, y, width, height int
+	cells               []uint32
+}
+
+// setCells stores a whole layer's cells, checking the count.
+func setCells(l *Layer, cells []uint32) error {
+	if len(cells) != l.Width*l.Height {
+		return fmt.Errorf("%d cells for a %dx%d layer", len(cells), l.Width, l.Height)
+	}
+	l.Data = cells
+	return nil
+}
+
+// flattenChunks lays chunks into one grid over their bounds, which may
+// begin at negative coordinates.
+func flattenChunks(l *Layer, chunks []chunk) error {
+	x0, y0 := chunks[0].x, chunks[0].y
+	x1, y1 := x0, y0
+	for _, c := range chunks {
+		x0, y0 = min(x0, c.x), min(y0, c.y)
+		x1, y1 = max(x1, c.x+c.width), max(y1, c.y+c.height)
+	}
+	l.StartX, l.StartY, l.Width, l.Height = x0, y0, x1-x0, y1-y0
+	l.Data = make([]uint32, l.Width*l.Height)
+	for _, c := range chunks {
+		if len(c.cells) != c.width*c.height {
+			return fmt.Errorf("chunk (%d,%d): %d cells for %dx%d", c.x, c.y, len(c.cells), c.width, c.height)
 		}
-		for y := range c.Height {
-			row := (c.Y-y0+y)*l.Width + c.X - x0
-			copy(l.Data[row:row+c.Width], cells[y*c.Width:(y+1)*c.Width])
+		for y := range c.height {
+			row := (c.y-y0+y)*l.Width + c.x - x0
+			copy(l.Data[row:row+c.width], c.cells[y*c.width:(y+1)*c.width])
 		}
 	}
 	return nil
 }
 
-// decodeCells reads layer data: a JSON array of ids, or a base64 string
-// of little-endian uint32s, optionally zlib or gzip compressed.
+// decodeCells reads JSON layer data: an array of ids, or a base64
+// string.
 func decodeCells(raw json.RawMessage, encoding, compression string) ([]uint32, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -266,6 +322,12 @@ func decodeCells(raw json.RawMessage, encoding, compression string) ([]uint32, e
 	if err := json.Unmarshal(raw, &text); err != nil {
 		return nil, fmt.Errorf("data: %w", err)
 	}
+	return decodeBase64Cells(text, compression)
+}
+
+// decodeBase64Cells reads base64 text holding little-endian uint32
+// cells, optionally zlib or gzip compressed.
+func decodeBase64Cells(text, compression string) ([]uint32, error) {
 	buf, err := base64.StdEncoding.DecodeString(strings.TrimSpace(text))
 	if err != nil {
 		return nil, fmt.Errorf("data: base64: %w", err)

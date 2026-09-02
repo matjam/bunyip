@@ -375,9 +375,15 @@ func (l *loader) materials() []Material {
 		mat := Material{Name: m.Name, BaseColor: [4]float32{1, 1, 1, 1}, Image: -1, Metallic: 1, Roughness: 1,
 			MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1, OcclusionImage: -1, OcclusionStrength: 1,
 			AlphaCutoff: 0.5, DoubleSided: m.DoubleSided, Unlit: m.Extensions.Unlit != nil, UVScale: [2]float32{1, 1},
-			IOR: 1.5, AttenuationColor: [3]float32{1, 1, 1}}
-		if tr := m.Extensions.Transmission; tr != nil && tr.Factor != nil {
-			mat.Transmission = *tr.Factor
+			IOR: 1.5, AttenuationColor: [3]float32{1, 1, 1}, TransmissionImage: -1, ThicknessImage: -1}
+		if tr := m.Extensions.Transmission; tr != nil {
+			if tr.Factor != nil {
+				mat.Transmission = *tr.Factor
+			}
+			mat.TransmissionImage, _ = l.imageOf(tr.Texture)
+			if mat.TransmissionImage >= 0 && tr.Factor == nil {
+				mat.Transmission = 1 // the texture alone: glTF's default factor is 0, but a texture means "use me"
+			}
 		}
 		if ior := m.Extensions.IOR; ior != nil && ior.IOR != nil {
 			mat.IOR = *ior.IOR
@@ -386,6 +392,7 @@ func (l *loader) materials() []Material {
 			if vol.Thickness != nil {
 				mat.Thickness = *vol.Thickness
 			}
+			mat.ThicknessImage, _ = l.imageOf(vol.ThicknessTexture)
 			if vol.AttenuationDistance != nil {
 				mat.AttenuationDistance = *vol.AttenuationDistance
 			}

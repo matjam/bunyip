@@ -24,6 +24,7 @@ layout(set = 0, binding = 8) uniform sampler2D image3;
 layout(set = 0, binding = 9) uniform samplerCube envMap;     // prefiltered environment, one level per roughness
 layout(set = 0, binding = 10) uniform sampler2D thicknessTex; // R: 1 thick, 0 thin, for subsurface
 layout(set = 0, binding = 11) uniform sampler2D sceneTex;     // the opaque scene, blurred down its mips, for transmission
+layout(set = 0, binding = 12) uniform sampler2D transmissionTex; // R scales the transmission factor
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -49,11 +50,14 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 sunColor;     // rgb the drawn disc's radiance
     vec4 fog;          // rgb the fog colour, w = exponential density
     vec4 fogRange;     // x start, y end of linear fog; z height, w falloff of ground fog
+    mat4 spotViewProj[4]; // shadowed spot lights' projections
+    vec4 spotInfo[32];    // x = a light's shadow map index or -1, y = range
 } frame;
 
-layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap0;
-layout(set = 2, binding = 1) uniform sampler2DShadow shadowMap1;
-layout(set = 2, binding = 2) uniform sampler2DShadow shadowMap2;
+// One 4096 atlas holds every shadow map: the three cascades of 2048 in
+// three quadrants and four spot maps of 1024 in the fourth.
+layout(set = 2, binding = 0) uniform sampler2DShadow shadowAtlas;
+const float SHADOW_ATLAS = 4096.0;
 
 #define UNIFORMS layout(set = 4, binding = 0)
 
@@ -143,14 +147,21 @@ vec3 perturbNormal(vec3 n, vec3 pos, vec2 uv) {
     return normalize(tbn * nm);
 }
 
-float sampleCascade(int c, vec3 uvz, vec2 texel) {
+// sampleAtlas takes nine comparisons around a point of one map in the
+// atlas: origin and scale place the map's 0..1 in the atlas.
+float sampleAtlas(vec2 origin, float scale, vec3 uvz) {
     float lit = 0.0;
+    vec2 base = origin + uvz.xy * scale;
+    float texel = 1.0 / SHADOW_ATLAS;
     for (int y = -1; y <= 1; y++)
         for (int x = -1; x <= 1; x++) {
-            vec3 p = vec3(uvz.xy + vec2(x, y) * texel, uvz.z);
-            lit += c == 0 ? texture(shadowMap0, p) : (c == 1 ? texture(shadowMap1, p) : texture(shadowMap2, p));
+            lit += texture(shadowAtlas, vec3(base + vec2(x, y) * texel, uvz.z));
         }
     return lit / 9.0;
+}
+
+float sampleCascade(int c, vec3 uvz, vec2 texel) {
+    return sampleAtlas(vec2(float(c % 2), float(c / 2)) * 0.5, 0.5, uvz);
 }
 
 // shadowFactor is 1 where the directional light reaches, 0 in shadow.
@@ -173,6 +184,28 @@ float shadowFactor(vec3 n, vec3 l) {
     float bias = texelWorld / (4.0 * radius); // one texel in depth units
     float texel = 1.0 / frame.params.x;
     return sampleCascade(c, vec3(uv, p.z - bias), vec2(texel));
+}
+
+float sampleSpot(int k, vec3 uvz) {
+    return sampleAtlas(vec2(0.5 + float(k % 2) * 0.25, 0.5 + float(k / 2) * 0.25), 0.25, uvz);
+}
+
+// spotShadowFactor is 1 where spot light i reaches the surface, 0 in
+// its shadow; k is the light's shadow map, dist its distance and
+// cosOuter its cone.
+float spotShadowFactor(int k, vec3 n, vec3 l, float dist, float cosOuter) {
+    // Normal-offset by one shadow texel at this distance.
+    float tanHalf = sqrt(max(1.0 - cosOuter * cosOuter, 0.0)) / max(cosOuter, 0.05);
+    float texelWorld = 2.0 * dist * tanHalf * 1.1 / 1024.0;
+    float NoL = clamp(dot(n, l), 0.0, 1.0);
+    float slope = sqrt(1.0 - NoL * NoL) / max(NoL, 0.05);
+    vec3 pos = vWorldPos + n * texelWorld * (1.0 + slope);
+    vec4 sp = frame.spotViewProj[k] * vec4(pos, 1.0);
+    if (sp.w <= 0.0) return 1.0;
+    vec3 p = sp.xyz / sp.w;
+    vec2 uv = p.xy * 0.5 + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z > 1.0) return 1.0;
+    return sampleSpot(k, vec3(uv, p.z - 0.0005));
 }
 
 float D_GGX(float NoH, float a2) {
@@ -307,6 +340,8 @@ vec3 light(Surface s) {
             // at the outer one.
             float cd = dot(-d / dist, frame.spotDir[i].xyz);
             att *= smoothstep(cone, max(frame.pointColor[i].w, cone + 1e-3), cd);
+            int k = int(frame.spotInfo[i].x);
+            if (k >= 0 && att > 0.0) att *= spotShadowFactor(k, n, d / dist, dist, cone);
         }
         color += lobes(s, n, v, d / dist, frame.pointColor[i].rgb * att);
     }

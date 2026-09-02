@@ -56,6 +56,23 @@ underlined, and report their rectangle through `OnTextInputRect` so the
 platform can place candidate windows. Wire that to
 `ctx.SetTextInputRect` once.
 
+## Navigating inside widgets
+
+A `ListBox`, `ReorderableList`, a row of `Tabs`, a `Table`'s rows, a
+`Tree`, a `RadioGroup` and an open `Dropdown` are each one Tab stop.
+Inside one, the arrows move between the items (up and down through rows
+and tree nodes, left and right along tabs), Home and End go to the ends,
+PageUp and PageDown move a page of rows, and Enter or A activates the
+item: selecting a row, switching a tab, choosing a radio or an option. A
+row moved to inside a `ScrollArea` or list scrolls into view. Tab leaves
+for the next widget, and Shift-Tab comes back to the item it left. The
+d-pad's up and down step through everything in order, so a gamepad walks
+a list row by row and out the other end; its left and right move along
+tabs and radios. Right opens a focused tree node and Left closes it. A
+focused `Slider`, `IntSlider` or `Spinner` steps with the left and right
+arrows, the minus and plus keys, or the d-pad. `Table` returns the row
+clicked or activated, or -1.
+
 ## Themes
 
 A `Theme` holds every colour and measure. Build one from a `Palette` of
@@ -109,10 +126,42 @@ saturation-value square, `Image` and `ImageRegion` for pictures,
 with bold, italic, colour and links (set `Theme.BoldFont` and
 `ItalicFont` for the faces), which returns the link clicked.
 
+## Drag and drop
+
+`DragSource` wraps any widgets in a region that can be picked up:
+pressing on it and moving the pointer a few units starts a drag carrying
+a payload, and a ghost of the label follows the pointer (set
+`DragGhost` on the context to draw something else, such as the item's
+icon). `DropTarget` makes the previous widget a place the drag can end,
+and `DropTargetRect` does the same for a rectangle drawn without
+widgets, such as a cell of an inventory grid. Both take an accept
+function (nil takes anything), outline the target in the accent colour
+while an accepted payload hovers, and report the payload on the frame
+the pointer is released there. `Dragging` returns the payload in flight
+so a target can show itself ready. Escape cancels a drag and nothing is
+dropped.
+
+```go
+for _, item := range inventory {
+	u.DragSource(item.Name, item, func() { u.Button(item.Name) })
+}
+u.Label("Equip")
+if p, ok := u.DropTarget("equip", func(p any) bool { return p.(Item).Wearable }); ok {
+	equip(p.(Item))
+}
+```
+
+`ReorderableList` shows rows that drag to a new place, with a marker
+where the row will land; it reports the row and its new index, and
+`Move` applies the change to the slice. With a row focused, Ctrl or Cmd
+with Up or Down moves it a step, and focus follows the row.
+
 ## Accessibility
 
 `Accessible` returns the last frame's widgets in reading order with a
 role, label, value, rectangle and state, so a game or a platform layer
-can hand them to a screen reader or drive the interface from them. The
-high-contrast theme has thicker borders and a wider focus ring, and
-`Theme.FocusWidth` sets the ring for any theme.
+can hand them to a screen reader or drive the interface from them.
+Table rows, lists and their rows, drag sources and drop targets have
+roles of their own, with the state showing a row being dragged or a
+target ready for a drop. The high-contrast theme has thicker borders and
+a wider focus ring, and `Theme.FocusWidth` sets the ring for any theme.

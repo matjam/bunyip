@@ -1,8 +1,10 @@
 // Command network is a chat room over the network package. Run one copy
 // with -listen and others with -join; typed lines travel over TCP and
-// every peer's pointer position is shared over UDP. Both sides run in
-// turn-based mode and sleep until input or a message arrives, which the
-// network's activity hook signals through Context.Wake.
+// every peer's pointer position is shared over UDP. With -reliable the
+// chat lines go over UDP too, with SendReliable, and the panel counts
+// how many arrived in order. Both sides run in turn-based mode and
+// sleep until input or a message arrives, which the network's activity
+// hook signals through Context.Wake.
 package main
 
 import (
@@ -23,7 +25,10 @@ import (
 
 // Messages shared by both ends.
 type join struct{ Name string }
-type chat struct{ From, Text string }
+type chat struct {
+	From, Text string
+	Seq        int // the sender's count of reliable lines, to check the order
+}
 type welcome struct{ UDPPort int }
 
 // pointer is a UDP message with a compact binary encoding.
@@ -51,12 +56,13 @@ func (p *pointer) UnmarshalBinary(b []byte) error {
 }
 
 type game struct {
-	seconds float64
-	shot    string
-	listen  string
-	joinTo  string
-	name    string
-	bot     bool
+	seconds  float64
+	shot     string
+	listen   string
+	joinTo   string
+	name     string
+	bot      bool
+	reliable bool
 
 	font     *gfx.Font
 	ui       *ui.Context
@@ -64,14 +70,19 @@ type game struct {
 	server   *network.Server
 	client   *network.Client
 	udp      *network.Peer
-	peers    map[string]*network.Addr // UDP addresses to fan pointers out to (server)
-	target   *network.Addr            // where a client sends pointers
+	peers    map[string]*network.Addr // connected UDP addresses to fan out to (server)
+	target   *network.Addr            // where a client sends over UDP
 	lines    []string
 	draft    string
 	points   map[string]pointer
 	mouseX   float32
 	mouseY   float32
 	shotDone bool
+
+	sent     int            // reliable lines sent
+	received int            // reliable lines received
+	lastSeq  map[string]int // last reliable Seq seen per sender
+	inOrder  bool
 }
 
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -84,6 +95,8 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.reg = network.NewRegistry().Register(join{}, chat{}, welcome{}, pointer{})
 	g.peers = map[string]*network.Addr{}
 	g.points = map[string]pointer{}
+	g.lastSeq = map[string]int{}
+	g.inOrder = true
 	if g.udp, err = network.ListenUDP(":0", g.reg); err != nil {
 		return err
 	}
@@ -124,6 +137,39 @@ func (g *game) say(line string) {
 	if len(g.lines) > 14 {
 		g.lines = g.lines[1:]
 	}
+}
+
+// sendChat delivers a line to everyone else: over TCP, or with
+// -reliable over UDP with SendReliable.
+func (g *game) sendChat(msg chat) {
+	if !g.reliable {
+		if g.client != nil {
+			g.client.Send(msg)
+		}
+		if g.server != nil {
+			g.server.Broadcast(msg)
+		}
+		return
+	}
+	msg.Seq = g.sent
+	g.sent++
+	if g.target != nil {
+		g.udp.SendReliable(g.target, msg)
+	}
+	for _, addr := range g.peers {
+		g.udp.SendReliable(addr, msg)
+	}
+}
+
+// receiveChat counts a reliable line and checks it follows the
+// sender's previous one.
+func (g *game) receiveChat(m *chat) {
+	g.received++
+	if last, seen := g.lastSeq[m.From]; seen && m.Seq != last+1 {
+		g.inOrder = false
+	}
+	g.lastSeq[m.From] = m.Seq
+	g.say(m.From + ": " + m.Text)
 }
 
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -172,8 +218,14 @@ func (g *game) Update(ctx *bunyip.Context) error {
 				case *welcome:
 					host, _, _ := splitHostPort(g.joinTo)
 					g.target, _ = network.Resolve(fmt.Sprintf("%s:%d", host, m.UDPPort))
-					if g.bot {
+					g.udp.Connect(g.target) // so the host sees us before the first pointer
+					if g.bot && !g.reliable {
 						g.client.Send(chat{From: g.name, Text: "hello from a bot"})
+					}
+					if g.bot && g.reliable {
+						for i := range 20 {
+							g.sendChat(chat{From: g.name, Text: fmt.Sprintf("reliable line %d", i+1)})
+						}
 					}
 				case *chat:
 					g.say(m.From + ": " + m.Text)
@@ -185,13 +237,31 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		}
 	}
 	for _, ev := range g.udp.Poll() {
-		if p, ok := ev.Msg.(*pointer); ok {
-			g.points[p.Name] = *p
-			if g.server != nil { // fan out to every other peer
+		switch ev.Kind {
+		case network.Connected:
+			if g.server != nil {
 				g.peers[ev.From.String()] = ev.From
-				for key, addr := range g.peers {
-					if key != ev.From.String() {
-						g.udp.Send(addr, *p)
+			}
+		case network.Disconnected:
+			delete(g.peers, ev.From.String())
+		case network.Message:
+			switch m := ev.Msg.(type) {
+			case *pointer:
+				g.points[m.Name] = *m
+				if g.server != nil { // fan out to every other peer
+					for key, addr := range g.peers {
+						if key != ev.From.String() {
+							g.udp.Send(addr, *m)
+						}
+					}
+				}
+			case *chat:
+				g.receiveChat(m)
+				if g.server != nil { // relay in order to every other peer
+					for key, addr := range g.peers {
+						if key != ev.From.String() {
+							g.udp.SendReliable(addr, *m)
+						}
 					}
 				}
 			}
@@ -205,10 +275,8 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		if g.target != nil {
 			g.udp.Send(g.target, me)
 		}
-		if g.server != nil {
-			for _, addr := range g.peers {
-				g.udp.Send(addr, me)
-			}
+		for _, addr := range g.peers {
+			g.udp.Send(addr, me)
 		}
 	}
 	return nil
@@ -239,17 +307,28 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		u.Panel("", ui.Rect{X: 16, Y: 404, W: 480, H: 52}, func() {
 			u.TextField("Type and press Enter", &g.draft)
 		})
+		if g.reliable {
+			u.Panel("Reliable UDP", ui.Rect{X: 512, Y: 16, W: 192, H: 120}, func() {
+				u.Label(fmt.Sprintf("Sent %d", g.sent))
+				u.Label(fmt.Sprintf("Received %d", g.received))
+				order := "in order"
+				if !g.inOrder {
+					order = "OUT OF ORDER"
+				}
+				u.Label(order)
+				if g.target != nil {
+					if s, ok := g.udp.Stats(g.target); ok {
+						u.Label(fmt.Sprintf("rtt %.1fms loss %.0f%%", float64(s.RTT)/1e6, s.Loss*100))
+					}
+				}
+			})
+		}
 	})
 	if ctx.Input.KeyPressed(input.KeyEnter) && g.draft != "" {
 		msg := chat{From: g.name, Text: g.draft}
 		g.draft = ""
 		g.say(msg.From + ": " + msg.Text)
-		if g.client != nil {
-			g.client.Send(msg)
-		}
-		if g.server != nil {
-			g.server.Broadcast(msg)
-		}
+		g.sendChat(msg)
 	}
 	return nil
 }
@@ -260,10 +339,11 @@ func main() {
 	listen := flag.String("listen", "", "host on this address, like :7777")
 	joinTo := flag.String("join", "", "connect to a host, like 192.168.1.5:7777")
 	name := flag.String("name", "player", "your name")
-	bot := flag.Bool("bot", false, "send a greeting once connected")
+	bot := flag.Bool("bot", false, "send a greeting once connected (20 numbered lines with -reliable)")
+	reliable := flag.Bool("reliable", false, "send chat over UDP with SendReliable and count lines delivered in order")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip network", Width: 720, Height: 480, TurnBased: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, listen: *listen, joinTo: *joinTo, name: *name, bot: *bot})
+		&game{seconds: *seconds, shot: *shot, listen: *listen, joinTo: *joinTo, name: *name, bot: *bot, reliable: *reliable})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "network:", err)
 		os.Exit(1)

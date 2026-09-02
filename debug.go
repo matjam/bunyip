@@ -48,8 +48,9 @@ func (c *Context) Profile(name string) func() {
 
 // overlay draws frame timings in the corner when enabled.
 type overlay struct {
-	on   bool
-	font *gfx.Font
+	on     bool
+	font   *gfx.Font
+	budget int // Config.DrawBudget
 	// A one-second window for the FPS figure.
 	windowStart time.Time
 	frames      int
@@ -85,6 +86,11 @@ func (o *overlay) draw(ctx *Context) error {
 	for _, sc := range s.Scopes {
 		lines = append(lines, fmt.Sprintf("  %s %.2f ms", sc.Name, sc.MS))
 	}
+	over := false
+	if b := o.budget; b > 0 && s.Draws2D+s.Draws3D > b {
+		over = true
+		lines = append(lines, fmt.Sprintf("OVER DRAW BUDGET: %d draws, budget %d", s.Draws2D+s.Draws3D, b))
+	}
 	g := ctx.Gfx
 	g.ScreenSpace()
 	g.SetLayer(1 << 20)
@@ -96,7 +102,11 @@ func (o *overlay) draw(ctx *Context) error {
 	}
 	g.FillRect(4, 4, w+2*pad, float32(len(lines))*lineH+2*pad, gfx.RGBA(0, 0, 0, 160))
 	for i, l := range lines {
-		g.DrawText(o.font, l, 4+pad, 4+pad+float32(i)*lineH, gfx.RGB(220, 230, 200))
+		col := gfx.RGB(220, 230, 200)
+		if over && i == len(lines)-1 {
+			col = gfx.RGB(255, 90, 70)
+		}
+		g.DrawText(o.font, l, 4+pad, 4+pad+float32(i)*lineH, col)
 	}
 	g.SetLayer(0)
 	return nil

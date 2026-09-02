@@ -1,6 +1,7 @@
 package phys
 
 import (
+	"math"
 	"sort"
 
 	"github.com/matjam/bunyip/ecs"
@@ -27,12 +28,122 @@ type DistanceJoint3 struct {
 }
 
 // HingeJoint3 pins two bodies at an anchor and lets them turn about one
-// axis, given in each body's frame; a zero axis means local Y. With B
-// set to ecs.None the hinge is fixed to the world at AnchorB.
+// axis, given in each body's frame; a zero axis means local Y. A side
+// set to ecs.None fixes that anchor and axis in the world.
+//
+// The angle is how far B has turned about the axis relative to A since
+// the first step, by the right-hand rule, in (-π, π]. MinAngle and
+// MaxAngle limit it; both zero means unlimited. A motor drives the
+// angle at MotorSpeed radians per second with up to MaxMotorTorque;
+// zero torque means no motor.
 type HingeJoint3 struct {
+	A, B               ecs.Entity
+	AnchorA, AnchorB   lin.Vec3
+	AxisA, AxisB       lin.Vec3
+	MinAngle, MaxAngle float32
+	MotorSpeed         float32
+	MaxMotorTorque     float32
+
+	rel      lin.Quat // B's rotation in A's frame on the first step
+	measured bool
+}
+
+// Angle is the hinge angle: how far B has turned about the axis
+// relative to A since the first step, in radians.
+func (j *HingeJoint3) Angle(w *ecs.World) float32 {
+	qa, qb := entityQuat(w, j.A), entityQuat(w, j.B)
+	j.measure(qa, qb)
+	return hingeAngle(mat3FromQuat(qa), mat3FromQuat(qb), hingeAxis(j.AxisA), j.rel)
+}
+
+func (j *HingeJoint3) measure(qa, qb lin.Quat) {
+	if !j.measured {
+		j.rel, j.measured = conj(qa).Mul(qb), true
+	}
+}
+
+// BallJoint3 pins two bodies at an anchor and lets them turn freely
+// about it: a shoulder, a hip, a neck. AxisB is the limb's axis in B's
+// frame (zero means local Y) and AxisA the centre of its cone in A's
+// frame (zero means where AxisB pointed on the first step). ConeAngle
+// limits how far AxisB may swing from AxisA and TwistAngle how far B
+// may turn about AxisB either way, both in radians; zero means
+// unlimited. A side set to ecs.None fixes that anchor and axis in the
+// world.
+type BallJoint3 struct {
 	A, B             ecs.Entity
 	AnchorA, AnchorB lin.Vec3
 	AxisA, AxisB     lin.Vec3
+	ConeAngle        float32
+	TwistAngle       float32
+
+	rel      lin.Quat // B's rotation in A's frame on the first step
+	measured bool
+}
+
+// Angles returns the swing of AxisB away from AxisA and the twist of B
+// about AxisB, in radians.
+func (j *BallJoint3) Angles(w *ecs.World) (cone, twist float32) {
+	qa, qb := entityQuat(w, j.A), entityQuat(w, j.B)
+	j.measure(qa, qb)
+	ra, rb := mat3FromQuat(qa), mat3FromQuat(qb)
+	wa := ra.mulVec(j.AxisA).Norm()
+	wb := rb.mulVec(hingeAxis(j.AxisB)).Norm()
+	return coneAngle(wa, wb), twistAngle(qa, qb, hingeAxis(j.AxisB), j.rel)
+}
+
+func (j *BallJoint3) measure(qa, qb lin.Quat) {
+	if !j.measured {
+		j.rel, j.measured = conj(qa).Mul(qb), true
+		if j.AxisA == (lin.Vec3{}) {
+			j.AxisA = j.rel.Rotate(hingeAxis(j.AxisB)).Norm()
+		}
+	}
+}
+
+// entityQuat is an entity's rotation, or the identity for the world.
+func entityQuat(w *ecs.World, e ecs.Entity) lin.Quat {
+	if e == ecs.None {
+		return lin.QuatIdentity()
+	}
+	t, _ := ecs.Get[gfx.Transform](w, e)
+	return quatOf(t)
+}
+
+// hingeAxis applies the local Y default.
+func hingeAxis(axis lin.Vec3) lin.Vec3 {
+	if axis == (lin.Vec3{}) {
+		return lin.V3(0, 1, 0)
+	}
+	return axis
+}
+
+// hingeAngle measures B's turn about A's axis relative to the rest
+// rotation rel: the angle between a reference perpendicular to the
+// axis carried by A and the same reference carried by B.
+func hingeAngle(ra, rb mat3, axisA lin.Vec3, rel lin.Quat) float32 {
+	n := ra.mulVec(axisA).Norm()
+	pa := perpendicular(axisA)
+	u := ra.mulVec(pa)
+	v := rb.mulVec(conj(rel).Rotate(pa))
+	return float32(math.Atan2(float64(n.Dot(u.Cross(v))), float64(u.Dot(v))))
+}
+
+// coneAngle is the angle between two world axes.
+func coneAngle(wa, wb lin.Vec3) float32 {
+	return float32(math.Acos(float64(lin.Clamp(wa.Dot(wb), -1, 1))))
+}
+
+// twistAngle is B's turn about its own axis relative to the rest
+// rotation rel: the twist part of the swing-twist split of the extra
+// rotation B has picked up, in B's frame.
+func twistAngle(qa, qb lin.Quat, axisB lin.Vec3, rel lin.Quat) float32 {
+	d := conj(rel).Mul(conj(qa).Mul(qb))
+	if d.W < 0 {
+		d = lin.Quat{X: -d.X, Y: -d.Y, Z: -d.Z, W: -d.W}
+	}
+	v := axisB.Norm()
+	return 2 * float32(math.Atan2(float64(lin.V3(d.X, d.Y, d.Z).Dot(v)), float64(d.W)))
 }
 
 // SpringJoint3 pulls two anchors toward a rest length with a damped
@@ -157,6 +268,13 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 			items = append(items, item{e.ID(), &hingeSolver3{j: j, a: a, b: b}})
 		}
 	})
+	s.ball.Each(func(e ecs.Entity, j *BallJoint3) {
+		a, oka := sideOf3(w, j.A)
+		b, okb := sideOf3(w, j.B)
+		if oka && okb && (a.b != nil || b.b != nil) {
+			items = append(items, item{e.ID(), &ballSolver3{j: j, a: a, b: b}})
+		}
+	})
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
@@ -270,27 +388,97 @@ func (p *pointSolver3) solve(a, b *jointSide3) {
 	b.impulse(lambda, p.rB, 1)
 }
 
+// angularLimit3 is a one-sided angular constraint about a world axis,
+// shared by hinge limits and a ball joint's cone and twist. With sign
+// +1 the impulse may only turn B toward positive angles, with -1 toward
+// negative, and with 0 either way (a locked joint).
+type angularLimit3 struct {
+	axis    lin.Vec3
+	mass    float32
+	bias    float32
+	impulse float32
+	sign    float32
+	active  bool
+}
+
+// prepare sets the limit up with position error c (positive past an
+// upper limit, negative past a lower one).
+func (l *angularLimit3) prepare(a, b *jointSide3, axis lin.Vec3, c, sign, h float32) {
+	k := axis.Dot(a.invI.add(b.invI).mulVec(axis))
+	l.active = k > 1e-12
+	if !l.active {
+		return
+	}
+	l.axis, l.mass, l.bias, l.sign, l.impulse = axis, 1/k, jointBaumgarte/h*c, sign, 0
+}
+
+func (l *angularLimit3) solve(a, b *jointSide3) {
+	if !l.active {
+		return
+	}
+	cdot := l.axis.Dot(b.angVel().Sub(a.angVel()))
+	old := l.impulse
+	l.impulse -= l.mass * (cdot + l.bias)
+	if l.sign > 0 {
+		l.impulse = max(l.impulse, 0)
+	} else if l.sign < 0 {
+		l.impulse = min(l.impulse, 0)
+	}
+	p := l.axis.Mul(l.impulse - old)
+	a.angularImpulse(p, -1)
+	b.angularImpulse(p, 1)
+}
+
+// motor3 drives the relative angular speed about a world axis toward a
+// target with a bounded accumulated impulse.
+type motor3 struct {
+	axis       lin.Vec3
+	mass       float32
+	speed      float32
+	maxImpulse float32
+	impulse    float32
+	active     bool
+}
+
+func (m *motor3) prepare(a, b *jointSide3, axis lin.Vec3, speed, maxImpulse float32) {
+	k := axis.Dot(a.invI.add(b.invI).mulVec(axis))
+	m.active = maxImpulse > 0 && k > 1e-12
+	if !m.active {
+		return
+	}
+	m.axis, m.mass, m.speed, m.maxImpulse, m.impulse = axis, 1/k, speed, maxImpulse, 0
+}
+
+func (m *motor3) solve(a, b *jointSide3) {
+	if !m.active {
+		return
+	}
+	cdot := m.axis.Dot(b.angVel().Sub(a.angVel()))
+	old := m.impulse
+	m.impulse = lin.Clamp(old+m.mass*(m.speed-cdot), -m.maxImpulse, m.maxImpulse)
+	p := m.axis.Mul(m.impulse - old)
+	a.angularImpulse(p, -1)
+	b.angularImpulse(p, 1)
+}
+
 type hingeSolver3 struct {
-	j      *HingeJoint3
-	a, b   jointSide3
-	point  pointSolver3
-	b1, b2 lin.Vec3
-	k2inv  [4]float32
-	bias   [2]float32
-	ok     bool
+	j            *HingeJoint3
+	a, b         jointSide3
+	point        pointSolver3
+	b1, b2       lin.Vec3
+	k2inv        [4]float32
+	bias         [2]float32
+	ok           bool
+	motor        motor3
+	lower, upper angularLimit3
 }
 
 func (s *hingeSolver3) sides() (ecs.Entity, ecs.Entity) { return s.j.A, s.j.B }
 
 func (s *hingeSolver3) prepare(h float32) {
-	s.point.prepare(&s.a, &s.b, s.j.AnchorA, s.j.AnchorB, h)
-	axisA, axisB := s.j.AxisA, s.j.AxisB
-	if axisA == (lin.Vec3{}) {
-		axisA = lin.V3(0, 1, 0)
-	}
-	if axisB == (lin.Vec3{}) {
-		axisB = lin.V3(0, 1, 0)
-	}
+	j := s.j
+	s.point.prepare(&s.a, &s.b, j.AnchorA, j.AnchorB, h)
+	axisA, axisB := hingeAxis(j.AxisA), hingeAxis(j.AxisB)
 	wa := s.a.rot.mulVec(axisA).Norm()
 	wb := s.b.rot.mulVec(axisB).Norm()
 	s.b1 = perpendicular(wa)
@@ -307,9 +495,25 @@ func (s *hingeSolver3) prepare(h float32) {
 	}
 	e := wa.Cross(wb)
 	s.bias = [2]float32{jointBaumgarte / h * s.b1.Dot(e), jointBaumgarte / h * s.b2.Dot(e)}
+	// The motor and the limits act about the axis.
+	j.measure(quatOf(s.a.t), quatOf(s.b.t))
+	angle := hingeAngle(s.a.rot, s.b.rot, axisA, j.rel)
+	s.motor.prepare(&s.a, &s.b, wa, j.MotorSpeed, j.MaxMotorTorque*h)
+	s.lower.active, s.upper.active = false, false
+	if j.MinAngle != 0 || j.MaxAngle != 0 {
+		if angle <= j.MinAngle {
+			s.lower.prepare(&s.a, &s.b, wa, angle-j.MinAngle, 1, h)
+		}
+		if angle >= j.MaxAngle {
+			s.upper.prepare(&s.a, &s.b, wa, angle-j.MaxAngle, -1, h)
+		}
+	}
 }
 
 func (s *hingeSolver3) solve() {
+	s.motor.solve(&s.a, &s.b)
+	s.lower.solve(&s.a, &s.b)
+	s.upper.solve(&s.a, &s.b)
 	if s.ok {
 		wrel := s.b.angVel().Sub(s.a.angVel())
 		c0, c1 := s.b1.Dot(wrel)+s.bias[0], s.b2.Dot(wrel)+s.bias[1]
@@ -319,6 +523,48 @@ func (s *hingeSolver3) solve() {
 		s.a.angularImpulse(l, -1)
 		s.b.angularImpulse(l, 1)
 	}
+	s.point.solve(&s.a, &s.b)
+}
+
+type ballSolver3 struct {
+	j           *BallJoint3
+	a, b        jointSide3
+	point       pointSolver3
+	cone, twist angularLimit3
+}
+
+func (s *ballSolver3) sides() (ecs.Entity, ecs.Entity) { return s.j.A, s.j.B }
+
+func (s *ballSolver3) prepare(h float32) {
+	j := s.j
+	s.point.prepare(&s.a, &s.b, j.AnchorA, j.AnchorB, h)
+	qa, qb := quatOf(s.a.t), quatOf(s.b.t)
+	j.measure(qa, qb)
+	axisB := hingeAxis(j.AxisB)
+	wa := s.a.rot.mulVec(j.AxisA).Norm()
+	wb := s.b.rot.mulVec(axisB).Norm()
+	s.cone.active, s.twist.active = false, false
+	if cone := coneAngle(wa, wb); j.ConeAngle > 0 && cone > j.ConeAngle {
+		// Turning B about wa × wb swings it further from the centre.
+		n := wa.Cross(wb).Norm()
+		if n == (lin.Vec3{}) {
+			n = perpendicular(wa)
+		}
+		s.cone.prepare(&s.a, &s.b, n, cone-j.ConeAngle, -1, h)
+	}
+	if j.TwistAngle > 0 {
+		switch twist := twistAngle(qa, qb, axisB, j.rel); {
+		case twist > j.TwistAngle:
+			s.twist.prepare(&s.a, &s.b, wb, twist-j.TwistAngle, -1, h)
+		case twist < -j.TwistAngle:
+			s.twist.prepare(&s.a, &s.b, wb, twist+j.TwistAngle, 1, h)
+		}
+	}
+}
+
+func (s *ballSolver3) solve() {
+	s.cone.solve(&s.a, &s.b)
+	s.twist.solve(&s.a, &s.b)
 	s.point.solve(&s.a, &s.b)
 }
 

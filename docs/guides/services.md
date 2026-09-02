@@ -78,9 +78,21 @@ with `Downhill` for chasing and fleeing, Bresenham `Line`, shadowcasting
 
 [network](../pkg/network.html) moves typed messages between game
 instances: ordered over TCP for turn-based play, lobbies and chat, and
-unordered over UDP for real-time state. A `Registry` names the message
-types both ends agree on; events arrive through `Poll` once per frame,
-and `SetOnActivity` can wake a sleeping turn-based game.
+over UDP for real-time state. A `Registry` names the message types
+both ends agree on; events arrive through `Poll` once per frame, and
+`SetOnActivity` can wake a sleeping turn-based game. `ListenTLS` and
+`DialTLS` encrypt TCP; `SelfSignedConfig` makes a certificate for a
+LAN game with a client config pinned to it, and `Fingerprint` with
+`PinnedConfig` let a player on another machine pin it too.
+
+A UDP `Peer` has two ways to send: `Send` fires a packet that may be
+lost, for state that is replaced every frame, and `SendReliable`
+resends until acknowledged and delivers in order, for anything that
+must arrive. Every packet acknowledges what came the other way, so the
+two share a link; `Stats` reports its round trip, loss and pending
+count. Peers say hello and keep alive, so a `Peer` raises `Connected`
+and `Disconnected` for UDP addresses (after `SetTimeout` of silence, a
+goodbye, or a restart) and `Peers` lists who is there.
 
 For real-time play the helpers do the usual tricks: an `Interpolator`
 draws other players a little behind the newest snapshot so they move
@@ -88,4 +100,9 @@ smoothly whatever the packet timing; a `Predictor` applies the local
 player's inputs at once and reconciles with the server's state by
 replaying the inputs it has not seen; a `History` lets a server rewind
 targets to where a shooter saw them; and a `Clock` estimates the
-server's time from pings.
+server's time from pings. `EncodeDelta` sends only the fields of a
+snapshot struct that changed since a baseline, `SnapshotBuffer` picks
+each client's baseline from what it last acknowledged (with
+`SnapshotReceiver` on the other end), and `Interest` chooses which
+entities are near enough to a viewer to send, with hysteresis at the
+edge.

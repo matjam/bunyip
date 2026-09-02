@@ -166,7 +166,7 @@ func TestUDP(t *testing.T) {
 	}
 	var got []Event
 	wait(t, "datagram", func() bool {
-		got = append(got, b.Poll()...)
+		got = append(got, messages(b.Poll())...)
 		return len(got) >= 1
 	})
 	if p, ok := got[0].Msg.(*pos); !ok || p.X != 1 || got[0].From.Port != a.Addr().Port {

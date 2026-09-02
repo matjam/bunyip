@@ -119,7 +119,10 @@ glTF document with its materials, textures, skins and animation clips.
 
 **Materials.** `Material` is metallic-roughness PBR: a base colour or
 albedo texture, metallic and roughness factors or a texture, a normal
-map, emissive strength, and flags for blending and double-sided drawing.
+map, emissive strength, and flags for blending and double-sided drawing,
+plus clearcoat, sheen, subsurface and glass (`Transmission` with a
+`TransmissionTexture` for panes in a frame, thickness and absorption),
+outlines and x-ray. glTF models bring all of it in.
 
 **Camera and lights.** `SetCamera` takes a `Camera` (position, target,
 field of view, or `Ortho` for an orthographic view where distance does
@@ -209,7 +212,20 @@ horizon's outdoors.
 from a point; `AddSpotLight` in a cone along a direction with a soft
 edge between its inner and outer angles. A frame keeps the first
 `MaxLights` (32); when a scene has more, add the nearest to the camera
-first.
+first. `AddSpot` takes a `SpotLight` value, and with `Shadows` set the
+light casts shadows from its own depth map; the first `MaxSpotShadows`
+(4) such lights a frame get one. The cascades and the spot maps share
+one atlas, so shadows cost one texture binding however many lights.
+
+**Colour grading.** `PostSettings.LUT` runs the finished frame through
+a lookup table: `NeutralLUT` gives the identity strip, a screenshot
+with it pasted in is graded in an image editor, the strip is cropped
+back out and loaded with `NewLUT`, and every frame gets the grade.
+`LUTStrength` blends it in.
+
+**Debugging the camera.** `bunyip.FlyCamera` is a free-flying camera
+for looking round a scene while it is being built: keys move, the
+right mouse button turns, `Camera` hands the result to `SetCamera`.
 
 **Culling.** Every draw is tested against the camera's frustum and
 skipped when nothing of its bounds is in view; `Stats().Culled` counts

@@ -81,19 +81,66 @@ got; `Nearest` finds the closest collider to a point within a radius.
 ## Joints
 
 Joints are components on their own entities that tie two bodies (or a
-body and a world anchor, with `B` left as `ecs.None`): `DistanceJoint`
-for rods and ropes with optional slack, `RevoluteJoint2` and
-`HingeJoint3` for pins and doors, `SpringJoint` with stiffness and
-damping, and `FixedJoint` to weld. They are solved in the same
-iterations as the contacts, so a chain of hinges hangs and swings
-without drifting apart.
+body and a world anchor, with either side left as `ecs.None`):
+`DistanceJoint` for rods and ropes with optional slack, `RevoluteJoint2`
+and `HingeJoint3` for pins and doors, `BallJoint3` for shoulders and
+hips, `SpringJoint` with stiffness and damping, and `FixedJoint` to
+weld. They are solved in the same iterations as the contacts, so a
+chain of hinges hangs and swings without drifting apart.
+
+A hinge (and a 2D revolute joint) measures its angle from the pose on
+its first step, positive by the right-hand rule about the axis, and
+`Angle(w)` reads it. `MinAngle` and `MaxAngle` stop it at either end,
+a door that opens one way; both zero means unlimited. `MotorSpeed` and
+`MaxMotorTorque` turn it into a motor that drives toward a speed with
+bounded torque, a wheel or a winch; a heavy load slows it and a limit
+stops it:
+
+```go
+w.SpawnWith(phys.HingeJoint3{A: axle, B: wheel, AxisA: lin.V3(1, 0, 0), AxisB: lin.V3(1, 0, 0),
+	MotorSpeed: 10, MaxMotorTorque: 50})
+w.SpawnWith(phys.HingeJoint3{A: frame, B: door, AnchorA: hingePos, AnchorB: lin.V3(-0.5, 0, 0),
+	AxisA: lin.V3(0, 1, 0), AxisB: lin.V3(0, 1, 0), MinAngle: 0, MaxAngle: 1.6})
+```
+
+`BallJoint3` pins two bodies at a point and lets them turn every way.
+`AxisB` is the limb's axis in its own frame (local Y by default) and
+`AxisA` the centre of its cone in the parent's frame (where the limb
+pointed on the first step, by default); `ConeAngle` limits how far the
+limb swings from that centre and `TwistAngle` how far it turns about
+itself. `Angles(w)` reads both.
+
+## Ragdolls
+
+`NewRagdoll3(w, spec)` spawns a humanoid of eleven capsules (pelvis,
+spine, head, upper arms, forearms, thighs, shins) on ball joints at the
+waist, neck, shoulders and hips and one-way hinges at the elbows and
+knees, with limits chosen so it flops rather than folds. A zero
+`RagdollSpec` gives a figure 1.8 units tall weighing 70; set `Height`
+to scale it, `Mass`, the bone sizes, `Position` (where its feet stand)
+and `Rotation`. The result names every part and joint (`Parts`,
+`Joints`, `RagdollPelvis` and friends) so a game can draw them, and
+`Pose` places the parts from an animated character's bones when a
+character dies: give it the world position and rotation of each part,
+the position being the part's centre, which is the bone's origin plus
+half the bone's `Length` along its rotated -Y. `Despawn` removes it
+again. By default the parts share a layer that meets everything but
+other ragdoll parts; set `Layers` to change that.
+
+```go
+r := phys.NewRagdoll3(w, phys.RagdollSpec{Position: lin.V3(0, 3, 0)})
+head := r.Parts[phys.RagdollHead]
+```
 
 ## Fast bodies and sleeping ones
 
 A small fast body can pass through a thin wall between two steps. Set
 `Body.CCD` on bullets and the like: the body is swept against the
 static colliders each substep and stopped at the first thing it would
-have crossed. Bodies that come to rest go to sleep when
+have crossed, and its bounding sphere is swept against the other
+moving bodies so two fast bodies meet rather than cross (a coarse
+test, so two long thin bodies can still miss). Bodies that come to
+rest go to sleep when
 `Settings.SleepTime` is set, which skips their integration and the
 pairs between sleeping bodies; a touch or an impulse wakes them.
 `Body.Asleep` and `Wake` read and override it.

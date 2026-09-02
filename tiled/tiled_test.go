@@ -331,7 +331,7 @@ func TestErrors(t *testing.T) {
 		want error
 	}{
 		{"zstd", zstd, ErrUnsupported},
-		{"xml", `<?xml version="1.0"?><map/>`, ErrUnsupported},
+		{"xml tileset as map", `<?xml version="1.0"?><tileset name="t"/>`, nil},
 		{"external without resolver", `{"tilesets": [{"firstgid": 1, "source": "x.tsj"}]}`, nil},
 		{"short data", `{"layers": [{"name": "l", "type": "tilelayer", "width": 2, "height": 2, "data": [1]}]}`, nil},
 		{"bad json", `{`, nil},

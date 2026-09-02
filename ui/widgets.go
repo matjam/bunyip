@@ -63,7 +63,9 @@ func (c *Context) Checkbox(label string, value *bool) bool {
 	return clicked
 }
 
-// Slider drags *value across [lo, hi] and reports a change.
+// Slider drags *value across [lo, hi] and reports a change. While
+// focused, the left and right arrows (or the d-pad) step it by a
+// twentieth of the range.
 func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 	id := c.id(label)
 	// The caption sits above the track inside the widget's own space, so
@@ -76,6 +78,14 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 	if held {
 		t := (c.mouseX - r.X) / r.W
 		v := lo + max(0, min(1, t))*(hi-lo)
+		if v != *value {
+			*value = v
+			changed = true
+		}
+	}
+	if d := c.stepKeys(id); d != 0 {
+		v := *value + float32(d)*(hi-lo)/20
+		v = max(min(lo, hi), min(v, max(lo, hi)))
 		if v != *value {
 			*value = v
 			changed = true

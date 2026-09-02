@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"meshes\":[{\"primitives\":[{\"AttriButes\":{\"POSITION\":0},\"indiCes\":1}]}],\"ACCessors\":[{\"ComponentTYpe\":5120,\"tYpe\":\"VEC3\"},{\"BufferView\":0,\"ComponentTYpe\":5120,\"Count\":1,\"tYpe\":\"SCALAR\"}],\"BufferViews\":[{},{}],\"Buffers\":[{\"uri\":\"data:;base64,\"}]}")

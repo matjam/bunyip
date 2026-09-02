@@ -39,6 +39,8 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 sunColor;     // rgb the drawn disc's radiance
     vec4 fog;          // rgb the fog colour, w = exponential density
     vec4 fogRange;     // x start, y end of linear fog; z height, w falloff of ground fog
+    mat4 spotViewProj[4]; // shadowed spot lights' projections
+    vec4 spotInfo[32];    // x = a light's shadow map index or -1, y = range
 } frame;
 
 // Per-instance stream: the model matrix's rows, base colour, material
@@ -69,6 +71,7 @@ layout(set = 0, binding = 8) uniform sampler2D image3;
 layout(set = 0, binding = 9) uniform samplerCube envMap;
 layout(set = 0, binding = 10) uniform sampler2D thicknessTex;
 layout(set = 0, binding = 11) uniform sampler2D sceneTex;
+layout(set = 0, binding = 12) uniform sampler2D transmissionTex;
 
 #define UNIFORMS layout(set = 4, binding = 0)
 

@@ -224,6 +224,10 @@ type Material struct {
 	Thickness           float32
 	AttenuationColor    Color
 	AttenuationDistance float32
+	// TransmissionTexture scales Transmission by its red channel, so a
+	// window frame can be opaque and its panes glass in one material;
+	// nil is the factor everywhere. Data, not colour.
+	TransmissionTexture *Texture
 
 	// Outline draws a line of that many pixels around the mesh's
 	// silhouette in OutlineColor (zero means black): selection rings,

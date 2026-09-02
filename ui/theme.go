@@ -8,15 +8,20 @@
 //
 // The widgets: Label and RichLabel, Button and IconButton, Checkbox,
 // Radio and RadioGroup, Slider, IntSlider and Spinner, Progress,
-// Dropdown and ListBox, TextField and TextArea with selection, clipboard
-// and undo, ColorPicker, Image, Tooltip and Separator. Anchored,
-// Stretched and Split place rectangles from the view's size.
+// Dropdown, ListBox and ReorderableList, TextField and TextArea with
+// selection, clipboard and undo, ColorPicker, Image, Tooltip and
+// Separator. Anchored, Stretched and Split place rectangles from the
+// view's size. DragSource and DropTarget carry a payload from one widget
+// to another with a ghost under the pointer.
 //
 // Identity comes from a widget's label and its enclosing containers;
 // widgets with the same label in one container are told apart by the
 // order they are called in, so a list of identical buttons works as
-// long as the order is stable. Focus moves with
-// Tab and the d-pad, activates with Enter, Space or a gamepad's A;
+// long as the order is stable. Focus moves with Tab and the d-pad and
+// activates with Enter, Space or a gamepad's A. A list, a row of tabs, a
+// table's rows, a tree, a radio group or an open dropdown is one Tab
+// stop whose items the arrows, Home, End, PageUp and PageDown move
+// between; sliders and spinners step with the left and right arrows.
 // WantsMouse and WantsKeyboard tell the game when the interface took
 // the input. Accessible lists the last frame's widgets with roles and
 // values for screen readers and tests.

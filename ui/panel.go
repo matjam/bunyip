@@ -83,6 +83,14 @@ func (c *Context) nextWidth() float32 {
 
 // next reserves the next widget rectangle of height h.
 func (c *Context) next(h float32) Rect {
+	r := c.nextRect(h)
+	if n := len(c.bounds); n > 0 && r != (Rect{}) {
+		c.bounds[n-1].add(r) // a DragSource measures what its body takes
+	}
+	return r
+}
+
+func (c *Context) nextRect(h float32) Rect {
 	p := c.currentPanel()
 	if p == nil {
 		return Rect{}

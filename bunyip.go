@@ -67,6 +67,15 @@ type Config struct {
 	// music player or a game with real-time multiplayer keeps running.
 	PauseUnfocused bool
 
+	// DrawBudget is the number of draw calls (2D and 3D together) a
+	// frame should stay under; the debug overlay warns when a frame goes
+	// over, so a batching regression is noticed. Zero means no warning.
+	DrawBudget int
+	// LogFile appends the engine's log (and a panic's stack trace) to a
+	// file when Log is nil, for crash reports from players' machines;
+	// empty logs to the terminal.
+	LogFile string
+
 	// ViewWidth and ViewHeight fix the game's view in view units: the 2D
 	// coordinate space and the 3D viewport. The window scales that view by
 	// Scaling and centres it, so a pixel-art game designs for 320 by 180
@@ -218,6 +227,33 @@ type windowControl interface {
 	SetCursorVisible(bool)
 	SetCursor(platform.CursorShape)
 	SetIcon(image.Image)
+	SetPosition(x, y int)
+	Position() (x, y int)
+	SetAlwaysOnTop(bool)
+	SetCursorImage(img image.Image, hotX, hotY int)
+}
+
+// SetPosition moves the window so its content's top-left corner sits at
+// a point on the screen, in points from the screen's top-left: a
+// remembered position from a settings file, a tool window beside the
+// main one. macOS today; the other platforms ignore it.
+func (c *Context) SetPosition(x, y int) { c.win.SetPosition(x, y) }
+
+// Position returns the window content's top-left corner on the screen,
+// in points from the screen's top-left, for saving with the settings.
+func (c *Context) Position() (x, y int) { return c.win.Position() }
+
+// SetAlwaysOnTop keeps the window above other applications' windows, for
+// an overlay or a companion tool. macOS today; the other platforms
+// ignore it.
+func (c *Context) SetAlwaysOnTop(on bool) { c.win.SetAlwaysOnTop(on) }
+
+// SetCursorImage replaces the pointer with an image, its hot spot at
+// (hotX, hotY) pixels from the image's top-left: a crosshair, a hand, a
+// sword. SetCursor with a shape puts the system pointer back. macOS
+// today; the other platforms keep the system pointer.
+func (c *Context) SetCursorImage(img image.Image, hotX, hotY int) {
+	c.win.SetCursorImage(img, hotX, hotY)
 }
 
 // Cursor is a pointer shape for SetCursor.

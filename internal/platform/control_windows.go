@@ -134,6 +134,14 @@ func (w *Window) SetCursor(shape CursorShape) {
 
 // SetIcon builds an HICON from the image and gives it to the window for
 // both its title bar and the taskbar.
+// SetPosition, Position, SetAlwaysOnTop and SetCursorImage are not
+// implemented on Windows yet; the window stays where the system put it
+// and keeps the system pointer.
+func (w *Window) SetPosition(x, y int)                 {}
+func (w *Window) Position() (int, int)                 { return 0, 0 }
+func (w *Window) SetAlwaysOnTop(bool)                  {}
+func (w *Window) SetCursorImage(image.Image, int, int) {}
+
 func (w *Window) SetIcon(img image.Image) {
 	if img == nil {
 		return

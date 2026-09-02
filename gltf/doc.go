@@ -172,8 +172,10 @@ type Material struct {
 	SheenColor          [3]float32 // KHR_materials_sheen; zero for none
 	SheenRoughness      float32
 	Transmission        float32    // KHR_materials_transmission factor; zero for opaque
+	TransmissionImage   int        // R scales the factor; -1 none
 	IOR                 float32    // KHR_materials_ior; default 1.5
 	Thickness           float32    // KHR_materials_volume thickness factor
+	ThicknessImage      int        // G scales the thickness, as glTF stores it; -1 none
 	AttenuationDistance float32    // zero for no absorption
 	AttenuationColor    [3]float32 // default white
 }
@@ -191,7 +193,7 @@ const (
 // roughness or normals) and must not be decoded as sRGB.
 func (d *Document) IsDataImage(i int) bool {
 	for _, m := range d.Materials {
-		if m.MetalRoughImage == i || m.NormalImage == i || m.OcclusionImage == i {
+		if m.MetalRoughImage == i || m.NormalImage == i || m.OcclusionImage == i || m.TransmissionImage == i || m.ThicknessImage == i {
 			return true
 		}
 	}

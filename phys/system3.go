@@ -134,6 +134,7 @@ type state3 struct {
 	colliders *ecs.Query2[gfx.Transform, Collider3]
 	distance  *ecs.Query1[DistanceJoint3]
 	hinge     *ecs.Query1[HingeJoint3]
+	ball      *ecs.Query1[BallJoint3]
 	spring    *ecs.Query1[SpringJoint3]
 	fixed     *ecs.Query1[FixedJoint3]
 	entries   []entry3
@@ -150,6 +151,7 @@ func stateOf3(w *ecs.World) *state3 {
 			colliders: ecs.NewQuery2[gfx.Transform, Collider3](w),
 			distance:  ecs.NewQuery1[DistanceJoint3](w),
 			hinge:     ecs.NewQuery1[HingeJoint3](w),
+			ball:      ecs.NewQuery1[BallJoint3](w),
 			spring:    ecs.NewQuery1[SpringJoint3](w),
 			fixed:     ecs.NewQuery1[FixedJoint3](w),
 			index:     map[ecs.Entity]int{},
@@ -359,6 +361,7 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
 			continue
 		}
+		s.sweepDynamic(e, h)
 		delta := e.b.Vel.Mul(h)
 		length := delta.Len()
 		if length < 1e-6 {
@@ -472,6 +475,62 @@ func (s *state3) sweepStatic(e *entry3, delta lin.Vec3) (float32, bool) {
 		}
 	}
 	return best, found
+}
+
+// sweepDynamic is the speculative contact between a CCD body and the
+// other moving bodies: for each pair whose bounding spheres meet along
+// their relative motion this substep, the body's shape is swept against
+// the other's and both are held at the moment they would touch, so the
+// next substep's contact catches them.
+func (s *state3) sweepDynamic(e *entry3, h float32) {
+	ca, ra := sphereOfBounds3(e.lo, e.hi)
+	var parts []convexPart
+	for i := range s.entries {
+		o := &s.entries[i]
+		if o == e || o.b == nil || o.b.invMass == 0 || o.c.Trigger || !e.c.Layers.collides(o.c.Layers) {
+			continue
+		}
+		if o.b.CCD && o.e.ID() < e.e.ID() {
+			continue // the pair was swept from the other side
+		}
+		cb, rb := sphereOfBounds3(o.lo, o.hi)
+		d := cb.Sub(ca)
+		delta := e.b.Vel.Sub(o.b.Vel).Mul(h) // e's motion as o sees it
+		length := delta.Len()
+		if length < 1e-6 || !spheresMeet(d.Dot(d), -d.Dot(delta), length*length, ra+rb) {
+			continue
+		}
+		if parts == nil {
+			if parts = convexParts(e.c.Shape, e.pos, e.rot); len(parts) == 0 {
+				return
+			}
+		}
+		if t, ok := sweepParts(parts, o.c.Shape, o.pos, o.rot, delta); ok && t < 1 {
+			f := min(1, t+0.5*slop/length)
+			e.b.fraction = min(e.b.fraction, f)
+			o.b.fraction = min(o.b.fraction, f)
+		}
+	}
+}
+
+// sphereOfBounds3 is the sphere around a bounding box.
+func sphereOfBounds3(lo, hi lin.Vec3) (lin.Vec3, float32) {
+	return lo.Add(hi).Mul(0.5), hi.Sub(lo).Len() / 2
+}
+
+// spheresMeet reports whether two spheres of combined radius whose
+// centres start dd apart (squared) touch during a relative motion v
+// (dv = d·v, vv = v·v), or already overlap.
+func spheresMeet(dd, dv, vv, radius float32) bool {
+	c := dd - radius*radius
+	if c <= 0 {
+		return true
+	}
+	if dv >= 0 || vv < 1e-12 {
+		return false
+	}
+	disc := dv*dv - vv*c
+	return disc >= 0 && (-dv-float32(math.Sqrt(float64(disc))))/vv < 1
 }
 
 // sweepParts sweeps convex pieces against one placed shape.
