@@ -134,8 +134,7 @@ itself. A reference to an entity the file does not hold becomes `None`.
 `gfx.Transform` and `gfx.Transform2` are registered by default.
 
 Only exported fields are saved, as with any `encoding/json` value, and
-a type with its own `MarshalJSON` is written that way. Keep components
-plain data and this is all there is to it.
+a type with its own `MarshalJSON` is written that way.
 
 ## Prefabs
 
@@ -171,9 +170,9 @@ something in the copied tree refers to its copy afterwards.
 Copies are deep through exported fields: slices, maps, pointers and
 interface values get their own storage, so an inventory slice in the
 clone is not the original's. Unexported fields are copied as values,
-which means a slice or pointer kept in one is still shared. Components
-that `encoding/json` can save are always copied fully; that is the
-rule of thumb for both cloning and prefabs.
+so a slice or pointer kept in one is still shared. A component that
+`encoding/json` can save is always copied fully, which is the rule of
+thumb for both cloning and prefabs.
 
 ## Modelling advice
 

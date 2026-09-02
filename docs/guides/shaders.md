@@ -92,9 +92,9 @@ material's `clearcoat`, `clearcoatRoughness`, `sheen`,
 `attenuationDistance`, all filled in from the material's textures and
 factors before `surface` runs; change any of them and the lighting
 follows. Everything else is the standard pipeline: the shadowed
-directional light, point lights, hemisphere ambient, alpha cutout,
-bloom and anti-aliasing. Compile with `-kind mesh`, create it with
-`NewMeshShader`, and set it on a material:
+directional light, point and spot lights, the sky or environment map,
+fog, alpha cutout, bloom and anti-aliasing. Compile with `-kind mesh`,
+create it with `NewMeshShader`, and set it on a material:
 
 ```go
 lava, err := ctx.Gfx.NewMeshShader(lavaSPV)
@@ -123,16 +123,6 @@ vertex hook, `bunyip-shader` writes a bundle of all five programs
 file, and `NewMeshShader` reads either that or plain fragment SPIR-V.
 The `shaders` example's flag ripples this way.
 
-## Material features
-
-Beyond textures and factors, `Material` carries `AlphaCutoff` (hard-edged
-cutouts that also cut their shadows), `OcclusionTexture` with
-`OcclusionStrength` (baked ambient occlusion), `Unlit` (base colour and
-emissive without lighting), `DoubleSided` (back faces lit with a flipped
-normal), and `NoDepthTest` and `NoDepthWrite` for overlays and effects.
-The glTF loader fills all of these from a file's materials, including
-the alpha mode, the unlit and emissive-strength extensions.
-
 ## Blend modes and transforms
 
 Blending is separate from shaders and works with any of them:
@@ -160,7 +150,15 @@ first) and inverts with `Inverse`.
 
 ## Reading compiler errors
 
-glslangValidator reports line numbers of the composed file, which begin
-with the prelude. `bunyip-shader` prints the offset to subtract; `-print`
-writes the composed GLSL to standard output so you can read the whole
-thing. The `shaders` example has three working shaders to start from.
+glslangValidator reports line numbers in the composed file, which begins
+with the prelude. `bunyip-shader` prints the offset to subtract, and
+`-print` writes the composed GLSL to standard output so the whole
+program can be read. The `shaders` example has four working shaders to
+start from: a wave and a dissolve on sprites, and a lava surface and a
+rippling flag on meshes.
+
+## Reloading while the game runs
+
+`Shader.Reload` swaps in newly compiled SPIR-V without recreating the
+shader, so an `asset.Watcher` on the `.spv` files gives hot reload: edit
+the GLSL, run `go generate`, and the next frame draws with it.

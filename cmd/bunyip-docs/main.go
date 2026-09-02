@@ -612,18 +612,22 @@ func (s *Site) write(dir string) error {
 	if err := os.WriteFile(filepath.Join(dir, "symbols.json"), syms, 0o644); err != nil {
 		return err
 	}
-	// Images and other files the guides refer to live in docs/static and
-	// are copied to the site root.
-	if entries, err := os.ReadDir("docs/static"); err == nil {
+	// Images the guides refer to sit beside them in docs/guides and are
+	// copied next to the rendered pages, so a guide's relative link works
+	// both on the site and when the Markdown is read in the repository.
+	if entries, err := os.ReadDir("docs/guides"); err == nil {
+		if err := os.MkdirAll(filepath.Join(dir, "guides"), 0o755); err != nil {
+			return err
+		}
 		for _, e := range entries {
-			if e.IsDir() {
+			if e.IsDir() || strings.HasSuffix(e.Name(), ".md") {
 				continue
 			}
-			data, err := os.ReadFile(filepath.Join("docs/static", e.Name()))
+			data, err := os.ReadFile(filepath.Join("docs/guides", e.Name()))
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "guides", e.Name()), data, 0o644); err != nil {
 				return err
 			}
 		}

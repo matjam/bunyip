@@ -33,11 +33,12 @@ one.
 
 ## Pausing
 
-`Mixer.SetPaused` holds every voice at once; the engine calls it when the
-window loses focus and a pause menu calls it too. `Bus.SetPaused` and
-`Voice.SetPaused` hold less. A pause fades out over the block it lands in
-and the resume fades back in, so neither clicks, and each level is kept
-separately: resuming the mixer leaves a paused bus paused.
+`Mixer.SetPaused` holds every voice at once; a pause menu calls it, and
+the engine calls it for you when `Config.PauseUnfocused` is set and the
+window loses focus. `Bus.SetPaused` and `Voice.SetPaused` hold less. A
+pause fades out over the block it lands in and the resume fades back in,
+so neither clicks. Each level is kept separately: resuming the mixer
+leaves a paused bus paused.
 
 ## Mute and solo
 
@@ -45,10 +46,9 @@ Mute is not pause: a muted voice or bus keeps playing silently, so
 unmuting picks up wherever the sound has got to. `Voice.SetMute` and
 `Bus.SetMute` do that. Solo is the mixing desk's audition button: while
 any voice is soloed only soloed voices are heard, and while any bus is
-soloed only soloed buses (a voice on no bus counts as another bus).
+soloed only soloed buses (a voice on no bus counts as a bus of its own).
 `Voice.SetSolo` and `Bus.SetSolo` set it, and clearing the last solo
-brings everything back. A sound designer's debug panel binds a row of
-buttons to these.
+brings everything back.
 
 ## Music
 
@@ -113,11 +113,11 @@ send to it instead of the shared one. That keeps the music dry while the
 cave's effects ring, or gives dialogue a small room while the world has a
 large one.
 
-## Effects and priorities
+## Voice limits
 
-`SetMaxVoices` caps concurrent voices, and when the cap is reached a new
-voice replaces the quietest voice of the lowest priority no higher than
-its own, so a footstep never steals from the dialogue.
+`SetMaxVoices` caps the number of voices playing at once. When the cap
+is reached, a new voice replaces the quietest voice whose priority is no
+higher than its own, so a footstep never steals from the dialogue.
 
 ## Tracker music
 
@@ -133,9 +133,9 @@ The player can be driven while it plays; its methods take the same lock
 as `Read`, so the game loop calls them freely. `Position` reports the
 song position (an index into the order list) and row, `Length` counts the
 positions and `Rows` the rows in the pattern at one, and `Seek(order,
-row)` jumps there, cutting whatever was sounding; a level with several
-sections in one module seeks between them. `Mute(channel, true)` silences
-a pattern channel while the song plays on, and `Solo` auditions one, as
-in a tracker; `Channels` says how many there are. A game that drops the
-drums when the player hides mutes their channel and unmutes it seamlessly
-later.
+row)` jumps there, cutting whatever was sounding, so a level with several
+sections in one module can seek between them. `Mute(channel, true)`
+silences a pattern channel while the song plays on, `Solo` auditions
+one, and `Channels` says how many there are. A game that drops the drums
+while the player hides mutes their channel and unmutes it later without
+a break.

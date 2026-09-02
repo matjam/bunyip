@@ -1,5 +1,12 @@
 # Design: user shaders, blending and vector paths, shaped text
 
+This is the design as it was written before the work was done. It is
+kept as a record of the reasoning. Some details changed as the code
+landed: mesh shaders now use five descriptor sets with the uniform block
+in set 4, and colour matrices and bitmap emoji, listed as out of scope
+here, were added later. The [rendering](../guides/rendering.md) and
+[shaders](../guides/shaders.md) guides describe what shipped.
+
 This document specifies three additions to `gfx`: fragment shaders
 written by the game, blend modes with anti-aliased vector paths and 2D
 transforms, and text shaping through HarfBuzz. The guiding rules were:

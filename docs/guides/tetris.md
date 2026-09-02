@@ -10,7 +10,7 @@ input, drawing, the timer and tween packages, the UI and the mixer. The
 finished program is `examples/tetris` in the repository; run it with
 `go run ./examples/tetris`.
 
-![The finished game](../tetris.png)
+![The finished game](tetris.png)
 
 ## 1. What is an entity here?
 
@@ -30,9 +30,9 @@ type Falling struct {
 }
 ```
 
-Everything there is exactly one of is a *resource* on the world rather
-than an entity: the score, the occupancy grid, this frame's controls,
-the gravity clock and the bag of upcoming pieces.
+Anything the game has exactly one of is a *resource* on the world
+rather than an entity: the score, the occupancy grid, this update's
+controls, the gravity clock and the bag of upcoming pieces.
 
 ```go
 type Board struct{ Full [rows][cols]bool }
@@ -125,9 +125,9 @@ w.AddSystem("effects", g.effectsSystem(ctx.Audio))
 ```
 
 The first system rebuilds the occupancy grid from the `Cell` entities,
-so the others test collisions against a plain array. Two hundred cells
-is nothing for a query, and it keeps the board honest whatever the other
-systems did:
+so the others test collisions against a plain array. Walking two
+hundred cells costs nothing, and rebuilding the grid every update means
+it can never disagree with the entities:
 
 ```go
 func boardSystem(w *ecs.World, dt float64) {
@@ -143,10 +143,10 @@ func boardSystem(w *ecs.World, dt float64) {
 
 ## 4. Input as a resource
 
-The engine's `ctx.Input` lives outside the world, so each `Update`
-copies the edges the game cares about into the `Controls` resource and
-then runs the systems. That keeps the input system a pure function of
-the world, which is what makes it testable and replayable:
+`ctx.Input` lives outside the world, so each `Update` copies the key
+presses the game cares about into the `Controls` resource and then runs
+the systems. The input system is then a function of the world alone,
+which makes it testable and, later, replayable:
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -276,8 +276,8 @@ func lockPiece(w *ecs.World) {
 }
 ```
 
-Notice that the game logic never mentions sound or animation. It emits
-an event and moves on.
+The game logic never mentions sound or animation. It emits an event
+and moves on.
 
 ## 7. Effects from events
 
@@ -356,9 +356,9 @@ u.Begin(ctx.Input, func() {
 
 ## 10. Running and shipping
 
-The whole game is about 350 lines. It accepts the same `-seconds` and
-`-shot` flags as every example, so a script can run it and save a
-screenshot without a person at the keyboard:
+The whole game is under five hundred lines. It accepts the same
+`-seconds` and `-shot` flags as every example, so a script can run it
+and save a screenshot:
 
 ```
 go run ./examples/tetris -seconds 3 -shot tetris.png

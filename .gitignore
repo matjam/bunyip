@@ -1,6 +1,7 @@
 /bin/
 *.png
 !assets/**/*.png
+!docs/guides/*.png
 *.spv
 !**/shaders/*.spv
 .DS_Store

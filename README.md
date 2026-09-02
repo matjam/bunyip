@@ -1,43 +1,53 @@
 # Bunyip
 
-A game engine in Go for real-time and turn-based games: roguelikes, 4X, and
-anything else that wants 2D sprites and 3D models on the same screen.
+A game engine in Go for real-time and turn-based games: roguelikes, 4X,
+space games, and anything else that puts 2D sprites and 3D models on the
+same screen.
 
-- Vulkan rendering through a generated, cgo-free binding (MoltenVK on macOS).
-- Native window, input and audio layers per platform; no SDL, no GLFW.
-- `CGO_ENABLED=0` everywhere. Native libraries are opened at runtime with purego.
-- Physically based rendering with clearcoat, sheen, subsurface and glass,
-  cascaded shadow maps, point lights, spot lights with shadows, a
-  procedural sky or image-based lighting, fog, SSAO, bloom, FXAA, tone
-  mapping and colour grading LUTs; skeletal
-  animation; automatic instancing and frustum culling; levels of detail;
-  billboards and labels in the world; decals, outlines and x-ray; dynamic
-  meshes and terrain; render textures; picking. Sprites, tilemaps, vector
-  paths, particles, shaped text with emoji and rich markup on top, and
-  game-written sprite and surface shaders.
-- Immediate-mode, themeable UI: panels, windows, tabs, tables, trees,
-  menus and modals; text fields with selection, clipboard and undo;
-  sliders, spinners, list boxes, colour pickers, tooltips, drag and drop
-  and reorderable lists; keyboard or gamepad navigation inside lists and
-  tables and an accessibility tree. glTF 2.0 models.
-  Fullscreen, cursor capture, gamepads, IME text input, action maps with
-  rebinding.
-- Audio mixer with streamed WAV, Ogg Vorbis and MP3, positional voices,
-  reverb and filters, priorities, and a tracker player for MOD, S3M, XM and IT.
-- Game services: an archetype-based entity component system with systems,
-  resources, events, saving, prefabs and cloning; assets and packs with
-  async loading and hot reload, saves and settings, seeded RNG, timers and
-  tweens, grids with pathfinding and field of view, Tiled maps, TCP and
-  UDP messaging with interpolation and prediction helpers.
-- A fixed view scaled into the window (fit, integer or stretch), an
-  interpolation factor for smooth motion, window title, icon, cursor and
-  clipboard control, and headless runs for tests and screenshots.
-- Two loop modes: fixed-timestep real time, or turn-based where the process
-  sleeps in the OS until input (or `Context.Wake`) arrives. A frame-timing
-  overlay on F3 and optional pprof.
+**How it is built**
 
-macOS is the tested target. Windows (Win32, WASAPI, XInput) and Linux (X11
-through xcb, ALSA, joystick devices) layers exist behind the same
+- Pure Go, `CGO_ENABLED=0` everywhere. Vulkan is called through a
+  generated binding and every native library is opened at run time with
+  purego; MoltenVK provides Vulkan on macOS.
+- Native window, input and audio layers per platform. No SDL, no GLFW.
+- Two loop modes: a fixed timestep for real-time games, or turn-based,
+  where the process sleeps in the operating system until input arrives.
+- Every example runs to a screenshot without a window, and the renderer's
+  tests read pixels back from a headless surface.
+
+**What it does**
+
+- 2D: sprites, sheets and tilemaps, Tiled maps, a camera, vector paths
+  with gradients and dashes, particles, HarfBuzz-shaped text with colour
+  emoji and rich markup, colour matrices, lit sprites, blend modes and
+  game-written fragment shaders.
+- 3D: physically based materials with clearcoat, sheen, subsurface and
+  glass; glTF models with skeletal animation, blend spaces, IK and morph
+  targets; cascaded shadows, spot lights with shadows, a procedural sky
+  or image-based lighting, fog; instancing, frustum culling and levels of
+  detail; billboards, decals, outlines and x-ray; dynamic meshes and
+  terrain; SSAO, bloom, FXAA, tone mapping and colour grading; render
+  textures and picking.
+- Interface: immediate-mode widgets with themes and skins, from panels
+  and windows to tables, trees, menus, modals, text editing, drag and
+  drop, and keyboard or gamepad navigation, with an accessibility tree.
+- Audio: a mixer with streamed WAV, Ogg Vorbis and MP3, positional
+  voices with Doppler and occlusion, buses, reverb zones, and a tracker
+  player for MOD, S3M, XM and IT.
+- Simulation: an archetype entity component system with saving, prefabs
+  and cloning; 2D and 3D rigid bodies with joints, ragdolls, character
+  controllers and queries; celestial mechanics for any star system.
+- Services: assets and pack files with background loading and hot
+  reload, saves and settings, translation with plural rules, seeded
+  random numbers, timers and cutscene sequences, tweens, grids with
+  pathfinding and field of view, and networking over TCP (with TLS) and
+  UDP (with reliable channels, prediction and interpolation helpers).
+- The window: a fixed view scaled into the window, fullscreen, cursor
+  capture and images, clipboard, gamepads, IME text input, action maps
+  with rebinding, a frame-timing overlay on F3, and optional pprof.
+
+macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
+(X11 through xcb, ALSA, joystick devices) layers sit behind the same
 `internal/platform` and `internal/audioout` interfaces; they cross-compile
 and vet but have not yet run on hardware. Wayland desktops use XWayland.
 
@@ -150,6 +160,8 @@ self-verifying without anyone watching the screen.
 
 ## Requirements
 
+Go 1.26 or later, and a Vulkan driver.
+
 macOS: the Vulkan loader and MoltenVK (`brew install vulkan-loader molten-vk`),
 or the LunarG Vulkan SDK. Optional: `brew install vulkan-validationlayers`
 for validation in tests and examples. Set `BUNYIP_VULKAN_LIBRARY` to point at
@@ -169,4 +181,7 @@ go vet ./...
 ```
 
 Renderer tests run on a headless surface, read the swapchain back and check
-pixels, so correctness never depends on a person looking at a window.
+pixels. `go test ./examples/` runs every example headless for a moment and
+checks that it drew something; it needs a GPU and is skipped with `-short`.
+The parsers have fuzz targets: `go test -fuzz=Fuzz ./audio/...` and the
+same in `gltf`, `tiled` and `gfx`.
