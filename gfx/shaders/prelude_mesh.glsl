@@ -14,10 +14,11 @@ layout(set = 0, binding = 0) uniform sampler2D albedoTex;
 layout(set = 0, binding = 1) uniform sampler2D metalRoughTex; // G roughness, B metallic (glTF)
 layout(set = 0, binding = 2) uniform sampler2D normalTex;
 layout(set = 0, binding = 3) uniform sampler2D emissiveTex;
-layout(set = 0, binding = 4) uniform sampler2D image0;
-layout(set = 0, binding = 5) uniform sampler2D image1;
-layout(set = 0, binding = 6) uniform sampler2D image2;
-layout(set = 0, binding = 7) uniform sampler2D image3;
+layout(set = 0, binding = 4) uniform sampler2D occlusionTex; // R: baked ambient occlusion
+layout(set = 0, binding = 5) uniform sampler2D image0;
+layout(set = 0, binding = 6) uniform sampler2D image1;
+layout(set = 0, binding = 7) uniform sampler2D image2;
+layout(set = 0, binding = 8) uniform sampler2D image3;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -46,12 +47,14 @@ layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
 layout(location = 3) in float vViewDepth;
 layout(location = 4) flat in vec4 vBaseColor;
-layout(location = 5) flat in vec4 vMaterial;
+layout(location = 5) flat in vec4 vMaterial; // x metallic, y roughness, z emissive, w flags (1 normal map, 2 unlit)
+layout(location = 6) flat in vec4 vExtra;    // y alpha cutoff, z occlusion strength
 layout(location = 0) out vec4 outColor;
 
 // Surface is what the lighting sees. surface() may change any field:
 // albedo and alpha (linear, not premultiplied), normal (world space),
-// metallic, roughness, emissive (linear radiance added after lighting).
+// metallic, roughness, emissive (linear radiance added after lighting),
+// occlusion (0..1, scales ambient light), unlit (skip lighting).
 struct Surface {
     vec3 albedo;
     float alpha;
@@ -59,10 +62,21 @@ struct Surface {
     float metallic;
     float roughness;
     vec3 emissive;
+    float occlusion;
+    bool unlit;
     vec2 uv;
     vec3 worldPos;
     vec3 viewDir;   // towards the camera
 };
+
+// VertexData and model are the vertex stage's; they are here so a
+// shader's vertex() compiles in this stage too, where it is never called.
+struct VertexData {
+    vec3 position;
+    vec3 normal;
+    vec2 uv;
+};
+mat4 model() { return mat4(1.0); }
 
 // time is seconds since the game started.
 float time() { return frame.params.w; }
@@ -173,7 +187,7 @@ vec3 light(Surface s) {
     vec3 r = reflect(-v, n);
     vec3 env = mix(frame.ground.rgb, frame.sky.rgb, r.y * 0.5 + 0.5);
     vec3 ambientSpec = kS * env * (1.0 - s.roughness * 0.8);
-    return color + ambientDiffuse + ambientSpec;
+    return color + (ambientDiffuse + ambientSpec) * s.occlusion;
 }
 
 void surface(inout Surface s);

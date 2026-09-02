@@ -176,13 +176,17 @@ func (f *Font) preload(r rune) {
 	}
 }
 
-// ResolveFace picks the first face with a glyph for the rune, which is
-// how shaping chooses fallbacks. It implements shaping.Fontmap.
-func (f *Font) ResolveFace(r rune) *font.Face {
+// fontmap picks faces for shaping: the main face when it has the rune,
+// otherwise the first fallback that does. It implements shaping.Fontmap
+// without exposing the shaping library on Font.
+type fontmap struct{ f *Font }
+
+func (m fontmap) ResolveFace(r rune) *font.Face {
+	f := m.f
+	if _, ok := f.faces[0].face.NominalGlyph(r); ok {
+		return f.faces[0].face
+	}
 	for _, ff := range f.faces[1:] {
-		if _, ok := f.faces[0].face.NominalGlyph(r); ok {
-			break
-		}
 		if _, ok := ff.face.NominalGlyph(r); ok {
 			return ff.face
 		}

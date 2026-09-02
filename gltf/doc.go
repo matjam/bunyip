@@ -95,19 +95,35 @@ type Material struct {
 	Image     int        // albedo image index into Document.Images, or -1
 	Linear    bool       // sampler asks for linear filtering
 
-	Metallic        float32 // factor; default 1
-	Roughness       float32 // factor; default 1
-	MetalRoughImage int     // G roughness, B metallic; -1 none
-	NormalImage     int     // -1 none
-	EmissiveImage   int     // -1 none
-	Emissive        [3]float32
+	Metallic          float32 // factor; default 1
+	Roughness         float32 // factor; default 1
+	MetalRoughImage   int     // G roughness, B metallic; -1 none
+	NormalImage       int     // -1 none
+	EmissiveImage     int     // -1 none
+	Emissive          [3]float32
+	OcclusionImage    int     // R occlusion; -1 none
+	OcclusionStrength float32 // default 1
+
+	AlphaMode   AlphaMode
+	AlphaCutoff float32 // for AlphaMask; default 0.5
+	DoubleSided bool
+	Unlit       bool // KHR_materials_unlit: draw the base colour without lighting
 }
+
+// AlphaMode is how a material's alpha is used.
+type AlphaMode uint8
+
+const (
+	AlphaOpaque AlphaMode = iota
+	AlphaMask             // fragments below AlphaCutoff are discarded
+	AlphaBlend            // alpha-blended
+)
 
 // IsDataImage reports whether an image holds non-colour data (metallic-
 // roughness or normals) and must not be decoded as sRGB.
 func (d *Document) IsDataImage(i int) bool {
 	for _, m := range d.Materials {
-		if m.MetalRoughImage == i || m.NormalImage == i {
+		if m.MetalRoughImage == i || m.NormalImage == i || m.OcclusionImage == i {
 			return true
 		}
 	}

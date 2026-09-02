@@ -78,8 +78,15 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				mat.NormalTexture = m.texture(src.NormalImage)
 				mat.EmissiveTexture = m.texture(src.EmissiveImage)
 				mat.Emissive = max(src.Emissive[0], src.Emissive[1], src.Emissive[2])
-				if mat.MetalRoughTexture == nil && mat.Metallic == 0 {
-					mat.Metallic = 0 // dielectric by factor alone
+				mat.OcclusionTexture = m.texture(src.OcclusionImage)
+				mat.OcclusionStrength = src.OcclusionStrength
+				mat.DoubleSided = src.DoubleSided
+				mat.Unlit = src.Unlit
+				switch src.AlphaMode {
+				case gltf.AlphaMask:
+					mat.AlphaCutoff = src.AlphaCutoff
+				case gltf.AlphaBlend:
+					mat.Blend = true
 				}
 			}
 			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})

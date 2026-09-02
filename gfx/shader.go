@@ -2,9 +2,12 @@ package gfx
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"unsafe"
 
+	"github.com/matjam/bunyip/gfx/shaders"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
@@ -113,6 +116,7 @@ func (g *Graphics) Transform() lin.Affine { return g.cur.xform }
 type Shader struct {
 	g      *Graphics
 	frag   []byte
+	stages map[shaders.Stage][]byte // a mesh shader's vertex programs, when it hooks vertices
 	mesh   bool
 	images [4]*Texture
 	block  []byte // the latest uniform values
@@ -124,8 +128,21 @@ type Shader struct {
 
 // pipeKey selects a pipeline variant of a shader.
 type pipeKey struct {
-	blend   Blend // 2D: the blend mode; mesh: BlendAlpha for translucent materials, BlendReplace for opaque
-	skinned bool
+	blend        Blend // 2D: the blend mode; mesh: BlendAlpha for translucent materials, BlendReplace for opaque
+	skinned      bool
+	doubleSided  bool
+	noDepthTest  bool
+	noDepthWrite bool
+	shadow       bool // the depth-only shadow pass
+}
+
+// meshKey is the pipeline variant a material needs.
+func meshKey(mat Material, skinned bool) pipeKey {
+	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite}
+	if mat.Blend {
+		key.blend = BlendAlpha
+	}
+	return key
 }
 
 // NewShader compiles a sprite (2D) shader from SPIR-V produced by
@@ -140,20 +157,53 @@ func (g *Graphics) NewMeshShader(spirv []byte) (*Shader, error) {
 	return g.newShader(spirv, true)
 }
 
-func (g *Graphics) newShader(spirv []byte, mesh bool) (*Shader, error) {
-	if len(spirv) < 20 || len(spirv)%4 != 0 || spirv[0] != 0x03 || spirv[1] != 0x02 || spirv[2] != 0x23 || spirv[3] != 0x07 {
-		return nil, fmt.Errorf("gfx: shader is not SPIR-V (compile it with bunyip-shader)")
-	}
-	s := &Shader{g: g, frag: spirv, mesh: mesh, pipes: map[pipeKey]*render.Pipeline{}}
-	// Build the common variant now so a bad module fails here, not mid-frame.
-	key := pipeKey{}
+func (g *Graphics) newShader(data []byte, mesh bool) (*Shader, error) {
+	s := &Shader{g: g, mesh: mesh, pipes: map[pipeKey]*render.Pipeline{}}
 	if mesh {
-		key.blend = BlendReplace
+		stages, err := shaders.Unbundle(data)
+		if err != nil {
+			return nil, fmt.Errorf("gfx: %w", err)
+		}
+		s.frag = stages[shaders.StageFrag]
+		delete(stages, shaders.StageFrag)
+		if len(stages) > 0 {
+			s.stages = stages
+		}
+	} else {
+		s.frag = data
 	}
-	if _, err := s.pipeline(key); err != nil {
-		return nil, err
+	for _, spv := range append([][]byte{s.frag}, slices.Collect(maps.Values(s.stages))...) {
+		if len(spv) < 20 || len(spv)%4 != 0 || spv[0] != 0x03 || spv[1] != 0x02 || spv[2] != 0x23 || spv[3] != 0x07 {
+			return nil, fmt.Errorf("gfx: shader is not SPIR-V (compile it with bunyip-shader)")
+		}
+	}
+	// Build the common variants now so a bad module fails here, not mid-frame.
+	keys := []pipeKey{{}}
+	if mesh {
+		keys = []pipeKey{{blend: BlendReplace}, {shadow: true}}
+	}
+	for _, key := range keys {
+		if _, err := s.pipeline(key); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
+}
+
+// vert is the shader's program for a vertex stage, or the engine's.
+func (s *Shader) vert(st shaders.Stage) []byte {
+	if spv, ok := s.stages[st]; ok {
+		return spv
+	}
+	switch st {
+	case shaders.StageSkinVert:
+		return shaders.PBRSkinVert
+	case shaders.StageShadowVert:
+		return shaders.ShadowVert
+	case shaders.StageShadowSkinVert:
+		return shaders.ShadowSkinVert
+	}
+	return shaders.PBRVert
 }
 
 // pipeline returns the shader's pipeline for a variant, building it on
@@ -164,11 +214,32 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 	}
 	g := s.g
 	var desc render.PipelineDesc
-	if s.mesh {
+	if s.mesh && key.shadow {
+		desc = g.meshes.shadowPipelineDesc(key.skinned)
+		if key.skinned {
+			desc.Vert = s.vert(shaders.StageShadowSkinVert)
+		} else {
+			desc.Vert = s.vert(shaders.StageShadowVert)
+		}
+	} else if s.mesh {
 		desc = g.meshes.pipelineDesc(key.skinned)
 		desc.Frag = s.frag
+		if key.skinned {
+			desc.Vert = s.vert(shaders.StageSkinVert)
+		} else {
+			desc.Vert = s.vert(shaders.StageVert)
+		}
 		if key.blend != BlendReplace {
 			desc.Blend, desc.DepthWrite, desc.CullMode = true, false, vk.VK_CULL_MODE_NONE
+		}
+		if key.doubleSided {
+			desc.CullMode = vk.VK_CULL_MODE_NONE
+		}
+		if key.noDepthTest {
+			desc.DepthTest = false
+		}
+		if key.noDepthWrite {
+			desc.DepthWrite = false
 		}
 	} else {
 		bindings, attrs := vertex2DLayout()

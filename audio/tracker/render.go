@@ -197,8 +197,6 @@ func hermite(y0, y1, y2, y3, t float32) float32 {
 	return ((c3*t+c2)*t+c1)*t + c0
 }
 
-func sqrt32(v float32) float32 { return float32(math.Sqrt(float64(v))) }
-
 func abs32(v float32) float32 {
 	if v < 0 {
 		return -v

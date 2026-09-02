@@ -765,7 +765,7 @@ func (g *Graphics) StrokeLine(x0, y0, x1, y1, width float32, c Color) {
 }
 
 // FillPolygon fills a polygon through the points.
-func (g *Graphics) FillPolygon(c Color, points ...lin.Vec2) {
+func (g *Graphics) FillPolygon(points []lin.Vec2, c Color) {
 	var p Path
 	g.FillPath(p.Polygon(points...), c, FillOptions{})
 }

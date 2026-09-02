@@ -82,7 +82,6 @@ func (m mask) intersects(o mask) bool {
 // column is one component type's storage inside an archetype.
 type column interface {
 	appendZero()
-	appendAny(v any)
 	setAny(row int, v any)
 	// moveTo appends row's value to dst (a column of the same type).
 	moveTo(dst column, row int)
@@ -92,10 +91,7 @@ type column interface {
 
 type typedColumn[T any] struct{ data []T }
 
-func (c *typedColumn[T]) appendZero() { var z T; c.data = append(c.data, z) }
-func (c *typedColumn[T]) appendAny(v any) {
-	c.data = append(c.data, v.(T))
-}
+func (c *typedColumn[T]) appendZero()           { var z T; c.data = append(c.data, z) }
 func (c *typedColumn[T]) setAny(row int, v any) { c.data[row] = v.(T) }
 func (c *typedColumn[T]) moveTo(dst column, row int) {
 	dst.(*typedColumn[T]).data = append(dst.(*typedColumn[T]).data, c.data[row])
@@ -251,10 +247,7 @@ type anyColumn struct {
 	data reflect.Value // []T
 }
 
-func (c *anyColumn) appendZero() { c.data = reflect.Append(c.data, reflect.Zero(c.typ)) }
-func (c *anyColumn) appendAny(v any) {
-	c.data = reflect.Append(c.data, reflect.ValueOf(v))
-}
+func (c *anyColumn) appendZero()           { c.data = reflect.Append(c.data, reflect.Zero(c.typ)) }
 func (c *anyColumn) setAny(row int, v any) { c.data.Index(row).Set(reflect.ValueOf(v)) }
 func (c *anyColumn) moveTo(dst column, row int) {
 	d := dst.(*anyColumn)

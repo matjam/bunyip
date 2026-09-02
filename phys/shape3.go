@@ -95,32 +95,6 @@ type obb struct {
 	half   lin.Vec3
 }
 
-func (o obb) vertices() [8]lin.Vec3 {
-	var out [8]lin.Vec3
-	i := 0
-	for _, sx := range []float32{-1, 1} {
-		for _, sy := range []float32{-1, 1} {
-			for _, sz := range []float32{-1, 1} {
-				out[i] = o.center.Add(o.rot.mulVec(lin.V3(sx*o.half.X, sy*o.half.Y, sz*o.half.Z)))
-				i++
-			}
-		}
-	}
-	return out
-}
-
-// support returns the vertex furthest along dir.
-func (o obb) support(dir lin.Vec3) lin.Vec3 {
-	best := o.center
-	bestD := float32(math.Inf(-1))
-	for _, v := range o.vertices() {
-		if d := v.Dot(dir); d > bestD {
-			best, bestD = v, d
-		}
-	}
-	return best
-}
-
 // collide3 generates contacts between two placed shapes; normals point
 // from A to B.
 func collide3(sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) []contact3 {

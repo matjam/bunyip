@@ -28,6 +28,7 @@ import (
 //go:generate go run ../../cmd/bunyip-shader -o wave.spv wave.glsl
 //go:generate go run ../../cmd/bunyip-shader -o dissolve.spv dissolve.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -o lava.spv lava.glsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -o flag.spv flag.glsl
 
 var (
 	//go:embed wave.spv
@@ -36,6 +37,8 @@ var (
 	dissolveSPV []byte
 	//go:embed lava.spv
 	lavaSPV []byte
+	//go:embed flag.spv
+	flagSPV []byte
 )
 
 type game struct {
@@ -49,10 +52,34 @@ type game struct {
 	wave      *gfx.Shader
 	dissolve  *gfx.Shader
 	lava      *gfx.Shader
+	flag      *gfx.Shader
 	cube      *gfx.Mesh
+	cloth     *gfx.Mesh
 	amplitude float32
 	heat      float32
+	wind      float32
 	shotDone  bool
+}
+
+// clothMesh is a subdivided quad in the x-y plane, 2 by 1.2 units, with
+// u running along x so the flag's vertex hook can pin one edge.
+func clothMesh(nx, ny int) ([]gfx.Vertex, []uint32) {
+	var verts []gfx.Vertex
+	var idx []uint32
+	for j := 0; j <= ny; j++ {
+		for i := 0; i <= nx; i++ {
+			u, v := float32(i)/float32(nx), float32(j)/float32(ny)
+			verts = append(verts, gfx.Vertex{Pos: lin.V3(u*2, 1.2-v*1.2, 0), Normal: lin.V3(0, 0, 1), UV: lin.V2(u, v)})
+		}
+	}
+	stride := uint32(nx + 1)
+	for j := 0; j < ny; j++ {
+		for i := 0; i < nx; i++ {
+			a := uint32(j)*stride + uint32(i)
+			idx = append(idx, a, a+stride, a+1, a+1, a+stride, a+stride+1)
+		}
+	}
+	return verts, idx
 }
 
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -76,6 +103,9 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.lava, err = ctx.Gfx.NewMeshShader(lavaSPV); err != nil {
 		return err
 	}
+	if g.flag, err = ctx.Gfx.NewMeshShader(flagSPV); err != nil {
+		return err
+	}
 	g.wave.SetImage(0, g.noise)
 	g.dissolve.SetImage(0, g.noise)
 	g.lava.SetImage(0, g.noise)
@@ -83,11 +113,17 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.cube, err = ctx.Gfx.NewMesh(cv, ci); err != nil {
 		return err
 	}
-	g.amplitude, g.heat = 0.03, 1
+	fv, fi := clothMesh(40, 24)
+	if g.cloth, err = ctx.Gfx.NewMesh(fv, fi); err != nil {
+		return err
+	}
+	g.amplitude, g.heat, g.wind = 0.03, 1, 1
 	return nil
 }
 
 func (g *game) Shutdown(ctx *bunyip.Context) {
+	g.cloth.Destroy()
+	g.flag.Destroy()
 	g.cube.Destroy()
 	g.lava.Destroy()
 	g.dissolve.Destroy()
@@ -122,6 +158,10 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(200, 200, 210), Roughness: 0.4, Metallic: 0.6},
 			lin.Translate(lin.V3(2.5*float32(math.Cos(a)), 0.2, 2.5*float32(math.Sin(a)))).Mul(lin.Rotate(t+float32(i), lin.V3(0, 1, 0))).Mul(lin.Scale(lin.V3(0.8, 0.8, 0.8))))
 	}
+	// A flag on a pole: the vertex hook ripples the cloth and its shadow.
+	g.flag.SetUniforms(struct{ Strength float32 }{g.wind})
+	gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(90, 90, 100), Roughness: 0.5}, lin.Translate(lin.V3(0, 1.2, 0)).Mul(lin.Scale(lin.V3(0.06, 3.2, 0.06))))
+	gr.DrawMesh(g.cloth, gfx.Material{Shader: g.flag, DoubleSided: true}, lin.Translate(lin.V3(0.05, 1.6, 0)).Mul(lin.Rotate(t*0.2, lin.V3(0, 1, 0))))
 
 	// 2D: the wave shader over a checker, then the dissolve.
 	g.wave.SetUniforms(struct{ Amplitude, Frequency float32 }{g.amplitude, 24})
@@ -151,10 +191,11 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Shaders", ui.Rect{X: 12, Y: 12, W: 320, H: 200}, func() {
+		u.Panel("Shaders", ui.Rect{X: 12, Y: 12, W: 320, H: 250}, func() {
 			u.Slider("Wave amplitude", &g.amplitude, 0, 0.1)
 			u.Slider("Lava heat", &g.heat, 0, 3)
-			u.Label("wave.glsl and dissolve.glsl colour sprites; lava.glsl shapes a surface before lighting. Additive glows, a multiplied shadow, and a sheared sprite below.")
+			u.Slider("Wind", &g.wind, 0, 2)
+			u.Label("wave.glsl and dissolve.glsl colour sprites; lava.glsl shapes a surface before lighting; flag.glsl moves vertices. Additive glows, a multiplied shadow, and a sheared sprite below.")
 		})
 	})
 	return nil

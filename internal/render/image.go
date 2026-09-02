@@ -1,8 +1,6 @@
 package render
 
 import (
-	"unsafe"
-
 	"github.com/matjam/bunyip/internal/vk"
 )
 
@@ -211,9 +209,4 @@ func (d *Device) NewShadowSampler() (vk.VkSampler, error) {
 	var s vk.VkSampler
 	err := vk.Check("vkCreateSampler", vk.VkCreateSampler(d.Handle, &info, nil, &s))
 	return s, err
-}
-
-// bytesOf views any fixed-size value as bytes, for uploads.
-func bytesOf[T any](v *T) []byte {
-	return unsafe.Slice((*byte)(unsafe.Pointer(v)), unsafe.Sizeof(*v))
 }

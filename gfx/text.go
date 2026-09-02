@@ -104,7 +104,7 @@ func (f *Font) shape(text string, opts TextOptions) []shaping.Output {
 		in.Language = language.NewLanguage(opts.Language)
 	}
 	var outs []shaping.Output
-	for _, run := range f.seg.Split(in, f) {
+	for _, run := range f.seg.Split(in, fontmap{f}) {
 		outs = append(outs, f.shaper.Shape(run))
 	}
 	f.runs[key] = outs

@@ -90,9 +90,22 @@ type jsonMaterial struct {
 		RoughnessFactor          *float32        `json:"roughnessFactor"`
 		MetallicRoughnessTexture *jsonTextureRef `json:"metallicRoughnessTexture"`
 	} `json:"pbrMetallicRoughness"`
-	NormalTexture   *jsonTextureRef `json:"normalTexture"`
-	EmissiveTexture *jsonTextureRef `json:"emissiveTexture"`
-	EmissiveFactor  []float32       `json:"emissiveFactor"`
+	NormalTexture    *jsonTextureRef `json:"normalTexture"`
+	EmissiveTexture  *jsonTextureRef `json:"emissiveTexture"`
+	EmissiveFactor   []float32       `json:"emissiveFactor"`
+	OcclusionTexture *struct {
+		Index    int      `json:"index"`
+		Strength *float32 `json:"strength"`
+	} `json:"occlusionTexture"`
+	AlphaMode   string   `json:"alphaMode"`
+	AlphaCutoff *float32 `json:"alphaCutoff"`
+	DoubleSided bool     `json:"doubleSided"`
+	Extensions  struct {
+		Unlit            *struct{} `json:"KHR_materials_unlit"`
+		EmissiveStrength *struct {
+			Strength float32 `json:"emissiveStrength"`
+		} `json:"KHR_materials_emissive_strength"`
+	} `json:"extensions"`
 }
 
 type jsonMesh struct {

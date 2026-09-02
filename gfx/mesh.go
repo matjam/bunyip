@@ -89,9 +89,21 @@ type Material struct {
 	NormalTexture     *Texture // tangent-space normal map; data, not colour
 	EmissiveTexture   *Texture // sRGB, scaled by Emissive
 	Emissive          float32
+	// OcclusionTexture darkens ambient light by its red channel, for baked
+	// crevice shadows; OcclusionStrength scales it (zero means 1).
+	OcclusionTexture  *Texture
+	OcclusionStrength float32
 
+	// AlphaCutoff discards fragments whose alpha is below it, in both the
+	// lit and shadow passes: leaves, fences, decals with hard edges. Zero
+	// means no cutout.
+	AlphaCutoff float32
 	Blend       bool // alpha-blended, drawn after opaque geometry back to front
-	DoubleSided bool // no back-face culling
+	DoubleSided bool // no back-face culling; back faces are lit with a flipped normal
+	Unlit       bool // the base colour and emissive as they are, ignoring lights
+
+	NoDepthTest  bool // draw over everything already drawn: overlays, highlights through walls
+	NoDepthWrite bool // leave the depth buffer alone: ghosts, additive effects
 
 	// Shader is a mesh shader from NewMeshShader that adjusts the surface
 	// before lighting; nil is the standard material.
@@ -151,7 +163,6 @@ type Light struct {
 
 	Shadows        bool    // render cascaded shadow maps for the directional light
 	ShadowDistance float32 // how far from the camera shadows reach; default 60
-	ShadowRadius   float32 // deprecated alias of ShadowDistance
 	ShadowStrength float32 // 0..1 how dark shadows are; zero means 1
 }
 
@@ -171,8 +182,8 @@ type meshDraw struct {
 type meshInstance struct {
 	model     lin.Mat4
 	baseColor [4]float32
-	material  [4]float32
-	extra     [4]float32 // x: joint base index
+	material  [4]float32 // metallic, roughness, emissive, flags (1 normal map, 2 unlit)
+	extra     [4]float32 // joint base index, alpha cutoff, occlusion strength
 }
 
 const meshInstanceSize = 112

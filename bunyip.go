@@ -25,8 +25,7 @@ type Config struct {
 	Width     int // window content size in points
 	Height    int
 	Resizable bool
-	VSync     bool // default true; set NoVSync to disable
-	NoVSync   bool
+	NoVSync   bool // present without waiting for the display; vsync is on by default
 
 	TurnBased bool          // wait for input instead of running a clock
 	FixedStep time.Duration // real-time update interval; default 1/60 s

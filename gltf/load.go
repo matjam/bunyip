@@ -340,7 +340,23 @@ func (l *loader) materials() []Material {
 	mats := make([]Material, 0, len(l.j.Materials))
 	for _, m := range l.j.Materials {
 		mat := Material{Name: m.Name, BaseColor: [4]float32{1, 1, 1, 1}, Image: -1, Metallic: 1, Roughness: 1,
-			MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1}
+			MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1, OcclusionImage: -1, OcclusionStrength: 1,
+			AlphaCutoff: 0.5, DoubleSided: m.DoubleSided, Unlit: m.Extensions.Unlit != nil}
+		switch m.AlphaMode {
+		case "MASK":
+			mat.AlphaMode = AlphaMask
+			if m.AlphaCutoff != nil {
+				mat.AlphaCutoff = *m.AlphaCutoff
+			}
+		case "BLEND":
+			mat.AlphaMode = AlphaBlend
+		}
+		if m.OcclusionTexture != nil {
+			mat.OcclusionImage, _ = l.imageOf(&jsonTextureRef{Index: m.OcclusionTexture.Index})
+			if m.OcclusionTexture.Strength != nil {
+				mat.OcclusionStrength = *m.OcclusionTexture.Strength
+			}
+		}
 		if m.PBR != nil {
 			if len(m.PBR.BaseColorFactor) == 4 {
 				copy(mat.BaseColor[:], m.PBR.BaseColorFactor)
@@ -360,6 +376,11 @@ func (l *loader) materials() []Material {
 			copy(mat.Emissive[:], m.EmissiveFactor)
 		} else if mat.EmissiveImage >= 0 {
 			mat.Emissive = [3]float32{1, 1, 1}
+		}
+		if es := m.Extensions.EmissiveStrength; es != nil && es.Strength > 0 {
+			for i := range mat.Emissive {
+				mat.Emissive[i] *= es.Strength
+			}
 		}
 		mats = append(mats, mat)
 	}

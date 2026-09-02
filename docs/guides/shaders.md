@@ -84,11 +84,12 @@ vec4 finish(vec4 lit, Surface s) { return lit; } // optional
 ```
 
 `Surface` has `albedo`, `alpha`, `normal` (world space), `metallic`,
-`roughness`, `emissive`, `uv`, `worldPos` and `viewDir`, filled in from
-the material's textures and factors before `surface` runs. Everything
-else is the standard pipeline: the shadowed directional light, point
-lights, hemisphere ambient, bloom and anti-aliasing. Compile with
-`-kind mesh`, create it with `NewMeshShader`, and set it on a material:
+`roughness`, `emissive`, `occlusion`, `unlit`, `uv`, `worldPos` and
+`viewDir`, filled in from the material's textures and factors before
+`surface` runs. Everything else is the standard pipeline: the shadowed
+directional light, point lights, hemisphere ambient, alpha cutout,
+bloom and anti-aliasing. Compile with `-kind mesh`, create it with
+`NewMeshShader`, and set it on a material:
 
 ```go
 lava, err := ctx.Gfx.NewMeshShader(lavaSPV)
@@ -96,6 +97,36 @@ lava.SetImage(0, noise)
 lava.SetUniforms(struct{ Heat float32 }{1})
 ctx.Gfx.DrawMesh(slab, gfx.Material{Shader: lava}, model)
 ```
+
+## Moving vertices
+
+A mesh shader may also define a vertex hook, which runs before the
+model matrix in object space (after skinning, for skinned meshes):
+
+```glsl
+void vertex(inout VertexData v) {
+	v.position.z += sin(v.uv.x * 6.0 - time() * 4.0) * 0.15 * v.uv.x;
+}
+```
+
+`VertexData` has `position`, `normal` and `uv`; `model()` is the
+instance's matrix and the material's textures and the shader's images
+can be sampled for displacement maps. The hook runs in the shadow pass
+too, so displaced geometry casts the right shadow. When a source has a
+vertex hook, `bunyip-shader` writes a bundle of all five programs
+(fragment; static and skinned vertex, lit and shadow) to the one output
+file, and `NewMeshShader` reads either that or plain fragment SPIR-V.
+The `shaders` example's flag ripples this way.
+
+## Material features
+
+Beyond textures and factors, `Material` carries `AlphaCutoff` (hard-edged
+cutouts that also cut their shadows), `OcclusionTexture` with
+`OcclusionStrength` (baked ambient occlusion), `Unlit` (base colour and
+emissive without lighting), `DoubleSided` (back faces lit with a flipped
+normal), and `NoDepthTest` and `NoDepthWrite` for overlays and effects.
+The glTF loader fills all of these from a file's materials, including
+the alpha mode, the unlit and emissive-strength extensions.
 
 ## Blend modes and transforms
 
