@@ -740,7 +740,7 @@ func (s *Site) write(dir string) error {
 }
 
 // llmsIntro opens llms.txt and llms-full.txt.
-const llmsIntro = "> A game engine in Go for real-time and turn-based games, with 2D sprites and 3D models on one screen, a Vulkan renderer without cgo, an entity component system, physics, an immediate-mode interface and an audio mixer.\n\nThe guides explain each area of the engine; the package pages are the full API reference with doc comments, declarations and examples. Import path: github.com/matjam/bunyip."
+const llmsIntro = "> A complete game engine in Go: a Vulkan renderer without cgo that draws 2D sprites and physically based 3D models in the same frame, an entity component system, rigid-body physics, skeletal animation, celestial mechanics, an immediate-mode interface, an audio mixer with a tracker player, and asset, save, translation and networking services, for real-time and turn-based games.\n\nThe guides explain each area of the engine; the package pages are the full API reference with doc comments, declarations and examples. Import path: github.com/matjam/bunyip."
 
 // llmsIndex writes llms.txt: the site's pages as Markdown links with a
 // line of description each.

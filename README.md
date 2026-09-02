@@ -1,8 +1,13 @@
 # Bunyip
 
-A game engine in Go for real-time and turn-based games: roguelikes, 4X,
-space games, and anything else that puts 2D sprites and 3D models on the
-same screen.
+A complete game engine in Go. It draws 2D sprites and physically based 3D
+models in the same frame, and brings its own entity component system,
+physics, animation, celestial mechanics, interface toolkit, audio mixer,
+asset pipeline, saves, translation and networking, all written for this
+engine and documented in one voice. It is built for games that simulate
+as much as they render: roguelikes, 4X strategy, space games, arcade
+games. Pure Go, no cgo, and every example runs to a screenshot without a
+window.
 
 **How it is built**
 

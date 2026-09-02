@@ -4,11 +4,30 @@ order: 1
 summary: what Bunyip is, how it is put together, and what to read next
 ---
 
-Bunyip is a game engine written in Go. It is aimed at games that
-simulate as much as they render: roguelikes, 4X strategy, space games,
-arcade games, and anything that puts 2D sprites and 3D models on the
-same screen. It draws with Vulkan, but a game never sees Vulkan; it
-sees sprites, meshes, cameras, lights and widgets.
+Bunyip is a complete game engine in Go. One package draws 2D sprites,
+vector paths and shaped text and physically based 3D models with
+shadows, sky and fog in the same frame. Around it sit an entity
+component system, rigid-body physics in two and three dimensions,
+skeletal animation with blend spaces and inverse kinematics, celestial
+mechanics, an immediate-mode interface, an audio mixer with positional
+sound and a tracker player, and the services a finished game needs:
+asset packs, saves, translation, action maps, and networking with
+prediction and reliable delivery. Every part is written for this engine
+and documented in the same voice, so a game reaches for one API rather
+than a dozen libraries with different ideas.
+
+It is built for games that simulate as much as they render: roguelikes
+with thousands of entities, 4X strategy on a hex map, a space game with
+real orbits, an arcade game that wants a 3D hero on a 2D field. A
+turn-based game sleeps in the operating system between moves; a
+real-time game runs a fixed timestep.
+
+The engine is pure Go. It builds with `go build` and no cgo, talks to
+Vulkan through a generated binding and to each operating system's own
+windowing and audio APIs through purego, and cross-compiles by setting
+`GOOS`. A game never sees Vulkan; it sees sprites, meshes, cameras,
+lights and widgets, and every example runs to a screenshot without a
+window so the whole engine is testable on a build machine.
 
 ## Design
 
