@@ -16,8 +16,9 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 params;
     vec4 splits;
     vec4 radii;
-    vec4 pointPos[8];
-    vec4 pointColor[8];
+    vec4 pointPos[32];
+    vec4 pointColor[32];
+    vec4 spotDir[32];
     vec4 sh[9];
     vec4 env;
     mat4 invViewProj;
@@ -25,6 +26,8 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 skyUp;        // xyz up, w = stars
     vec4 sun;          // xyz towards the sun, w = angular radius
     vec4 sunColor;     // rgb the drawn disc's radiance
+    vec4 fog;
+    vec4 fogRange;
 } frame;
 
 layout(push_constant) uniform PC {

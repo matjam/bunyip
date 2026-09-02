@@ -196,7 +196,9 @@ void main() {
     surface(s);
     if (vExtra.y > 0.0 && s.alpha < vExtra.y) discard;
     vec3 color = s.unlit ? s.albedo : light(s);
-    outColor = finish(vec4(color + s.emissive, s.alpha), s);
+    vec4 lit = finish(vec4(color + s.emissive, s.alpha), s);
+    lit.rgb = applyFog(lit.rgb, vWorldPos, vViewDepth);
+    outColor = lit;
 }
 `
 

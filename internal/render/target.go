@@ -41,8 +41,10 @@ func (d *Device) newTarget(extent vk.VkExtent2D, colorFormat, depthFormat vk.VkF
 	t := &Target{Extent: extent, dev: d}
 	var err error
 	if colorFormat != vk.VK_FORMAT_UNDEFINED {
+		// Transfer destination so ClearColorForSampling can clear it
+		// before its first pass.
 		t.Color, err = d.NewImage(extent, colorFormat,
-			vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|vk.VK_IMAGE_USAGE_SAMPLED_BIT|extra, vk.VK_IMAGE_ASPECT_COLOR_BIT)
+			vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|vk.VK_IMAGE_USAGE_SAMPLED_BIT|vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT|extra, vk.VK_IMAGE_ASPECT_COLOR_BIT)
 		if err != nil {
 			return nil, err
 		}

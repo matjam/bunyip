@@ -27,8 +27,9 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count, w = time
     vec4 splits;       // view-space distances where cascades end
     vec4 radii;        // half-size of each cascade's orthographic box
-    vec4 pointPos[8];  // xyz, w = range
-    vec4 pointColor[8];
+    vec4 pointPos[32];   // xyz, w = range
+    vec4 pointColor[32]; // rgb, w = cos of a spot light's inner cone (2 for a point light)
+    vec4 spotDir[32];    // xyz a spot light's direction, w = cos of its outer cone (-2 for a point light)
     vec4 sh[9];        // environment irradiance as spherical harmonics
     vec4 env;          // x intensity, y mip count, z = 1 image environment, 2 procedural sky
     mat4 invViewProj;
@@ -36,6 +37,8 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 skyUp;        // xyz up, w = stars
     vec4 sun;          // xyz towards the sun, w = angular radius
     vec4 sunColor;     // rgb the drawn disc's radiance
+    vec4 fog;          // rgb the fog colour, w = exponential density
+    vec4 fogRange;     // x start, y end of linear fog; z height, w falloff of ground fog
 } frame;
 
 // Per-instance stream: the model matrix's rows, base colour, material

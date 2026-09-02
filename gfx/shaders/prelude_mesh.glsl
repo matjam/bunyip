@@ -37,8 +37,9 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count, w = time
     vec4 splits;       // view-space distances where cascades end
     vec4 radii;        // half-size of each cascade's orthographic box
-    vec4 pointPos[8];  // xyz, w = range
-    vec4 pointColor[8];
+    vec4 pointPos[32];   // xyz, w = range
+    vec4 pointColor[32]; // rgb, w = cos of a spot light's inner cone (2 for a point light)
+    vec4 spotDir[32];    // xyz a spot light's direction, w = cos of its outer cone (-2 for a point light)
     vec4 sh[9];        // environment irradiance as spherical harmonics
     vec4 env;          // x intensity, y mip count, z = 1 when an environment is set
     mat4 invViewProj;
@@ -46,6 +47,8 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 skyUp;        // xyz up, w = stars
     vec4 sun;          // xyz towards the sun, w = angular radius
     vec4 sunColor;     // rgb the drawn disc's radiance
+    vec4 fog;          // rgb the fog colour, w = exponential density
+    vec4 fogRange;     // x start, y end of linear fog; z height, w falloff of ground fog
 } frame;
 
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap0;
@@ -298,9 +301,37 @@ vec3 light(Surface s) {
         float range = max(frame.pointPos[i].w, 1e-3);
         float att = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
         att *= att / max(dist * dist, 1e-3);
+        float cone = frame.spotDir[i].w;
+        if (cone > -1.5) {
+            // A spot light: full inside the inner cone, fading to nothing
+            // at the outer one.
+            float cd = dot(-d / dist, frame.spotDir[i].xyz);
+            att *= smoothstep(cone, max(frame.pointColor[i].w, cone + 1e-3), cd);
+        }
         color += lobes(s, n, v, d / dist, frame.pointColor[i].rgb * att);
     }
     return color + ambient(s, n, v) * s.occlusion;
+}
+
+// applyFog fades a lit colour towards the frame's fog colour by the
+// distance from the camera: linear between the range's start and end,
+// exponential-squared by the density, whichever is denser, thinned
+// above the ground fog's height. Every mesh shader's output passes
+// through it; call it yourself in finish() only to fog something the
+// engine does not.
+vec3 applyFog(vec3 c, vec3 worldPos, float depth) {
+    float f = 0.0;
+    if (frame.fogRange.y > frame.fogRange.x) {
+        f = clamp((depth - frame.fogRange.x) / (frame.fogRange.y - frame.fogRange.x), 0.0, 1.0);
+    }
+    if (frame.fog.w > 0.0) {
+        float e = depth * frame.fog.w;
+        f = max(f, 1.0 - exp(-e * e));
+    }
+    if (frame.fogRange.w > 0.0) {
+        f *= clamp(exp(-(worldPos.y - frame.fogRange.z) * frame.fogRange.w), 0.0, 1.0);
+    }
+    return mix(c, frame.fog.rgb, f);
 }
 
 // irradiance evaluates the environment's spherical harmonics for a

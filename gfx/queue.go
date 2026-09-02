@@ -11,6 +11,8 @@ import (
 type drawQueue struct {
 	stream      stream2D
 	draws       []meshDraw
+	visOpaque   int // draws at the front of the opaque group the camera sees
+	visBlended  int // the same for the blended group
 	decals      []decal
 	camera      Camera
 	light       Light

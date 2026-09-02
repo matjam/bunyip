@@ -15,7 +15,7 @@ const (
 	hdrFormat      = vk.VK_FORMAT_R16G16B16A16_SFLOAT
 	shadowMapSize  = 2048
 	shadowCascades = 3
-	maxPointLights = 8
+	maxPointLights = 32
 )
 
 // meshPass owns the 3D pipelines, targets and per-frame uniforms.
@@ -38,6 +38,7 @@ type meshPass struct {
 	xrayPipe      *render.Pipeline // solid tint where depth says hidden
 	decalPipe     *render.Pipeline // set up by the post pass, which owns the depth sampler layout
 	decalMesh     *Mesh            // a unit cube
+	quad          *Mesh            // the billboard quad, made on first use
 }
 
 // decal is a texture projected onto the scene inside a box.
@@ -86,6 +87,11 @@ type pointLight struct {
 	pos   lin.Vec3
 	color Color
 	rng   float32
+	// A spot light adds a direction and a cone: full inside cosInner,
+	// gone outside cosOuter.
+	spot               bool
+	dir                lin.Vec3
+	cosInner, cosOuter float32
 }
 
 // frameUniforms mirrors the Frame block in pbr.vert (std140).
@@ -102,14 +108,17 @@ type frameUniforms struct {
 	splits        lin.Vec4
 	radii         lin.Vec4
 	pointPos      [maxPointLights]lin.Vec4
-	pointColor    [maxPointLights]lin.Vec4
-	sh            [9]lin.Vec4 // environment irradiance
-	env           lin.Vec4    // intensity, mip count, kind (1 image, 2 procedural sky)
+	pointColor    [maxPointLights]lin.Vec4 // w = cos of a spot's inner cone, 2 for a point light
+	spotDir       [maxPointLights]lin.Vec4 // w = cos of a spot's outer cone, -2 for a point light
+	sh            [9]lin.Vec4              // environment irradiance
+	env           lin.Vec4                 // intensity, mip count, kind (1 image, 2 procedural sky)
 	invViewProj   lin.Mat4
 	horizon       lin.Vec4 // sky at the horizon, w = air (1 - vacuum)
 	skyUp         lin.Vec4 // up axis, w = stars
 	sun           lin.Vec4 // towards the sun, w = angular radius
 	sunColor      lin.Vec4 // the drawn disc's radiance
+	fog           lin.Vec4 // fog colour, w = exponential density
+	fogRange      lin.Vec4 // linear start, end; ground fog height, falloff
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -286,11 +295,40 @@ func (g *Graphics) SetCamera(c Camera) { g.cur.camera, g.cur.hasCam = c, true }
 // SetLight sets the directional light, ambient term and shadow settings.
 func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 
-// AddPointLight adds a point light for this frame (at most 8 are used).
+// AddPointLight adds a light shining from a point in every direction
+// for this frame, fading to nothing rng units away: torches, muzzle
+// flashes, glowing ore. A frame keeps its first 32 point and spot lights
+// (MaxLights); add the nearest ones first when a scene has more.
 func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
 	if len(g.cur.points) < maxPointLights {
-		g.cur.points = append(g.cur.points, pointLight{pos, c, rng})
+		g.cur.points = append(g.cur.points, pointLight{pos: pos, color: c, rng: rng})
 	}
+}
+
+// MaxLights is how many point and spot lights a frame keeps.
+const MaxLights = maxPointLights
+
+// AddSpotLight adds a light shining from a point along dir in a cone,
+// fading to nothing rng units away: flashlights, headlights, stage
+// lights. The cone is full inside innerAngle and fades to nothing at
+// outerAngle (both full angles in radians; a zero inner angle means a
+// hard-edged cone, a zero outer angle means 45 degrees). Spot lights
+// count against the same limit as point lights.
+func (g *Graphics) AddSpotLight(pos, dir lin.Vec3, c Color, rng, innerAngle, outerAngle float32) {
+	if len(g.cur.points) >= maxPointLights {
+		return
+	}
+	if outerAngle <= 0 {
+		outerAngle = lin.Radians(45)
+	}
+	if innerAngle > outerAngle {
+		innerAngle = outerAngle
+	}
+	g.cur.points = append(g.cur.points, pointLight{
+		pos: pos, color: c, rng: rng, spot: true, dir: dir.Norm(),
+		cosInner: float32(math.Cos(float64(innerAngle) / 2)),
+		cosOuter: float32(math.Cos(float64(outerAngle) / 2)),
+	})
 }
 
 // DrawMesh queues a mesh with a material and a model matrix. Draws that
@@ -521,7 +559,16 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	}
 	for i, p := range q.points {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
-		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 1)
+		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 2)
+		u.spotDir[i] = lin.V4(0, 0, 0, -2)
+		if p.spot {
+			u.pointColor[i].W = p.cosInner
+			u.spotDir[i] = p.dir.Vec4(p.cosOuter)
+		}
+	}
+	if f := l.Fog; f.End > f.Start || f.Density > 0 {
+		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
+		u.fogRange = lin.V4(f.Start, f.End, f.Height, f.HeightFalloff)
 	}
 	if env := l.Environment; env != nil && env.cube != nil {
 		u.sh = env.sh
@@ -544,26 +591,46 @@ func boolFloat(b bool) float32 {
 	return 0
 }
 
-// prepareDraws resolves material sets, sorts opaque draws for instancing and
-// blended draws back to front, and uploads the instance stream.
-func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image) (opaque, blended []meshDraw, err error) {
+// prepareDraws resolves material sets, culls draws outside the camera's
+// view, sorts opaque draws for instancing and blended draws back to
+// front, and uploads the instance stream. Culled draws sort to the end
+// of their group and stay in the lists for the shadow pass, which sees
+// them from the light; q.visOpaque and q.visBlended count the draws the
+// camera sees at the front of each list.
+func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, blended []meshDraw, err error) {
 	view := q.camera.viewMatrix()
+	frustum := FrustumOf(q.camera.ViewProj(aspect))
 	env := q.light.Environment
 	if env != nil && env.cube == nil {
 		env = nil
 	}
+	culled := 0
 	for i := range q.draws {
 		d := &q.draws[i]
 		if d.set, err = g.materialSet(d.mat, env, scene); err != nil {
 			return nil, nil, err
 		}
-		pos := d.model.MulPoint(d.mesh.Min.Add(d.mesh.Max).Mul(0.5))
-		d.depth = -view.MulPoint(pos).Z
+		centre, radius := d.mesh.boundingSphere(d.model)
+		d.depth = -view.MulPoint(centre).Z
+		if d.skinned {
+			radius *= 2 // the bind pose's bounds, loosely
+		}
+		// A shader that moves vertices may push them anywhere.
+		d.culled = len(d.shader.stages) == 0 && !frustum.ContainsSphere(centre, radius)
+		if d.culled {
+			culled++
+		}
 	}
+	g.stats.Culled += culled
 	slices.SortStableFunc(q.draws, func(a, b meshDraw) int {
 		switch {
 		case a.mat.blended() != b.mat.blended():
 			if a.mat.blended() {
+				return 1
+			}
+			return -1
+		case a.culled != b.culled: // what the camera sees first
+			if a.culled {
 				return 1
 			}
 			return -1
@@ -661,7 +728,20 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image) (op
 			break
 		}
 	}
-	return q.draws[:split], q.draws[split:], nil
+	opaque, blended = q.draws[:split], q.draws[split:]
+	q.visOpaque, q.visBlended = visibleCount(opaque), visibleCount(blended)
+	return opaque, blended, nil
+}
+
+// visibleCount is how many draws at the front of a sorted group the
+// camera sees.
+func visibleCount(draws []meshDraw) int {
+	for i, d := range draws {
+		if d.culled {
+			return i
+		}
+	}
+	return len(draws)
 }
 
 // transmissive reports whether any draw needs the opaque scene copy.
@@ -758,10 +838,11 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
 		return err
 	}
-	opaque, blended, err := g.prepareDraws(q, fr.Slot, t.scene)
+	opaque, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
 	if err != nil {
 		return err
 	}
+	seen, seenBlended := opaque[:q.visOpaque], blended[:q.visBlended]
 	if q.light.Shadows {
 		for c := range mp.shadow {
 			render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadow[c], ClearDepth: 1})
@@ -790,18 +871,18 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		vk.VkCmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&push))
 		vk.VkCmdDraw(cb, 3, 1, 0, 0)
 	}
-	if err := g.drawRuns(cb, fr, q, opaque, 0, nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seen, 0, nil); err != nil {
 		return err
 	}
-	g.drawSolid(cb, fr, q, opaque, 0, t.extent)
-	if transmissive(blended) {
+	g.drawSolid(cb, fr, q, seen, 0, t.extent)
+	if transmissive(seenBlended) {
 		// Glass reads what is behind it: snapshot the opaque scene, with
 		// blurred mips for rough glass, then carry on into the same images.
 		render.EndTargetPass(cb, t.hdr)
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
-	if err := g.drawRuns(cb, fr, q, blended, uint32(len(opaque)), nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(len(opaque)), nil); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {
@@ -896,6 +977,9 @@ func (mp *meshPass) destroy(g *Graphics) {
 	}
 	if mp.decalMesh != nil {
 		mp.decalMesh.Destroy()
+	}
+	if mp.quad != nil {
+		mp.quad.Destroy()
 	}
 	if mp.blackCube != nil {
 		mp.blackCube.Destroy()

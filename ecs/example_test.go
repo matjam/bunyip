@@ -1,6 +1,7 @@
 package ecs_test
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/matjam/bunyip/ecs"
@@ -75,6 +76,43 @@ func ExampleSetParent() {
 	// Output:
 	// {10 1 0}
 	// false
+}
+
+func ExamplePrefab() {
+	// A template spawns as many independent copies as the game needs.
+	tank := ecs.NewPrefab(Position{0, 0}, Health{10}).
+		Child(ecs.NewPrefab(gfx.At(0, 1, 0))) // the turret
+	w := ecs.NewWorld()
+	a := tank.Spawn(w)
+	b := tank.Spawn(w)
+	if h, ok := ecs.Get[Health](w, a); ok {
+		h.HP = 3
+	}
+	hb, _ := ecs.Get[Health](w, b)
+	fmt.Println(hb.HP, len(ecs.ChildrenOf(w, a)), w.Count())
+	// Output:
+	// 10 1 4
+}
+
+func ExampleWorld_Save() {
+	// Register names once, at start-up, so files outlive renames.
+	ecs.Register[Position]("Position")
+	ecs.Register[Health]("Health")
+
+	w := ecs.NewWorld()
+	w.SpawnWith(Position{1, 2}, Health{5})
+	var save bytes.Buffer
+	if err := w.Save(&save); err != nil {
+		fmt.Println(err)
+	}
+
+	loaded := ecs.NewWorld()
+	if err := loaded.Load(&save); err != nil {
+		fmt.Println(err)
+	}
+	ecs.Each(loaded, func(e ecs.Entity, p *Position) { fmt.Println(p.X, p.Y) })
+	// Output:
+	// 1 2
 }
 
 func ExampleCommands() {

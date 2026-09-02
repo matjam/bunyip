@@ -126,8 +126,8 @@ field of view, or `Ortho` for an orthographic view where distance does
 not shrink things, as isometric strategy games want); `OrbitCamera`
 builds one from yaw, pitch and distance.
 `SetLight` sets the directional light with sky and ground ambient and
-optional cascaded shadow maps; `AddPointLight` adds up to eight local
-lights per frame.
+optional cascaded shadow maps; `AddPointLight` and `AddSpotLight` add
+local lights for the frame.
 
 **The sky.** `Light.Sky` is a procedural environment built from what
 the game already knows: an `Up` axis, `Zenith`, `Horizon` and `Ground`
@@ -194,9 +194,52 @@ ray, and `Mesh.Intersect` or `Model.Intersect` report where it hits.
 where a label or a health bar belongs.
 
 **Debug drawing.** `DrawLine3D`, `DrawWireBox`, `DrawWireCube`,
-`DrawWireSphere` and `DrawAxes` draw lines over the scene that ignore
-depth, so colliders, paths, rays and bones can be seen while a game is
-being written.
+`DrawWireSphere`, `DrawWireFrustum` and `DrawAxes` draw lines over the
+scene that ignore depth, so colliders, paths, rays, bones and cameras can
+be seen while a game is being written; `DebugText3D` puts the overlay
+font at a world point.
+
+**Fog.** `Light.Fog` fades distant geometry into a colour: linear
+between `Start` and `End`, exponential by `Density`, and ground fog that
+thins above `Height`. It hides the far plane, gives a scene depth and
+costs nothing. The sky is not fogged, so pick a colour near the
+horizon's outdoors.
+
+**Point and spot lights.** `AddPointLight` shines in every direction
+from a point; `AddSpotLight` in a cone along a direction with a soft
+edge between its inner and outer angles. A frame keeps the first
+`MaxLights` (32); when a scene has more, add the nearest to the camera
+first.
+
+**Culling.** Every draw is tested against the camera's frustum and
+skipped when nothing of its bounds is in view; `Stats().Culled` counts
+them. Culled draws still cast shadows. A game with many chunks or
+regions should test them itself with `Frustum` before building their
+draws at all: `ContainsBox` and `ContainsSphere` are the tests, and
+`Camera.Frustum` or `Graphics.Frustum` gives the volume.
+
+**Level of detail.** `NewLOD` takes meshes from finest to coarsest and
+the distances at which each hands over; `DrawLOD` picks by the camera's
+distance to the model, and a nil last mesh draws nothing far away.
+
+**Billboards and labels.** `DrawBillboard` puts a textured quad in the
+scene that turns to face the camera: health bars, name tags, trees in
+the distance, smoke. `Upright` keeps it vertical, `Cutout` gives it
+hard edges that cast shadows, `OnTop` draws it over everything.
+`DrawText3D` draws a font's text the same way, one instanced draw per
+label. Both go through the mesh path, so they are lit and fogged when
+asked.
+
+**Dynamic meshes.** `Mesh.Update` replaces a mesh's geometry: a voxel
+chunk after a block is dug, a terrain edit, a procedural mesh that
+grows. Draws already queued keep the old geometry until the frame ends.
+
+**Shapes.** Besides `CubeMesh` and `SphereMesh` there are `QuadMesh`,
+`PlaneMesh`, `CylinderMesh`, `ConeMesh`, `CapsuleMesh` and `TorusMesh`,
+and `HeightfieldMesh` builds terrain from a grid of heights.
+`ComputeNormals` smooths geometry built by hand, `FlatShaded` gives it
+the faceted look, `TransformVertices` and `AppendMesh` place parts and
+merge them into one draw.
 
 ## Verifying without eyes
 

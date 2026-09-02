@@ -19,6 +19,14 @@
 // Systems are functions registered on the world and run in order by
 // Update; resources are singletons such as the score or the rules;
 // events are per-frame queues that systems use to talk to each other.
+//
+// Worlds save and load as JSON. Register names each component and
+// resource type so files stay valid across builds; Save writes every
+// live entity, its parent links and the registered resources, and Load
+// recreates them with fresh handles, rewriting the Entity fields inside
+// components. Prefab is a template of components (and child prefabs)
+// that spawns independent copies; Clone and CloneTree copy an entity
+// that already exists.
 package ecs
 
 import (
@@ -83,6 +91,7 @@ func (m mask) intersects(o mask) bool {
 type column interface {
 	appendZero()
 	setAny(row int, v any)
+	getAny(row int) any
 	// moveTo appends row's value to dst (a column of the same type).
 	moveTo(dst column, row int)
 	swapRemove(row int)
@@ -93,6 +102,7 @@ type typedColumn[T any] struct{ data []T }
 
 func (c *typedColumn[T]) appendZero()           { var z T; c.data = append(c.data, z) }
 func (c *typedColumn[T]) setAny(row int, v any) { c.data[row] = v.(T) }
+func (c *typedColumn[T]) getAny(row int) any    { return c.data[row] }
 func (c *typedColumn[T]) moveTo(dst column, row int) {
 	dst.(*typedColumn[T]).data = append(dst.(*typedColumn[T]).data, c.data[row])
 }
@@ -249,6 +259,7 @@ type anyColumn struct {
 
 func (c *anyColumn) appendZero()           { c.data = reflect.Append(c.data, reflect.Zero(c.typ)) }
 func (c *anyColumn) setAny(row int, v any) { c.data.Index(row).Set(reflect.ValueOf(v)) }
+func (c *anyColumn) getAny(row int) any    { return c.data.Index(row).Interface() }
 func (c *anyColumn) moveTo(dst column, row int) {
 	d := dst.(*anyColumn)
 	d.data = reflect.Append(d.data, c.data.Index(row))
@@ -478,6 +489,40 @@ func (w *World) Components(e Entity) []reflect.Type {
 		out = append(out, w.comps[id].typ)
 	}
 	return out
+}
+
+// ComponentValues returns a copy of each of the entity's components as
+// an any value, in the same order as Components. Changing a returned
+// value does not change the entity; Add writes it back.
+func (w *World) ComponentValues(e Entity) []any {
+	if !w.Alive(e) {
+		return nil
+	}
+	m := &w.meta[e.id-1]
+	out := make([]any, len(m.arch.columns))
+	for i, c := range m.arch.columns {
+		out[i] = c.getAny(int(m.row))
+	}
+	return out
+}
+
+// setComponents attaches several components given as any values with
+// one table move, replacing any the entity already carries.
+func (w *World) setComponents(e Entity, comps []any) {
+	m := &w.meta[e.id-1]
+	nm := m.arch.mask
+	ids := make([]ComponentID, len(comps))
+	for i, c := range comps {
+		ids[i] = w.idOfValue(c)
+		nm.set(ids[i])
+	}
+	if nm != m.arch.mask {
+		w.move(e, w.archetypeFor(nm))
+	}
+	a := m.arch
+	for i, c := range comps {
+		a.columns[a.column(ids[i])].setAny(int(m.row), c)
+	}
 }
 
 // Entities lists every live entity, in no particular order.

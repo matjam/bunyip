@@ -39,7 +39,8 @@ type Graphics struct {
 	main          *drawQueue // the screen
 	cur           *drawQueue // where Draw* calls land
 	subFrames     []subFrame
-	retired       []*Texture // replaced mid-frame; destroyed once the frame is submitted
+	retired       []*Texture       // replaced mid-frame; destroyed once the frame is submitted
+	retiredBufs   []*render.Buffer // a mesh's old geometry after Update, likewise
 	scratch       []vertex2D
 	linePipe      *render.Pipeline // debug lines over the 3D scene
 	dbgFont       *Font            // the built-in font, made on first use
@@ -112,6 +113,28 @@ func pixelRect(vp vk.VkRect2D, clip lin.Rect, sx, sy float32) vk.VkRect2D {
 // retire schedules a texture that queued sprites may still reference for
 // destruction at the end of the frame.
 func (g *Graphics) retire(t *Texture) { g.retired = append(g.retired, t) }
+
+// retireBuffers schedules a mesh's old buffers for destruction once the
+// frame that may draw them is submitted.
+func (g *Graphics) retireBuffers(bufs ...*render.Buffer) {
+	g.retiredBufs = append(g.retiredBufs, bufs...)
+}
+
+// freeRetired destroys what was retired, after waiting for the device
+// when anything is pending.
+func (g *Graphics) freeRetired() {
+	if len(g.retired) == 0 && len(g.retiredBufs) == 0 {
+		return
+	}
+	_ = g.r.Device.WaitIdle()
+	for _, t := range g.retired {
+		t.Destroy()
+	}
+	for _, b := range g.retiredBufs {
+		b.Destroy()
+	}
+	g.retired, g.retiredBufs = g.retired[:0], g.retiredBufs[:0]
+}
 
 // New builds the drawing context over a renderer.
 func New(r *render.Renderer) (*Graphics, error) {
@@ -271,6 +294,7 @@ type FrameStats struct {
 	Vertices2D int // 2D vertices drawn
 	Draws3D    int // mesh draw calls after instancing, all passes
 	Instances  int // mesh instances drawn in the main pass
+	Culled     int // mesh draws outside the camera's view, skipped in the main pass
 }
 
 // Stats returns the last finished frame's counts.
@@ -343,10 +367,7 @@ func (g *Graphics) End(capture bool) (*image.RGBA, error) {
 	}
 	img, err := g.r.EndFrame(fr, capture)
 	g.lastStats = g.stats
-	for _, t := range g.retired {
-		t.Destroy() // waits for the device, so the submitted frame is done with it
-	}
-	g.retired = g.retired[:0]
+	g.freeRetired()
 	return img, err
 }
 
@@ -470,10 +491,8 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 // must be destroyed first or are leaked with the device.
 func (g *Graphics) Destroy() {
 	_ = g.r.Device.WaitIdle()
-	for _, t := range g.retired {
-		t.Destroy()
-	}
-	g.retired = nil
+	g.freeRetired()
+	g.retired, g.retiredBufs = nil, nil
 	if g.main != nil {
 		g.main.destroy()
 	}

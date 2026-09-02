@@ -46,7 +46,11 @@ func (v Vertex) gpu() gpuVertex {
 	return gpuVertex{pos: v.Pos, normal: v.Normal, uv: v.UV, uv2: v.UV2, color: packColor(v.Color)}
 }
 
-// Mesh is indexed triangle geometry in device memory.
+// Mesh is indexed triangle geometry in device memory. Build one from
+// vertices with NewMesh, from the shapes in this package (CubeMesh,
+// SphereMesh, PlaneMesh, HeightfieldMesh and the rest), or by loading a
+// glTF Model. Meshes that change, such as voxel chunks and procedural
+// terrain, take new geometry through Update.
 type Mesh struct {
 	IndexCount uint32
 	Min, Max   lin.Vec3 // axis-aligned bounds in mesh space
@@ -54,6 +58,57 @@ type Mesh struct {
 	verts      []Vertex // kept for picking
 	indices    []uint32
 	skinned    bool
+	g          *Graphics
+}
+
+// Vertices returns the mesh's vertices as uploaded, for picking and
+// physics; the slice is the mesh's own, so do not change it.
+func (m *Mesh) Vertices() []Vertex { return m.verts }
+
+// Indices returns the mesh's triangle indices, three per triangle; the
+// slice is the mesh's own.
+func (m *Mesh) Indices() []uint32 { return m.indices }
+
+// Update replaces the mesh's geometry: a voxel chunk after a block is
+// broken, terrain after an edit, a procedural mesh that grows. Draws
+// already queued this frame keep the old geometry, which is freed once
+// the frame is done, so Update is safe at any point of a frame. Skinned
+// meshes cannot be updated.
+func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
+	if m.skinned {
+		return fmt.Errorf("gfx: a skinned mesh cannot be updated")
+	}
+	if m.vbuf == nil {
+		return fmt.Errorf("gfx: update of a destroyed mesh")
+	}
+	if len(verts) == 0 {
+		return fmt.Errorf("gfx: mesh needs vertices")
+	}
+	packed := make([]gpuVertex, len(verts))
+	for i, v := range verts {
+		packed[i] = v.gpu()
+	}
+	fresh, err := m.g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
+	if err != nil {
+		return err
+	}
+	m.g.retireBuffers(m.vbuf, m.ibuf)
+	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
+	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
+	return nil
+}
+
+// boundingSphere is the mesh's bounds under a model matrix as a sphere:
+// the box's centre moved, its half-diagonal scaled by the matrix's
+// largest axis.
+func (m *Mesh) boundingSphere(model lin.Mat4) (centre lin.Vec3, radius float32) {
+	centre = model.MulPoint(m.Min.Add(m.Max).Mul(0.5))
+	scale := float32(0)
+	for c := range 3 {
+		axis := lin.V3(model.At(0, c), model.At(1, c), model.At(2, c)).Len()
+		scale = max(scale, axis)
+	}
+	return centre, m.Max.Sub(m.Min).Len() * 0.5 * scale
 }
 
 // NewMesh uploads vertices and triangle indices.
@@ -79,7 +134,7 @@ func (g *Graphics) newMesh(verts []Vertex, indices []uint32, vdata []byte) (*Mes
 			return nil, fmt.Errorf("gfx: index %d out of range for %d vertices", i, len(verts))
 		}
 	}
-	m := &Mesh{IndexCount: uint32(len(indices)), Min: verts[0].Pos, Max: verts[0].Pos, verts: verts, indices: indices}
+	m := &Mesh{IndexCount: uint32(len(indices)), Min: verts[0].Pos, Max: verts[0].Pos, verts: verts, indices: indices, g: g}
 	for _, v := range verts[1:] {
 		m.Min = lin.V3(min(m.Min.X, v.Pos.X), min(m.Min.Y, v.Pos.Y), min(m.Min.Z, v.Pos.Z))
 		m.Max = lin.V3(max(m.Max.X, v.Pos.X), max(m.Max.Y, v.Pos.Y), max(m.Max.Z, v.Pos.Z))
@@ -257,6 +312,25 @@ type Light struct {
 	Environment *Environment
 	// Background draws the environment, or the Sky, behind the scene.
 	Background bool
+	// Fog fades distant geometry into a colour; the zero value is none.
+	Fog Fog
+}
+
+// Fog fades geometry into a colour with distance from the camera: the
+// cheapest way to give a scene depth and to hide the far plane. Linear
+// fog ramps from Start to full at End; exponential fog thickens with
+// Density (1 - exp(-(distance * Density)^2)); when both are set the
+// denser wins. Height and HeightFalloff make ground fog: full at and
+// below Height, thinning above it by exp(-(y - Height) * HeightFalloff),
+// along the world's y axis. A zero End and Density means no fog. The
+// sky is not fogged, so pick a colour near the horizon's for outdoor
+// scenes.
+type Fog struct {
+	Color         Color
+	Start, End    float32
+	Density       float32
+	Height        float32
+	HeightFalloff float32
 }
 
 type meshDraw struct {
@@ -267,6 +341,7 @@ type meshDraw struct {
 	shader    *Shader // never nil once queued
 	uniform   int32   // arena offset of the shader's uniforms, -1 for none
 	depth     float32 // view-space distance for transparency sorting
+	culled    bool    // outside the camera's view; drawn only into shadows
 	skinned   bool
 	jointBase int // first joint matrix in the queue's joint list
 }

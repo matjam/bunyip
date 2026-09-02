@@ -105,24 +105,30 @@ rich text with links and hyphenation are in. What remains:
 
 ## 3D rendering
 
-- Billboarded sprites in 3D for labels and health bars; `Project` maps
-  a world point to the view for 2D overlays today.
-- Debug frustums and text in 3D; lines, boxes, spheres and axes exist.
-- Distance fog as a light setting; the cheapest large visual win.
-- Level of detail for meshes and impostors; frustum and occlusion
-  culling (draws are currently all submitted).
-- Point-light shadows (cube shadow maps) and spot lights; more than eight
-  point lights (clustered or tiled lighting).
-- Terrain: heightfield meshes with LOD, splat maps as a built-in.
+Billboards and 3D text, debug frustums and 3D debug text, distance and
+ground fog, frustum culling with a public `Frustum`, levels of detail,
+spot lights, thirty-two lights a frame, heightfield and primitive
+meshes, and dynamic mesh updates are in. What remains:
+
+- Point and spot light shadows (cube and single shadow maps); only the
+  directional light casts shadows.
+- Occlusion culling; impostors (billboards baked from a model).
+- Clustered lighting for hundreds of lights; a frame keeps its first
+  thirty-two.
+- Terrain splat maps and heightfield LOD as built-ins; a game does
+  both with `HeightfieldMesh`, a mesh shader and `LOD` today.
 - Global illumination beyond one environment map: light probes, baked
   lightmaps, reflection probes per area, screen-space reflections.
-- Volumetrics: god rays, height fog, atmospheric scattering for the sky
-  rather than the parametric gradient.
+- Volumetrics: god rays, atmospheric scattering for the sky rather than
+  the parametric gradient; fog is a per-pixel fade, not a medium.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
 - Depth of field, motion blur, colour grading LUTs, lens effects.
 - Order-independent transparency; blended draws are sorted per mesh.
 - Render texture options: colour format, no depth, multisampling, and
   reading its depth.
+- Culling uses each mesh's bind-pose bounds (doubled for skinned
+  meshes) and skips meshes whose shader moves vertices; a shader that
+  moves them far can still be culled when it should not be.
 
 ## Materials and lighting
 

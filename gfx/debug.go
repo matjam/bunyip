@@ -165,6 +165,15 @@ func (g *Graphics) DrawAxes(m lin.Mat4, size float32) {
 	g.DrawLine3D(o, m.MulPoint(lin.V3(0, 0, size)), Color{0.3, 0.4, 1, 1})
 }
 
+// DebugText3D draws debug text at a world position, projected to the
+// view: an entity's id over its head, a value beside a probe. Points
+// behind the camera draw nothing.
+func (g *Graphics) DebugText3D(p lin.Vec3, text string) {
+	if x, y, ok := g.Project(p); ok {
+		g.DebugText(x, y, text)
+	}
+}
+
 func pick(b bool, no, yes float32) float32 {
 	if b {
 		return yes
