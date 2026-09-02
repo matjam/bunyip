@@ -150,15 +150,7 @@ func (g *Graphics) initPost() error {
 	if p.main, err = g.newSceneTargets(g.r.Swapchain.Extent); err != nil {
 		return err
 	}
-	g.r.OnResize(func(extent vk.VkExtent2D) error {
-		if err := g.r.Device.WaitIdle(); err != nil {
-			return err
-		}
-		p.main.destroy(g)
-		var err error
-		p.main, err = g.newSceneTargets(extent)
-		return err
-	})
+	g.r.OnResize(func(vk.VkExtent2D) error { return g.rebuildMain() })
 	return nil
 }
 

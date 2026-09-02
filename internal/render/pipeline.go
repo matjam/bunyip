@@ -274,3 +274,24 @@ func SetScissor(cb vk.VkCommandBuffer, extent vk.VkExtent2D, x, y int32, w, h ui
 	}
 	vk.VkCmdSetScissor(cb, 0, 1, &scissor)
 }
+
+// SetViewportRect sets the viewport to a pixel rectangle.
+func SetViewportRect(cb vk.VkCommandBuffer, r vk.VkRect2D) {
+	viewport := vk.VkViewport{X: float32(r.Offset.X), Y: float32(r.Offset.Y), Width: float32(r.Extent.Width), Height: float32(r.Extent.Height), MaxDepth: 1}
+	vk.VkCmdSetViewport(cb, 0, 1, &viewport)
+}
+
+// SetScissorRect limits rasterisation to a pixel rectangle.
+func SetScissorRect(cb vk.VkCommandBuffer, r vk.VkRect2D) {
+	vk.VkCmdSetScissor(cb, 0, 1, &r)
+}
+
+// ClearRect fills a rectangle of the pass's colour attachment with a
+// colour, inside the pass.
+func ClearRect(cb vk.VkCommandBuffer, r vk.VkRect2D, color [4]float32) {
+	var value vk.VkClearValue
+	*value.Color().Float32() = color
+	att := vk.VkClearAttachment{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, ColorAttachment: 0, ClearValue: value}
+	rect := vk.VkClearRect{Rect: r, BaseArrayLayer: 0, LayerCount: 1}
+	vk.VkCmdClearAttachments(cb, 1, &att, 1, &rect)
+}

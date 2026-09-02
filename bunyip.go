@@ -30,6 +30,19 @@ type Config struct {
 	TurnBased bool          // wait for input instead of running a clock
 	FixedStep time.Duration // real-time update interval; default 1/60 s
 
+	// ViewWidth and ViewHeight fix the game's view in view units: the 2D
+	// coordinate space and the 3D viewport. The window scales that view by
+	// Scaling and centres it, so a pixel-art game designs for 320 by 180
+	// once. Zero means the view is the window's size in points and follows
+	// it as the window resizes.
+	ViewWidth, ViewHeight int
+	Scaling               Scaling
+
+	// Headless runs without a window or input: frames render offscreen at
+	// Width by Height and Context.Screenshot still works, for tests and
+	// screenshot runs on a build machine.
+	Headless bool
+
 	Validation bool // enable Vulkan validation when installed
 	NoAudio    bool // skip opening the audio device
 	Log        *slog.Logger
@@ -42,6 +55,20 @@ type Config struct {
 
 	recovering bool // set by Run when rebuilding after a device loss
 }
+
+// Scaling is how a fixed view fills the window.
+type Scaling uint8
+
+const (
+	// ScaleFit is the largest size that fits with the aspect ratio kept;
+	// black bars fill the rest.
+	ScaleFit Scaling = iota
+	// ScaleInteger scales by whole numbers only, so pixel art stays crisp,
+	// falling back to ScaleFit when even one times does not fit.
+	ScaleInteger
+	// ScaleStretch fills the window, distorting the aspect ratio.
+	ScaleStretch
+)
 
 // Game is what Run drives. Update advances the simulation and Draw queues
 // drawing through ctx.Gfx. Optional interfaces Initer and Shutdowner add
@@ -93,6 +120,11 @@ type Context struct {
 	Delta float64
 	Time  float64
 	Frame uint64
+	// Alpha, during Draw, is how far the clock has run past the last
+	// Update as a fraction of a fixed step, 0 to 1. Drawing a body at
+	// previous + (current - previous) * Alpha moves it smoothly when the
+	// display runs faster than the update rate. It is 1 in turn-based mode.
+	Alpha float32
 
 	// Stats holds the previous frame's timings.
 	Stats Stats

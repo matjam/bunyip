@@ -39,6 +39,69 @@ type Graphics struct {
 	linePipe      *render.Pipeline // debug lines over the 3D scene
 	dbgFont       *Font            // the built-in font, made on first use
 	dbgFontFailed bool
+	viewport      vk.VkRect2D // the main output's pixel rectangle; zero means the whole window
+}
+
+// SetViewport limits the main output to a pixel rectangle: the 2D view
+// maps onto it, the 3D scene renders at its size, and the window outside
+// it stays black. The engine sets it from Config's view size and scaling
+// policy; a zero rect means the whole window.
+func (g *Graphics) SetViewport(r lin.Rect) error {
+	vp := vk.VkRect2D{Offset: vk.VkOffset2D{X: int32(r.X), Y: int32(r.Y)}, Extent: vk.VkExtent2D{Width: uint32(r.W), Height: uint32(r.H)}}
+	if r.W <= 0 || r.H <= 0 {
+		vp = vk.VkRect2D{}
+	}
+	if vp == g.viewport {
+		return nil
+	}
+	g.viewport = vp
+	return g.rebuildMain()
+}
+
+// Viewport returns the main output's pixel rectangle.
+func (g *Graphics) Viewport() lin.Rect {
+	vp := g.viewport
+	if vp.Extent.Width == 0 {
+		vp.Extent = g.r.Swapchain.Extent
+	}
+	return lin.R(float32(vp.Offset.X), float32(vp.Offset.Y), float32(vp.Extent.Width), float32(vp.Extent.Height))
+}
+
+// mainExtent is the pixel size the main scene renders at.
+func (g *Graphics) mainExtent() vk.VkExtent2D {
+	if g.viewport.Extent.Width > 0 {
+		return g.viewport.Extent
+	}
+	return g.r.Swapchain.Extent
+}
+
+// rebuildMain sizes the main scene targets to the viewport when it changed.
+func (g *Graphics) rebuildMain() error {
+	ext := g.mainExtent()
+	if g.post.main != nil && g.post.main.extent == ext {
+		return nil
+	}
+	if err := g.r.Device.WaitIdle(); err != nil {
+		return err
+	}
+	if g.post.main != nil {
+		g.post.main.destroy(g)
+	}
+	var err error
+	g.post.main, err = g.newSceneTargets(ext)
+	return err
+}
+
+// pixelRect maps a view-space clip rectangle into the viewport's pixels.
+func pixelRect(vp vk.VkRect2D, clip lin.Rect, sx, sy float32) vk.VkRect2D {
+	x0 := vp.Offset.X + int32(clip.X*sx)
+	y0 := vp.Offset.Y + int32(clip.Y*sy)
+	x1 := vp.Offset.X + int32((clip.X+clip.W)*sx+0.5)
+	y1 := vp.Offset.Y + int32((clip.Y+clip.H)*sy+0.5)
+	x0, y0 = max(x0, vp.Offset.X), max(y0, vp.Offset.Y)
+	x1 = min(x1, vp.Offset.X+int32(vp.Extent.Width))
+	y1 = min(y1, vp.Offset.Y+int32(vp.Extent.Height))
+	return vk.VkRect2D{Offset: vk.VkOffset2D{X: x0, Y: y0}, Extent: vk.VkExtent2D{Width: uint32(max(x1-x0, 0)), Height: uint32(max(y1-y0, 0))}}
 }
 
 // retire schedules a texture that queued sprites may still reference for
@@ -263,11 +326,20 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 		g.composite(cb, t, bloom, ao)
 		render.EndTargetPass(cb, t.ldr)
 	}
-	extent := g.r.Swapchain.Extent
-	if target != nil {
+	vp := vk.VkRect2D{Extent: g.r.Swapchain.Extent}
+	switch {
+	case target != nil:
 		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
-		extent = target.Extent
-	} else {
+		vp.Extent = target.Extent
+	case g.viewport.Extent.Width > 0:
+		// A fixed view inside the window: black outside the viewport, the
+		// clear colour within it.
+		g.r.BeginSwapchainPass(fr, [4]float32{0, 0, 0, 1})
+		vp = g.viewport
+		render.SetViewportRect(cb, vp)
+		render.SetScissorRect(cb, vp)
+		render.ClearRect(cb, vp, clear)
+	default:
 		g.r.BeginSwapchainPass(fr, clear)
 	}
 	switch {
@@ -276,7 +348,7 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	case has3D:
 		g.composite(cb, t, bloom, ao)
 	}
-	if err := g.flush2D(fr, q, extent); err != nil {
+	if err := g.flush2D(fr, q, vp); err != nil {
 		return err
 	}
 	if target != nil {
@@ -286,7 +358,7 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 }
 
 // flush2D records the queue's 2D stream: one draw per run of equal state.
-func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, extent vk.VkExtent2D) error {
+func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error {
 	st := &q.stream
 	if len(st.items) == 0 {
 		return nil
@@ -296,21 +368,24 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, extent vk.VkExtent2D)
 		return err
 	}
 	cb := fr.CB
-	render.SetViewport(cb, extent)
+	render.SetViewportRect(cb, vp)
 	var offset vk.VkDeviceSize
 	vk.VkCmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &offset)
 	var bound *render.Pipeline
 	var boundProj *lin.Mat4
 	var boundClip lin.Rect
 	boundUniform := int32(-2)
-	scaleX, scaleY := float32(extent.Width)/q.viewW, float32(extent.Height)/q.viewH
+	scaleX, scaleY := float32(vp.Extent.Width)/q.viewW, float32(vp.Extent.Height)/q.viewH
 	push := push2D{frame: lin.V4(g.time, q.viewW, q.viewH, scaleX)}
 	for _, d := range st.draws {
 		s := d.state
 		if s.clip != boundClip {
 			boundClip = s.clip
-			render.SetScissor(cb, extent, int32(s.clip.X*scaleX), int32(s.clip.Y*scaleY),
-				uint32(max(s.clip.W*scaleX, 0)), uint32(max(s.clip.H*scaleY, 0)), s.clip == (lin.Rect{}))
+			if s.clip == (lin.Rect{}) {
+				render.SetScissorRect(cb, vp)
+			} else {
+				render.SetScissorRect(cb, pixelRect(vp, s.clip, scaleX, scaleY))
+			}
 		}
 		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend})
 		if err != nil {

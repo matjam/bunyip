@@ -212,7 +212,7 @@ func (g *Graphics) pixelScale() float32 {
 	if g.main.viewW <= 0 {
 		return 1
 	}
-	return float32(g.r.Swapchain.Extent.Width) / g.main.viewW
+	return float32(g.mainExtent().Width) / g.main.viewW
 }
 
 func fixedToFloat(v fixed.Int26_6) float32 { return float32(v) / 64 }

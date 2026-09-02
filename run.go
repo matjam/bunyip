@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image/png"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/matjam/bunyip/internal/platform"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
+	"github.com/matjam/bunyip/lin"
 )
 
 // audioRate is the mixer and device sample rate.
@@ -49,18 +51,32 @@ func runOnce(cfg Config, game Game) error {
 	if cfg.Title == "" {
 		cfg.Title = "Bunyip"
 	}
-	app, err := platform.NewApp()
-	if err != nil {
-		return err
-	}
-	win, err := app.NewWindow(platform.Config{Title: cfg.Title, Width: cfg.Width, Height: cfg.Height, Resizable: cfg.Resizable})
-	if err != nil {
-		return err
+	var (
+		app         eventSource
+		win         window
+		surfaceExts []string
+		makeSurface render.SurfaceFunc
+	)
+	if cfg.Headless {
+		win = &headlessWindow{w: cfg.Width, h: cfg.Height}
+		app = &headlessApp{step: cfg.FixedStep}
+		surfaceExts, makeSurface = render.HeadlessSurfaceExtensions(), render.NewHeadlessSurface
+	} else {
+		pa, err := platform.NewApp()
+		if err != nil {
+			return err
+		}
+		pw, err := pa.NewWindow(platform.Config{Title: cfg.Title, Width: cfg.Width, Height: cfg.Height, Resizable: cfg.Resizable})
+		if err != nil {
+			return err
+		}
+		app, win = pa, pw
+		surfaceExts, makeSurface = platform.RequiredInstanceExtensions(), pw.CreateSurface
 	}
 	defer win.Close()
 	pw, ph := win.PixelSize()
 	r, err := render.NewRenderer(render.Config{AppName: cfg.Title, Validation: cfg.Validation, Log: cfg.Log},
-		platform.RequiredInstanceExtensions(), win.CreateSurface, vk.VkExtent2D{Width: uint32(pw), Height: uint32(ph)}, !cfg.NoVSync)
+		surfaceExts, makeSurface, vk.VkExtent2D{Width: uint32(pw), Height: uint32(ph)}, !cfg.NoVSync)
 	if err != nil {
 		return err
 	}
@@ -72,7 +88,7 @@ func runOnce(cfg Config, game Game) error {
 	defer g.Destroy()
 
 	mixer := audio.NewMixer(audioRate)
-	if !cfg.NoAudio {
+	if !cfg.NoAudio && !cfg.Headless {
 		dev, err := audioout.Open(audioRate, mixer.Mix)
 		if err != nil {
 			cfg.Log.Warn("bunyip: audio output unavailable, continuing silent", "err", err)
@@ -80,13 +96,13 @@ func runOnce(cfg Config, game Game) error {
 			defer dev.Close()
 		}
 	}
-	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win, app: app}}
+	l := &loop{cfg: cfg, app: app, win: win, game: game, ctx: &Context{Gfx: g, Input: &input.State{}, Log: cfg.Log, Audio: mixer, Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1}}
 	l.overlay.on = cfg.Debug
 	defer l.overlay.destroy() // before g.Destroy, which was deferred earlier
 	if cfg.Pprof != "" && !cfg.recovering {
 		servePprof(cfg.Pprof, l.ctx)
 	}
-	l.applySize(win)
+	l.applySize()
 	if cfg.recovering {
 		if err := game.(Recoverer).Recover(l.ctx); err != nil {
 			return err
@@ -104,11 +120,16 @@ func runOnce(cfg Config, game Game) error {
 
 type loop struct {
 	cfg     Config
-	app     *platform.App
-	win     *platform.Window
+	app     eventSource
+	win     window
 	game    Game
 	ctx     *Context
 	overlay overlay
+
+	// The main output's pixel rectangle and the window's pixels per point,
+	// for mapping pointer positions into view units.
+	viewport       lin.Rect
+	pixelsPerPoint float32
 
 	// Timings gathered during the frame, published to ctx.Stats at its end.
 	frameStart          time.Time
@@ -116,12 +137,58 @@ type loop struct {
 	updates             int
 }
 
-func (l *loop) applySize(w *platform.Window) {
+// applySize reads the window's size and places the view in it: the whole
+// window in points, or a fixed view scaled by the configured policy and
+// centred, with the rest left black.
+func (l *loop) applySize() {
+	w := l.win
 	pw, ph := w.PixelSize()
 	width, height := w.Size()
-	l.ctx.Width, l.ctx.Height, l.ctx.Scale = float32(width), float32(height), float32(w.Scale())
+	l.pixelsPerPoint = float32(w.Scale())
 	l.ctx.Gfx.Resize(pw, ph)
-	l.ctx.Gfx.SetView(float32(width), float32(height))
+	cfg := l.cfg
+	if cfg.ViewWidth <= 0 || cfg.ViewHeight <= 0 {
+		l.viewport = lin.R(0, 0, float32(pw), float32(ph))
+		l.ctx.Width, l.ctx.Height, l.ctx.Scale = float32(width), float32(height), l.pixelsPerPoint
+		l.ctx.Gfx.SetView(float32(width), float32(height))
+		if err := l.ctx.Gfx.SetViewport(lin.Rect{}); err != nil {
+			l.ctx.Log.Error("bunyip: viewport", "err", err)
+		}
+		return
+	}
+	vw, vh := float32(cfg.ViewWidth), float32(cfg.ViewHeight)
+	sx, sy := float32(pw)/vw, float32(ph)/vh
+	switch cfg.Scaling {
+	case ScaleStretch:
+	case ScaleInteger:
+		s := float32(math.Floor(float64(min(sx, sy))))
+		if s < 1 {
+			s = min(sx, sy)
+		}
+		sx, sy = s, s
+	default:
+		s := min(sx, sy)
+		sx, sy = s, s
+	}
+	rw := float32(math.Round(float64(vw * sx)))
+	rh := float32(math.Round(float64(vh * sy)))
+	l.viewport = lin.R(float32(math.Floor(float64((float32(pw)-rw)/2))), float32(math.Floor(float64((float32(ph)-rh)/2))), rw, rh)
+	l.ctx.Width, l.ctx.Height, l.ctx.Scale = vw, vh, rw/vw
+	l.ctx.Gfx.SetView(vw, vh)
+	if err := l.ctx.Gfx.SetViewport(l.viewport); err != nil {
+		l.ctx.Log.Error("bunyip: viewport", "err", err)
+	}
+}
+
+// toView maps a pointer position in window points into view units.
+func (l *loop) toView(x, y float64) (float32, float32) {
+	px, py := float32(x)*l.pixelsPerPoint, float32(y)*l.pixelsPerPoint
+	return (px - l.viewport.X) / l.viewport.W * l.ctx.Width, (py - l.viewport.Y) / l.viewport.H * l.ctx.Height
+}
+
+// toViewDelta maps a pointer movement in window points into view units.
+func (l *loop) toViewDelta(dx, dy float64) (float32, float32) {
+	return float32(dx) * l.pixelsPerPoint / l.viewport.W * l.ctx.Width, float32(dy) * l.pixelsPerPoint / l.viewport.H * l.ctx.Height
 }
 
 func (l *loop) run() error {
@@ -149,6 +216,7 @@ func (l *loop) run() error {
 			if err := l.update(); err != nil {
 				return err
 			}
+			l.ctx.Alpha = 1
 		} else {
 			accumulator += now.Sub(last)
 			last = now
@@ -162,9 +230,16 @@ func (l *loop) run() error {
 					return err
 				}
 			}
+			l.ctx.Alpha = float32(accumulator) / float32(step)
 		}
 		if err := l.draw(); err != nil {
 			return err
+		}
+		if l.cfg.Headless {
+			// Nothing paces a headless run, so keep it to the update rate.
+			if rest := step - time.Since(now); rest > 0 {
+				time.Sleep(rest)
+			}
 		}
 	}
 	return nil
@@ -258,7 +333,7 @@ func (l *loop) handleEvents(events []platform.Event) {
 		case platform.EventClose:
 			l.ctx.quit = true
 		case platform.EventResize:
-			l.applySize(e.Window)
+			l.applySize()
 		case platform.EventFocus:
 			if !e.Focused {
 				in.FeedFocusLost()
@@ -272,14 +347,16 @@ func (l *loop) handleEvents(events []platform.Event) {
 		case platform.EventCompose:
 			in.FeedComposition(e.Text)
 		case platform.EventMouseMove:
-			in.FeedMouseDelta(float32(e.DX), float32(e.DY))
+			in.FeedMouseDelta(l.toViewDelta(e.DX, e.DY))
 			if !l.win.CursorCaptured() {
-				in.FeedMouseMove(float32(e.X), float32(e.Y))
+				in.FeedMouseMove(l.toView(e.X, e.Y))
 			}
 		case platform.EventMouseDown:
-			in.FeedMouseButton(e.Button, true, float32(e.X), float32(e.Y))
+			x, y := l.toView(e.X, e.Y)
+			in.FeedMouseButton(e.Button, true, x, y)
 		case platform.EventMouseUp:
-			in.FeedMouseButton(e.Button, false, float32(e.X), float32(e.Y))
+			x, y := l.toView(e.X, e.Y)
+			in.FeedMouseButton(e.Button, false, x, y)
 		case platform.EventScroll:
 			in.FeedScroll(float32(e.DX), float32(e.DY))
 		}
