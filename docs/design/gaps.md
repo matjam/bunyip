@@ -73,27 +73,22 @@ comments) has landed. What remains:
 
 ## 2D drawing
 
-- Texture writes each frame without a device wait; `Texture.Write` waits
-  for the GPU, which suits loading and occasional updates, not video.
-- Colour matrices per draw (hue, saturation, brightness, invert) as a
-  built-in rather than a five-line shader.
-- Sprite flip flags, and per-draw filtering (nearest or linear) rather
-  than only per texture.
-- Gradient fills (linear, radial) for paths and rectangles; dashed
-  strokes; stroke-along-path text.
-- Indexed triangle draws (`DrawIndexed`) for large 2D meshes and
-  particle systems.
-- Particle systems as a first-class feature: emitters, curves over
-  lifetime, GPU-instanced, with a small editor in the gallery.
-- Lit 2D: normal-mapped sprites with point lights, 2D shadows.
-- Tilemaps: layers, per-tile flip and rotation, a collision layer,
-  animated tiles, and Tiled (TMX/TSX) import. Atlas formats from
-  TexturePacker and Aseprite for sheets with named frames.
-- Nine-slice with tiled (not stretched) edges.
-- Shader hot reload during development: rerun `bunyip-shader` on save
-  and swap the pipelines. Compiling GLSL at runtime would need a
-  pure-Go compiler and is out of scope; the offline tool is the design.
-- Sprite batching statistics and a draw-call budget in the debug overlay.
+Streaming texture writes, colour matrices, flips and per-draw
+filtering, gradients, dashed strokes, text on paths, indexed draws, the
+`particle` package, lit sprites, tilemap flips and animations, the
+`tiled` importer, TexturePacker and Aseprite atlases, tiled nine-slices,
+`Shader.Reload` and batch statistics are in. What remains:
+
+- 2D shadows cast by occluders from the point lights; lit sprites take
+  light from every direction today.
+- GPU-instanced particles for very large counts; the system is CPU
+  simulated and drawn through the sprite stream, fine for thousands.
+- A particle editor in the gallery.
+- Tiled's XML forms (.tmx, .tsx) and zstd-compressed layers; the JSON
+  forms with CSV, base64, zlib and gzip load.
+- A draw-call budget warning in the overlay; the counts are shown.
+- Compiling GLSL at runtime would need a pure-Go compiler and is out of
+  scope; the offline tool plus `Shader.Reload` is the design.
 
 ## Text
 

@@ -120,6 +120,8 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |
+| `go run ./examples/tiled` | a map from the Tiled editor: layers, an external tileset, flipped and rotated tiles, an animated pond, object outlines |
+| `go run ./examples/particles` | a campfire of fire and smoke, rain, sparks on click and confetti on Space from the particle package, with a tuning panel |
 | `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
 | `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |
 | `go run ./examples/text [-font file.ttf]` | HarfBuzz-shaped text: kerning and ligatures, Arabic joining, right-to-left and mixed lines, a fallback font, Unicode wrapping, vertical text, distance-field text |

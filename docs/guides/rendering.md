@@ -20,13 +20,29 @@ size, a UV window, a tint, rotation and origin. `DrawTexture` and
 `FillRect` cover the common cases. A `Region` names a rectangle of a
 texture, from `NewRegion` or `Sheet.Region`, and `DrawRegion` draws it.
 `DrawNineSlice` stretches a `NineSlice` over a rectangle with its corners
-kept, and `DebugText` prints in the engine's own font without loading
-one.
+kept, or repeats its edges and centre with `Tile` set. Sprites flip with
+`FlipX` and `FlipY` and pick nearest or linear sampling per draw with
+`Filter`. `DrawIndexed` draws shared-vertex meshes. `DebugText` prints
+in the engine's own font without loading one. Writes to a texture inside
+a frame stream without waiting for the GPU, so video and painting can
+update every frame.
+
+**Colour and light.** `ColorMatrixed` (or `SetColorMatrix`) recolours
+everything drawn inside it through a `ColorMatrix`: `Saturation`,
+`HueRotate`, `Brightness`, `Contrast`, `Invert`, `Sepia` and `Tint`
+compose with `Mul`, so a hit flash or a night tint is one line.
+`SetLights2D` places up to eight point lights above the sprite plane and
+`DrawLit` draws a sprite lit by them through a tangent-space normal map,
+for torchlight across a dungeon wall.
 
 **Sheets, animation and tilemaps.** A `Sheet` divides a texture into
 frames; `DrawFrame` draws one. `Animation` and `AnimState` step through
-frames at a rate. A `Tilemap` holds frame indices and draws only the
-tiles inside the camera's view.
+frames at a rate. A `Tilemap` holds frame indices, with `TileFlipped`
+bits for mirrored and turned tiles and `Animate` for tiles that cycle,
+and draws only the tiles inside the camera's view. The `tiled` package
+loads maps and tilesets saved by the Tiled editor into tilemaps and
+object lists, and `ParseAtlas` reads TexturePacker and Aseprite atlases
+into named regions and animation tags.
 
 **Cameras and layers.** `SetCamera2D` makes later sprites world-space:
 the camera has a position, zoom and rotation, and `ViewToWorld` maps the
@@ -53,9 +69,19 @@ bitmap font resamples.
 it under the non-zero or even-odd rule, optionally with a texture;
 `StrokePath` outlines it with a width, caps and joins. Both are
 anti-aliased and go through the same stream as sprites, so they sort by
-layer and clip like everything else. `FillCircle`, `StrokeRect` and
+layer and clip like everything else. A `Gradient`, linear or radial,
+colours a fill or stroke by position (`FillGradient` for a rectangle),
+`StrokeOptions.Dash` makes dashed and dotted lines, and `DrawTextOnPath`
+runs a line of text along a path. `FillCircle`, `StrokeRect` and
 `StrokeLine` cover the quick cases, and `DrawTriangles` takes raw
 geometry.
+
+**Particles.** The `particle` package simulates emitters on the CPU and
+draws them through the sprite stream: a rate or bursts, a shape to emit
+from, speed, spread, gravity, damping, size and colour curves over
+lifetime, a texture, region or sheet frames, a blend mode and a layer.
+`Fire`, `Smoke`, `Sparks`, `Rain` and `Confetti` are ready-made
+emitters; the `particles` example shows them with a tuning panel.
 
 **Blending and transforms.** `Blended` (or `SetBlend`) picks a blend mode
 for a stretch of drawing: additive glows, multiplied shadows, screen,
@@ -65,6 +91,13 @@ rotate, scale and shear compose with `Mul`.
 
 **Shaders.** Fragment shaders written by the game colour sprites and
 shape mesh surfaces; the [Shaders](shaders.html) guide covers them.
+`Shader.Reload` swaps in a recompiled program while the game runs, so an
+`asset.Watcher` on the compiled files gives shader hot reload.
+
+**Budget.** `ctx.Stats` and `Graphics.Stats` count 2D draw calls and
+vertices and 3D draw calls and instances for the last frame; the F3
+overlay shows them. A rising 2D draw count means state changes are
+breaking batches.
 
 **Clipping.** `Clip` (or `PushClip` and `PopClip`) limits drawing to a
 `lin.Rect`, which is how scroll areas work. Every rectangle in the
