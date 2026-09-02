@@ -52,9 +52,11 @@ window.
   with rebinding, a frame-timing overlay on F3, and optional pprof.
 
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
-(X11 through xcb, ALSA, joystick devices) layers sit behind the same
+(Wayland or X11, ALSA, joystick devices) layers sit behind the same
 `internal/platform` and `internal/audioout` interfaces; they cross-compile
-and vet but have not yet run on hardware. Wayland desktops use XWayland.
+and vet but have not yet run on hardware. On Linux the window layer uses
+Wayland where a compositor is running and falls back to X11 through xcb;
+`BUNYIP_X11=1` forces X11.
 
 ## Documentation
 
@@ -182,9 +184,11 @@ or the LunarG Vulkan SDK. Optional: `brew install vulkan-validationlayers`
 for validation in tests and examples. Set `BUNYIP_VULKAN_LIBRARY` to point at
 a specific library.
 
-Linux: a Vulkan driver, `libxcb`, and `libasound`; `libxkbcommon` and
-`libxkbcommon-x11` for text input. Windows: a Vulkan driver (`vulkan-1.dll`
-ships with GPU drivers).
+Linux: a Vulkan driver, `libasound`, and either `libwayland-client` 1.20 or
+later for a Wayland session or `libxcb` for an X11 one. `libxkbcommon` gives
+text input on both, `libxkbcommon-x11` is needed for X11, and
+`libwayland-cursor` gives the pointer its shapes under Wayland. Windows: a
+Vulkan driver (`vulkan-1.dll` ships with GPU drivers).
 
 ## Developing
 

@@ -44,7 +44,8 @@ in each package's comment.
 - Drag and drop of files onto the window, and native file dialogs.
   `OpenURL` opens the browser on every platform.
 - Multiple windows.
-- Windows IME and X input methods; only macOS composes text natively.
+- Windows IME, X input methods and Wayland `zwp_text_input_v3`; only
+  macOS composes text natively.
 - App bundling for Windows and Linux (installers, AppImage); code
   signing.
 

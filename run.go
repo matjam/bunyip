@@ -98,6 +98,7 @@ func runOnce(cfg Config, game Game) error {
 		if err != nil {
 			return err
 		}
+		cfg.Log.Debug("bunyip: window backend", "backend", platform.Backend())
 		pw, err := pa.NewWindow(platform.Config{Title: cfg.Title, Width: cfg.Width, Height: cfg.Height, Resizable: cfg.Resizable})
 		if err != nil {
 			return err

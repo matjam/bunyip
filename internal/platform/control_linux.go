@@ -12,8 +12,14 @@ const (
 	pMaxSize        = 1 << 5
 )
 
-// SetTitle changes the window's title through WM_NAME and _NET_WM_NAME.
+// SetTitle changes the window's title, through xdg_toplevel.set_title under
+// Wayland and WM_NAME and _NET_WM_NAME under X11.
 func (w *Window) SetTitle(title string) {
+	if w.wl != nil {
+		w.wl.setTitle(title)
+		w.wl.app.l.flush(w.wl.app.display)
+		return
+	}
 	a, x := w.app, w.app.x
 	if title == "" {
 		title = " "
@@ -24,9 +30,16 @@ func (w *Window) SetTitle(title string) {
 	x.flush(a.conn)
 }
 
-// SetSizeLimits bounds the content size through WM_NORMAL_HINTS; zero
-// lifts a bound.
+// SetSizeLimits bounds the content size, through xdg_toplevel.set_min_size
+// and set_max_size under Wayland and WM_NORMAL_HINTS under X11; zero lifts a
+// bound.
 func (w *Window) SetSizeLimits(minW, minH, maxW, maxH int) {
+	if w.wl != nil {
+		w.wl.minW, w.wl.minH, w.wl.maxW, w.wl.maxH = minW, minH, maxW, maxH
+		w.wl.applySizeLimits(minW, minH, maxW, maxH)
+		w.wl.app.l.flush(w.wl.app.display)
+		return
+	}
 	w.minW, w.minH, w.maxW, w.maxH = minW, minH, maxW, maxH
 	var hints [18]uint32
 	if minW > 0 || minH > 0 {
@@ -48,9 +61,9 @@ func (w *Window) SetSizeLimits(minW, minH, maxW, maxH int) {
 	x.flush(a.conn)
 }
 
-// applyCursor sets the window's cursor attribute from the hidden flag
+// applyCursorX11 sets the window's cursor attribute from the hidden flag
 // and the chosen shape.
-func (w *Window) applyCursor() {
+func (w *Window) applyCursorX11() {
 	a, x := w.app, w.app.x
 	cursor := w.shapeCursor
 	if w.cursorHidden {
@@ -70,17 +83,36 @@ func (w *Window) applyCursor() {
 
 // SetCursorVisible shows or hides the pointer over the window.
 func (w *Window) SetCursorVisible(on bool) {
+	if w.wl != nil {
+		if w.wl.cursorHidden == !on {
+			return
+		}
+		w.wl.cursorHidden = !on
+		w.wl.applyCursor()
+		w.wl.app.l.flush(w.wl.app.display)
+		return
+	}
 	if w.cursorHidden == !on {
 		return
 	}
 	w.cursorHidden = !on
 	if !w.captured {
-		w.applyCursor()
+		w.applyCursorX11()
 	}
 }
 
-// SetCursor picks the pointer's shape from the X cursor font.
+// SetCursor picks the pointer's shape, from the cursor theme under Wayland
+// and from the X cursor font under X11.
 func (w *Window) SetCursor(shape CursorShape) {
+	if w.wl != nil {
+		if shape >= cursorShapeCount {
+			shape = CursorArrow
+		}
+		w.wl.shape = shape
+		w.wl.applyCursor()
+		w.wl.app.l.flush(w.wl.app.display)
+		return
+	}
 	a, x := w.app, w.app.x
 	glyph := uint16(68) // XC_left_ptr
 	switch shape {
@@ -113,21 +145,25 @@ func (w *Window) SetCursor(shape CursorShape) {
 		x.closeFont(a.conn, font)
 	}
 	if !w.captured {
-		w.applyCursor()
+		w.applyCursorX11()
 	}
 }
 
-// SetIcon sets _NET_WM_ICON: width, height and ARGB pixels as cardinals.
 // SetPosition, Position, SetAlwaysOnTop and SetCursorImage are not
-// implemented on X11 yet; the window stays where the window manager put
-// it and keeps the system pointer.
+// implemented on either Linux backend. Wayland has no protocol that gives a
+// client its own position or puts a window above others, and the X11 layer
+// leaves placement to the window manager.
 func (w *Window) SetPosition(x, y int)                 {}
 func (w *Window) Position() (int, int)                 { return 0, 0 }
 func (w *Window) SetAlwaysOnTop(bool)                  {}
 func (w *Window) SetCursorImage(image.Image, int, int) {}
 
+// SetIcon sets _NET_WM_ICON under X11: width, height and ARGB pixels as
+// cardinals. Under Wayland it does nothing, because the icon comes from the
+// desktop entry the app id names; xdg-toplevel-icon-v1, which would let the
+// client send pixels, is not wired yet.
 func (w *Window) SetIcon(img image.Image) {
-	if img == nil {
+	if img == nil || w.wl != nil {
 		return
 	}
 	b := img.Bounds()
@@ -144,9 +180,10 @@ func (w *Window) SetIcon(img image.Image) {
 	x.flush(a.conn)
 }
 
-// Clipboard is not available under X11 yet: serving selections needs a
-// request loop the platform layer does not run.
+// Clipboard is not available on Linux yet: X11 selections need a request
+// loop the platform layer does not run, and Wayland needs wl_data_device
+// with a pipe to read the offer from.
 func (a *App) Clipboard() (string, error) { return "", ErrNoClipboard }
 
-// SetClipboard is not available under X11 yet.
+// SetClipboard is not available on Linux yet.
 func (a *App) SetClipboard(string) error { return ErrNoClipboard }

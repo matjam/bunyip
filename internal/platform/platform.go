@@ -13,9 +13,20 @@ package platform
 
 import (
 	"errors"
+	"runtime"
 
 	"github.com/matjam/bunyip/input"
 )
+
+// backendName is the window system in use. It starts as the operating
+// system's name and NewApp replaces it where the platform has more than one
+// window system to choose between, which today is Linux.
+var backendName = runtime.GOOS
+
+// Backend names the window system the layer opened: "wayland" or "x11" on
+// Linux, and the operating system's name elsewhere. The engine logs it at
+// startup, because which one a Linux session got is not otherwise visible.
+func Backend() string { return backendName }
 
 // Config describes a window to open.
 type Config struct {

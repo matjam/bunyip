@@ -3,9 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
-	"runtime"
 	"structs"
-	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -279,48 +277,27 @@ func loadX11() (*xlib, error) {
 	return x, nil
 }
 
-func init() {
-	// The connection is used from one thread; Wake sends through xcb,
-	// which is thread-safe.
-	runtime.LockOSThread()
-}
+// ErrNoX11 is returned when no X server can be reached.
+var ErrNoX11 = errors.New("platform: cannot connect to an X server (is DISPLAY set?)")
 
-// ErrUnsupported is returned when no X server can be reached.
-var ErrUnsupported = errors.New("platform: cannot connect to an X server (is DISPLAY set?)")
-
-// App is the connection to the X server. Create one per process.
-type App struct {
-	x       *xlib
-	conn    unsafe.Pointer
-	screen  *xcbScreen
-	windows map[uint32]*Window
-	pending []Event
-	mods    Mods
-	mu      sync.Mutex
-
-	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
-
-	xkbCtx, xkbKeymap, xkbState unsafe.Pointer
-	xkbDevice                   int32
-}
-
-// NewApp connects to the X server.
-func NewApp() (*App, error) {
+// connectX11 opens the connection to the X server and fills in the X11 half
+// of the App.
+func (a *App) connectX11() error {
 	x, err := loadX11()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var screenNum int32
 	conn := x.connect(nil, &screenNum)
 	if conn == nil || x.connectionHasError(conn) != 0 {
-		return nil, ErrUnsupported
+		return ErrNoX11
 	}
 	it := x.setupRootsIterator(x.getSetup(conn))
 	for i := int32(0); i < screenNum && it.Rem > 0; i++ {
 		it.Data = (*xcbScreen)(unsafe.Add(unsafe.Pointer(it.Data), unsafe.Sizeof(xcbScreen{})))
 		it.Rem--
 	}
-	a := &App{x: x, conn: conn, screen: it.Data, windows: map[uint32]*Window{}}
+	a.x, a.conn, a.screen, a.windows = x, conn, it.Data, map[uint32]*Window{}
 	a.atomWMProtocols = a.atom("WM_PROTOCOLS")
 	a.atomWMDelete = a.atom("WM_DELETE_WINDOW")
 	a.atomNetWMName = a.atom("_NET_WM_NAME")
@@ -329,7 +306,7 @@ func NewApp() (*App, error) {
 	a.atomNetWMFullscreen = a.atom("_NET_WM_STATE_FULLSCREEN")
 	a.atomWake = a.atom("BUNYIP_WAKE")
 	a.setupXKB()
-	return a, nil
+	return nil
 }
 
 func (a *App) atom(name string) uint32 {
@@ -374,32 +351,8 @@ func (a *App) refreshKeymap() {
 	}
 }
 
-// Window is one X11 window.
-type Window struct {
-	app       *App
-	id        uint32
-	width     int
-	height    int
-	closed    bool
-	captured  bool
-	fullscr   bool
-	cursor    uint32 // the invisible cursor while captured
-	inputRect textRect
-	mouseX    float64
-	mouseY    float64
-	warping   bool
-
-	minW, minH, maxW, maxH int // content size limits; zero is none
-	cursorHidden           bool
-	shape                  CursorShape
-	shapeCursor            uint32 // the glyph cursor in force, or 0
-	blankCursor            uint32 // the invisible cursor while hidden, or 0
-}
-
-type textRect struct{ X, Y, W, H float64 }
-
-// NewWindow opens a window and shows it.
-func (a *App) NewWindow(cfg Config) (*Window, error) {
+// newX11Window opens an X11 window and shows it.
+func (a *App) newX11Window(cfg Config) (*Window, error) {
 	x := a.x
 	id := x.generateID(a.conn)
 	values := [2]uint32{a.screen.BlackPixel, xcbEventMaskKeyPress | xcbEventMaskKeyRelease | xcbEventMaskButtonPress |
@@ -427,9 +380,9 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	return w, nil
 }
 
-// Poll drains pending X events into the returned slice, reused by the
+// x11Poll drains pending X events into the returned slice, reused by the
 // next call. With wait set it blocks until at least one event arrives.
-func (a *App) Poll(wait bool) []Event {
+func (a *App) x11Poll(wait bool) []Event {
 	a.pending = a.pending[:0]
 	x := a.x
 	x.flush(a.conn)
@@ -616,9 +569,9 @@ func (a *App) handle(ge *xcbGenericEvent) {
 	}
 }
 
-// Wake sends a client message to the window so a blocked Poll returns
+// x11Wake sends a client message to the window so a blocked Poll returns
 // with EventWake. Safe from any goroutine: xcb serialises its calls.
-func (a *App) Wake() {
+func (a *App) x11Wake() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for id := range a.windows {
@@ -633,20 +586,8 @@ func (a *App) Wake() {
 
 // Gamepads reads the Linux joystick devices; see gamepad_linux.go.
 
-// Size is the content size in points (pixels: X11 reports no scale).
-func (w *Window) Size() (int, int) { return w.width, w.height }
-
-// PixelSize is the framebuffer size.
-func (w *Window) PixelSize() (int, int) { return w.width, w.height }
-
-// Scale is pixels per point.
-func (w *Window) Scale() float64 { return 1 }
-
-// Closed reports whether the window was destroyed.
-func (w *Window) Closed() bool { return w.closed }
-
-// Close destroys the window.
-func (w *Window) Close() {
+// closeX11 destroys the X11 window.
+func (w *Window) closeX11() {
 	if w.closed {
 		return
 	}
@@ -656,11 +597,8 @@ func (w *Window) Close() {
 	w.app.x.flush(w.app.conn)
 }
 
-// Fullscreen reports whether the window manager has the window full screen.
-func (w *Window) Fullscreen() bool { return w.fullscr }
-
-// SetFullscreen asks the window manager for _NET_WM_STATE_FULLSCREEN.
-func (w *Window) SetFullscreen(on bool) {
+// setFullscreenX11 asks the window manager for _NET_WM_STATE_FULLSCREEN.
+func (w *Window) setFullscreenX11(on bool) {
 	if on == w.fullscr {
 		return
 	}
@@ -677,9 +615,9 @@ func (w *Window) SetFullscreen(on bool) {
 	w.fullscr = on
 }
 
-// SetCursorCaptured hides the cursor, confines it to the window and
+// setCursorCapturedX11 hides the cursor, confines it to the window and
 // reports motion as deltas.
-func (w *Window) SetCursorCaptured(on bool) {
+func (w *Window) setCursorCapturedX11(on bool) {
 	if on == w.captured {
 		return
 	}
@@ -700,13 +638,4 @@ func (w *Window) SetCursorCaptured(on bool) {
 		x.changeWindowAttrs(a.conn, w.id, xcbCWCursor, &values[0])
 	}
 	x.flush(a.conn)
-}
-
-// CursorCaptured reports the capture state.
-func (w *Window) CursorCaptured() bool { return w.captured }
-
-// SetTextInputRect records where text is entered; X input methods are
-// not wired, so it only stores the rectangle.
-func (w *Window) SetTextInputRect(x, y, width, height float64) {
-	w.inputRect = textRect{X: x, Y: y, W: width, H: height}
 }
