@@ -88,7 +88,7 @@ sticks and triggers in -1 to 1. Sticks report up as positive y, as the
 hardware does. `JustConnected` and `JustDisconnected` mark the update a
 controller appears or vanishes, for a join prompt or a pause. There are
 `MaxGamepads` of them, and `Gamepad(i)` is never nil, so an unplugged
-controller simply reads as nothing held.
+controller reads as nothing held.
 
 ```go
 pad := ctx.Input.Gamepad(0)

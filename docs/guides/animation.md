@@ -113,7 +113,7 @@ w.SpawnWith(gfx.Sprite{Size: lin.V2(64, 64), Color: gfx.White}, spriteTexture{te
 A `Skeleton` component wraps a `gfx.AnimPlayer` for a glTF model's
 clips; the system advances it, and the entity draws with
 `gfx.DrawModelAnimated`. Clip selection stays on the player, so a
-character controller system just names the clip it wants:
+character controller system names the clip it wants:
 `Play(name, loop)` snaps to a clip, `CrossFade(name, loop, seconds)`
 blends into it from whatever is playing, `Finished` says when a
 one-shot clip has ended.
@@ -284,7 +284,7 @@ player.PostPose = func(p *gfx.AnimPlayer) {
 Under them are the player's node overrides, usable directly from
 `PostPose` or after `Advance`: `NodePosition` and `NodeRotation` read a
 node in model space, `NodeLocal` and `SetNodeLocal` read and replace
-its transform relative to its parent, `SetNodeRotation` sets just the
+its transform relative to its parent, `SetNodeRotation` sets only the
 rotation, and `RotateNode` turns a node by a model-space rotation about
 its own position so its children follow. An override lasts until the
 next `Advance` samples the clips again, so set it every frame; while
