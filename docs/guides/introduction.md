@@ -20,6 +20,10 @@ never sees Vulkan; it sees sprites, meshes, cameras, lights and a UI.
 - **Two loop modes.** Real-time games get a fixed timestep. Turn-based
   games set one flag and the process sleeps in the operating system until
   the player does something, using no CPU while they think.
+- **Data first.** Game state lives in an entity component system with
+  dense per-type storage, so a query over a hundred thousand entities is
+  a walk down a few slices, and systems are plain functions over that
+  data.
 - **Immediate mode.** The interface is rebuilt every frame from plain Go
   values, and closures scope every container, so there is no retained
   widget tree to keep in sync with the game.
@@ -62,15 +66,18 @@ touches: graphics, input, audio, timing and the window.
 | Engine | [bunyip](../pkg/bunyip.html) (loop, context), [input](../pkg/input.html) |
 | Graphics | [gfx](../pkg/gfx.html) (2D, 3D, text, post-processing), [ui](../pkg/ui.html), [gltf](../pkg/gltf.html), [lin](../pkg/lin.html) |
 | Audio | [audio](../pkg/audio.html) (mixer, music, effects), [audio/tracker](../pkg/audio/tracker.html) |
-| Services | [scene](../pkg/scene.html), [asset](../pkg/asset.html), [save](../pkg/save.html), [rng](../pkg/rng.html), [timer](../pkg/timer.html), [tween](../pkg/tween.html), [grid](../pkg/grid.html), [network](../pkg/network.html) |
+| Services | [ecs](../pkg/ecs.html), [asset](../pkg/asset.html), [save](../pkg/save.html), [rng](../pkg/rng.html), [timer](../pkg/timer.html), [tween](../pkg/tween.html), [grid](../pkg/grid.html), [network](../pkg/network.html) |
 | Tools | `bunyip-info`, `bunyip-play`, `bunyip-pack`, `bunyip-bundle`, `bunyip-docs` |
 
 ## Where to go next
 
 - [Getting started](getting-started.html) installs what the engine needs
   and opens a window.
-- [Building Tetris](tetris.html) writes a complete game from an empty file,
-  touching input, timing, drawing, the UI and sound on the way.
+- [Building Tetris](tetris.html) writes a complete game from an empty file
+  on the entity component system, touching input, timing, drawing, the UI
+  and sound on the way.
+- [Entities and systems](ecs.html) explains how the ECS stores data and
+  how to structure a game around queries, systems, resources and events.
 - The concept guides on [rendering](rendering.html), the [interface](ui.html),
   [audio](audio.html) and [game services](services.html) explain each area
   before you dive into its API reference.

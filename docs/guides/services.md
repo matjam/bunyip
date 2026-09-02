@@ -1,6 +1,6 @@
 ---
 title: Game services
-order: 7
+order: 8
 summary: entities, assets, saves, random numbers, timers, tweens, grids and networking
 ---
 
@@ -8,13 +8,14 @@ These packages have no GPU or window dependency, so their examples run
 under `go test` and they work in a headless server just as well as in a
 game.
 
-## Entities: scene
+## Entities: ecs
 
-[scene](../pkg/scene.html) is an entity store. Entities are cheap
-generational handles; components are plain Go values attached by type
-and iterated by type. `SetParent` builds a hierarchy, and `WorldMatrix`
-composes `gfx.Transform` components down the tree, so a turret follows
-its tank and a moon its planet.
+[ecs](../pkg/ecs.html) is the entity component system, covered in its
+own guide, [Entities and systems](ecs.html). Entities are generational
+handles, components are plain structs in dense per-type columns,
+queries walk them without lookups, and systems, resources and events
+structure the game loop. `SetParent` builds a hierarchy and
+`WorldMatrix` composes `gfx.Transform` components down the tree.
 
 ## Files: asset
 

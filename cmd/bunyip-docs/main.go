@@ -52,7 +52,7 @@ var groups = []struct {
 	{"Engine", []string{"bunyip", "input"}},
 	{"Graphics", []string{"gfx", "ui", "gltf", "lin"}},
 	{"Audio", []string{"audio", "audio/tracker"}},
-	{"Services", []string{"scene", "asset", "save", "rng", "timer", "tween", "grid", "network"}},
+	{"Services", []string{"ecs", "asset", "save", "rng", "timer", "tween", "grid", "network"}},
 	{"Tools", []string{"cmd/"}},
 	{"Example programs", []string{"examples/"}},
 }
@@ -720,7 +720,7 @@ const indexTmpl = `{{define "index"}}{{template "layout" .}}{{end}}
 <a class="card" href="pkg/gfx.html"><h3>Rendering</h3><p>Sprites, tilemaps and scalable text on top of a physically based 3D renderer with cascaded shadows, ambient occlusion, bloom and skeletal animation. No Vulkan knowledge required.</p></a>
 <a class="card" href="pkg/ui.html"><h3>Interface</h3><p>An immediate-mode toolkit rebuilt every frame: panels, buttons, sliders, drop-downs, scroll areas, text fields with IME support, eight colour themes and texture skins.</p></a>
 <a class="card" href="pkg/audio.html"><h3>Audio</h3><p>A mixer with streamed music, positional voices, reverb and filters, priorities and fades, plus a tracker player for MOD, S3M, XM and IT.</p></a>
-<a class="card" href="pkg/scene.html"><h3>Game services</h3><p>An entity store with a scene graph, assets with packs and hot reload, saves and settings, seeded random numbers, timers and tweens, grids with pathfinding, and TCP and UDP messaging.</p></a>
+<a class="card" href="pkg/ecs.html"><h3>Game services</h3><p>An archetype-based entity component system with systems, resources and events, assets with packs and hot reload, saves and settings, seeded random numbers, timers and tweens, grids with pathfinding, and TCP and UDP messaging.</p></a>
 </div>
 <h2>Guides</h2>
 <ul class="guide-list">

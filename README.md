@@ -14,9 +14,10 @@ anything else that wants 2D sprites and 3D models on the same screen.
   capture, gamepads, IME text input.
 - Audio mixer with streamed WAV, Ogg Vorbis and MP3, positional voices,
   reverb and filters, priorities, and a tracker player for MOD, S3M, XM and IT.
-- Game services: entity store, assets and packs with async loading and hot
-  reload, saves and settings, seeded RNG, timers and tweens, grids with
-  pathfinding and field of view, TCP and UDP messaging.
+- Game services: an archetype-based entity component system with systems,
+  resources and events; assets and packs with async loading and hot reload,
+  saves and settings, seeded RNG, timers and tweens, grids with pathfinding
+  and field of view, TCP and UDP messaging.
 - Two loop modes: fixed-timestep real time, or turn-based where the process
   sleeps in the OS until input (or `Context.Wake`) arrives. A frame-timing
   overlay on F3 and optional pprof.
@@ -48,7 +49,7 @@ output.
 | `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State` |
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
 | `lin` | vectors, matrices, quaternions |
-| `scene` | entity store with typed components and a transform hierarchy |
+| `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy |
 | `asset` | files from directories and pack files, async loading, hot reload |
 | `save` | JSON saves and settings in the platform's data directory |
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
@@ -101,13 +102,13 @@ self-verifying without anyone watching the screen.
 | `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay |
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
 | `go run ./examples/audio [-music file.ogg]` | positional voices, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream and streamed music files |
-| `go run ./examples/solar` | entity store with a parent-child hierarchy, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
+| `go run ./examples/solar` | the ECS driving a scene: hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
 | `go run ./examples/lighting [-model file.glb]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, every post-processing setting on a slider, glTF animation clips |
 | `go run ./examples/pathfinding` | A*, Dijkstra maps, field of view, flood fill and lines on a paintable grid; save and load through the save package |
 | `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic |
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |
 | `go run ./examples/inputs` | keys, mouse, wheel, cursor capture, fullscreen, typed text with IME composition, gamepads |
-| `go run ./examples/tetris` | the complete game the Tetris guide builds: timers, tweens, UI panel, synthesised sounds |
+| `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |

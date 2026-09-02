@@ -1,7 +1,9 @@
-// Command tetris is the game the Tetris guide builds, step by step: a
-// board of cells, seven pieces that rotate, gravity on a timer, line
-// clears with a flash, a score panel and sound. Left and right move, Up
-// rotates, Down soft-drops, Space hard-drops, R restarts, Escape quits.
+// Command tetris is the game the Tetris guide builds on the entity
+// component system: settled blocks are entities, the falling piece is an
+// entity, and systems for input, gravity, locking and effects run each
+// update over resources such as the score and the board. Left and right
+// move, Up rotates, Down soft-drops, Space hard-drops, R restarts,
+// Escape quits.
 package main
 
 import (
@@ -13,6 +15,7 @@ import (
 
 	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/audio"
+	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/rng"
@@ -21,8 +24,7 @@ import (
 	"github.com/matjam/bunyip/ui"
 )
 
-// The board is ten cells wide and twenty tall; each cell is a colour
-// index, zero for empty.
+// The board is ten cells wide and twenty tall.
 const (
 	cols, rows = 10, 20
 	cell       = 28
@@ -43,59 +45,108 @@ var shapes = []struct {
 	{"L", []string{"..#", "###", "..."}, gfx.Hex(0xFA7921)},
 }
 
-// piece is a shape at a position with a rotation applied to its cells.
-type piece struct {
-	kind  int
-	cells [][]bool // cells[y][x]
-	x, y  int
+// Components.
+
+// Cell is one settled block on the board.
+type Cell struct{ X, Y, Kind int }
+
+// Falling is the piece the player controls; there is one at a time.
+type Falling struct {
+	Kind  int
+	Cells [][]bool // Cells[y][x]
+	X, Y  int
 }
 
-func newPiece(kind int) piece {
-	rows := shapes[kind].cells
-	p := piece{kind: kind, x: cols/2 - len(rows[0])/2}
-	for _, row := range rows {
+// Resources: singletons the systems share.
+
+// Board is the occupancy grid rebuilt from Cell entities each update.
+type Board struct{ Full [rows][cols]bool }
+
+// Score is what the panel shows.
+type Score struct {
+	Points, Lines int
+	Over          bool
+}
+
+// Controls is this update's input, filled in from ctx.Input.
+type Controls struct{ Left, Right, Rotate, Down, Drop bool }
+
+// Clock drives gravity on game time.
+type Clock struct {
+	Timers timer.Scheduler
+	Drop   timer.Handle
+}
+
+// Bag deals the next piece.
+type Bag struct {
+	Random *rng.Rand
+	Next   int
+}
+
+// Events: how systems tell each other what happened.
+
+// Locked says a piece settled without clearing lines.
+type Locked struct{}
+
+// Cleared says lines were removed.
+type Cleared struct{ Rows int }
+
+// newFalling builds a piece at the top of the board.
+func newFalling(kind int) Falling {
+	src := shapes[kind].cells
+	p := Falling{Kind: kind, X: cols/2 - len(src[0])/2}
+	for _, row := range src {
 		var r []bool
 		for _, ch := range row {
 			r = append(r, ch == '#')
 		}
-		p.cells = append(p.cells, r)
+		p.Cells = append(p.Cells, r)
 	}
 	return p
 }
 
 // rotated returns the piece turned clockwise.
-func (p piece) rotated() piece {
-	n := len(p.cells)
-	out := piece{kind: p.kind, x: p.x, y: p.y, cells: make([][]bool, n)}
+func (p Falling) rotated() Falling {
+	n := len(p.Cells)
+	out := Falling{Kind: p.Kind, X: p.X, Y: p.Y, Cells: make([][]bool, n)}
 	for y := range n {
-		out.cells[y] = make([]bool, n)
+		out.Cells[y] = make([]bool, n)
 		for x := range n {
-			out.cells[y][x] = p.cells[n-1-x][y]
+			out.Cells[y][x] = p.Cells[n-1-x][y]
 		}
 	}
 	return out
+}
+
+// fits reports whether the piece overlaps walls, floor or settled cells.
+func fits(b *Board, p Falling) bool {
+	for y, row := range p.Cells {
+		for x, on := range row {
+			if !on {
+				continue
+			}
+			bx, by := p.X+x, p.Y+y
+			if bx < 0 || bx >= cols || by >= rows || (by >= 0 && b.Full[by][bx]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type game struct {
 	seconds float64
 	shot    string
 
-	font   *gfx.Font
-	ui     *ui.Context
-	board  [rows][cols]int // colour index + 1, or 0
-	cur    piece
-	next   piece
-	random *rng.Rand
-	timers timer.Scheduler
-	drop   timer.Handle
-	flash  *tween.Tween
-	lines  int
-	score  int
-	over   bool
-	mixer  *audio.Mixer
-	lock   *audio.Sound
-	clear  *audio.Sound
+	world   *ecs.World
+	cells   *ecs.Query1[Cell]
+	falling *ecs.Query1[Falling]
 
+	font     *gfx.Font
+	ui       *ui.Context
+	lock     *audio.Sound
+	clear    *audio.Sound
+	flash    *tween.Tween
 	shotDone bool
 }
 
@@ -105,104 +156,210 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		return err
 	}
 	g.ui = ui.New(ctx.Gfx, ui.DarkTheme(g.font))
-	g.mixer = ctx.Audio
 	if g.lock, err = ctx.Audio.NewSound(audio.Sine(220, 0.06, ctx.Audio.Rate())); err != nil {
 		return err
 	}
 	if g.clear, err = ctx.Audio.NewSound(audio.Sine(660, 0.25, ctx.Audio.Rate())); err != nil {
 		return err
 	}
+	w := ecs.NewWorld()
+	g.world = w
+	g.cells = ecs.NewQuery1[Cell](w)
+	g.falling = ecs.NewQuery1[Falling](w)
+	// Systems run in this order every update.
+	w.AddSystem("board", boardSystem)
+	w.AddSystem("input", inputSystem)
+	w.AddSystem("gravity", gravitySystem)
+	w.AddSystem("effects", g.effectsSystem(ctx.Audio))
 	g.restart()
 	return nil
 }
 
 func (g *game) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
 
+// restart clears the board and deals the first piece.
 func (g *game) restart() {
-	g.board = [rows][cols]int{}
-	g.random = rng.New(uint64(g.score) + 7)
-	g.next = newPiece(g.random.Intn(len(shapes)))
-	g.lines, g.score, g.over = 0, 0, false
-	g.spawn()
-	g.timers = timer.Scheduler{}
-	g.drop = g.timers.Every(0.6, g.gravity)
-}
-
-// spawn brings in the next piece; if it cannot be placed the game is over.
-func (g *game) spawn() {
-	g.cur, g.next = g.next, newPiece(g.random.Intn(len(shapes)))
-	if g.collides(g.cur) {
-		g.over = true
+	w := g.world
+	for _, e := range w.Entities() {
+		w.Despawn(e)
 	}
+	ecs.SetResource(w, Board{})
+	ecs.SetResource(w, Score{})
+	ecs.SetResource(w, Controls{})
+	bag := Bag{Random: rng.New(7)}
+	bag.Next = bag.Random.Intn(len(shapes))
+	ecs.SetResource(w, bag)
+	var clock Clock
+	clock.Drop = clock.Timers.Every(0.6, func() { drop(w) })
+	ecs.SetResource(w, clock)
+	spawnPiece(w)
 }
 
-// collides reports whether the piece overlaps walls, floor or settled cells.
-func (g *game) collides(p piece) bool {
-	for y, row := range p.cells {
-		for x, on := range row {
-			if !on {
-				continue
-			}
-			bx, by := p.x+x, p.y+y
-			if bx < 0 || bx >= cols || by >= rows || (by >= 0 && g.board[by][bx] != 0) {
-				return true
-			}
+// spawnPiece deals the next piece; if it cannot be placed the game is over.
+func spawnPiece(w *ecs.World) {
+	bag := ecs.Resource[Bag](w)
+	p := newFalling(bag.Next)
+	bag.Next = bag.Random.Intn(len(shapes))
+	if !fits(ecs.Resource[Board](w), p) {
+		ecs.Resource[Score](w).Over = true
+	}
+	w.SpawnWith(p)
+}
+
+// boardSystem rebuilds the occupancy grid from the Cell entities, so the
+// other systems test collisions against a plain array.
+func boardSystem(w *ecs.World, dt float64) {
+	b := ecs.Resource[Board](w)
+	b.Full = [rows][cols]bool{}
+	ecs.Each(w, func(e ecs.Entity, c *Cell) {
+		if c.Y >= 0 {
+			b.Full[c.Y][c.X] = true
 		}
-	}
-	return false
+	})
 }
 
-// try moves to the candidate if it fits and reports whether it did.
-func (g *game) try(p piece) bool {
-	if g.collides(p) {
+// try moves the piece to the candidate if it fits.
+func try(w *ecs.World, p *Falling, candidate Falling) bool {
+	if !fits(ecs.Resource[Board](w), candidate) {
 		return false
 	}
-	g.cur = p
+	*p = candidate
 	return true
 }
 
-func (g *game) gravity() {
-	if g.over {
+// inputSystem applies the Controls resource to the falling piece.
+func inputSystem(w *ecs.World, dt float64) {
+	if ecs.Resource[Score](w).Over {
 		return
 	}
-	down := g.cur
-	down.y++
-	if !g.try(down) {
-		g.lockPiece()
+	in := ecs.Resource[Controls](w)
+	_, p, ok := ecs.NewQuery1[Falling](w).First()
+	if !ok {
+		return
 	}
-}
-
-// lockPiece settles the piece into the board and clears full lines.
-func (g *game) lockPiece() {
-	for y, row := range g.cur.cells {
-		for x, on := range row {
-			if on && g.cur.y+y >= 0 {
-				g.board[g.cur.y+y][g.cur.x+x] = g.cur.kind + 1
+	if in.Left {
+		c := *p
+		c.X--
+		try(w, p, c)
+	}
+	if in.Right {
+		c := *p
+		c.X++
+		try(w, p, c)
+	}
+	if in.Rotate {
+		r := p.rotated()
+		// Wall kick: nudge sideways when the rotation would clip a wall.
+		for _, dx := range []int{0, -1, 1, -2, 2} {
+			r.X = p.X + dx
+			if try(w, p, r) {
+				break
 			}
 		}
 	}
+	if in.Down {
+		drop(w)
+	}
+	if in.Drop {
+		for {
+			c := *p
+			c.Y++
+			if !try(w, p, c) {
+				break
+			}
+		}
+		lockPiece(w)
+	}
+}
+
+// gravitySystem advances the clock; its timer calls drop.
+func gravitySystem(w *ecs.World, dt float64) {
+	if ecs.Resource[Score](w).Over {
+		return
+	}
+	ecs.Resource[Clock](w).Timers.Update(dt)
+}
+
+// drop moves the piece down one row, or locks it when it cannot fall.
+func drop(w *ecs.World) {
+	_, p, ok := ecs.NewQuery1[Falling](w).First()
+	if !ok {
+		return
+	}
+	c := *p
+	c.Y++
+	if !try(w, p, c) {
+		lockPiece(w)
+	}
+}
+
+// lockPiece turns the falling piece into Cell entities, clears full
+// lines and emits an event saying what happened.
+func lockPiece(w *ecs.World) {
+	e, p, ok := ecs.NewQuery1[Falling](w).First()
+	if !ok {
+		return
+	}
+	for y, row := range p.Cells {
+		for x, on := range row {
+			if on && p.Y+y >= 0 {
+				w.SpawnWith(Cell{X: p.X + x, Y: p.Y + y, Kind: p.Kind})
+			}
+		}
+	}
+	w.Despawn(e)
+	boardSystem(w, 0)
+	b := ecs.Resource[Board](w)
 	cleared := 0
 	for y := rows - 1; y >= 0; y-- {
 		full := true
 		for x := range cols {
-			full = full && g.board[y][x] != 0
+			full = full && b.Full[y][x]
 		}
-		if full {
-			copy(g.board[1:y+1], g.board[0:y]) // everything above falls one row
-			g.board[0] = [cols]int{}
-			cleared++
-			y++ // check the row that just fell into this slot
+		if !full {
+			continue
 		}
+		// Despawn this row's cells and let everything above fall one row.
+		// Despawning the visited entity inside a query is safe.
+		ecs.Each(w, func(e ecs.Entity, c *Cell) {
+			switch {
+			case c.Y == y:
+				w.Despawn(e)
+			case c.Y < y:
+				c.Y++
+			}
+		})
+		boardSystem(w, 0)
+		cleared++
+		y++ // re-check the row that just fell into this slot
 	}
 	if cleared > 0 {
-		g.lines += cleared
-		g.score += []int{0, 100, 300, 500, 800}[cleared]
-		g.flash = tween.New(1, 0, 0.4, tween.OutQuad)
-		g.mixer.Play(g.clear, audio.PlayOptions{Volume: 0.5, Pitch: 1 + 0.2*float32(cleared)})
+		s := ecs.Resource[Score](w)
+		s.Lines += cleared
+		s.Points += []int{0, 100, 300, 500, 800}[cleared]
+		ecs.Emit(w, Cleared{Rows: cleared})
 	} else {
-		g.mixer.Play(g.lock, audio.PlayOptions{Volume: 0.4})
+		ecs.Emit(w, Locked{})
 	}
-	g.spawn()
+	spawnPiece(w)
+}
+
+// effectsSystem turns events into sound and the line-clear flash.
+func (g *game) effectsSystem(mixer *audio.Mixer) ecs.System {
+	return func(w *ecs.World, dt float64) {
+		for range ecs.Events[Locked](w) {
+			mixer.Play(g.lock, audio.PlayOptions{Volume: 0.4})
+		}
+		for _, ev := range ecs.Events[Cleared](w) {
+			mixer.Play(g.clear, audio.PlayOptions{Volume: 0.5, Pitch: 1 + 0.2*float32(ev.Rows)})
+			g.flash = tween.New(1, 0, 0.4, tween.OutQuad)
+		}
+		if g.flash != nil {
+			if g.flash.Update(float32(dt)); g.flash.Done() {
+				g.flash = nil
+			}
+		}
+	}
 }
 
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -217,53 +374,19 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	if in.KeyPressed(input.KeyR) {
 		g.restart()
 	}
-	if g.over {
-		return nil
+	// Input becomes a resource so the input system stays a pure function
+	// of the world.
+	*ecs.Resource[Controls](g.world) = Controls{
+		Left: in.KeyPressed(input.KeyLeft), Right: in.KeyPressed(input.KeyRight), Rotate: in.KeyPressed(input.KeyUp),
+		Down: in.KeyPressed(input.KeyDown), Drop: in.KeyPressed(input.KeySpace),
 	}
-	if in.KeyPressed(input.KeyLeft) {
-		p := g.cur
-		p.x--
-		g.try(p)
-	}
-	if in.KeyPressed(input.KeyRight) {
-		p := g.cur
-		p.x++
-		g.try(p)
-	}
-	if in.KeyPressed(input.KeyUp) {
-		r := g.cur.rotated()
-		// Wall kick: nudge sideways when the rotation would clip a wall.
-		for _, dx := range []int{0, -1, 1, -2, 2} {
-			r.x = g.cur.x + dx
-			if g.try(r) {
-				break
-			}
-		}
-	}
-	if in.KeyPressed(input.KeyDown) {
-		g.gravity()
-	}
-	if in.KeyPressed(input.KeySpace) {
-		for {
-			p := g.cur
-			p.y++
-			if !g.try(p) {
-				break
-			}
-		}
-		g.lockPiece()
-	}
-	g.timers.Update(ctx.Delta)
-	if g.flash != nil {
-		if g.flash.Update(float32(ctx.Delta)); g.flash.Done() {
-			g.flash = nil
-		}
-	}
+	g.world.Update(ctx.Delta)
 	return nil
 }
 
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
+	w := g.world
 	ox, oy := (ctx.Width-cols*cell)/2-80, (ctx.Height-rows*cell)/2
 	gr.FillRect(ox-4, oy-4, cols*cell+8, rows*cell+8, gfx.RGB(40, 42, 56))
 	gr.FillRect(ox, oy, cols*cell, rows*cell, gfx.RGB(16, 16, 24))
@@ -272,27 +395,27 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		c.A = alpha
 		gr.FillRect(ox+float32(x*cell)+1, oy+float32(y*cell)+1, cell-2, cell-2, c)
 	}
-	for y := range rows {
-		for x := range cols {
-			if k := g.board[y][x]; k != 0 {
-				drawCell(x, y, k-1, 1)
-			}
+	g.cells.Each(func(e ecs.Entity, c *Cell) {
+		if c.Y >= 0 {
+			drawCell(c.X, c.Y, c.Kind, 1)
 		}
-	}
-	// The ghost shows where the piece will land.
-	ghost := g.cur
-	for !g.collides(ghost) {
-		ghost.y++
-	}
-	ghost.y--
-	for _, p := range []struct {
-		piece piece
-		alpha float32
-	}{{ghost, 0.25}, {g.cur, 1}} {
-		for y, row := range p.piece.cells {
-			for x, on := range row {
-				if on && p.piece.y+y >= 0 {
-					drawCell(p.piece.x+x, p.piece.y+y, p.piece.kind, p.alpha)
+	})
+	if _, p, ok := g.falling.First(); ok {
+		// The ghost shows where the piece will land.
+		ghost := *p
+		for fits(ecs.Resource[Board](w), ghost) {
+			ghost.Y++
+		}
+		ghost.Y--
+		for _, layer := range []struct {
+			piece Falling
+			alpha float32
+		}{{ghost, 0.25}, {*p, 1}} {
+			for y, row := range layer.piece.Cells {
+				for x, on := range row {
+					if on && layer.piece.Y+y >= 0 {
+						drawCell(layer.piece.X+x, layer.piece.Y+y, layer.piece.Kind, layer.alpha)
+					}
 				}
 			}
 		}
@@ -300,14 +423,16 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	if g.flash != nil {
 		gr.FillRect(ox, oy, cols*cell, rows*cell, gfx.Color{R: 1, G: 1, B: 1, A: 0.35 * g.flash.Value()})
 	}
+	score := ecs.Resource[Score](w)
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Tetris", ui.Rect{X: ox + cols*cell + 24, Y: oy, W: 200, H: 260}, func() {
-			u.Label(fmt.Sprintf("Score %d", g.score))
-			u.Label(fmt.Sprintf("Lines %d", g.lines))
-			u.Label("Next: " + shapes[g.next.kind].name)
+		u.Panel("Tetris", ui.Rect{X: ox + cols*cell + 24, Y: oy, W: 200, H: 300}, func() {
+			u.Label(fmt.Sprintf("Score %d", score.Points))
+			u.Label(fmt.Sprintf("Lines %d", score.Lines))
+			u.Label("Next: " + shapes[ecs.Resource[Bag](w).Next].name)
+			u.Label(fmt.Sprintf("%d entities", w.Count()))
 			u.Separator()
-			if g.over {
+			if score.Over {
 				u.Label("Game over")
 			}
 			if u.Button("Restart (R)") {

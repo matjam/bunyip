@@ -53,6 +53,6 @@ jobs:
         if: matrix.target == 'linux/amd64'
         env:
           CGO_ENABLED: "0"
-        run: go test ./rng/ ./tween/ ./timer/ ./grid/ ./save/ ./scene/ ./asset/ ./network/ ./audio/... ./lin/ ./gltf/ ./input/
+        run: go test ./rng/ ./tween/ ./timer/ ./grid/ ./save/ ./ecs/ ./asset/ ./network/ ./audio/... ./lin/ ./gltf/ ./input/
     env:
       TARGET: ${{ matrix.target }}

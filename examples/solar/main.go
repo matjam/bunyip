@@ -1,8 +1,9 @@
-// Command solar shows the entity store and scene graph: a sun with
-// orbiting planets and moons as a parent-child hierarchy, an asteroid
-// belt of hundreds of entities drawn as one instanced call, click-to-pick
-// with a screen ray, a render texture used as a top-down minimap, and
-// profile scopes in the debug overlay (F3).
+// Command solar shows the entity component system driving a scene: a
+// sun with orbiting planets and moons as a parent-child hierarchy, an
+// asteroid belt of hundreds of entities drawn as one instanced call,
+// systems for orbits and spin, click-to-pick with a screen ray, a render
+// texture used as a top-down minimap, and profile scopes in the debug
+// overlay (F3).
 package main
 
 import (
@@ -14,11 +15,11 @@ import (
 	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
 	"github.com/matjam/bunyip/rng"
-	"github.com/matjam/bunyip/scene"
 )
 
 // Components.
@@ -37,6 +38,12 @@ type orbit struct {
 
 type spin struct{ Speed float32 }
 
+// asteroid marks belt members, which draw as cubes.
+type asteroid struct{}
+
+// clock is a resource: elapsed time for the spin system.
+type clock struct{ Time float32 }
+
 type game struct {
 	seconds float64
 	shot    string
@@ -44,9 +51,10 @@ type game struct {
 	font     *gfx.Font
 	sphere   *gfx.Mesh
 	cube     *gfx.Mesh
-	world    *scene.World
+	world    *ecs.World
+	bodies   *ecs.Query1[body]
 	minimap  *gfx.RenderTexture
-	selected scene.Entity
+	selected ecs.Entity
 	yaw      float32
 	shotDone bool
 }
@@ -69,11 +77,9 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	g.minimap.SetView(220, 220)
 
-	w := scene.NewWorld()
-	sun := w.Spawn()
-	scene.Set(w, sun, body{Name: "Sun", Radius: 1.4, Color: gfx.RGB(255, 200, 90), Emissive: 3})
-	scene.Set(w, sun, spin{0.2})
-	scene.Set(w, sun, gfx.Transform{})
+	w := ecs.NewWorld()
+	ecs.SetResource(w, clock{})
+	sun := w.SpawnWith(body{Name: "Sun", Radius: 1.4, Color: gfx.RGB(255, 200, 90), Emissive: 3}, spin{0.2}, gfx.Transform{})
 	planets := []struct {
 		name  string
 		r, d  float32
@@ -88,30 +94,42 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	random := rng.New(11)
 	for _, p := range planets {
-		e := w.Spawn()
-		scene.Set(w, e, body{Name: p.name, Radius: p.r, Color: p.col})
-		scene.Set(w, e, orbit{Radius: p.d, Speed: p.speed, Angle: random.Float() * 6.28})
-		scene.Set(w, e, spin{1})
-		scene.Set(w, e, gfx.Transform{})
-		w.SetParent(e, sun)
+		e := w.SpawnWith(body{Name: p.name, Radius: p.r, Color: p.col},
+			orbit{Radius: p.d, Speed: p.speed, Angle: random.Float() * 6.28}, spin{1}, gfx.Transform{})
+		ecs.SetParent(w, e, sun)
 		for m := range p.moons {
-			moon := w.Spawn()
-			scene.Set(w, moon, body{Name: p.name + " moon", Radius: 0.14, Color: gfx.RGB(200, 200, 210)})
-			scene.Set(w, moon, orbit{Radius: p.r + 0.6 + 0.5*float32(m), Speed: 2 + float32(m), Angle: random.Float() * 6.28})
-			scene.Set(w, moon, gfx.Transform{})
-			w.SetParent(moon, e) // moons follow their planet through the hierarchy
+			moon := w.SpawnWith(body{Name: p.name + " moon", Radius: 0.14, Color: gfx.RGB(200, 200, 210)},
+				orbit{Radius: p.r + 0.6 + 0.5*float32(m), Speed: 2 + float32(m), Angle: random.Float() * 6.28}, gfx.Transform{})
+			ecs.SetParent(w, moon, e) // moons follow their planet through the hierarchy
 		}
 	}
 	// The belt: many small entities with the same mesh and material draw
 	// as one instanced call.
 	for range 400 {
-		a := w.Spawn()
-		scene.Set(w, a, body{Name: "asteroid", Radius: 0.05 + random.Float()*0.06, Color: gfx.RGB(150, 140, 130)})
-		scene.Set(w, a, orbit{Radius: 13.5 + random.Float()*2.5, Speed: 0.1 + random.Float()*0.05, Angle: random.Float() * 6.28})
-		scene.Set(w, a, gfx.Transform{Position: lin.V3(0, random.Between(-0.4, 0.4), 0)})
-		w.SetParent(a, sun)
+		a := w.SpawnWith(body{Name: "asteroid", Radius: 0.05 + random.Float()*0.06, Color: gfx.RGB(150, 140, 130)}, asteroid{},
+			orbit{Radius: 13.5 + random.Float()*2.5, Speed: 0.1 + random.Float()*0.05, Angle: random.Float() * 6.28},
+			gfx.Transform{Position: lin.V3(0, random.Between(-0.4, 0.4), 0)})
+		ecs.SetParent(w, a, sun)
 	}
+	// Systems: orbits place bodies on their circles, spin turns them.
+	orbits := ecs.NewQuery2[orbit, gfx.Transform](w)
+	w.AddSystem("orbits", func(w *ecs.World, dt float64) {
+		orbits.Each(func(e ecs.Entity, o *orbit, t *gfx.Transform) {
+			o.Angle += o.Speed * float32(dt)
+			t.Position.X = o.Radius * float32(math.Cos(float64(o.Angle)))
+			t.Position.Z = o.Radius * float32(math.Sin(float64(o.Angle)))
+		})
+	})
+	spins := ecs.NewQuery2[spin, gfx.Transform](w)
+	w.AddSystem("spin", func(w *ecs.World, dt float64) {
+		c := ecs.Resource[clock](w)
+		c.Time += float32(dt)
+		spins.Each(func(e ecs.Entity, s *spin, t *gfx.Transform) {
+			t.Rotation = lin.AxisAngle(lin.V3(0, 1, 0), c.Time*s.Speed)
+		})
+	})
 	g.world = w
+	g.bodies = ecs.NewQuery1[body](w)
 	g.selected = sun
 	return nil
 }
@@ -131,19 +149,10 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		ctx.Screenshot(g.shot)
 		g.shotDone = true
 	}
-	done := ctx.Profile("orbits")
-	dt := float32(ctx.Delta)
-	w := g.world
-	scene.Each2(w, func(e scene.Entity, o *orbit, t *gfx.Transform) {
-		o.Angle += o.Speed * dt
-		t.Position.X = o.Radius * float32(math.Cos(float64(o.Angle)))
-		t.Position.Z = o.Radius * float32(math.Sin(float64(o.Angle)))
-	})
-	scene.Each2(w, func(e scene.Entity, s *spin, t *gfx.Transform) {
-		t.Rotation = lin.AxisAngle(lin.V3(0, 1, 0), float32(ctx.Time)*s.Speed)
-	})
-	g.yaw += dt * 0.05
+	done := ctx.Profile("systems")
+	g.world.Update(ctx.Delta)
 	done()
+	g.yaw += float32(ctx.Delta) * 0.05
 	return nil
 }
 
@@ -158,16 +167,16 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		Ambient: gfx.Color{R: 0.08, G: 0.08, B: 0.12, A: 1}}
 	drawBodies := func(withSelection bool) {
 		gr.AddPointLight(lin.V3(0, 0, 0), gfx.Color{R: 40, G: 32, B: 20, A: 1}, 60)
-		scene.Each(w, func(e scene.Entity, b *body) {
+		g.bodies.Each(func(e ecs.Entity, b *body) {
 			mat := gfx.Material{BaseColor: b.Color, Emissive: b.Emissive, Roughness: 0.8}
 			if withSelection && e == g.selected && b.Emissive == 0 {
 				mat.Emissive = 1.5
 			}
 			mesh := g.sphere
-			if b.Name == "asteroid" {
+			if ecs.Has[asteroid](w, e) {
 				mesh = g.cube
 			}
-			gr.DrawMesh(mesh, mat, w.WorldMatrix(e).Mul(lin.Scale(lin.V3(b.Radius, b.Radius, b.Radius))))
+			gr.DrawMesh(mesh, mat, ecs.WorldMatrix(w, e).Mul(lin.Scale(lin.V3(b.Radius, b.Radius, b.Radius))))
 		})
 	}
 	// The minimap: the same scene from straight above into a render texture.
@@ -190,8 +199,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		mx, my := ctx.Input.Mouse()
 		ray := gr.ScreenRay(float32(mx), float32(my))
 		best := float32(math.MaxFloat32)
-		scene.Each(w, func(e scene.Entity, b *body) {
-			m := w.WorldMatrix(e).Mul(lin.Scale(lin.V3(b.Radius, b.Radius, b.Radius)))
+		g.bodies.Each(func(e ecs.Entity, b *body) {
+			m := ecs.WorldMatrix(w, e).Mul(lin.Scale(lin.V3(b.Radius, b.Radius, b.Radius)))
 			if hit, ok := g.sphere.Intersect(m, ray); ok && hit.Distance < best {
 				best, g.selected = hit.Distance, e
 			}
@@ -201,7 +210,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr.ScreenSpace()
 	gr.Draw(g.minimap.Texture(), gfx.Sprite{Pos: lin.V2(ctx.Width-232, 12), Size: lin.V2(220, 220), UV1: lin.V2(1, 1), Color: gfx.White})
 	name := "nothing"
-	if b, ok := scene.Get[body](w, g.selected); ok {
+	if b, ok := ecs.Get[body](w, g.selected); ok {
 		name = b.Name
 	}
 	y := ctx.Height - 64
