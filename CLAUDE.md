@@ -20,8 +20,10 @@ audio layers per platform written against the OS APIs (no SDL, no GLFW),
 an archetype entity component system, rigid-body physics, an
 immediate-mode interface, an audio mixer with a tracker player, and the
 services a game needs (assets, saves, translation, networking). macOS is
-the tested platform; Windows and Linux cross-compile but have not run on
-hardware. Linux picks Wayland or X11 at startup; `BUNYIP_X11=1` forces
+the tested platform. The Linux window layer has run on real hardware,
+both Wayland and X11; Linux audio, Linux gamepads and the whole Windows
+layer cross-compile but have not. Linux picks Wayland or X11 at startup;
+`BUNYIP_X11=1` forces
 X11 and `platform.Backend()` says which was chosen.
 
 # Part one: working on the engine
@@ -141,7 +143,7 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   code, docs or commit messages.
 - Do not edit `internal/vk`; regenerate it from `vk.xml`.
 - Keep the Windows and Linux layers compiling and vetted
-  (`GOOS=windows` and `GOOS=linux` builds) even though they are untested
+  (`GOOS=windows` and `GOOS=linux` builds) even where they are untested
   on hardware; a feature that cannot be implemented there gets a no-op
   with a comment saying so, not a stub that appears to work.
 - Every example must run headless to a screenshot; `examples_test.go`

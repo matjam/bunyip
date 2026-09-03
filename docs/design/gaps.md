@@ -26,9 +26,10 @@ in each package's comment.
 - Web (WebAssembly) and mobile (Android, iOS). Both need a second
   graphics backend, since Vulkan is unavailable there; WebGPU is the
   plausible common target. This is the largest single gap.
-- Windows and Linux have been cross-compiled and vetted but never run on
-  real machines. Linux has both a native Wayland layer and an X11 layer,
-  chosen at startup; neither has been exercised on hardware.
+- Windows has been cross-compiled and vetted but never run on a real
+  machine. The Linux window layer has: both the Wayland and X11 backends
+  have opened windows, presented frames and delivered input on a Linux
+  desktop. Linux audio and gamepads remain unexercised.
 - What the Wayland layer does not do yet: the clipboard through
   `wl_data_device`, text input through `zwp_text_input_v3`, fractional
   scale through `wp_fractional_scale_v1` and `wp_viewporter` (the buffer
@@ -275,7 +276,9 @@ reload is `Shader.Reload` behind an `asset.Watcher`.
 
 ## Quality and process
 
-- Hardware verification on Windows and Linux, and a GPU matrix in CI.
+- Hardware verification on Windows, of the Linux audio and gamepad
+  layers, and of the Linux window layer beyond the one desktop it has
+  run on; a GPU matrix in CI.
 - Screenshot comparison for the examples. `examples/examples_test.go`
   runs each one headless (`BUNYIP_HEADLESS=1`) and checks that it drew
   something, but not what.

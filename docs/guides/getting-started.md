@@ -16,9 +16,9 @@ compile against. The engine opens the driver at run time.
 | Linux | The GPU vendor's Vulkan driver, plus `libxcb` and `libasound`, which every desktop has. `libxkbcommon` and `libxkbcommon-x11` enable text input. |
 | Windows | A current GPU driver; `vulkan-1.dll` ships with it. |
 
-The engine is developed and tested on macOS. The Windows and Linux
-layers cross-compile and pass their unit tests but have not yet been
-run on real hardware.
+The engine is developed and tested on macOS. The Linux window layer has
+run on real hardware, both Wayland and X11. The Windows layer and the
+Linux audio layer cross-compile and pass their unit tests but have not.
 
 ## A window
 

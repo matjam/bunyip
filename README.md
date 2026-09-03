@@ -53,8 +53,10 @@ window.
 
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
 (Wayland or X11, ALSA, joystick devices) layers sit behind the same
-`internal/platform` and `internal/audioout` interfaces; they cross-compile
-and vet but have not yet run on hardware. On Linux the window layer uses
+`internal/platform` and `internal/audioout` interfaces. The Linux window
+layer has run on real hardware, both Wayland and X11; the Linux audio and
+gamepad layers and the whole Windows layer cross-compile and vet but have
+not. On Linux the window layer uses
 Wayland where a compositor is running and falls back to X11 through xcb;
 `BUNYIP_X11=1` forces X11.
 

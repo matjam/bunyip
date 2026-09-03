@@ -141,10 +141,10 @@ BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
 
 ## What each platform supports
 
-macOS is the tested platform. The Windows, Wayland and X11 layers
-cross-compile and pass their unit tests, but they have not yet run on
-real hardware. `docs/design/gaps.md` in the repository keeps the current
-list of what is missing.
+macOS is the tested platform. The Wayland and X11 layers have run on
+real Linux hardware. The Windows layer cross-compiles and passes its
+unit tests, but it has not. `docs/design/gaps.md` in the repository
+keeps the current list of what is missing.
 
 Linux has two window systems, so the layer picks one when the process
 starts. It uses Wayland when `WAYLAND_DISPLAY` is set (or the default

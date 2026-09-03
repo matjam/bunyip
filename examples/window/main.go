@@ -1,17 +1,21 @@
-// Command window opens a native window, creates a Vulkan surface over it and
-// prints every event until the window is closed or -seconds elapse. It is the
-// smoke test for the platform layer.
+// Command window opens a native window, presents cleared frames through a
+// Vulkan swapchain and prints every event until the window is closed or
+// -seconds elapse. It is the smoke test for the platform layer. Presenting
+// is part of the test: a Wayland window only appears once a buffer is
+// committed to its surface, so a window that opens on every platform must
+// draw. The frames clear to one dark colour; the moment the window shows
+// it, the whole stack from event loop to present has worked.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 	"time"
 
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/internal/platform"
+	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 )
 
@@ -38,26 +42,41 @@ func run(seconds float64, wait bool) error {
 	pw, ph := win.PixelSize()
 	fmt.Printf("window: %dx%d points, %dx%d pixels, scale %.2f\n", w, h, pw, ph, win.Scale())
 
-	instance, surface, err := createSurface(win)
+	var surface vk.VkSurfaceKHR
+	r, err := render.NewRenderer(render.Config{AppName: "window"},
+		platform.RequiredInstanceExtensions(),
+		func(instance vk.VkInstance) (vk.VkSurfaceKHR, error) {
+			s, err := win.CreateSurface(instance)
+			surface = s
+			return s, err
+		},
+		vk.VkExtent2D{Width: uint32(pw), Height: uint32(ph)}, true)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("surface: 0x%x on instance 0x%x\n", surface, instance)
-	defer func() {
-		vk.VkDestroySurfaceKHR(instance, surface, nil)
-		vk.VkDestroyInstance(instance, nil)
-	}()
-	if err := reportSurface(instance, surface); err != nil {
+	defer r.Destroy()
+	fmt.Printf("surface: 0x%x on instance 0x%x\n", surface, r.Instance.Handle)
+	if err := reportSurface(r.Device.Physical(), surface); err != nil {
 		return err
 	}
+	fmt.Printf("swapchain: %dx%d, format %d, %d images\n",
+		r.Swapchain.Extent.Width, r.Swapchain.Extent.Height, r.Swapchain.Format, len(r.Swapchain.Images))
 
 	deadline := time.Time{}
 	if seconds > 0 {
 		deadline = time.Now().Add(time.Duration(seconds * float64(time.Second)))
 	}
 	for !win.Closed() {
+		// The frame comes first so the window is mapped before the first
+		// blocking poll; vsync paces the loop in polling mode.
+		if err := present(r); err != nil {
+			return err
+		}
 		for _, e := range app.Poll(wait && deadline.IsZero()) {
 			printEvent(e)
+			if e.Kind == platform.EventResize {
+				r.Resize(e.PixelW, e.PixelH)
+			}
 			if e.Kind == platform.EventClose || (e.Kind == platform.EventKeyDown && e.Key == input.KeyEscape) {
 				win.Close()
 			}
@@ -65,12 +84,22 @@ func run(seconds float64, wait bool) error {
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			win.Close()
 		}
-		if !wait {
-			time.Sleep(4 * time.Millisecond)
-		}
 	}
 	fmt.Println("closed")
 	return nil
+}
+
+// present records one frame that clears the swapchain image and presents
+// it. A frame is dropped without error while the swapchain rebuilds after
+// a resize.
+func present(r *render.Renderer) error {
+	fr, ok, err := r.BeginFrame()
+	if err != nil || !ok {
+		return err
+	}
+	r.BeginSwapchainPass(fr, [4]float32{0.10, 0.12, 0.16, 1})
+	_, err = r.EndFrame(fr, false)
+	return err
 }
 
 func printEvent(e platform.Event) {
@@ -94,50 +123,9 @@ func printEvent(e platform.Event) {
 	}
 }
 
-func createSurface(win *platform.Window) (vk.VkInstance, vk.VkSurfaceKHR, error) {
-	if err := vk.Load(); err != nil {
-		return 0, 0, err
-	}
-	var keep [][]byte
-	cstr := func(s string) *byte {
-		p, b := vk.CString(s)
-		keep = append(keep, b)
-		return p
-	}
-	names := append(platform.RequiredInstanceExtensions(), vk.VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
-	enabled := make([]*byte, 0, len(names))
-	for _, n := range names {
-		enabled = append(enabled, cstr(n))
-	}
-	app := vk.VkApplicationInfo{SType: vk.VK_STRUCTURE_TYPE_APPLICATION_INFO, PApplicationName: cstr("window"), ApiVersion: vk.API_VERSION_1_3}
-	info := vk.VkInstanceCreateInfo{
-		SType:                   vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-		Flags:                   vk.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
-		PApplicationInfo:        &app,
-		EnabledExtensionCount:   uint32(len(enabled)),
-		PpEnabledExtensionNames: &enabled[0],
-	}
-	var instance vk.VkInstance
-	if err := vk.Check("vkCreateInstance", vk.VkCreateInstance(&info, nil, &instance)); err != nil {
-		return 0, 0, err
-	}
-	runtime.KeepAlive(keep)
-	if err := vk.LoadInstance(instance); err != nil {
-		return 0, 0, err
-	}
-	surface, err := win.CreateSurface(instance)
-	return instance, surface, err
-}
-
-// reportSurface asks the first physical device what it can present to the
-// surface, which exercises the whole path MoltenVK needs for a swapchain.
-func reportSurface(instance vk.VkInstance, surface vk.VkSurfaceKHR) error {
-	var count uint32 = 1
-	var dev vk.VkPhysicalDevice
-	r := vk.VkEnumeratePhysicalDevices(instance, &count, &dev)
-	if r != vk.VK_SUCCESS && r != vk.VK_INCOMPLETE {
-		return vk.Check("vkEnumeratePhysicalDevices", r)
-	}
+// reportSurface prints what the chosen physical device can present to the
+// surface, which exercises the whole path a swapchain needs.
+func reportSurface(dev vk.VkPhysicalDevice, surface vk.VkSurfaceKHR) error {
 	var caps vk.VkSurfaceCapabilitiesKHR
 	if err := vk.Check("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", vk.VkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, surface, &caps)); err != nil {
 		return err
