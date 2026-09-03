@@ -211,20 +211,18 @@ func makeTemplate() *image.RGBA {
 	fill(1, 1, true, true, false, false)
 	fill(0, 2, false, false, true, true)
 	fill(1, 2, false, true, true, false)
-	// The inner tile: interior grass with a rim notch at each corner,
-	// where a diagonal hole shows.
+	// The inner tile: interior grass with a rounded fillet of rim in
+	// each corner. Where two grass edges meet around an empty diagonal
+	// cell, their rims run into this fillet; the empty cell itself lies
+	// entirely in the neighbour, so nothing here is transparent.
 	fill(0, 0, false, false, false, false)
 	const r = 4
 	for _, c := range [4][2]int{{0, 0}, {tile - 1, 0}, {0, tile - 1}, {tile - 1, tile - 1}} {
 		for py := range tile {
 			for px := range tile {
 				dx, dy := px-c[0], py-c[1]
-				if d := dx*dx + dy*dy; d <= r*r {
-					if d <= (r-2)*(r-2) {
-						img.SetRGBA(px, py, color.RGBA{})
-					} else {
-						img.SetRGBA(px, py, rim)
-					}
+				if dx*dx+dy*dy <= r*r {
+					img.SetRGBA(px, py, rim)
 				}
 			}
 		}
