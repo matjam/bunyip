@@ -49,10 +49,14 @@ func TestTwoBoneIK(t *testing.T) {
 					t.Fatalf("foot at %v, %v from target %v", newFoot, d, tc.target)
 				}
 			} else {
-				// Straight along the target direction, as long as the leg.
+				// Straight along the target direction, almost as long as
+				// the leg: the solver clamps the reach 1e-4 short of fully
+				// straight to keep its angles well conditioned, so the
+				// tolerance here must sit clear of that margin.
 				dir := tc.target.Sub(hip).Norm()
 				length := knee.Distance(hip) + foot.Distance(knee)
-				if d := newFoot.Sub(hip); !near(d.Len(), length) || d.Norm().Dot(dir) < 0.999 {
+				d := newFoot.Sub(hip)
+				if short := length - d.Len(); short < -1e-4 || short > 1e-3 || d.Norm().Dot(dir) < 0.999 {
 					t.Fatalf("out of reach: foot offset %v", d)
 				}
 			}
