@@ -285,3 +285,93 @@ func TestExpandBlob(t *testing.T) {
 		}
 	}
 }
+
+// TestExpandBlobRoles checks every assembled tile pixel by pixel against
+// its mask, with a template whose pixels encode their role: rim 1,
+// interior 2, inside-corner mark 3, transparent 0. It catches a quarter
+// copied into the wrong quadrant, which a per-tile colour cannot.
+func TestExpandBlobRoles(t *testing.T) {
+	const tile = 16
+	tmpl := image.NewRGBA(image.Rect(0, 0, 2*tile, 3*tile))
+	rim := color.RGBA{R: 1, A: 255}
+	in := color.RGBA{R: 2, A: 255}
+	fill := func(tx, ty int, top, right, bottom, left bool) {
+		for py := range tile {
+			for px := range tile {
+				c := in
+				if top && py < 3 || bottom && py >= tile-3 || left && px < 3 || right && px >= tile-3 {
+					c = rim
+				}
+				if top && left && px < 3 && py < 3 || top && right && px >= tile-3 && py < 3 ||
+					bottom && left && px < 3 && py >= tile-3 || bottom && right && px >= tile-3 && py >= tile-3 {
+					continue // outer corners are cut away
+				}
+				tmpl.SetRGBA(tx*tile+px, ty*tile+py, c)
+			}
+		}
+	}
+	fill(1, 0, true, true, true, true)
+	fill(0, 1, true, false, false, true)
+	fill(1, 1, true, true, false, false)
+	fill(0, 2, false, false, true, true)
+	fill(1, 2, false, true, true, false)
+	fill(0, 0, false, false, false, false)
+	for _, c := range [4][2]int{{0, 0}, {tile - 3, 0}, {0, tile - 3}, {tile - 3, tile - 3}} {
+		for dy := range 3 {
+			for dx := range 3 {
+				tmpl.SetRGBA(c[0]+dx, c[1]+dy, color.RGBA{R: 3, A: 255})
+			}
+		}
+	}
+	sheet, frames := ExpandBlob(tmpl, tile)
+	at := func(f, x, y int) uint8 {
+		c := sheet.RGBAAt(f%8*tile+x, f/8*tile+y)
+		if c.A == 0 {
+			return 0
+		}
+		return c.R
+	}
+	for i, mask := range BlobMasks() {
+		f := frames[i]
+		bit := func(d int) bool { return mask&(1<<d) != 0 }
+		n, e, s, w := bit(DirN), bit(DirE), bit(DirS), bit(DirW)
+		// An edge midpoint is a rim when open and interior when connected.
+		for _, c := range []struct {
+			name      string
+			x, y      int
+			connected bool
+		}{{"N", 8, 1, n}, {"E", 14, 8, e}, {"S", 8, 14, s}, {"W", 1, 8, w}} {
+			want := uint8(1)
+			if c.connected {
+				want = 2
+			}
+			if got := at(f, c.x, c.y); got != want {
+				t.Errorf("mask %08b %s edge: %d, want %d", mask, c.name, got, want)
+			}
+		}
+		// A corner is cut away when both sides are open, an inside-corner
+		// mark when both connect without the diagonal, interior when the
+		// diagonal connects too, and otherwise a rim running past it.
+		for _, c := range []struct {
+			name    string
+			x, y    int
+			a, b, d bool
+		}{{"NW", 1, 1, n, w, bit(DirNW)}, {"NE", 14, 1, n, e, bit(DirNE)},
+			{"SW", 1, 14, s, w, bit(DirSW)}, {"SE", 14, 14, s, e, bit(DirSE)}} {
+			var want uint8
+			switch {
+			case !c.a && !c.b:
+				want = 0
+			case c.a && c.b && c.d:
+				want = 2
+			case c.a && c.b:
+				want = 3
+			default:
+				want = 1
+			}
+			if got := at(f, c.x, c.y); got != want {
+				t.Errorf("mask %08b %s corner: %d, want %d", mask, c.name, got, want)
+			}
+		}
+	}
+}

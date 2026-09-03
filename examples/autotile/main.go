@@ -252,36 +252,52 @@ func addFlowers(img *image.RGBA) {
 }
 
 // makeWalls draws the 16 edge tiles: a stone block with arms toward each
-// connected side, indexed by the Edge16 mask.
+// connected side, indexed by the Edge16 mask. The shape is filled first
+// and outlined afterwards, so a straight run reads as one wall rather
+// than a chain of blocks.
 func makeWalls() *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, 16*tile, tile))
 	stone := color.RGBA{R: 120, G: 116, B: 128, A: 255}
 	shade := color.RGBA{R: 86, G: 82, B: 96, A: 255}
-	block := func(mask int, x0, y0, x1, y1 int) {
-		for py := y0; py < y1; py++ {
-			for px := x0; px < x1; px++ {
+	const a, b = 5, 11 // the core block
+	for mask := range 16 {
+		var solid [tile][tile]bool
+		fill := func(x0, y0, x1, y1 int) {
+			for py := y0; py < y1; py++ {
+				for px := x0; px < x1; px++ {
+					solid[py][px] = true
+				}
+			}
+		}
+		fill(a, a, b, b)
+		if mask&1 != 0 { // north
+			fill(a, 0, b, a)
+		}
+		if mask&2 != 0 { // east
+			fill(b, a, tile, b)
+		}
+		if mask&4 != 0 { // south
+			fill(a, b, b, tile)
+		}
+		if mask&8 != 0 { // west
+			fill(0, a, a, b)
+		}
+		for py := range tile {
+			for px := range tile {
+				if !solid[py][px] {
+					continue
+				}
+				// Outline pixels are those with an empty neighbour inside
+				// the tile; at the tile border the arm continues next door.
 				c := stone
-				if px == x0 || py == y0 || px == x1-1 || py == y1-1 {
-					c = shade
+				for _, o := range [4][2]int{{0, -1}, {1, 0}, {0, 1}, {-1, 0}} {
+					nx, ny := px+o[0], py+o[1]
+					if nx >= 0 && ny >= 0 && nx < tile && ny < tile && !solid[ny][nx] {
+						c = shade
+					}
 				}
 				img.SetRGBA(mask*tile+px, py, c)
 			}
-		}
-	}
-	const a, b = 5, 11 // the core block
-	for mask := range 16 {
-		block(mask, a, a, b, b)
-		if mask&1 != 0 { // north
-			block(mask, a, 0, b, a+1)
-		}
-		if mask&2 != 0 { // east
-			block(mask, b-1, a, tile, b)
-		}
-		if mask&4 != 0 { // south
-			block(mask, a, b-1, b, tile)
-		}
-		if mask&8 != 0 { // west
-			block(mask, 0, a, a+1, b)
 		}
 	}
 	return img

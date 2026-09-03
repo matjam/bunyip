@@ -30,14 +30,29 @@ func ExpandBlob(template image.Image, tile int) (*image.RGBA, [47]int) {
 	out := image.NewRGBA(image.Rect(0, 0, columns*tile, rows*tile))
 	var frames [47]int
 	half := tile / 2
-	// src copies one quarter of a template tile into one quarter of an
-	// output tile. Quarters are 0 TL, 1 TR, 2 BL, 3 BR.
-	src := func(dst image.Point, tx, ty, q int) {
-		o := template.Bounds().Min
-		sp := image.Pt(o.X+tx*tile+q%2*half, o.Y+ty*tile+q/2*half)
-		r := image.Rect(dst.X+q%2*half, dst.Y+q/2*half, dst.X+q%2*half+half, dst.Y+q/2*half+half)
-		draw.Draw(out, r, template, sp, draw.Src)
+	// Quarters of a tile: 0 TL, 1 TR, 2 BL, 3 BR.
+	quarter := func(q int) image.Point { return image.Pt(q%2*half, q/2*half) }
+	// blit fills quadrant dq of the output tile at dst from quadrant sq
+	// of template tile (tx, ty). An edge piece reads a different quarter
+	// than it fills: the left edge of the output's top-left quadrant is
+	// the block's lower-left quarter, where the rim runs on without a
+	// corner.
+	blit := func(dst image.Point, dq, tx, ty, sq int) {
+		o := template.Bounds().Min.Add(image.Pt(tx*tile, ty*tile)).Add(quarter(sq))
+		d := dst.Add(quarter(dq))
+		draw.Draw(out, image.Rect(d.X, d.Y, d.X+half, d.Y+half), template, o, draw.Src)
 	}
+	// Template tiles.
+	const (
+		inner = iota // inside corners
+		_            // preview, unused
+		blockTL
+		blockTR
+		blockBL
+		blockBR
+	)
+	pos := [6][2]int{{0, 0}, {1, 0}, {0, 1}, {1, 1}, {0, 2}, {1, 2}}
+	from := func(dst image.Point, dq, t, sq int) { blit(dst, dq, pos[t][0], pos[t][1], sq) }
 	for i, mask := range BlobMasks() {
 		frames[i] = i
 		dst := image.Pt(i%columns*tile, i/columns*tile)
@@ -45,55 +60,56 @@ func ExpandBlob(template image.Image, tile int) (*image.RGBA, [47]int) {
 		e := mask&(1<<DirE) != 0
 		s := mask&(1<<DirS) != 0
 		w := mask&(1<<DirW) != 0
-		// Top-left quarter: shaped by the north and west neighbours,
-		// with the diagonal deciding interior against inside corner.
-		switch {
+		// Each quadrant is shaped by its two edge neighbours, with the
+		// diagonal deciding interior against inside corner. Interior
+		// quarters come from the diagonally opposite block tile.
+		switch { // top-left: north and west
 		case !n && !w:
-			src(dst, 0, 1, 0) // outer corner from block TL
+			from(dst, 0, blockTL, 0) // outer corner
 		case n && !w:
-			src(dst, 0, 1, 2) // left edge continues
+			from(dst, 0, blockTL, 2) // left edge runs on
 		case !n && w:
-			src(dst, 0, 1, 1) // top edge continues
+			from(dst, 0, blockTL, 1) // top edge runs on
 		case mask&(1<<DirNW) != 0:
-			src(dst, 1, 2, 0) // interior from block BR
+			from(dst, 0, blockBR, 0)
 		default:
-			src(dst, 0, 0, 0) // inside corner
+			from(dst, 0, inner, 0)
 		}
-		switch { // top-right quarter: north and east
+		switch { // top-right: north and east
 		case !n && !e:
-			src(dst, 1, 1, 1)
+			from(dst, 1, blockTR, 1)
 		case n && !e:
-			src(dst, 1, 1, 3)
+			from(dst, 1, blockTR, 3)
 		case !n && e:
-			src(dst, 1, 1, 0)
+			from(dst, 1, blockTR, 0)
 		case mask&(1<<DirNE) != 0:
-			src(dst, 0, 2, 1)
+			from(dst, 1, blockBL, 1)
 		default:
-			src(dst, 0, 0, 1)
+			from(dst, 1, inner, 1)
 		}
-		switch { // bottom-left quarter: south and west
+		switch { // bottom-left: south and west
 		case !s && !w:
-			src(dst, 0, 2, 2)
+			from(dst, 2, blockBL, 2)
 		case s && !w:
-			src(dst, 0, 2, 0)
+			from(dst, 2, blockBL, 0)
 		case !s && w:
-			src(dst, 0, 2, 3)
+			from(dst, 2, blockBL, 3)
 		case mask&(1<<DirSW) != 0:
-			src(dst, 1, 1, 2)
+			from(dst, 2, blockTR, 2)
 		default:
-			src(dst, 0, 0, 2)
+			from(dst, 2, inner, 2)
 		}
-		switch { // bottom-right quarter: south and east
+		switch { // bottom-right: south and east
 		case !s && !e:
-			src(dst, 1, 2, 3)
+			from(dst, 3, blockBR, 3)
 		case s && !e:
-			src(dst, 1, 2, 1)
+			from(dst, 3, blockBR, 1)
 		case !s && e:
-			src(dst, 1, 2, 2)
+			from(dst, 3, blockBR, 2)
 		case mask&(1<<DirSE) != 0:
-			src(dst, 0, 1, 3)
+			from(dst, 3, blockTL, 3)
 		default:
-			src(dst, 0, 0, 3)
+			from(dst, 3, inner, 3)
 		}
 	}
 	return out, frames
