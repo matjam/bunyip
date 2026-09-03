@@ -251,7 +251,8 @@ Terrain sets painted in the Tiled editor's terrain tool come in through
 the tiled package: `Map.WangSet` finds a set by name and its `Rules`
 method converts it, with tile ids as frames. The
 [autotile example](https://github.com/matjam/bunyip/tree/main/examples/autotile)
-paints grass and walls with the mouse over one shared terrain grid.
+paints grass, walls and water with the mouse over one shared terrain
+grid, one rule kind each.
 
 ## Maps from the Tiled editor
 

@@ -166,7 +166,7 @@ itself without a person watching the screen.
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |
 | `go run ./examples/tiled` | a map from the Tiled editor: layers, an external tileset, flipped and rotated tiles, an animated pond, object outlines |
-| `go run ./examples/autotile` | paint terrain that picks its own tiles: a 47-tile blob set composed from a six-tile template, an edge-matched wall set, weighted flower variants |
+| `go run ./examples/autotile` | paint terrain that picks its own tiles: a 47-tile blob set composed from a six-tile template, an edge-matched wall set, a corner Wang water set with curving shores, weighted flower variants |
 | `go run ./examples/particles` | a campfire of fire and smoke, rain, sparks on click and confetti on Space from the particle package, with a tuning panel |
 | `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
 | `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |

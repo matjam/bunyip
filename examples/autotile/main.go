@@ -1,9 +1,11 @@
 // Command autotile paints terrain that picks its own tiles. Grass is a
 // 47-tile blob set composed from a six-tile template by ExpandBlob, with
 // a flower variant mixed into the filled tiles; walls are a 16-tile edge
-// set. Both read the same terrain grid through one autotile.Mapper each.
-// Paint with the left mouse button, erase with the right; 1 selects the
-// grass brush and 2 the wall brush. Escape quits.
+// set; water is a two-colour corner Wang set whose shorelines curve
+// around the land. All three read the same terrain grid through one
+// autotile.Mapper each. Paint with the left mouse button, erase with the
+// right; 1 selects the grass brush, 2 the wall brush and 3 the water
+// brush. Escape quits.
 package main
 
 import (
@@ -31,6 +33,13 @@ const (
 	empty = iota
 	grass
 	wall
+	water
+)
+
+// Wang colours for the water set: land and water.
+const (
+	landColor  = 1
+	waterColor = 2
 )
 
 type game struct {
@@ -40,15 +49,26 @@ type game struct {
 	terrain  []int
 	grassTex *gfx.Texture
 	wallTex  *gfx.Texture
+	waterTex *gfx.Texture
 	grassMap *gfx.Tilemap
 	wallMap  *gfx.Tilemap
+	waterMap *gfx.Tilemap
 	grassRul *autotile.Mapper
 	wallRul  *autotile.Mapper
+	waterRul *autotile.Mapper
 	brush    int
 	shotDone bool
 }
 
 func (g *game) at(x, y int) int { return g.terrain[y*mapW+x] }
+
+// color is the terrain grid seen as Wang colours: water or land.
+func (g *game) color(x, y int) int {
+	if g.at(x, y) == water {
+		return waterColor
+	}
+	return landColor
+}
 
 func (g *game) Init(ctx *bunyip.Context) error {
 	// The grass sheet: 47 blob tiles composed from a drawn template,
@@ -74,19 +94,33 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.wallRul = &autotile.Mapper{Rules: autotile.Edge16(wall, wallFrames)}
 	g.wallMap = gfx.NewTilemap(gfx.NewSheet(g.wallTex, tile, tile), mapW, mapH)
 
+	// The water sheet: one tile per combination of water corners, which
+	// is the complete two-colour corner Wang set.
+	if g.waterTex, err = ctx.Gfx.NewTexture(makeWater(), gfx.TextureOptions{}); err != nil {
+		return err
+	}
+	g.waterRul = &autotile.Mapper{Rules: autotile.Wang(autotile.WangCorners, waterTiles())}
+	g.waterMap = gfx.NewTilemap(gfx.NewSheet(g.waterTex, tile, tile), mapW, mapH)
+
 	// Seed the map so there is something to look at: grass blobs from a
-	// few random walks, and a wall run.
+	// few random walks, a pond, and a wall run.
 	g.terrain = make([]int, mapW*mapH)
 	r := rng.New(7)
-	for range 6 {
+	walk := func(id, steps int) {
 		x, y := r.Intn(mapW), r.Intn(mapH)
-		for range 90 {
+		for range steps {
 			if x >= 0 && y >= 0 && x < mapW && y < mapH {
-				g.terrain[y*mapW+x] = grass
+				g.terrain[y*mapW+x] = id
 			}
 			x += r.Intn(3) - 1
 			y += r.Intn(3) - 1
 		}
+	}
+	for range 6 {
+		walk(grass, 90)
+	}
+	for range 3 {
+		walk(water, 60)
 	}
 	for x := 6; x < 26; x++ {
 		g.terrain[8*mapW+x] = wall
@@ -99,10 +133,11 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-// refresh reapplies both rule sets to the whole map.
+// refresh reapplies every rule set to the whole map.
 func (g *game) refresh() {
 	g.grassRul.Apply(mapW, mapH, g.at, g.grassMap.Set)
 	g.wallRul.Apply(mapW, mapH, g.at, g.wallMap.Set)
+	g.waterRul.Apply(mapW, mapH, g.color, g.waterMap.Set)
 }
 
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -115,6 +150,9 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	}
 	if in.KeyPressed(input.Key2) {
 		g.brush = wall
+	}
+	if in.KeyPressed(input.Key3) {
+		g.brush = water
 	}
 	mx, my := in.Mouse()
 	x, y := int(mx)/tile, int(my)/tile
@@ -130,6 +168,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 			// One changed cell only needs its neighbourhood redone.
 			g.grassRul.Cell(x, y, mapW, mapH, g.at, g.grassMap.Set)
 			g.wallRul.Cell(x, y, mapW, mapH, g.at, g.wallMap.Set)
+			g.waterRul.Cell(x, y, mapW, mapH, g.color, g.waterMap.Set)
 		}
 	}
 	return nil
@@ -138,6 +177,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	gr.FillRect(0, 0, float32(mapW*tile), float32(mapH*tile), gfx.RGB(38, 30, 26))
+	gr.DrawTilemap(g.waterMap, 0, 0, gfx.Color{})
 	gr.DrawTilemap(g.grassMap, 0, 0, gfx.Color{})
 	gr.DrawTilemap(g.wallMap, 0, 0, gfx.Color{})
 	mx, my := ctx.Input.Mouse()
@@ -155,6 +195,64 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.grassTex.Destroy()
 	g.wallTex.Destroy()
+	g.waterTex.Destroy()
+}
+
+// waterTiles lists the sixteen corner Wang tiles: frame m has water at
+// the corners whose bits are set (north-west 1, north-east 2,
+// south-west 4, south-east 8) and land elsewhere. Frame 0, all land,
+// is a transparent tile so dry cells draw nothing.
+func waterTiles() []autotile.WangTile {
+	tiles := make([]autotile.WangTile, 16)
+	for m := range tiles {
+		t := autotile.WangTile{Frame: m}
+		for i, d := range []int{autotile.DirNW, autotile.DirNE, autotile.DirSW, autotile.DirSE} {
+			t.Colors[d] = landColor
+			if m&(1<<i) != 0 {
+				t.Colors[d] = waterColor
+			}
+		}
+		tiles[m] = t
+	}
+	return tiles
+}
+
+// makeWater draws the sixteen water tiles. Each pixel interpolates the
+// four corners' wetness and is water past the halfway mark, so a lone
+// wet corner rounds off and two wet corners meet in a straight shore;
+// a band just inside the shore is foam.
+func makeWater() *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, 16*tile, tile))
+	deep := color.RGBA{R: 46, G: 104, B: 176, A: 255}
+	wave := color.RGBA{R: 60, G: 124, B: 196, A: 255}
+	foam := color.RGBA{R: 176, G: 214, B: 232, A: 255}
+	for m := range 16 {
+		var c [4]float64 // NW, NE, SW, SE wetness
+		for i := range c {
+			if m&(1<<i) != 0 {
+				c[i] = 1
+			}
+		}
+		for py := range tile {
+			for px := range tile {
+				u := (float64(px) + 0.5) / tile
+				v := (float64(py) + 0.5) / tile
+				wet := c[0]*(1-u)*(1-v) + c[1]*u*(1-v) + c[2]*(1-u)*v + c[3]*u*v
+				if wet < 0.5 {
+					continue
+				}
+				col := deep
+				if (px/4+py/4)%2 == 0 {
+					col = wave
+				}
+				if wet < 0.62 {
+					col = foam
+				}
+				img.SetRGBA(m*tile+px, py, col)
+			}
+		}
+	}
+	return img
 }
 
 // makeTemplate draws the six-tile grass template ExpandBlob expects:
