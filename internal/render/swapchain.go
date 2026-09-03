@@ -8,7 +8,9 @@ import (
 
 // Swapchain owns the presentable images for one surface. Recreate handles
 // resizes; the caller decides when by watching the platform's resize events
-// and the results of Acquire and Present.
+// and the results of Acquire and Present. A zero surface makes a headless
+// swapchain: ordinary images of the fallback extent, one per frame in
+// flight, with a zero Handle and nothing to acquire or present.
 type Swapchain struct {
 	Handle  vk.VkSwapchainKHR
 	Format  vk.VkFormat
@@ -21,10 +23,13 @@ type Swapchain struct {
 	// One render-finished semaphore per image: the semaphore a present
 	// waits on must not be reused until that image comes back.
 	renderDone []vk.VkSemaphore
+	// headless owns the images when there is no real swapchain.
+	headless []*Image
 }
 
 // NewSwapchain creates a swapchain sized to the surface's current extent, or
-// to fallback when the surface leaves the size to the application.
+// to fallback when the surface leaves the size to the application. A zero
+// surface creates a headless swapchain of the fallback extent.
 func (d *Device) NewSwapchain(surface vk.VkSurfaceKHR, fallback vk.VkExtent2D, vsync bool) (*Swapchain, error) {
 	s := &Swapchain{dev: d, surface: surface, vsync: vsync}
 	if err := s.create(fallback, 0); err != nil {
@@ -48,6 +53,9 @@ func (s *Swapchain) Recreate(fallback vk.VkExtent2D) error {
 }
 
 func (s *Swapchain) create(fallback vk.VkExtent2D, old vk.VkSwapchainKHR) error {
+	if s.surface == 0 {
+		return s.createHeadless(fallback)
+	}
 	d := s.dev
 	var caps vk.VkSurfaceCapabilitiesKHR
 	if err := vk.Check("vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
@@ -118,6 +126,49 @@ func (s *Swapchain) create(fallback vk.VkExtent2D, old vk.VkSwapchainKHR) error 
 	return nil
 }
 
+// createHeadless makes the images a swapchain would own, without a surface
+// or a window system. There is one image per frame in flight, so the frame
+// ring's fences pace their reuse; Handle stays zero and the renderer skips
+// acquire and present.
+func (s *Swapchain) createHeadless(extent vk.VkExtent2D) error {
+	if extent.Width == 0 || extent.Height == 0 {
+		return fmt.Errorf("render: headless swapchain needs a nonzero extent")
+	}
+	format, err := s.dev.chooseHeadlessFormat()
+	if err != nil {
+		return err
+	}
+	s.Format, s.Extent = format, extent
+	s.Images = make([]vk.VkImage, FramesInFlight)
+	s.Views = make([]vk.VkImageView, FramesInFlight)
+	s.headless = make([]*Image, FramesInFlight)
+	for i := range s.headless {
+		img, err := s.dev.NewImage(extent, format,
+			vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+			vk.VK_IMAGE_ASPECT_COLOR_BIT)
+		if err != nil {
+			return err
+		}
+		s.headless[i], s.Images[i], s.Views[i] = img, img.Handle, img.View
+	}
+	s.dev.log.Debug("render: headless swapchain created",
+		"extent", fmt.Sprintf("%dx%d", extent.Width, extent.Height), "format", format, "images", FramesInFlight)
+	return nil
+}
+
+// chooseHeadlessFormat picks the sRGB format the surface path prefers,
+// checked against what the device can render to.
+func (d *Device) chooseHeadlessFormat() (vk.VkFormat, error) {
+	for _, want := range []vk.VkFormat{vk.VK_FORMAT_B8G8R8A8_SRGB, vk.VK_FORMAT_R8G8B8A8_SRGB} {
+		var props vk.VkFormatProperties
+		vk.VkGetPhysicalDeviceFormatProperties(d.Physical(), want, &props)
+		if props.OptimalTilingFeatures&vk.VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT != 0 {
+			return want, nil
+		}
+	}
+	return 0, fmt.Errorf("render: no sRGB colour attachment format for headless rendering")
+}
+
 // chooseFormat prefers an 8-bit BGRA/RGBA sRGB surface so that shaders work
 // in linear light and the swapchain does the encoding.
 func (s *Swapchain) chooseFormat() (vk.VkFormat, vk.VkColorSpaceKHR, error) {
@@ -160,6 +211,14 @@ func (s *Swapchain) chooseImmediate() vk.VkPresentModeKHR {
 }
 
 func (s *Swapchain) destroyViews() {
+	if s.headless != nil {
+		// The images own their views; destroying them covers both.
+		for _, img := range s.headless {
+			img.Destroy()
+		}
+		s.headless, s.Images, s.Views = nil, nil, nil
+		return
+	}
 	for _, v := range s.Views {
 		vk.VkDestroyImageView(s.dev.Handle, v, nil)
 	}

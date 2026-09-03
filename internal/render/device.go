@@ -33,7 +33,13 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	}
 	d := &Device{QueueFamily: g.queueFamily, Name: g.name, log: inst.log, gpu: g, anisotropy: 1}
 	d.alloc.dev = d
-	exts := []string{vk.VK_KHR_SWAPCHAIN_EXTENSION_NAME}
+	// Enabling the swapchain extension without VK_KHR_surface on the
+	// instance violates VUID-vkCreateDevice-ppEnabledExtensionNames-01387,
+	// and a headless device has nothing to present to anyway.
+	var exts []string
+	if surface != 0 {
+		exts = append(exts, vk.VK_KHR_SWAPCHAIN_EXTENSION_NAME)
+	}
 	if slices.Contains(g.extensions, vk.VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) {
 		exts = append(exts, vk.VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) // required when advertised
 		d.portability = true

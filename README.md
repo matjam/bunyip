@@ -18,7 +18,7 @@ window.
 - Two loop modes: a fixed timestep for real-time games, or turn-based,
   where the process sleeps in the operating system until input arrives.
 - Every example runs to a screenshot without a window, and the renderer's
-  tests read pixels back from a headless surface.
+  tests render into offscreen images and read the pixels back.
 
 **What it does**
 
@@ -201,8 +201,9 @@ go test ./...                    # headless GPU tests skip without a driver
 go vet ./...
 ```
 
-Renderer tests run on a headless surface, read the swapchain back and check
-pixels. `go test ./examples/` runs every example headless for a moment and
+Renderer tests render into offscreen images, read the frame back and check
+pixels; headless mode needs no window system and no surface extension, so
+it works on any conformant Vulkan driver. `go test ./examples/` runs every example headless for a moment and
 checks that it drew something; it needs a GPU and is skipped with `-short`.
 The parsers have fuzz targets: `go test -fuzz=Fuzz ./audio/...` and the
 same in `gltf`, `tiled` and `gfx`.

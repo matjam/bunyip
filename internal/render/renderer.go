@@ -159,14 +159,19 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 		return nil, false, deviceLostOr(err)
 	}
 	sc.index = 0
-	res := vk.AcquireNextImageKHR(d.Handle, r.Swapchain.Handle, ^uint64(0), f.imageAvailable, 0, &sc.index)
-	if res == vk.VK_ERROR_OUT_OF_DATE_KHR {
-		r.resize = true
-		return nil, false, nil
-	}
-	if res != vk.VK_SUBOPTIMAL_KHR {
-		if err := vk.Check("vkAcquireNextImageKHR", res); err != nil {
-			return nil, false, err
+	if r.Swapchain.Handle == 0 {
+		// Headless: one image per frame slot, paced by the slot's fence.
+		sc.index = uint32(r.current)
+	} else {
+		res := vk.AcquireNextImageKHR(d.Handle, r.Swapchain.Handle, ^uint64(0), f.imageAvailable, 0, &sc.index)
+		if res == vk.VK_ERROR_OUT_OF_DATE_KHR {
+			r.resize = true
+			return nil, false, nil
+		}
+		if res != vk.VK_SUBOPTIMAL_KHR {
+			if err := vk.Check("vkAcquireNextImageKHR", res); err != nil {
+				return nil, false, err
+			}
 		}
 	}
 	if err := vk.Check("vkResetFences", vk.ResetFences(d.Handle, 1, &f.fence)); err != nil {
@@ -261,48 +266,57 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 			return nil, err
 		}
 	}
-	srcLayout := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-	if capture {
-		srcLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+	headless := r.Swapchain.Handle == 0
+	if !headless {
+		srcLayout := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+		if capture {
+			srcLayout = vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+		}
+		imageBarrier(f.cb, img, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+			srcLayout, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+			vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vk.VK_ACCESS_2_MEMORY_WRITE_BIT,
+			vk.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0)
 	}
-	imageBarrier(f.cb, img, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-		srcLayout, vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-		vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, vk.VK_ACCESS_2_MEMORY_WRITE_BIT,
-		vk.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0)
 	if err := vk.Check("vkEndCommandBuffer", vk.EndCommandBuffer(f.cb)); err != nil {
 		return nil, err
 	}
 	sc := &r.scratch
-	sc.wait = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: f.imageAvailable, StageMask: vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT}
-	sc.signal = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: r.Swapchain.renderDone[fr.ImageIndex], StageMask: vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}
 	sc.cbInfo = vk.VkCommandBufferSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, CommandBuffer: f.cb}
 	sc.submit = vk.VkSubmitInfo2{
-		SType:                    vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-		WaitSemaphoreInfoCount:   1,
-		PWaitSemaphoreInfos:      &sc.wait,
-		CommandBufferInfoCount:   1,
-		PCommandBufferInfos:      &sc.cbInfo,
-		SignalSemaphoreInfoCount: 1,
-		PSignalSemaphoreInfos:    &sc.signal,
+		SType:                  vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+		CommandBufferInfoCount: 1,
+		PCommandBufferInfos:    &sc.cbInfo,
+	}
+	if !headless {
+		// The present semaphores only exist for a real swapchain; a headless
+		// frame is paced by the slot fence alone.
+		sc.wait = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: f.imageAvailable, StageMask: vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT}
+		sc.signal = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: r.Swapchain.renderDone[fr.ImageIndex], StageMask: vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}
+		sc.submit.WaitSemaphoreInfoCount = 1
+		sc.submit.PWaitSemaphoreInfos = &sc.wait
+		sc.submit.SignalSemaphoreInfoCount = 1
+		sc.submit.PSignalSemaphoreInfos = &sc.signal
 	}
 	if err := vk.Check("vkQueueSubmit2", vk.QueueSubmit2(d.Queue, 1, &sc.submit, f.fence)); err != nil {
 		return nil, deviceLostOr(err)
 	}
-	sc.present = vk.VkPresentInfoKHR{
-		SType:              vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-		WaitSemaphoreCount: 1,
-		PWaitSemaphores:    &r.Swapchain.renderDone[fr.ImageIndex],
-		SwapchainCount:     1,
-		PSwapchains:        &r.Swapchain.Handle,
-		PImageIndices:      &fr.ImageIndex,
-	}
-	res := vk.QueuePresentKHR(d.Queue, &sc.present)
-	switch res {
-	case vk.VK_ERROR_OUT_OF_DATE_KHR, vk.VK_SUBOPTIMAL_KHR:
-		r.resize = true
-	default:
-		if err := vk.Check("vkQueuePresentKHR", res); err != nil {
-			return nil, deviceLostOr(err)
+	if !headless {
+		sc.present = vk.VkPresentInfoKHR{
+			SType:              vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+			WaitSemaphoreCount: 1,
+			PWaitSemaphores:    &r.Swapchain.renderDone[fr.ImageIndex],
+			SwapchainCount:     1,
+			PSwapchains:        &r.Swapchain.Handle,
+			PImageIndices:      &fr.ImageIndex,
+		}
+		res := vk.QueuePresentKHR(d.Queue, &sc.present)
+		switch res {
+		case vk.VK_ERROR_OUT_OF_DATE_KHR, vk.VK_SUBOPTIMAL_KHR:
+			r.resize = true
+		default:
+			if err := vk.Check("vkQueuePresentKHR", res); err != nil {
+				return nil, deviceLostOr(err)
+			}
 		}
 	}
 	r.current = (r.current + 1) % FramesInFlight
