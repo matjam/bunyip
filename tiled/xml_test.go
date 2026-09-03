@@ -6,7 +6,6 @@ import (
 	"os"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/matjam/bunyip/lin"
@@ -269,7 +268,12 @@ func TestXMLTilesetDetails(t *testing.T) {
 	    <image source="fire.png" width="8" height="8"/>
 	    <animation><frame tileid="1" duration="100"/><frame tileid="0" duration="200"/></animation>
 	  </tile>
-	  <wangsets><wangset name="w" type="corner" tile="-1"/></wangsets>
+	  <wangsets><wangset name="w" type="corner" tile="-1">
+	    <wangcolor name="grass" color="#00ff00" tile="0" probability="0.5"/>
+	    <wangcolor name="dirt" color="#804000" tile="1" probability="1"/>
+	    <wangtile tileid="0" wangid="0,1,0,2,0,1,0,1"/>
+	    <wangtile tileid="1" wangid="0,2,0,2,0,2,0,2"/>
+	  </wangset></wangsets>
 	</tileset>`
 	ts, err := ParseTileset([]byte(src))
 	if err != nil {
@@ -287,7 +291,20 @@ func TestXMLTilesetDetails(t *testing.T) {
 	if want := []Frame{{TileID: 1, Duration: 0.1}, {TileID: 0, Duration: 0.2}}; !slices.Equal(fire.Animation, want) {
 		t.Errorf("animation %v, want %v", fire.Animation, want)
 	}
-	if strings.Contains(fmt.Sprint(ts.Properties), "wang") {
-		t.Error("wangsets should be ignored")
+	if len(ts.WangSets) != 1 {
+		t.Fatalf("wangsets: %+v", ts.WangSets)
+	}
+	ws := ts.WangSets[0]
+	if ws.Name != "w" || ws.Type != "corner" || len(ws.Colors) != 2 || len(ws.Tiles) != 2 {
+		t.Fatalf("wangset: %+v", ws)
+	}
+	if ws.Colors[0].Name != "grass" || ws.Colors[0].Probability != 0.5 || ws.Colors[0].Color.G != 255 {
+		t.Errorf("colour: %+v", ws.Colors[0])
+	}
+	if ws.Tiles[0].WangID != [8]int{0, 1, 0, 2, 0, 1, 0, 1} {
+		t.Errorf("wangid: %v", ws.Tiles[0].WangID)
+	}
+	if r := ws.Rules(); r == nil {
+		t.Error("no rules from the set")
 	}
 }

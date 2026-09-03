@@ -163,6 +163,22 @@ func convertJSONTileset(j jsonTileset, dir string) (Tileset, error) {
 		}
 		ts.Tiles[t.ID] = tile
 	}
+	for _, ws := range j.WangSets {
+		set := WangSet{Name: ws.Name, Type: ws.Type}
+		for _, c := range ws.Colors {
+			col, _ := ParseColor(c.Color)
+			set.Colors = append(set.Colors, WangColor{Name: c.Name, Color: col, Tile: c.Tile, Probability: c.Probability})
+		}
+		for _, wt := range ws.Tiles {
+			if len(wt.WangID) > 8 {
+				return Tileset{}, fmt.Errorf("wangset %q tile %d: wangid has %d values", ws.Name, wt.TileID, len(wt.WangID))
+			}
+			t := WangSetTile{TileID: wt.TileID}
+			copy(t.WangID[:], wt.WangID)
+			set.Tiles = append(set.Tiles, t)
+		}
+		ts.WangSets = append(ts.WangSets, set)
+	}
 	return ts, nil
 }
 
@@ -558,7 +574,27 @@ type jsonTileset struct {
 	Margin      int             `json:"margin"`
 	Spacing     int             `json:"spacing"`
 	Tiles       json.RawMessage `json:"tiles"`
+	WangSets    []jsonWangSet   `json:"wangsets"`
 	Properties  []jsonProperty  `json:"properties"`
+}
+
+type jsonWangSet struct {
+	Name   string          `json:"name"`
+	Type   string          `json:"type"`
+	Colors []jsonWangColor `json:"colors"`
+	Tiles  []jsonWangTile  `json:"wangtiles"`
+}
+
+type jsonWangColor struct {
+	Name        string  `json:"name"`
+	Color       string  `json:"color"`
+	Tile        int     `json:"tile"`
+	Probability float64 `json:"probability"`
+}
+
+type jsonWangTile struct {
+	TileID int   `json:"tileid"`
+	WangID []int `json:"wangid"`
 }
 
 type jsonTile struct {

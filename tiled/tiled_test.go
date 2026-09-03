@@ -12,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/matjam/bunyip/grid/autotile"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -379,4 +380,32 @@ func TestOldTilesFormat(t *testing.T) {
 	if tile := m.Tilesets[0].Tiles[1]; tile.ID != 1 || tile.Image != "b.png" || tile.ImageWidth != 8 {
 		t.Errorf("tile: %+v", tile)
 	}
+}
+
+func TestJSONWangSets(t *testing.T) {
+	src := `{"tilesets": [{"firstgid": 1, "name": "terr", "image": "t.png", "tilewidth": 8, "tileheight": 8, "columns": 4, "tilecount": 16,
+	  "wangsets": [{"name": "ground", "type": "corner",
+	    "colors": [{"name": "grass", "color": "#00ff00", "tile": -1, "probability": 1}],
+	    "wangtiles": [{"tileid": 3, "wangid": [0, 1, 0, 1, 0, 1, 0, 1]}]}]}], "layers": []}`
+	m, err := Parse([]byte(src), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts, ws := m.WangSet("ground")
+	if ts == nil || ws == nil {
+		t.Fatalf("wangset not found: %+v", m.Tilesets[0].WangSets)
+	}
+	if ws.Type != "corner" || len(ws.Colors) != 1 || ws.Colors[0].Name != "grass" {
+		t.Fatalf("wangset: %+v", ws)
+	}
+	if ws.Tiles[0].TileID != 3 || ws.Tiles[0].WangID != [8]int{0, 1, 0, 1, 0, 1, 0, 1} {
+		t.Errorf("wangtile: %+v", ws.Tiles[0])
+	}
+	// The converted rules place the all-grass tile in a grass field.
+	mp := autotile.Mapper{Rules: ws.Rules()}
+	mp.Apply(2, 2, func(x, y int) int { return 1 }, func(x, y, f int) {
+		if f != 3 {
+			t.Errorf("cell %d,%d: frame %d, want 3", x, y, f)
+		}
+	})
 }

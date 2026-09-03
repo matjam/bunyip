@@ -10,7 +10,9 @@
 // points, polygons and polylines with their names, types and custom
 // properties, for spawn points, triggers and collision shapes), image
 // layers and groups, and tilesets embedded or external with per-tile
-// animations, collision shapes and properties. Build loads the
+// animations, collision shapes, properties and terrain sets from the
+// terrain tool (a WangSet converts to grid/autotile rules with its
+// Rules method). Build loads the
 // tilesets' images, makes one gfx.Tilemap per tile layer with the
 // animations wired up, and returns a Level whose Draw draws the layers
 // in order. Keep the object layers to place your own entities.
@@ -84,6 +86,7 @@ type Tileset struct {
 	TileCount             int
 	Margin, Spacing       int
 	Tiles                 map[int]Tile // by local id; only tiles with extra data
+	WangSets              []WangSet    // terrain sets from the Tiled terrain tool
 	Properties            Properties
 }
 

@@ -2,7 +2,7 @@
 title: 2D graphics
 group: Graphics
 order: 1
-summary: sprites, atlases, the camera, layers and sorting, tilemaps, text, vector paths, particles, lights and render textures for a 2D game
+summary: sprites, atlases, the camera, layers and sorting, tilemaps, autotiling, text, vector paths, particles, lights and render textures for a 2D game
 ---
 
 The [gfx](../pkg/gfx.html) package is one drawing context for a window.
@@ -221,6 +221,37 @@ g.tilemap.Animate(frameWater, gfx.TileAnimation{
 	Frames: []int{frameWater, frameWaterB}, Durations: []float32{0.4}})
 g.tilemap.Advance(ctx.Delta) // in Update
 ```
+
+## Autotiling
+
+To keep a map of plain terrain ids and let the tiles pick themselves,
+use the [autotile](../pkg/grid/autotile.html) package. A
+`Mapper` turns terrain ids into frame indices: `Apply` fills a whole
+tilemap and `Cell` patches the neighbourhood of one edited cell. Four
+rule kinds cover the usual tilesets: `Edge16` matches the four edge
+neighbours with 16 tiles (walls, pipes, fences), `Blob47` matches all
+eight neighbours with the 47 distinct blob tiles, `Corner16` is the
+dual grid where each tile sits on a corner between four cells, and
+`Wang` matches terrain colours on tile edges or corners for any number
+of terrains meeting with transitions. `ExpandBlob` composes the 47 blob
+tiles from a six-tile template, so an artist draws six tiles instead of
+47. Variants weight alternative frames per neighbourhood, chosen by a
+stable hash of the cell position.
+
+```go
+img, frames := autotile.ExpandBlob(template, 16)
+tex, _ := ctx.Gfx.NewTexture(img, gfx.TextureOptions{})
+grassMap := gfx.NewTilemap(gfx.NewSheet(tex, 16, 16), w, h)
+grass := &autotile.Mapper{Rules: autotile.Blob47(1, frames)}
+grass.Apply(w, h, terrainAt, grassMap.Set)   // the whole map once
+grass.Cell(x, y, w, h, terrainAt, grassMap.Set) // after one edit
+```
+
+Terrain sets painted in the Tiled editor's terrain tool come in through
+the tiled package: `Map.WangSet` finds a set by name and its `Rules`
+method converts it, with tile ids as frames. The
+[autotile example](https://github.com/matjam/bunyip/tree/main/examples/autotile)
+paints grass and walls with the mouse over one shared terrain grid.
 
 ## Maps from the Tiled editor
 

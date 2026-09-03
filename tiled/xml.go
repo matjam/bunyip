@@ -88,7 +88,45 @@ func convertXMLTileset(x xmlTileset, dir string) (Tileset, error) {
 		}
 		ts.Tiles[t.ID] = tile
 	}
+	if x.WangSets != nil {
+		for _, ws := range x.WangSets.Sets {
+			set := WangSet{Name: ws.Name, Type: ws.Type}
+			for _, c := range ws.Colors {
+				col, _ := ParseColor(c.Color)
+				set.Colors = append(set.Colors, WangColor{Name: c.Name, Color: col, Tile: c.Tile, Probability: c.Probability})
+			}
+			for _, wt := range ws.Tiles {
+				id, err := parseWangID(wt.WangID)
+				if err != nil {
+					return Tileset{}, fmt.Errorf("wangset %q tile %d: %w", ws.Name, wt.TileID, err)
+				}
+				set.Tiles = append(set.Tiles, WangSetTile{TileID: wt.TileID, WangID: id})
+			}
+			ts.WangSets = append(ts.WangSets, set)
+		}
+	}
 	return ts, nil
+}
+
+// parseWangID reads a wangtile's comma-separated colour list, up to
+// eight values clockwise from north; missing values stay zero.
+func parseWangID(s string) ([8]int, error) {
+	var id [8]int
+	if s == "" {
+		return id, nil
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) > 8 {
+		return id, fmt.Errorf("wangid has %d values", len(parts))
+	}
+	for i, p := range parts {
+		v, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil || v < 0 {
+			return id, fmt.Errorf("bad wangid value %q", p)
+		}
+		id[i] = v
+	}
+	return id, nil
 }
 
 // xmlLayers converts a map's or group's layer elements in document
@@ -398,6 +436,30 @@ type xmlTileset struct {
 	Image      *xmlImage        `xml:"image"`
 	Properties *xmlPropertyList `xml:"properties"`
 	Tiles      []xmlTile        `xml:"tile"`
+	WangSets   *xmlWangSets     `xml:"wangsets"`
+}
+
+type xmlWangSets struct {
+	Sets []xmlWangSet `xml:"wangset"`
+}
+
+type xmlWangSet struct {
+	Name   string         `xml:"name,attr"`
+	Type   string         `xml:"type,attr"`
+	Colors []xmlWangColor `xml:"wangcolor"`
+	Tiles  []xmlWangTile  `xml:"wangtile"`
+}
+
+type xmlWangColor struct {
+	Name        string  `xml:"name,attr"`
+	Color       string  `xml:"color,attr"`
+	Tile        int     `xml:"tile,attr"`
+	Probability float64 `xml:"probability,attr"`
+}
+
+type xmlWangTile struct {
+	TileID int    `xml:"tileid,attr"`
+	WangID string `xml:"wangid,attr"` // eight colours, comma separated
 }
 
 type xmlImage struct {

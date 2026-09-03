@@ -76,13 +76,17 @@ events are in.
 
 Streaming texture writes, colour matrices, flips and per-draw
 filtering, gradients, dashed strokes, text on paths, indexed draws, the
-`particle` package, lit sprites, tilemap flips and animations, the
+`particle` package, lit sprites, tilemap flips and animations,
+autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
+template expansion, Tiled terrain sets), the
 `tiled` importer in both of Tiled's file forms, TexturePacker and
 Aseprite atlases, tiled nine-slices, `Shader.Reload`, batch statistics
 and a draw budget warning are in.
 
 - 2D shadows cast by occluders from the point lights; lit sprites take
   light from every direction today.
+- Autotiling on hexagonal and isometric neighbourhoods; the rules in
+  `grid/autotile` assume a square grid.
 - Post-processing on a 2D-only frame. Bloom, ambient occlusion,
   vignette, the LUT and FXAA all run in the composite pass, which
   `renderQueue` skips when the frame has no 3D draws, no background and
