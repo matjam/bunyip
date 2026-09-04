@@ -103,6 +103,18 @@ points, the units the operating system lays out windows in, and
 factor of 2 they differ by a factor of two, and the swapchain must be
 built at the pixel size.
 
+`win.Visible()` is printed beside them. Visibility is whether the window
+can be seen at all, which is not the same question as focus: a window
+loses focus the moment another window is clicked, but stays visible.
+It is false while the window is minimised, and on the platforms that
+report it, while the window is wholly covered by other windows. Each
+backend answers from what its system tells it: miniaturised or occluded
+on macOS, minimised on Windows, suspended through xdg_toplevel version 6
+under Wayland, and unmapped, minimised or obscured on X11. A game does
+not usually call this method, because the engine turns it into
+`ctx.Visible` and, with `Config.PauseHidden`, into a pause; printing it
+here is how a new backend is checked.
+
 `render.NewRenderer` takes the instance extensions the platform needs,
 a callback that creates the surface once the instance exists, and the
 initial extent. The callback shape exists because a Vulkan surface can
@@ -124,7 +136,7 @@ func run(seconds float64, wait bool) error {
 	}
 	w, h := win.Size()
 	pw, ph := win.PixelSize()
-	fmt.Printf("window: %dx%d points, %dx%d pixels, scale %.2f\n", w, h, pw, ph, win.Scale())
+	fmt.Printf("window: %dx%d points, %dx%d pixels, scale %.2f, visible %v\n", w, h, pw, ph, win.Scale(), win.Visible())
 
 	var surface vk.VkSurfaceKHR
 	r, err := render.NewRenderer(render.Config{AppName: "window"},
@@ -223,6 +235,17 @@ against them: modifier flags on key events, whether a key repeat is
 reported, precise scroll deltas from a trackpad against coarse deltas
 from a wheel, and both sizes plus the scale factor on a resize.
 
+`EventVisible` is the running counterpart of the `Visible` call above:
+the backend sends one whenever the answer changes, so minimising the
+window prints `visible=false` and restoring it prints `visible=true`.
+It is separate from `EventFocus` on purpose, because the two go
+different ways: clicking another window on the same screen changes focus
+and not visibility, while minimising changes both. A backend that never
+sends this event is one where nothing pauses under
+`Config.PauseHidden`, which is what makes the line worth printing. The
+`default` case prints the kind alone for the events that carry no
+fields, such as `EventClose`.
+
 ```go
 func printEvent(e platform.Event) {
 	switch e.Kind {
@@ -240,6 +263,8 @@ func printEvent(e platform.Event) {
 		fmt.Printf("%s %dx%d points, %dx%d pixels, scale %.2f\n", e.Kind, e.Width, e.Height, e.PixelW, e.PixelH, e.Scale)
 	case platform.EventFocus:
 		fmt.Printf("%s focused=%v\n", e.Kind, e.Focused)
+	case platform.EventVisible:
+		fmt.Printf("%s visible=%v\n", e.Kind, e.Visible)
 	default:
 		fmt.Println(e.Kind)
 	}
@@ -296,5 +321,18 @@ func reportSurface(dev vk.VkPhysicalDevice, surface vk.VkSurfaceKHR) error {
 - Resize the window and watch the resize lines from `printEvent`; drag
   it between displays with different scale factors to see `Scale`
   change and `run` rebuild the swapchain.
+- Minimise the window and restore it, then cover it completely with
+  another window, and watch which of those the backend reports as
+  `visible=false`. The answer differs by platform, which is the point.
+- Call `win.SetClipboard("hello")` after a key press and
+  `win.Clipboard()` on the next one, and paste into another program.
+  Neither Wayland nor X11 keeps clipboard text anywhere: the program
+  that copied owns the selection and hands the text over on request, so
+  the text lives only as long as this process, unless a clipboard
+  manager takes it over. A read waits about a second for the owner to
+  answer and comes back empty if nobody does. Under Wayland a write also
+  fails until the window has had some input, because the compositor
+  changes the selection only in answer to a key, a button or the pointer
+  arriving.
 - Set `BUNYIP_X11=1` on Linux to force the X11 backend, and compare the
   event stream with the Wayland one.

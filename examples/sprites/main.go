@@ -39,7 +39,7 @@ type game struct {
 	shotTaken  bool
 }
 
-// The lit panel: a floor a few bricks across with two crates on it.
+// The lit panel: a floor a few bricks across with three crates on it.
 const (
 	roomX, roomY = 600, 320
 	roomW, roomH = 340, 260

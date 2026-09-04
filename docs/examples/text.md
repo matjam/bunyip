@@ -1,7 +1,7 @@
 ---
 title: Shaped text
 example: text
-summary: HarfBuzz shaping, bidirectional and vertical text, fallback fonts, wrapping, rich text and distance-field glyphs
+summary: HarfBuzz shaping, bidirectional and vertical text, fallback fonts, wrapping, hyphenation in the text's own language, rich text, colour glyphs and distance-field text
 ---
 
 This example is a page of text that exercises the parts of the text
@@ -9,9 +9,10 @@ system a game needs once it leaves English. It shows kerning and
 ligatures taken from the font, Arabic that joins its letters and runs
 right to left, a mixed-direction line, a fallback chain that fills in
 glyphs the main font lacks, line breaking by the Unicode rules with
-justification and hyphenation, vertical text, letter spacing, rich text
-with styles and links, colour emoji, and distance-field glyphs that
-scale and rotate without blurring.
+justification and hyphenation in the text's own language, vertical text,
+letter spacing, rich text with styles and links, colour glyphs from
+whatever emoji font the system has, and distance-field glyphs that scale
+and rotate without blurring.
 
 Everything here comes from [gfx](../pkg/gfx.html): `NewFont`,
 `NewSDFFont`, `DrawText`, `DrawTextBlock`, `DrawRichText`,
@@ -66,8 +67,17 @@ binary, so the program always has something to draw with.
 `FontOptions.Fallbacks` is a list of font files consulted in order for
 any rune the main font does not cover. The world font goes first and the
 emoji font second, so Arabic and Hebrew come from one and emoji from the
-other. The emoji font is a bitmap face with colour strikes, which the
-engine draws in colour rather than as a silhouette.
+other.
+
+The emoji font is looked for in four places, one per platform, and the
+first that opens wins: Apple's on macOS, Noto in either of the two
+places distributions put it on Linux, and Segoe UI Emoji on Windows.
+Those four files are not one kind of font. Apple's holds bitmap strikes,
+Noto's holds either strikes or COLR layers depending on the build, and
+Segoe's holds COLR. The engine draws all of them in colour, along with
+faces whose glyphs are SVG documents, so the example does not care which
+one it found; the `g.emoji != nil` test below is about whether any font
+was found at all, not about what sort it is.
 
 `NewFont` rasterises glyphs into an atlas as they are first used.
 `NewSDFFont` stores a signed distance field instead, which costs more to
@@ -83,9 +93,18 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if data, err := os.ReadFile(g.fontPath); err == nil {
 		g.world = data
 	}
-	// A bitmap emoji font as a further fallback draws emoji in colour.
-	if data, err := os.ReadFile("/System/Library/Fonts/Apple Color Emoji.ttc"); err == nil {
-		g.emoji = data
+	// An emoji font as a further fallback draws emoji in colour, whether
+	// it holds bitmap strikes, COLR layers or SVG documents.
+	for _, path := range []string{
+		"/System/Library/Fonts/Apple Color Emoji.ttc",
+		"/usr/share/fonts/noto/NotoColorEmoji.ttf",
+		"/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+		"C:\\Windows\\Fonts\\seguiemj.ttf",
+	} {
+		if data, err := os.ReadFile(path); err == nil {
+			g.emoji = data
+			break
+		}
 	}
 	var err error
 	opts := gfx.FontOptions{}
@@ -189,8 +208,31 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 ## Wrapping, measuring, vertical text and tracking
 
 The paragraph is wrapped to 420 units by the Unicode line breaking
-rules, justified, and hyphenated with `gfx.EnglishHyphenator()`, which
-supplies break points inside long words. `Font.Measure` returns the size
+rules, justified, and hyphenated, which is what stops justification from
+opening rivers of space around a word like "extraordinarily".
+
+The hyphenation is asked for by language rather than by hyphenator.
+`AutoHyphenate: true` with `Language: "en-GB"` picks the British English
+patterns; the same two fields with `"de"` would pick the German ones,
+and a language the engine ships no patterns for is simply left
+unhyphenated rather than hyphenated wrongly. The patterns are TeX's, by
+Liang's method, and the engine ships American and British English,
+German, French, Spanish, Italian, Dutch, Portuguese, Swedish, Danish,
+Norwegian, Finnish, Polish and Russian, loading a set on first use. The
+older way is still there: `Hyphenate` takes a hyphenator directly, from
+`gfx.EnglishHyphenator()` or `gfx.HyphenatorFor("de-AT")`, which is what
+a game wants when it has its own patterns from `ParseTeXPatterns`. The
+language form is the one to reach for in a translated interface, because
+the same `TextOptions` then hyphenate whatever language is on screen
+without the game choosing a hyphenator per string.
+
+`Language` does more than pick patterns: it is passed down to the
+shaper, where it selects the language-specific forms a font offers.
+British and American English differ only in where they break words, but
+the same field is what makes a Serbian italic or a Turkish dotless i
+come out right in a font that distinguishes them.
+
+`Font.Measure` returns the size
 the same text and options produce without drawing it, and the height it
 returns is used twice: once to stroke a box around the paragraph, and
 once to advance `y` past it. Measuring with the options the text is
@@ -202,10 +244,11 @@ alignment and hyphenation all change the height.
 heading is tracked out.
 
 ```go
-	gr.DrawText(g.body, "Wrapped by the Unicode rules, justified in 420 units, hyphenated:", 40, y, dim)
+	gr.DrawText(g.body, "Wrapped by the Unicode rules, justified in 420 units, hyphenated in en-GB:", 40, y, dim)
 	y += 28
 	para := "Bunyip shapes text with HarfBuzz through go-text, so marks land on their bases, scripts that join do so, and lines break where they should, in any language the font covers, with extraordinarily long words hyphenated."
-	popts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify, Hyphenate: gfx.EnglishHyphenator()}
+	// AutoHyphenate picks the patterns for the language the text is in.
+	popts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify, Language: "en-GB", AutoHyphenate: true}
 	gr.DrawTextBlock(g.body, para, 40, y, popts, white)
 	_, ph := g.body.Measure(para, popts)
 	gr.StrokeRect(40, y-4, 420, ph+8, 1, gfx.RGB(70, 75, 95))
@@ -228,9 +271,17 @@ units, so the game can test them against the pointer or outline them as
 here. Nothing about links is built in beyond reporting where they
 landed.
 
-The emoji line is drawn only when the bitmap font was found. The escapes
+The emoji line is drawn only when one of the four emoji fonts was found,
+and the fallback line says so rather than leaving a blank. The escapes
 in the string are the emoji code points written as `\U0001F600` and so
 on, which keeps the source readable in any editor.
+
+Nothing here asks for colour. The emoji font is a fallback like any
+other, so the shaper reaches it for runes `goregular` does not cover,
+and the glyphs it returns happen to carry colour: a bitmap strike, a
+stack of COLR layers each with its own paint, or an SVG document the
+engine rasterises. All three end up in the same atlas as the outline
+glyphs beside them and draw in the same batch.
 
 ```go
 	// Rich text: styles and a link in one block, and colour emoji.
@@ -241,9 +292,9 @@ on, which keeps the source readable in any editor.
 	}
 	y += 30
 	if g.emoji != nil {
-		gr.DrawText(g.body, "Colour emoji from the system font: \U0001F600 \U0001F389 \U0001F680", 40, y, white)
+		gr.DrawText(g.body, "Colour glyphs from the system emoji font: \U0001F600 \U0001F389 \U0001F680", 40, y, white)
 	} else {
-		gr.DrawText(g.body, "No bitmap emoji font found; a fallback with sbix or CBDT strikes draws emoji in colour.", 40, y, dim)
+		gr.DrawText(g.body, "No emoji font found; a fallback with strikes, COLR layers or SVG glyphs draws emoji in colour.", 40, y, dim)
 	}
 	y += 40
 ```
@@ -293,9 +344,12 @@ func main() {
 
 - Pass `-font` a font from your own system, in `main`'s `-font` flag,
   and add a line in `Draw` in a script that font covers.
-- Change `popts` in `Draw` to `Align: gfx.AlignLeft` and remove
-  `Hyphenate` to see what justification and hyphenation are doing to the
-  ragged edge.
+- Change `popts` in `Draw` to `Align: gfx.AlignLeft` and drop
+  `AutoHyphenate` to see what justification and hyphenation are doing to
+  the ragged edge.
+- Change `Language` in `popts` to `"de"` and translate the paragraph,
+  or set it to a language the engine ships no patterns for, and watch
+  the long words stop breaking rather than break in the wrong places.
 - Draw the paragraph twice in `Draw`, once with the ordinary font and
   once with `g.sdf` at the same size, and compare the edges when the
   window is resized.

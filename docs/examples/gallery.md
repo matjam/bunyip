@@ -55,6 +55,7 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"strings"
 
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
@@ -125,6 +126,20 @@ through.
 `g.ui.OnTextInputRect = ctx.SetTextInputRect` reports where the focused
 text field is, so an input method's candidate window appears beside it.
 
+The last three calls hand the gallery's own state to the
+[debug console](../guides/console.html), which `main` turns on with
+`Config.Console`. `Console.Float` and `Console.Bool` bind a name to a
+pointer, so `gallery.volume 0.2` at the command line moves the slider
+and the Services panel shows both values live. `Console.Register` adds a
+command: `theme` with no argument lists the palettes and `theme light`
+switches to one, which is the same work the dropdown does. Binding a
+pointer rather than copying a value is what keeps the two in step in
+both directions; the widget writes through the same pointer the console
+reads.
+
+Every console method is safe on a nil console, so these lines stay
+compiling and do nothing when `Config.Console` is off.
+
 ```go
 func (g *gallery) Init(ctx *bunyip.Context) error {
 	var err error
@@ -164,6 +179,23 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	if g.beep {
 		ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: 0.4})
 	}
+	// Two of the gallery's own values through the console: set them from
+	// the command line, or watch them in the Services panel.
+	ctx.Console.Float("gallery.volume", &g.volume, "the volume slider's value")
+	ctx.Console.Bool("gallery.skin", &g.useSkin, "draw the widgets from the texture skin")
+	ctx.Console.Register("theme", "theme <name>: switch the interface theme", func(args []string) (string, error) {
+		if len(args) == 0 {
+			return strings.Join(ui.ThemeNames(), " "), nil
+		}
+		for i, n := range ui.ThemeNames() {
+			if n == args[0] {
+				g.themeIdx = i
+				g.applyTheme()
+				return "theme " + n, nil
+			}
+		}
+		return "", fmt.Errorf("no theme %q", args[0])
+	})
 	return nil
 }
 ```
@@ -202,8 +234,16 @@ The interface is built in `Draw`, so `Update` only handles quitting and
 the screenshot. `g.ui.WantsKeyboard` is why Escape does not quit while a
 text field has focus.
 
+The first thing it does is give way to the console. While the drop-down
+is open it has the keyboard, and a game that kept reading keys would quit
+on the Escape that was meant to close the console and type into its own
+text fields. Returning early is the whole protocol.
+
 ```go
 func (g *gallery) Update(ctx *bunyip.Context) error {
+	if ctx.Console.Open() {
+		return nil // the console has the keyboard
+	}
 	if ctx.Input.KeyPressed(input.KeyEscape) && !g.ui.WantsKeyboard() || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -405,7 +445,9 @@ the height of its content and a closure that builds it.
 			})
 		})
 	})
-	return nil
+	// The console draws last of all, above every window the gallery
+	// opened: ` opens it and F4 opens the debug panels.
+	return ctx.Console.Draw(ctx)
 }
 ```
 
@@ -518,7 +560,7 @@ func main() {
 	theme := flag.String("theme", "dark", "starting theme: "+fmt.Sprint(ui.ThemeNames()))
 	tab := flag.Int("tab", 0, "the tab of the More widgets window to open on (0-3)")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true, Debug: *debug},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true, Debug: *debug, Console: true},
 		&gallery{seconds: *seconds, shot: *shot, beep: *beep, skinned: *skin, theme: *theme, startTab: *tab})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)

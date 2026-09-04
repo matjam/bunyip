@@ -1,7 +1,7 @@
 ---
 title: Autotile
 example: autotile
-summary: terrain that picks its own tiles: a 47-tile blob set expanded from a six-tile template, a 16-tile edge set for walls, and a corner Wang set whose shorelines curve
+summary: terrain that picks its own tiles: a 47-tile blob set expanded from a six-tile template, a 16-tile edge set for walls, a corner Wang set whose shorelines curve, and a 64-tile hexagonal edge set in the strip below
 ---
 
 Painting terrain and choosing tiles are separate jobs. This program keeps
@@ -24,10 +24,19 @@ ids directly; the water rules read the same grid through a function that
 maps it to two Wang colours. That is the pattern the package is built
 for: the game owns one grid, and each layer has its own rules over it.
 
-The tiles are drawn by [gfx](../pkg/gfx.html) as three tilemaps.
-[The 2D graphics guide](../guides/graphics-2d.html) covers sheets and
-tilemaps, and [tiled](../pkg/tiled.html) reads terrain sets from the
-Tiled editor into the same rules.
+The strip along the bottom of the window is a fourth mapper on a
+different **layout**. `Mapper.Layout` says where each direction's
+neighbour lies, and its zero value is the square grid the map above
+uses. The strip sets `autotile.HexRowsOdd` instead, so the same package
+walks pointy-top hexagons in staggered rows, and picks frames from a
+64-tile `Edge64` set: six neighbours instead of four, and no diagonals.
+
+The tiles are drawn by [gfx](../pkg/gfx.html) as three tilemaps and, for
+the hexagons, one sheet drawn a frame at a time.
+[The 2D graphics guide](../guides/graphics-2d.html) covers sheets,
+tilemaps, autotiling and layouts, and [tiled](../pkg/tiled.html) reads
+terrain sets from the Tiled editor into the same rules, taking the
+layout from `Map.Layout`.
 
 Run it:
 
@@ -37,7 +46,8 @@ go run ./examples/autotile -seconds 3 -shot out.png
 
 The flags are `-seconds N` and `-shot file.png`. A left click paints with
 the current brush, a right click erases, and 1, 2 and 3 select grass,
-wall and water.
+wall and water. The hexagonal strip is generated once and is not
+paintable.
 
 ## Package, constants and state
 
@@ -45,6 +55,15 @@ The terrain ids are a plain enumeration and the Wang colours are a second
 one, because they are different things: an id says what a cell is, a Wang
 colour says what a corner should show. The game keeps a texture, a
 tilemap and a `*autotile.Mapper` per layer.
+
+The second half of the first constant block is the hexagonal strip's
+geometry. Pointy-top hexagons in staggered rows sit a tile apart
+horizontally but only three quarters of a tile apart vertically, because
+consecutive rows interlock; `hexRow` is that spacing, `hexStripH` the
+height of `hexH` such rows plus the last row's overhang, and `windowH`
+the map plus the strip. `hexTerrainW` is one wider than the strip is
+drawn, so the odd rows, which are shifted half a tile right, still have
+a neighbour to the east inside the grid.
 
 ```go
 // Command autotile paints terrain that picks its own tiles. Grass is a
@@ -55,6 +74,10 @@ tilemap and a `*autotile.Mapper` per layer.
 // autotile.Mapper each. Paint with the left mouse button, erase with the
 // right; 1 selects the grass brush, 2 the wall brush and 3 the water
 // brush. Escape quits.
+//
+// The strip along the bottom is the same idea on a hexagonal layout: a
+// 64-tile edge set on hexagons in staggered rows, where each tile shows
+// a rim on the sides no neighbour continues.
 package main
 
 import (
@@ -63,12 +86,14 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 	"os"
 
 	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/grid/autotile"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/lin"
 	"github.com/matjam/bunyip/rng"
 )
 
@@ -76,6 +101,16 @@ const (
 	tile = 16
 	mapW = 40
 	mapH = 22
+	// The hexagonal strip below the square map: pointy-top hexagons in
+	// staggered rows, a tile wide, with rows three quarters of a tile
+	// apart and the odd rows shifted half a tile right.
+	hexW, hexH  = 20, 6
+	hexRow      = tile * 3 / 4
+	hexTop      = mapH * tile
+	hexStripH   = hexH*hexRow + tile/4
+	windowH     = mapH*tile + hexStripH
+	hexSideLen  = tile / 2 // the vertical sides of a pointy-top hexagon
+	hexTerrainW = hexW + 1 // one column of margin, so the shifted rows fit
 )
 
 const (
@@ -105,6 +140,10 @@ type game struct {
 	grassRul *autotile.Mapper
 	wallRul  *autotile.Mapper
 	waterRul *autotile.Mapper
+	hexTex   *gfx.Texture
+	hexSheet *gfx.Sheet
+	hexLand  []int // the hexagonal strip's terrain, hexTerrainW by hexH
+	hexFrame []int // its frames, one per cell
 	brush    int
 	shotDone bool
 }
@@ -153,7 +192,8 @@ two terrains meet, the higher colour wins.
 is a grid of frame indices over one sheet.
 
 The map is then seeded with a few random walks and a wall run so there is
-something to look at, and `refresh` fills every tilemap.
+something to look at, `refresh` fills every tilemap, and `initHexes`
+builds the strip below.
 
 ```go
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -216,13 +256,89 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	g.brush = grass
 	g.refresh()
-	return nil
+	return g.initHexes(ctx)
 }
 ```
 
+## The hexagonal strip: a layout instead of a grid
+
+`autotile.HexRowsOdd` is the layout the strip uses: pointy-top hexagons
+in staggered rows with the odd rows shifted right, which is what the
+Tiled editor calls stagger axis Y with stagger index odd. The other
+layouts are `HexRowsEven`, `HexColsOdd` and `HexColsEven` for flat-top
+hexagons in staggered columns, `HexAxial` for the same six directions in
+axial coordinates, and `IsoDiamond` for a diamond grid. The zero value,
+`Square`, is what the three mappers above use without saying so.
+
+The layout is not a drawing decision. It answers one question, which cell
+lies in a given direction from this one, and everything else follows.
+`Layout.Neighbour` and `Layout.Dirs` are exported for a game's own code,
+and the random walk here uses them directly: it picks one of the six
+directions the layout lists and steps to whatever cell the layout names.
+Nothing in `initHexes` knows that a hexagon's neighbour to the north-east
+is `(x, y-1)` on even rows and `(x+1, y-1)` on odd ones. That table lives
+in the layout.
+
+`autotile.Edge64` is `Edge16`'s hexagonal counterpart: a hexagon has six
+sides, so a six-bit mask of connected neighbours needs 64 tiles. Bit *i*
+is the *i*-th direction the layout uses, clockwise, which for the rows
+layouts is north-east, east, south-east, south-west, west and north-west.
+`makeHexes` draws one tile per mask, so `frames[i] = i` here: the sheet is
+the complete set in mask order and needs no indirection.
+
+A hexagonal layout has six neighbours and no diagonals, so it takes
+`Edge64` or `Wang` rules. `Blob47` and `Corner16` need the eight
+neighbours of a square or isometric grid.
+
+`Mapper.Apply` is the same call as for the square map, with the layout
+set: it walks `hexTerrainW` by `hexH` cells, reads terrain through
+`g.hexAt` and writes a frame per cell into `g.hexFrame`. The strip is
+generated once, so nothing recomputes it after `Init`.
+
+```go
+// hexLayout is the strip's grid: pointy-top hexagons in staggered rows
+// with the odd rows shifted right, which is what the Tiled editor calls
+// stagger axis Y with stagger index odd.
+const hexLayout = autotile.HexRowsOdd
+
+// initHexes builds the hexagonal strip: a 64-tile edge set, a patch of
+// terrain walked over the layout's own neighbours, and the frames for
+// it. Nothing here knows the hexagon offsets; the layout does.
+func (g *game) initHexes(ctx *bunyip.Context) error {
+	var err error
+	if g.hexTex, err = ctx.Gfx.NewTexture(makeHexes(), gfx.TextureOptions{}); err != nil {
+		return err
+	}
+	g.hexSheet = gfx.NewSheet(g.hexTex, tile, tile)
+	g.hexLand = make([]int, hexTerrainW*hexH)
+	r := rng.New(11)
+	for _, start := range [][2]int{{3, 2}, {9, 3}, {15, 2}, {19, 4}} {
+		x, y := start[0], start[1]
+		dirs := hexLayout.Dirs()
+		for range 40 {
+			if x >= 0 && y >= 0 && x < hexTerrainW && y < hexH {
+				g.hexLand[y*hexTerrainW+x] = 1
+			}
+			x, y = hexLayout.Neighbour(x, y, dirs[r.Intn(len(dirs))])
+		}
+	}
+	var frames [64]int
+	for i := range frames {
+		frames[i] = i // frame = mask: the set is complete
+	}
+	g.hexFrame = make([]int, hexTerrainW*hexH)
+	m := autotile.Mapper{Rules: autotile.Edge64(1, frames), Layout: hexLayout}
+	m.Apply(hexTerrainW, hexH, g.hexAt, func(x, y, f int) { g.hexFrame[y*hexTerrainW+x] = f })
+	return nil
+}
+
+func (g *game) hexAt(x, y int) int { return g.hexLand[y*hexTerrainW+x] }
+```
+
 `Apply` computes a frame for every cell and hands it to a setter, which
-is `Tilemap.Set` here, and passes -1 for cells its rules leave empty. The
-water rules get `g.color` and the other two get `g.at`, which is the only
+is `Tilemap.Set` for the square layers and a closure that fills a slice
+for the strip, and passes -1 for cells its rules leave empty. The water
+rules get `g.color` and the other two get `g.at`, which is the only
 difference between the three calls.
 
 ```go
@@ -281,7 +397,10 @@ func (g *game) Update(ctx *bunyip.Context) error {
 }
 ```
 
-## Draw: three tilemaps
+The pointer test uses the square map's bounds, so a click in the strip
+paints nothing.
+
+## Draw: three tilemaps and the strip
 
 The layers are drawn in order, water first, so grass covers water and
 walls cover both. `DrawTilemap` takes a position and a tint; a zero
@@ -300,6 +419,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	if x >= 0 && y >= 0 && x < mapW && y < mapH {
 		gr.FillRect(float32(x*tile), float32(y*tile), tile, tile, gfx.RGBA(255, 255, 255, 60))
 	}
+	g.drawHexes(gr)
 	if g.shot != "" && !g.shotDone && (g.seconds == 0 || ctx.Time >= g.seconds/2) {
 		g.shotDone = true
 		ctx.Screenshot(g.shot)
@@ -308,11 +428,117 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 }
 ```
 
+The strip is not a `Tilemap`, because a tilemap lays its frames out on a
+square lattice and these hexagons interlock. `DrawFrame` draws one frame
+of a sheet at a position instead, and the placement is the drawing half
+of the layout: every second row moves half a tile right, matching
+`HexRowsOdd`, and consecutive rows are `hexRow` apart, three quarters of
+a tile, so the pointed tops and bottoms overlap. A frame of -1, which
+`Apply` writes for a cell the rules leave empty, draws nothing.
+
 ```go
+// drawHexes draws the hexagonal strip. Every second row is shifted half
+// a tile right and the rows overlap by a quarter of a tile, which is how
+// pointy-top hexagons in staggered rows meet.
+func (g *game) drawHexes(gr *gfx.Graphics) {
+	gr.FillRect(0, hexTop, mapW*tile, hexStripH, gfx.RGB(20, 24, 34))
+	for y := range hexH {
+		for x := range hexTerrainW {
+			f := g.hexFrame[y*hexTerrainW+x]
+			if f < 0 {
+				continue
+			}
+			px := float32(x * tile)
+			if y%2 == 1 {
+				px += tile / 2
+			}
+			gr.DrawFrame(g.hexSheet, f, gfx.Sprite{Pos: lin.V2(px, float32(hexTop+y*hexRow))})
+		}
+	}
+}
+
 func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.grassTex.Destroy()
 	g.wallTex.Destroy()
 	g.waterTex.Destroy()
+	g.hexTex.Destroy()
+}
+```
+
+## The hexagon tiles
+
+`makeHexes` draws all 64 tiles into an eight by eight sheet. Each tile is
+a pointy-top hexagon a tile wide, given by six vertices clockwise from
+the top, with vertical left and right sides `hexSideLen` long.
+
+Whether a pixel is inside the hexagon is one test done six times: the
+cross product of an edge with the vector to the pixel is the signed
+distance to that edge's line. The vertices run clockwise on a y-down
+screen, so a positive distance means the pixel is outside, and the
+smallest magnitude among the six says which side the pixel is nearest.
+
+That nearest side is what makes the tile mean something. If the mask bit
+for it is clear, this cell has no neighbour of the same terrain on that
+side, so the pixels within a couple of units of it are drawn in the rim
+colour. Where a neighbour does continue, the side is drawn as plain body
+and the two hexagons read as one region. The mask bits are in the
+layout's own direction order, clockwise from north-east, which is the
+order the vertex loop walks the sides in.
+
+```go
+// makeHexes draws the 64 hexagon tiles: a pointy-top hexagon filled with
+// a checker, with a light rim along each side the mask says has no
+// neighbour of the same terrain. Bit i is the i-th direction the rows
+// layout uses, clockwise from north-east, which is the order the sides
+// are walked here.
+func makeHexes() *image.RGBA {
+	const cols = 8
+	img := image.NewRGBA(image.Rect(0, 0, cols*tile, 64/cols*tile))
+	body := color.RGBA{R: 96, G: 120, B: 168, A: 255}
+	shade := color.RGBA{R: 74, G: 96, B: 140, A: 255}
+	rim := color.RGBA{R: 206, G: 222, B: 244, A: 255}
+	// The hexagon's vertices, clockwise from the top, for a tile-wide
+	// pointy-top hexagon whose left and right sides are vertical.
+	const half, side = tile / 2, hexSideLen
+	verts := [6][2]float64{
+		{half, 0}, {tile, (tile - side) / 2}, {tile, (tile + side) / 2},
+		{half, tile}, {0, (tile + side) / 2}, {0, (tile - side) / 2},
+	}
+	for mask := range 64 {
+		ox, oy := mask%cols*tile, mask/cols*tile
+		for py := range tile {
+			for px := range tile {
+				fx, fy := float64(px)+0.5, float64(py)+0.5
+				inside, nearest, nearD := true, 0, math.Inf(1)
+				for i := range 6 {
+					a, b := verts[i], verts[(i+1)%6]
+					ex, ey := b[0]-a[0], b[1]-a[1]
+					// The vertices run clockwise on a y-down screen, so a
+					// point outside an edge is on its left.
+					d := ((fx-a[0])*ey - (fy-a[1])*ex) / math.Hypot(ex, ey)
+					if d > 0 {
+						inside = false
+						break
+					}
+					if -d < nearD {
+						nearD, nearest = -d, i
+					}
+				}
+				if !inside {
+					continue
+				}
+				c := body
+				if (px/3+py/3)%2 == 0 {
+					c = shade
+				}
+				if nearD < 2.2 && mask&(1<<nearest) == 0 {
+					c = rim
+				}
+				img.SetRGBA(ox+px, oy+py, c)
+			}
+		}
+	}
+	return img
 }
 ```
 
@@ -564,15 +790,16 @@ func makeWalls() *image.RGBA {
 
 ## main
 
-The window is exactly the map, so a cell is 16 pixels on the screen and
-the pointer arithmetic in `Update` needs no camera.
+The window is exactly the map plus the strip below it, so a cell is 16
+pixels on the screen and the pointer arithmetic in `Update` needs no
+camera.
 
 ```go
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write the frame at -seconds/2 to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip autotile", Width: mapW * tile, Height: mapH * tile},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip autotile", Width: mapW * tile, Height: windowH},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "autotile:", err)
@@ -588,6 +815,14 @@ func main() {
 - Paint a single water cell and look at the four corners it rounds; then
   paint one beside it and watch `Cell` in `Update` redo just the
   neighbourhood.
+- Change `hexLayout` to `autotile.HexRowsEven` and watch the strip's
+  terrain change shape without a line of drawing code changing. The
+  drawing in `drawHexes` still shifts the odd rows, so it now disagrees
+  with the layout: fix it by shifting the even rows instead, and see how
+  little else has to move.
+- Give the hexagonal walk a longer run or a different seed in
+  `initHexes` and watch `Edge64` rim only the sides that reach open
+  water.
 - Give the wall rules a `Variant` in `Init` for the fully connected mask
   and draw a cracked block for it in `makeWalls`.
 - Set `OutsideFixed` and `Outside` on a `Mapper` in `Init` and see how

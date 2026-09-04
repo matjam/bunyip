@@ -1,15 +1,16 @@
 ---
 title: Physics 2D
 example: physics2d
-summary: balls, boxes and triangles falling into a pit with a ramp, a kinematic paddle, a trigger zone and a raycast
+summary: balls, boxes and triangles falling into a pit with a ramp, a kinematic paddle, a car on sprung wheel joints, a trigger zone and a raycast
 ---
 
 This program is the 2D half of [phys](../pkg/phys.html). Static walls
 make a pit, a rotated static box makes a ramp, a kinematic paddle sweeps
-back and forth, a circular trigger tints whatever passes through it, and
-two dozen dynamic circles, boxes and triangles fall into the pile. A ray
-is cast from the top left corner to the pointer every update and the
-entity it hits is named.
+back and forth, a car on two sprung wheel joints drives up and down the
+floor, a circular trigger tints whatever passes through it, and two
+dozen dynamic circles, boxes and triangles fall into the pile. A ray is
+cast from the top left corner to the pointer every update and the entity
+it hits is named.
 
 Physics in Bunyip is a set of components on the
 [entity component system](../pkg/ecs.html). A body is `phys.Body2`, a
@@ -43,6 +44,7 @@ It is created once and walked every frame.
 ```go
 // Command physics2d shows the 2D rigid bodies: balls, boxes and a
 // triangle fall into a pit, a kinematic paddle sweeps through them, a
+// car on sprung wheel joints drives back and forth along the floor, a
 // trigger zone tints whatever enters it, and a raycast from the corner
 // to the pointer reports what it hits. Click to drop more shapes at the
 // pointer; R resets; Escape quits.
@@ -85,12 +87,33 @@ type game struct {
 	random  *rng.Rand
 	paddle  ecs.Entity
 	trigger ecs.Entity
+	car     ecs.Entity
+	wheels  [2]ecs.Entity
+	axles   [2]ecs.Entity // the wheel joints, whose motors drive the car
+	forward bool
 	hit     string
 	rayEnd  lin.Vec2
 
 	shotDone bool
 }
+
+// Collision layers: the car's own parts pass through each other and
+// through nothing else.
+const (
+	layerWorld  = 1
+	layerFrame  = 2
+	layerWheels = 4
+)
 ```
+
+The car is five entities: a chassis, two wheels and the two joints
+holding them on. The joints are kept because their motors are what
+drives the car, and a joint is an ordinary entity with a joint
+component, so driving means fetching that component and writing a field.
+
+The three layer constants are a bitmask scheme rather than an
+enumeration: each is a single bit, so a collider's `Mask` can name a set
+of layers. `layerWorld` is everything that is not part of the car.
 
 ## Init: the textures
 
@@ -166,6 +189,9 @@ func (g *game) reset(ctx *bunyip.Context) {
 	g.paddle = w.SpawnWith(gfx.At2(W*0.7, H*0.7), paddle, phys.Collider2{Shape: phys.Box2{HalfW: 90, HalfH: 10}}, look{Color: gfx.RGB(255, 200, 90)})
 	// A trigger zone: overlaps are reported, never resolved.
 	g.trigger = w.SpawnWith(gfx.At2(W*0.5, H*0.3), phys.Collider2{Shape: phys.Circle{Radius: 60}, Trigger: true}, look{Color: gfx.RGBA(120, 200, 255, 60)})
+	// The chassis rides an axle drop above the wheels, which rest on the
+	// floor whose top is 40 below the bottom of the view.
+	g.buildCar(w, lin.V2(140, H-66))
 	for i := range 24 {
 		g.spawn(lin.V2(W*0.3+float32(i%6)*50, 60+float32(i/6)*60))
 	}
@@ -183,6 +209,120 @@ func (g *game) reset(ctx *bunyip.Context) {
 	})
 }
 ```
+
+## The car: two wheel joints as a suspension
+
+`buildCar` is the whole vehicle. A `phys.WheelJoint2` is a wheel on a
+suspension: `A` is the chassis, `B` is the wheel, the wheel spins freely
+about its centre, and the centre is free to slide along `Axis` in the
+chassis frame. That one joint is doing two jobs a game would otherwise
+build from a slider and a hinge.
+
+`AnchorA` is where the wheel sits when the suspension is at rest, given
+in the chassis frame, which is why the parts are spawned at exactly that
+offset: spawning them where the joint wants them means the springs start
+at rest rather than snapping the car into shape on the first step.
+
+The spring is described in physical terms rather than as a stiffness.
+`Frequency: 5` is five hertz, how often the suspension would bounce a
+second if it were undamped, and `DampingRatio: 0.8` is a fraction of
+critical damping, where 1 settles without overshooting. Describing it
+this way means the response does not change when the chassis mass
+changes: an eight-kilogram body and a one-kilogram body on the same
+numbers behave the same.
+
+`MaxMotorTorque: 60000` gives the axles something to push with, but no
+`MotorSpeed` is set here; `drive` sets that every update, which is what
+steers the car.
+
+The layers keep the car from fighting itself. The chassis is on
+`layerFrame` and the wheels on `layerWheels`, and both mask only
+`layerWorld`, so neither collides with the other or with the other
+wheel: the joint holds them together, and a contact between them would
+only jitter. Everything else in the scene leaves `Layers` zero, which
+collides with everything.
+
+```go
+// buildCar puts a chassis on two wheels held by WheelJoint2 springs,
+// with the axle motors driving the wheels. The wheel's centre is where
+// the joint's AnchorA in the chassis frame points, so the suspension
+// rests at the height the parts were spawned at.
+func (g *game) buildCar(w *ecs.World, at lin.Vec2) {
+	const (
+		halfW  = 34.0 // chassis half width
+		halfH  = 10.0 // chassis half height
+		radius = 14.0 // wheel radius
+		axleX  = 22.0 // wheel offset from the chassis centre
+		axleY  = 12.0 // wheel drop below the chassis centre
+	)
+	frame := phys.Dynamic2(8)
+	frame.Friction = 0.6
+	g.car = w.SpawnWith(gfx.Transform2{Position: at}, frame,
+		phys.Collider2{Shape: phys.Box2{HalfW: halfW, HalfH: halfH},
+			Layers: phys.Layers{Layer: layerFrame, Mask: layerWorld}},
+		look{Color: gfx.RGB(230, 110, 110)})
+	for i, dx := range [2]float32{-axleX, axleX} {
+		wheel := phys.Dynamic2(1)
+		wheel.Friction = 0.9
+		g.wheels[i] = w.SpawnWith(gfx.Transform2{Position: at.Add(lin.V2(dx, axleY))}, wheel,
+			phys.Collider2{Shape: phys.Circle{Radius: radius},
+				Layers: phys.Layers{Layer: layerWheels, Mask: layerWorld}},
+			look{Color: gfx.RGB(24, 26, 34)})
+		g.axles[i] = w.SpawnWith(phys.WheelJoint2{A: g.car, B: g.wheels[i],
+			AnchorA: lin.V2(dx, axleY), Axis: lin.V2(0, 1),
+			Frequency: 5, DampingRatio: 0.8, MaxMotorTorque: 60000})
+	}
+	g.forward = true
+}
+```
+
+The wheels' high friction, 0.9 against the chassis's 0.6, is what turns
+motor torque into motion. A motor that spins a frictionless wheel moves
+nothing; the car pulls itself along the floor through the wheel
+contacts, exactly as a real one does, so a slippery floor would leave it
+spinning its wheels in place.
+
+`drive` reverses at either end and writes `MotorSpeed` on both axles.
+Nothing here applies a force to the chassis: the motors turn the wheels,
+the wheels grip the floor, and the car follows. The comment about the
+sign is worth reading twice, because 2D view units put Y downwards,
+which flips the sense of a positive angle: a wheel turning the way its
+angle grows rolls to the right, not the left.
+
+```go
+// drive turns the wheels, reversing when the car nears a wall. Screen
+// coordinates grow downward, so a wheel turning the way the angle grows
+// rolls to the right.
+func (g *game) drive(ctx *bunyip.Context) {
+	t, ok := ecs.Get[gfx.Transform2](g.world, g.car)
+	if !ok {
+		return
+	}
+	if t.Position.X > ctx.Width-120 {
+		g.forward = false
+	} else if t.Position.X < 120 {
+		g.forward = true
+	}
+	speed := float32(16)
+	if !g.forward {
+		speed = -16
+	}
+	for _, e := range g.axles {
+		if j, ok := ecs.Get[phys.WheelJoint2](g.world, e); ok {
+			j.MotorSpeed = speed
+		}
+	}
+}
+```
+
+`ecs.Get` returns a pointer into the component's table, so writing
+`j.MotorSpeed` changes the joint the solver will read this step. The
+`ok` on the transform lookup is not defensive noise: `reset` builds a
+new world, so an entity handle from the old one stops resolving, and
+the check is what makes the order of `reset` and `drive` in an update
+not matter.
+
+## Dropping shapes
 
 `spawn` drops one random shape. `phys.Dynamic2(1)` is a body of mass one;
 `Restitution` is bounciness from zero to one and `Friction` resists
@@ -232,6 +372,15 @@ world's copy. A kinematic body ignores forces, so a velocity written here
 holds until it is written again, and bodies resting on the paddle are
 carried along by the contact.
 
+The paddle and the car are the two ways to move something, side by side.
+The paddle is told where to go and nothing can argue with it; the car is
+given torque at its wheels and has to find traction. A kinematic body
+suits a lift or a moving platform, whose path the game decides; a driven
+body suits anything that should be stopped by a wall it drives into.
+
+Both are set before `world.Update`, because the step reads what is in
+the components at the moment it runs.
+
 `g.world.Update(ctx.Delta)` runs the registered systems in order, which
 is where the simulation actually steps.
 
@@ -262,6 +411,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	if b, ok := ecs.Get[phys.Body2](g.world, g.paddle); ok {
 		b.Vel = lin.V2(220*float32(math.Sin(ctx.Time*0.8)), 0)
 	}
+	g.drive(ctx)
 	g.world.Update(ctx.Delta)
 	// A raycast from the corner to the pointer.
 	x, y := in.Mouse()
@@ -291,6 +441,12 @@ Triangles are drawn as three lines, rotating each point by the
 transform's own angle, because there is no filled polygon call in the 2D
 API.
 
+The wheels get a second pass afterwards, drawing a diameter through each
+one. A disc drawn from a texture looks identical however fast it turns,
+so without the spoke there is nothing on screen to show that the motors
+are doing anything; with it, a stopped car and a car spinning its wheels
+against a wall look different.
+
 ```go
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
@@ -315,6 +471,17 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			}
 		}
 	})
+	// A spoke on each wheel, so the drive is visible.
+	for _, e := range g.wheels {
+		t, ok := ecs.Get[gfx.Transform2](g.world, e)
+		c, ok2 := ecs.Get[phys.Collider2](g.world, e)
+		if !ok || !ok2 {
+			continue
+		}
+		r := c.Shape.(phys.Circle).Radius
+		dir := lin.V2(float32(math.Cos(float64(t.Rotation))), float32(math.Sin(float64(t.Rotation))))
+		g.segment(gr, t.Position.Sub(dir.Mul(r)), t.Position.Add(dir.Mul(r)), 3, gfx.RGB(200, 200, 215))
+	}
 	g.segment(gr, lin.V2(40, 40), g.rayEnd, 2, gfx.RGBA(255, 255, 120, 200))
 	gr.DrawText(g.font, g.hit+"; click to drop shapes, R resets", 48, 30, gfx.RGB(230, 230, 240))
 	gr.DrawText(g.font, fmt.Sprintf("%d bodies", ecs.Count[phys.Body2](g.world)), 48, 52, gfx.RGB(170, 170, 190))
@@ -383,5 +550,15 @@ func main() {
   `reset`, and see the overlap resolved instead of reported.
 - Give the paddle a vertical velocity as well in `Update` and watch
   bodies ride it.
+- Drop `Frequency` in `buildCar` to 1 and watch the car wallow, then
+  raise it to 20 for a suspension that barely gives. Setting it to 0
+  leaves the axis free, so the chassis falls onto its own wheels.
+- Set `DampingRatio` to 0.05 and drive the car over the debris; the
+  bouncing takes a long time to die away.
+- Cut `MaxMotorTorque` in `buildCar` to 600 and watch the car struggle
+  up the ramp, or set the wheels' `Friction` to 0.05 and watch them spin
+  without moving it.
+- Give the car's chassis and wheels the same layer in `buildCar` and see
+  what a joint holding two colliding bodies together does.
 - Cast the ray from the pointer in a direction in `Update` rather than
   towards it, and draw the surface normal the hit reports.

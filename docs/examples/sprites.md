@@ -1,19 +1,21 @@
 ---
 title: Sprites
 example: sprites
-summary: a few hundred textured sprites bouncing over a grid, with fullscreen, cursor capture and gamepad input
+summary: a few hundred textured sprites bouncing over a grid, and a lit brick floor where a circling lamp throws shadows from three crates
 ---
 
-This is the smallest complete game in the repository. It generates a
-texture at start-up, gives three hundred sprites a position, a velocity,
-a tint and a spin, moves them in `Update` and draws them in `Draw`. The
-whole program is the four methods of the [Game](../pkg/bunyip.html#Game)
-interface plus one image helper, so it is the shortest path from an
-empty file to something moving on screen.
+This is the smallest complete game in the repository, with one extra
+panel bolted on. It generates a texture at start-up, gives three hundred
+sprites a position, a velocity, a tint and a spin, moves them in `Update`
+and draws them in `Draw`. In the bottom-right corner it also draws a lit
+room: a tiled brick floor with a normal map, a lamp circling above it, a
+fixed blue light in the corner, and three crates registered as shadow
+casters so the lamp throws their shadows across the bricks.
 
 It exercises 2D drawing from [gfx](../pkg/gfx.html): `NewTexture`,
-`Draw` with a `Sprite`, and `FillRect` for the checkered background. It
-also shows the parts of [input](../pkg/input.html) and
+`Draw` with a `Sprite`, `FillRect` for the checkered background, and
+`SetLights2D`, `AddOccluder2D` and `DrawLit` for the lit panel. It also
+shows the parts of [input](../pkg/input.html) and
 [bunyip](../pkg/bunyip.html) a game needs early: keyboard edges, the
 mouse position, the mouse delta while the cursor is captured, a gamepad,
 fullscreen, and `Screenshot`. The guides for this material are
@@ -39,9 +41,11 @@ origin at the top-left corner and Y increasing downwards. `tint` is a
 `gfx.Color` in linear space, and `spin` is in radians per second,
 because every angle in the engine is radians.
 
-`game` holds the flags parsed in `main` plus the texture and the
-sprites. `shotTaken` exists so the screenshot is written once rather
-than on every update after the halfway mark.
+`game` holds the flags parsed in `main` plus the textures and the
+sprites. There are three textures: the disc every sprite draws, the
+brick floor's colour, and the floor's normal map. `shotTaken` exists so
+the screenshot is written once rather than on every update after the
+halfway mark.
 
 ```go
 type ball struct {
@@ -56,12 +60,41 @@ type game struct {
 	fullscreen bool
 	capture    bool
 	tex        *gfx.Texture
+	floor      *gfx.Texture
+	floorNorm  *gfx.Texture
 	balls      []ball
 	shotTaken  bool
 }
 ```
 
-## Init: the texture and the sprites
+## The lit room
+
+The room is fixed geometry, so it is constants rather than state. `brick`
+is the floor texture's size in pixels, and the floor is drawn one sprite
+wide with UVs that run past 1, so the 64-pixel texture tiles across the
+340 by 260 room instead of stretching over it.
+
+`crates` are the shadow casters, each `{x, y, w, h}` in view units. The
+same three rectangles are drawn as boxes and handed to `AddOccluder2D`
+as polygons, so what blocks the light is exactly what is on screen.
+
+```go
+// The lit panel: a floor a few bricks across with three crates on it.
+const (
+	roomX, roomY = 600, 320
+	roomW, roomH = 340, 260
+	brick        = 64 // the floor texture's size, tiled over the room
+)
+
+// crates are the shadow casters, in view units.
+var crates = [][4]float32{
+	{roomX + 90, roomY + 70, 46, 46},
+	{roomX + 200, roomY + 150, 60, 34},
+	{roomX + 40, roomY + 180, 34, 50},
+}
+```
+
+## Init: the textures and the sprites
 
 `Init` runs once with a live context, which is where GPU resources are
 created. `NewTexture` takes any `image.Image` and a `TextureOptions`
@@ -69,6 +102,13 @@ whose zero value is nearest-neighbour sampling with mipmaps; `Linear:
 true` asks for smooth sampling, which suits a round disc that is
 rotated. Translucent texels are premultiplied in linear light during
 upload, so the anti-aliased edge of the disc composites correctly.
+
+The floor takes two more textures from `brickImages`. Both set `Repeat:
+true`, which is what lets the sprite's UVs run past 1 and tile. The
+normal map also sets `Data: true`: a normal map is not colour, so it
+must not go through the sRGB path that premultiplies and encodes a
+colour texture. `Data` uploads the bytes exactly as they were painted,
+which is what `DrawLit` expects to decode as a direction.
 
 The sprites are seeded from a fixed `rand.NewPCG(1, 2)`, so every run
 looks the same and a screenshot can be compared between builds.
@@ -92,6 +132,15 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.tex, err = ctx.Gfx.NewTexture(discImage(48), gfx.TextureOptions{Linear: true}); err != nil {
 		return err
 	}
+	colour, normal := brickImages(brick)
+	if g.floor, err = ctx.Gfx.NewTexture(colour, gfx.TextureOptions{Linear: true, Repeat: true}); err != nil {
+		return err
+	}
+	// A normal map is not colour, so it uploads as data: the shader wants
+	// the bytes as they were painted.
+	if g.floorNorm, err = ctx.Gfx.NewTexture(normal, gfx.TextureOptions{Linear: true, Repeat: true, Data: true}); err != nil {
+		return err
+	}
 	rng := rand.New(rand.NewPCG(1, 2))
 	for range 300 {
 		g.balls = append(g.balls, ball{
@@ -104,11 +153,15 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) { g.tex.Destroy() }
+func (g *game) Shutdown(ctx *bunyip.Context) {
+	g.tex.Destroy()
+	g.floor.Destroy()
+	g.floorNorm.Destroy()
+}
 ```
 
-`Shutdown` destroys the texture. Every GPU resource has `Destroy`, and
-it must be called from the same goroutine that created the resource,
+`Shutdown` destroys all three textures. Every GPU resource has `Destroy`,
+and it must be called from the same goroutine that created the resource,
 which for a game means from one of the `Game` methods.
 
 ## Update: input and motion
@@ -177,10 +230,10 @@ the elements are updated in place.
 
 `Draw` runs once per frame and only queues work. Everything in one layer
 is drawn in call order, so the background grid comes first, then the
-mouse marker, then the sprites. Nothing is submitted until the frame
-ends, and the 2D calls merge into as few draws as their texture, shader,
-blend and clip allow, which is why a few hundred sprites of one texture
-cost little.
+mouse marker, then the sprites, then the lit room. Nothing is submitted
+until the frame ends, and the 2D calls merge into as few draws as their
+texture, shader, blend and clip allow, which is why a few hundred
+sprites of one texture cost little.
 
 `Sprite` is a struct of options whose zero value is a sensible sprite:
 `Size` defaults to the texture size, `Color` defaults to white and
@@ -206,6 +259,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			Color: b.tint, Rotation: b.spin * float32(ctx.Time),
 		})
 	}
+	g.drawLitRoom(ctx)
 	return nil
 }
 ```
@@ -213,6 +267,92 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 Reading the mouse in `Draw` is safe: input edges are latched for the
 whole frame while `Draw` runs, so an interface built here sees every
 press even on a frame that ran no update.
+
+## The lit room: lights, occluders and shadows
+
+`drawLitRoom` is the whole 2D lighting feature in thirty lines. Three
+calls do the work.
+
+`SetLayer(10)` puts everything that follows above the bouncing sprites,
+and the last line puts the layer back to 0 so the next frame starts
+where it expects to. Layers order draws across calls; within one layer
+the order is call order.
+
+`SetLights2D` sets the ambient colour and up to eight point lights for
+the frame. `Light2D`'s zero values are defaults: `Height` 40, `Radius`
+300, `Color` white. `Height` is how far above the sprite plane the light
+sits, which decides how steeply it rakes across the floor's normal map.
+The lamp's position is a slow Lissajous figure of `ctx.Time`, so it
+drifts over the crates rather than orbiting them exactly; the blue light
+in the corner never moves.
+
+`Shadows: true` on the lamp is what makes the crates block it. The blue
+light leaves `Shadows` unset, so it lights the floor flatly, and the
+difference between the two is visible in the same frame: the warm light
+has hard-edged wedges behind the crates and the blue one does not.
+`Softness` is the width of the shadow's soft edge in view units at the
+shadowed point, 8 by default; 5 here gives a slightly crisper edge.
+
+`AddOccluder2D` takes a closed polygon in the same units as sprite
+positions. Each crate contributes its four corners, clockwise. Two points
+would make a single wall segment instead. Lights and occluders are both
+cleared at the start of every frame, so they are set every frame like
+the drawing itself, and every `DrawLit` sprite in the frame sees the same
+set: it does not matter that the occluders are added before the floor is
+drawn.
+
+Under the hood each shadowed light gets a polar shadow map built on the
+CPU: 512 directions around the light, each holding the distance to the
+nearest occluder edge, uploaded as one row of a small texture that the
+lit shader reads along the direction from the light to the fragment. The
+cost is the occluder edges times the shadowed lights, and only edges
+inside a light's radius are visited, so a few hundred edges are free. Add
+the walls near the player rather than the whole level.
+
+`DrawLit` draws the floor lit by those lights through the normal map.
+`UV1: lin.V2(roomW/brick, roomH/brick)` sends the UVs past 1, which the
+`Repeat: true` textures tile rather than clamp, so the room is a little
+over five bricks across and four down.
+
+```go
+// drawLitRoom draws the lit panel: the lamp circles the room, the crates
+// block it, and the floor picks up the light through its normal map. The
+// lights and the occluders are set every frame, like the drawing itself.
+func (g *game) drawLitRoom(ctx *bunyip.Context) {
+	gr := ctx.Gfx
+	gr.SetLayer(10) // over the bouncing sprites
+	lamp := lin.V2(
+		roomX+roomW/2+90*float32(math.Cos(ctx.Time*0.7)),
+		roomY+roomH/2+55*float32(math.Sin(ctx.Time*0.9)),
+	)
+	gr.SetLights2D(gfx.RGB(26, 26, 34),
+		gfx.Light2D{Pos: lamp, Height: 26, Radius: 300, Color: gfx.RGB(255, 198, 130), Shadows: true, Softness: 5},
+		gfx.Light2D{Pos: lin.V2(roomX+24, roomY+24), Height: 40, Radius: 190, Color: gfx.RGB(90, 130, 255)},
+	)
+	for _, c := range crates {
+		gr.AddOccluder2D(
+			lin.V2(c[0], c[1]), lin.V2(c[0]+c[2], c[1]),
+			lin.V2(c[0]+c[2], c[1]+c[3]), lin.V2(c[0], c[1]+c[3]),
+		)
+	}
+	gr.FillRect(roomX-8, roomY-8, roomW+16, roomH+16, gfx.RGB(10, 10, 14))
+	gr.DrawLit(g.floor, g.floorNorm, gfx.Sprite{
+		Pos: lin.V2(roomX, roomY), Size: lin.V2(roomW, roomH),
+		UV1: lin.V2(roomW/brick, roomH/brick), // the floor tiles, so the UVs run past 1
+	})
+	for _, c := range crates {
+		gr.FillRect(c[0], c[1], c[2], c[3], gfx.RGB(96, 68, 44))
+		gr.StrokeRect(c[0], c[1], c[2], c[3], 2, gfx.RGB(48, 34, 22))
+	}
+	gr.FillCircle(lamp.X, lamp.Y, 4, gfx.RGB(255, 236, 190))
+	gr.SetLayer(0)
+}
+```
+
+The crates themselves are plain `FillRect` calls. Nothing about being an
+occluder draws anything; the polygon handed to `AddOccluder2D` and the
+rectangle drawn on screen are two separate statements that happen to
+agree.
 
 ## The texture image
 
@@ -239,6 +379,79 @@ func discImage(size int) image.Image {
 		}
 	}
 	return img
+}
+```
+
+## The brick floor and its normal map
+
+`brickImages` returns two images the same size: what the floor looks like
+and which way it faces.
+
+Both come from one `height` function, which is the surface at a point:
+flat across a brick, dropping into the mortar around it. It lays two
+bricks across the tile and four courses down, offsets every other course
+by half a brick, and uses `smoothstep` so the drop into the mortar is a
+ramp rather than a step. Because the pattern is computed modulo the tile
+size, the two images tile seamlessly, which is what lets the room repeat
+them.
+
+The colour image is that height shaded: brick where the surface is high,
+grey mortar where it is low.
+
+The normal map is the slope of the same function, by central
+differences: the surface normal is `(-dh/dx, -dh/dy, 1)` normalised, and
+each component is written biased into a byte, so a flat surface is the
+familiar `(128, 128, 255)`. That is tangent space, which is what
+`DrawLit` decodes. The `*2` on the derivatives exaggerates the slope, so
+the mortar catches the lamp more strongly than a literal height field
+would.
+
+```go
+// brickImages draws the floor: a colour texture of bricks with mortar
+// between them, and the matching tangent-space normal map, where the
+// mortar dips and the bricks are domed. Both tile, so the room repeats
+// them rather than stretching one across it.
+func brickImages(size int) (*image.RGBA, *image.RGBA) {
+	colour := image.NewRGBA(image.Rect(0, 0, size, size))
+	normal := image.NewRGBA(image.Rect(0, 0, size, size))
+	// height is the surface at a point: flat across a brick, dropping
+	// into the mortar around it.
+	height := func(x, y int) float64 {
+		bx := float64((x%size+size)%size) / float64(size) * 2 // two bricks across
+		by := float64((y%size+size)%size) / float64(size) * 4 // four courses down
+		row := math.Floor(by)
+		bx += 0.5 * math.Mod(row, 2) // every other course is offset half a brick
+		u := math.Abs(math.Mod(bx, 1)-0.5) * 2
+		v := math.Abs(math.Mod(by, 1)-0.5) * 2
+		edge := math.Max(u, v)
+		return 1 - smoothstep(0.7, 1, edge)
+	}
+	for y := range size {
+		for x := range size {
+			h := height(x, y)
+			// The normal comes from the slope, by central differences.
+			dx := height(x+1, y) - height(x-1, y)
+			dy := height(x, y+1) - height(x, y-1)
+			nx, ny, nz := -dx*2, -dy*2, 1.0
+			l := math.Sqrt(nx*nx + ny*ny + nz*nz)
+			normal.SetRGBA(x, y, color.RGBA{
+				R: uint8((nx/l*0.5 + 0.5) * 255), G: uint8((ny/l*0.5 + 0.5) * 255),
+				B: uint8((nz/l*0.5 + 0.5) * 255), A: 255,
+			})
+			shade := 0.55 + 0.45*h
+			tint := color.RGBA{R: uint8(190 * shade), G: uint8(150 * shade), B: uint8(130 * shade), A: 255}
+			if h < 0.5 {
+				tint = color.RGBA{R: uint8(120 * shade), G: uint8(116 * shade), B: uint8(110 * shade), A: 255}
+			}
+			colour.SetRGBA(x, y, tint)
+		}
+	}
+	return colour, normal
+}
+
+func smoothstep(a, b, x float64) float64 {
+	t := math.Min(math.Max((x-a)/(b-a), 0), 1)
+	return t * t * (3 - 2*t)
 }
 ```
 
@@ -270,11 +483,19 @@ func main() {
 
 - Raise the sprite count in `Init` from 300 to 30000 and press F3 to
   watch the frame time and the draw count; they stay one draw call.
+- Turn `Shadows` off on the lamp in `drawLitRoom` and back on, and watch
+  what the crates stop doing. Then set `Shadows: true` on the blue light
+  as well and see two sets of shadows cross.
+- Change `Softness` on the lamp from 5 to 40 and back to 0, which is the
+  8-unit default, and watch the shadow edges spread.
+- Raise the lamp's `Height` from 26 to 200. The floor flattens out: the
+  light arrives nearly straight down, so the normal map has almost
+  nothing to catch.
+- Add a fourth crate to `crates`. Nothing else changes: the same slice
+  is drawn and registered as an occluder.
 - Give `ball` a scale field, set it in `Init` and use it for `Size` in
   `Draw`, so the sprites vary in size as well as colour.
 - Add gravity in `Update` by adding to `b.vel.Y` each step and losing
   energy on the bounce.
-- Change `discImage` to draw a square with a soft edge, and see the
-  difference `TextureOptions{Linear: true}` makes under rotation.
 - Make the sprites follow the pointer: read `ctx.Input.Mouse()` in
   `Update` and steer each velocity towards it.

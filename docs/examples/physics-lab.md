@@ -27,7 +27,9 @@ go run ./examples/physics-lab -seconds 3 -shot out.png
 ```
 
 `-ragdoll=false` leaves the ragdoll out. Drag to orbit, the scroll wheel
-zooms, R drops the bodies again, Escape quits.
+zooms, R drops the bodies again, Escape quits. The backquote key opens
+the debug console and F4 its panels, which is where the world can be
+inspected, paused and poked at while it runs.
 
 ## The terrain
 
@@ -151,6 +153,7 @@ type game struct {
 	ctrl      phys.CharacterController3
 	heroDir   float32
 	heroTimer float64
+	torque    float32
 	contacts  []phys.Collision3
 	yaw       float32
 	pitch     float32
@@ -188,6 +191,18 @@ keeps a chain of touching boxes from fighting itself.
 The paddle wheel is one body with a `phys.Compound3` shape of two
 crossed boxes, on a hinge whose `A` is the world and which has
 `MotorSpeed` and `MaxMotorTorque` set, so the joint drives it.
+
+The last four calls wire the scene into the
+[debug console](../guides/console.html), which `main` turns on with
+`Config.Console`. `Console.Attach("lab", g.world)` hands it the world:
+from then on the console's entity panel lists the bodies with their
+components, and its physics panel shows the solver's settings, the
+contact and island counts, and a pause. `Console.Float` binds
+`wheel.torque` to the field the next section reads, so the motor's
+strength can be changed while the wheel is turning, and
+`Console.Register` adds a `drop` command that does what R does. Every
+console method is safe on a nil console, so none of this needs guarding
+when `Config.Console` is off.
 
 ```go
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -258,6 +273,16 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	w.SpawnWith(phys.HingeJoint3{A: ecs.None, AnchorA: wheelAt, B: g.wheel, AxisA: lin.V3(0, 0, 1), AxisB: lin.V3(0, 0, 1), MotorSpeed: 1.5, MaxMotorTorque: 400})
 	w.AddSystem("physics", phys.System3)
 	g.drop()
+	// The console gets the world, so its entity and physics panels can
+	// list the bodies, pause the simulation and edit the solver
+	// settings, plus a variable and a command of the lab's own.
+	g.torque = 400
+	ctx.Console.Attach("lab", g.world)
+	ctx.Console.Float("wheel.torque", &g.torque, "the paddle wheel's motor torque")
+	ctx.Console.Register("drop", "drop: throw the debris in again", func([]string) (string, error) {
+		g.drop()
+		return "dropped", nil
+	})
 	return nil
 }
 ```
@@ -284,6 +309,14 @@ octahedron hull, the wedge hull, a box and a sphere. The spheres get
 `CCD = true`, continuous collision detection, because a small fast
 sphere is the shape most likely to pass through the terrain in one step.
 Each gets a random spin through `AngVel` and a random orientation.
+
+`step` is the only place the world is advanced, and it exists so there
+is one. Before each step it copies `g.torque` into the wheel's hinge,
+which is what makes the console variable take effect on the running
+simulation: a joint is a component like any other, so changing it is a
+matter of finding it and writing the field. `Update` calls `step` on the
+normal path and again on the path where the console is open, so the
+scene keeps simulating while a command is being typed.
 
 ```go
 // drop respawns the tumbling bodies above the terrain, and a ragdoll
@@ -329,6 +362,17 @@ func (g *game) drop() {
 	}
 }
 
+// step advances the simulation, giving the paddle wheel's motor
+// whatever torque the console's wheel.torque variable holds.
+func (g *game) step(dt float64) {
+	ecs.Each(g.world, func(_ ecs.Entity, j *phys.HingeJoint3) {
+		if j.B == g.wheel {
+			j.MaxMotorTorque = g.torque
+		}
+	})
+	g.world.Update(dt)
+}
+
 func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.terrain.Destroy()
 	g.cube.Destroy()
@@ -358,6 +402,12 @@ runs afterwards.
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
 	in := ctx.Input
+	if ctx.Console.Open() {
+		// The console has the keyboard and the pointer while it is open;
+		// the simulation keeps running behind it.
+		g.step(ctx.Delta)
+		return nil
+	}
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -389,7 +439,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	}
 	step := ctx.Profile("physics")
 	g.ctrl.Move(g.world, g.hero, lin.V3(2.5*g.heroDir, -6, 0), float32(ctx.Delta))
-	g.world.Update(ctx.Delta)
+	g.step(ctx.Delta)
 	step.End()
 	g.contacts = append(g.contacts[:0], ecs.Events[phys.Collision3](g.world)...)
 	return nil
@@ -401,59 +451,21 @@ the panel reads back as milliseconds per frame.
 
 ## Outlining a shape
 
-`wireShape` draws any collider as lines. It handles each shape type in a
-type switch: a sphere as a wire sphere, a box as a wire cube from a
-translation, rotation and scale, a capsule as two spheres plus four
-connecting lines, and a hull as a line between every pair of points,
-which is dense but shows the volume without a convex hull algorithm.
+The lab used to carry its own `wireShape` helper, a type switch that
+drew each collider as lines. That work now lives in the physics package
+as `phys.DrawShape3`, so the example calls it instead of keeping a copy:
+a sphere is drawn as three rings, a box as its edges, a capsule as two
+spheres and the lines joining them, a hull as an edge between every pair
+of its points, and a compound recurses into its parts, composing each
+part's offset and rotation with the body's. A mesh shape is skipped,
+since a terrain mesh is drawn as a mesh already.
 
-A compound recurses into its parts, composing each part's offset and
-rotation with the body's. Both places substitute the identity when a
-quaternion is the zero value, since a zero quaternion is not a rotation.
-
-```go
-// wireShape outlines a collider in place.
-func wireShape(gr *gfx.Graphics, s phys.Shape3, t gfx.Transform, c gfx.Color) {
-	rot := t.Rotation
-	if rot == (lin.Quat{}) {
-		rot = lin.QuatIdentity()
-	}
-	switch sh := s.(type) {
-	case phys.Sphere:
-		gr.DrawWireSphere(t.Position, sh.Radius, c)
-	case phys.Box3:
-		gr.DrawWireCube(lin.TRS(t.Position, rot, sh.Half.Mul(2)), c)
-	case phys.Capsule:
-		up := rot.Rotate(lin.V3(0, sh.HalfHeight, 0))
-		a, b := t.Position.Sub(up), t.Position.Add(up)
-		gr.DrawWireSphere(a, sh.Radius, c)
-		gr.DrawWireSphere(b, sh.Radius, c)
-		for _, d := range []lin.Vec3{rot.Rotate(lin.V3(sh.Radius, 0, 0)), rot.Rotate(lin.V3(0, 0, sh.Radius))} {
-			gr.DrawLine3D(a.Add(d), b.Add(d), c)
-			gr.DrawLine3D(a.Sub(d), b.Sub(d), c)
-		}
-	case phys.ConvexHull:
-		// Every pair of points: a dense outline that shows the volume.
-		pts := make([]lin.Vec3, len(sh.Points))
-		for i, p := range sh.Points {
-			pts[i] = t.Position.Add(rot.Rotate(p))
-		}
-		for i := range pts {
-			for j := i + 1; j < len(pts); j++ {
-				gr.DrawLine3D(pts[i], pts[j], c)
-			}
-		}
-	case phys.Compound3:
-		for _, p := range sh.Parts {
-			pt := gfx.Transform{Position: t.Position.Add(rot.Rotate(p.Offset)), Rotation: rot.Mul(p.Rotation)}
-			if p.Rotation == (lin.Quat{}) {
-				pt.Rotation = rot
-			}
-			wireShape(gr, p.Shape, pt, c)
-		}
-	}
-}
-```
+`phys.DrawColliders3` is the whole-world version of the same thing: it
+walks every collider in a world and shades each one by whether its body
+is static, awake or asleep, then draws the contact normals. The lab does
+not use it, because it colours the debris by its own palette and by
+whether the body is touching anything this frame, which the next section
+covers.
 
 ## Draw: solids, wires and the ragdoll
 
@@ -509,7 +521,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				}
 			}
 		}
-		wireShape(gr, c.Shape, *t, col)
+		phys.DrawShape3(gr, c.Shape, *t, col)
 	})
 	// The ragdoll's capsules as a cylinder with a sphere at each end.
 	if g.doll != nil {
@@ -565,7 +577,7 @@ normal.
 		}
 		if sh, ok := c.Shape.(phys.Box3); ok {
 			gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(120, 120, 130), Roughness: 0.9}, lin.TRS(t.Position, t.Rotation, sh.Half.Mul(2)))
-			wireShape(gr, c.Shape, *t, gfx.RGB(90, 200, 255))
+			phys.DrawShape3(gr, c.Shape, *t, gfx.RGB(90, 200, 255))
 		}
 	})
 	// Joint anchors as short lines between the bodies they join.
@@ -590,7 +602,7 @@ normal.
 		if !g.ctrl.Grounded {
 			col = gfx.RGB(255, 80, 80)
 		}
-		wireShape(gr, phys.Capsule{Radius: g.ctrl.Radius, HalfHeight: g.ctrl.HalfHeight}, *ht, col)
+		phys.DrawShape3(gr, phys.Capsule{Radius: g.ctrl.Radius, HalfHeight: g.ctrl.HalfHeight}, *ht, col)
 		if g.ctrl.Grounded {
 			foot := ht.Position.Sub(lin.V3(0, g.ctrl.HalfHeight+g.ctrl.Radius, 0))
 			gr.DrawLine3D(foot, foot.Add(g.ctrl.GroundNormal), gfx.RGB(255, 255, 255))
@@ -615,7 +627,7 @@ frame it is pressed.
 ```go
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("physics lab", ui.Rect{X: 12, Y: ctx.Height - 150, W: 380, H: 138}, func() {
+		u.Panel("physics lab", ui.Rect{X: 12, Y: ctx.Height - 186, W: 380, H: 174}, func() {
 			ms := 0.0
 			if len(ctx.Stats.Scopes) > 0 {
 				ms = ctx.Stats.Scopes[0].MS
@@ -634,9 +646,11 @@ frame it is pressed.
 			if u.Button("Drop again (R)") {
 				g.drop()
 			}
+			u.Label("` opens the console, F4 the debug panels")
 		})
 	})
-	return nil
+	// The console draws last, so it sits above the lab's own interface.
+	return ctx.Console.Draw(ctx)
 }
 ```
 
@@ -648,7 +662,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	ragdoll := flag.Bool("ragdoll", true, "drop a ragdoll with the debris")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true, Console: true},
 		&game{seconds: *seconds, shot: *shot, ragdoll: *ragdoll})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "physics-lab:", err)
@@ -666,6 +680,10 @@ func main() {
   turns grey, and what that does to a body a paddle is about to hit.
 - Give the hinge in `Init` `MotorSpeed: -4` and a larger
   `MaxMotorTorque`, and watch the wheel throw the debris.
+- Open the console with the backquote key and type `wheel.torque 40`,
+  then `wheel.torque 4000`, without restarting. Then run `drop`, and
+  open the panels with F4 to watch the body count and the contacts while
+  the debris settles.
 - Add a `phys.BallJoint3` in `Init` between two of the dropped bodies;
   `drawJoint` in `Draw` already handles that type.
 - Steer the character in `Update` from the keyboard instead of the
