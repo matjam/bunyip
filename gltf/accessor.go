@@ -18,7 +18,9 @@ var typeCounts = map[string]int{"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "M
 const maxAccessorFloats = 64 << 20
 
 // floats reads an accessor as float32 components, converting integer
-// types (normalised or not) the way the specification says.
+// types (normalised or not) the way the specification says. A sparse
+// accessor's replacements are applied over its base data, or over zeros
+// when it has no buffer view.
 func (l *loader) floats(index int) ([]float32, int, error) {
 	if index < 0 || index >= len(l.j.Accessors) {
 		return nil, 0, fmt.Errorf("accessor %d out of range", index)
@@ -32,34 +34,105 @@ func (l *loader) floats(index int) ([]float32, int, error) {
 	if a.Count < 0 || a.ByteOffset < 0 || a.Count > 1<<28 {
 		return nil, 0, fmt.Errorf("accessor %d: bad count %d or offset %d", index, a.Count, a.ByteOffset)
 	}
+	var out []float32
 	if a.BufferView == nil {
 		// All zeros, per spec; the count is bounded so a file cannot ask
 		// for gigabytes of nothing.
 		if a.Count*n > maxAccessorFloats {
 			return nil, 0, fmt.Errorf("accessor %d: %d values without a buffer view", index, a.Count*n)
 		}
-		return make([]float32, a.Count*n), n, nil
-	}
-	data, stride, err := l.bufferView(*a.BufferView)
-	if err != nil {
-		return nil, 0, fmt.Errorf("accessor %d: %w", index, err)
-	}
-	if stride == 0 {
-		stride = n * size
-	}
-	// The overrun check runs before the output is allocated, so the
-	// buffer bounds the memory a file can claim.
-	if a.ByteOffset+(a.Count-1)*stride+n*size > len(data) && a.Count > 0 {
-		return nil, 0, fmt.Errorf("accessor %d overruns its buffer view", index)
-	}
-	out := make([]float32, a.Count*n)
-	for i := range a.Count {
-		base := a.ByteOffset + i*stride
-		for c := range n {
-			out[i*n+c] = readComponent(data[base+c*size:], a.ComponentType, a.Normalized)
+		out = make([]float32, a.Count*n)
+	} else {
+		data, stride, err := l.bufferView(*a.BufferView)
+		if err != nil {
+			return nil, 0, fmt.Errorf("accessor %d: %w", index, err)
+		}
+		if stride == 0 {
+			stride = n * size
+		}
+		// The overrun check runs before the output is allocated, so the
+		// buffer bounds the memory a file can claim.
+		if a.ByteOffset+(a.Count-1)*stride+n*size > len(data) && a.Count > 0 {
+			return nil, 0, fmt.Errorf("accessor %d overruns its buffer view", index)
+		}
+		out = make([]float32, a.Count*n)
+		for i := range a.Count {
+			base := a.ByteOffset + i*stride
+			for c := range n {
+				out[i*n+c] = readComponent(data[base+c*size:], a.ComponentType, a.Normalized)
+			}
 		}
 	}
+	if err := l.applySparse(index, a, n, size, func(elem int, vals []float32) {
+		copy(out[elem*n:(elem+1)*n], vals)
+	}); err != nil {
+		return nil, 0, err
+	}
 	return out, n, nil
+}
+
+// sparseIndexSizes is what an element index in a sparse accessor may be
+// stored as: unsigned byte, short or int.
+var sparseIndexSizes = map[int]int{5121: 1, 5123: 2, 5125: 4}
+
+// applySparse reads an accessor's sparse block, which replaces some of
+// its elements with values from another buffer view, and hands each
+// replacement to set as an element index and that element's components.
+// An accessor with no sparse block does nothing. Blender writes morph
+// targets this way, since a blend shape usually moves few vertices.
+func (l *loader) applySparse(index int, a jsonAccessor, n, size int, set func(elem int, vals []float32)) error {
+	s := a.Sparse
+	if s == nil || s.Count == 0 {
+		return nil
+	}
+	if s.Count < 0 || s.Count > a.Count {
+		return fmt.Errorf("accessor %d: sparse count %d is not within the accessor's %d", index, s.Count, a.Count)
+	}
+	isize := sparseIndexSizes[s.Indices.ComponentType]
+	if isize == 0 {
+		return fmt.Errorf("accessor %d: sparse indices of component type %d", index, s.Indices.ComponentType)
+	}
+	// Sparse index and value views are tightly packed: the specification
+	// forbids a byte stride on them.
+	idxData, _, err := l.bufferView(s.Indices.BufferView)
+	if err != nil {
+		return fmt.Errorf("accessor %d: sparse indices: %w", index, err)
+	}
+	valData, _, err := l.bufferView(s.Values.BufferView)
+	if err != nil {
+		return fmt.Errorf("accessor %d: sparse values: %w", index, err)
+	}
+	if s.Indices.ByteOffset < 0 || s.Values.ByteOffset < 0 {
+		return fmt.Errorf("accessor %d: negative sparse offset", index)
+	}
+	if s.Indices.ByteOffset+s.Count*isize > len(idxData) {
+		return fmt.Errorf("accessor %d: sparse indices overrun their buffer view", index)
+	}
+	if s.Values.ByteOffset+s.Count*n*size > len(valData) {
+		return fmt.Errorf("accessor %d: sparse values overrun their buffer view", index)
+	}
+	vals := make([]float32, n)
+	for i := range s.Count {
+		b := idxData[s.Indices.ByteOffset+i*isize:]
+		var elem int
+		switch isize {
+		case 1:
+			elem = int(b[0])
+		case 2:
+			elem = int(binary.LittleEndian.Uint16(b))
+		default:
+			elem = int(binary.LittleEndian.Uint32(b))
+		}
+		if elem < 0 || elem >= a.Count {
+			return fmt.Errorf("accessor %d: sparse index %d is outside its %d elements", index, elem, a.Count)
+		}
+		base := s.Values.ByteOffset + i*n*size
+		for c := range n {
+			vals[c] = readComponent(valData[base+c*size:], a.ComponentType, a.Normalized)
+		}
+		set(elem, vals)
+	}
+	return nil
 }
 
 func readComponent(b []byte, ctype int, normalized bool) float32 {
@@ -96,7 +169,8 @@ func readComponent(b []byte, ctype int, normalized bool) float32 {
 	return 0
 }
 
-// indices reads an index accessor of any integer width.
+// indices reads an index accessor of any integer width, applying a
+// sparse block over the base data when the accessor has one.
 func (l *loader) indices(index int) ([]uint32, error) {
 	if index < 0 || index >= len(l.j.Accessors) {
 		return nil, fmt.Errorf("accessor %d out of range", index)
@@ -106,33 +180,41 @@ func (l *loader) indices(index int) ([]uint32, error) {
 	if a.Type != "SCALAR" || size == 0 || a.ComponentType == 5126 {
 		return nil, fmt.Errorf("index accessor %d: unsupported type %s/%d", index, a.Type, a.ComponentType)
 	}
-	if a.BufferView == nil {
-		return nil, fmt.Errorf("index accessor %d has no data", index)
-	}
-	data, stride, err := l.bufferView(*a.BufferView)
-	if err != nil {
-		return nil, err
-	}
-	if stride == 0 {
-		stride = size
-	}
 	if a.Count < 0 || a.ByteOffset < 0 || a.Count > 1<<28 {
 		return nil, fmt.Errorf("index accessor %d: bad count %d or offset %d", index, a.Count, a.ByteOffset)
 	}
-	if a.Count > 0 && a.ByteOffset+(a.Count-1)*stride+size > len(data) {
-		return nil, fmt.Errorf("index accessor %d overruns its buffer view", index)
-	}
 	out := make([]uint32, a.Count)
-	for i := range a.Count {
-		b := data[a.ByteOffset+i*stride:]
-		switch size {
-		case 1:
-			out[i] = uint32(b[0])
-		case 2:
-			out[i] = uint32(binary.LittleEndian.Uint16(b))
-		case 4:
-			out[i] = binary.LittleEndian.Uint32(b)
+	if a.BufferView == nil {
+		if a.Sparse == nil {
+			return nil, fmt.Errorf("index accessor %d has no data", index)
 		}
+	} else {
+		data, stride, err := l.bufferView(*a.BufferView)
+		if err != nil {
+			return nil, err
+		}
+		if stride == 0 {
+			stride = size
+		}
+		if a.Count > 0 && a.ByteOffset+(a.Count-1)*stride+size > len(data) {
+			return nil, fmt.Errorf("index accessor %d overruns its buffer view", index)
+		}
+		for i := range a.Count {
+			b := data[a.ByteOffset+i*stride:]
+			switch size {
+			case 1:
+				out[i] = uint32(b[0])
+			case 2:
+				out[i] = uint32(binary.LittleEndian.Uint16(b))
+			case 4:
+				out[i] = binary.LittleEndian.Uint32(b)
+			}
+		}
+	}
+	if err := l.applySparse(index, a, 1, size, func(elem int, vals []float32) {
+		out[elem] = uint32(vals[0])
+	}); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

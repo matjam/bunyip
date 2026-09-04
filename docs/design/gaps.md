@@ -194,8 +194,6 @@ slide) are in.
 
 - GPU morph targets. The CPU blend is fine for a few characters with a
   few thousand vertices each.
-- Sparse accessors in glTF, which Blender writes for morph targets, are
-  read as dense; a file that relies on them loads with zero deltas.
 - Sprite animation authoring from Aseprite or similar, beyond the atlas
   frame tags `ParseAtlas` reads.
 

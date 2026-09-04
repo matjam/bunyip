@@ -54,12 +54,28 @@ type jsonBufferView struct {
 }
 
 type jsonAccessor struct {
-	BufferView    *int   `json:"bufferView"`
-	ByteOffset    int    `json:"byteOffset"`
-	ComponentType int    `json:"componentType"`
-	Normalized    bool   `json:"normalized"`
-	Count         int    `json:"count"`
-	Type          string `json:"type"`
+	BufferView    *int        `json:"bufferView"`
+	ByteOffset    int         `json:"byteOffset"`
+	ComponentType int         `json:"componentType"`
+	Normalized    bool        `json:"normalized"`
+	Count         int         `json:"count"`
+	Type          string      `json:"type"`
+	Sparse        *jsonSparse `json:"sparse"`
+}
+
+// jsonSparse is the subset of an accessor's elements a file overrides,
+// which is how Blender writes morph targets that touch few vertices.
+type jsonSparse struct {
+	Count   int `json:"count"`
+	Indices struct {
+		BufferView    int `json:"bufferView"`
+		ByteOffset    int `json:"byteOffset"`
+		ComponentType int `json:"componentType"`
+	} `json:"indices"`
+	Values struct {
+		BufferView int `json:"bufferView"`
+		ByteOffset int `json:"byteOffset"`
+	} `json:"values"`
 }
 
 type jsonImage struct {

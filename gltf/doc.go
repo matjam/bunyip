@@ -5,7 +5,9 @@
 // sheen, transmission, volume, emissive strength, texture transforms),
 // decoded images, morph targets with their default weights, skins,
 // animation clips (node transforms and morph weights) and the flattened
-// node hierarchy with world matrices.
+// node hierarchy with world matrices. Sparse accessors, which store only
+// the elements a morph target moves, decode over the base data or over
+// zeros when the accessor has no buffer view.
 //
 // Load reads a file, Parse a byte slice; both return a Document. The
 // package has no GPU dependency, so a tool or a server can read models
