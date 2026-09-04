@@ -119,16 +119,33 @@ follow, clamp and shake on `Camera2D`, tiled nine-slices,
 
 ## Text
 
-Bitmap colour emoji, letter spacing, justification, text on a path,
-rich text with links and hyphenation are in.
+Colour glyphs from COLR layers, SVG documents and bitmap strikes, letter
+spacing, justification, text on a path, rich text with links and
+hyphenation are in. A glyph first drawn in a
+frame appears in that frame: the atlas upload is recorded into the frame
+before the render pass. Hyphenation patterns for thirteen languages ship
+with the engine and `AutoHyphenate` picks one from the text's
+`Language`. Rich text shapes each stretch of one face as a whole, so
+kerning and ligatures cross the style changes inside it.
 
-- COLR and SVG colour glyphs; only bitmap strikes (sbix, CBDT) draw in
-  colour, which covers Apple's and Google's emoji fonts.
-- Hyphenation patterns beyond American English; `ParseTeXPatterns`
-  loads any TeX pattern file a game ships.
-- Rich text shapes each word on its own, so ligatures and kerning do not
-  cross a style change, and a glyph first drawn in a frame appears from
-  the next frame.
+- Rich text breaks lines at spaces and newlines rather than by the
+  Unicode rules, and does not hyphenate.
+- Parts of the colour glyph formats. In COLR, the variation deltas of
+  the variable paint tables are not applied, the four non-separable
+  blend modes (hue, saturation, colour and luminosity) composite as
+  source over, and a layer that asks for the text colour draws white,
+  since a colour glyph is drawn untinted. In SVG, strokes, clipping
+  paths, masks, filters, patterns, images, text, style sheets and
+  animation are not drawn, the even-odd fill rule draws as non-zero, a
+  gradient does not inherit from another through `href`, and a group's
+  opacity applies to each of its shapes rather than to the group as one.
+  A
+  distance-field font draws a colour glyph as its outline.
+- Hyphenation patterns for languages outside the shipped set, which are
+  Danish, Dutch, English (American and British), Finnish, French,
+  German, Italian, Norwegian, Polish, Portuguese, Russian, Spanish and
+  Swedish; `ParseTeXPatterns` loads any other TeX pattern file a game
+  ships.
 
 ## 3D rendering
 

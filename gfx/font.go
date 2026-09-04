@@ -257,14 +257,25 @@ func (f *Font) glyph(face uint8, gid font.GID) glyph {
 // font unit, shifted by (dx, dy) pixels, y down. It reports the outline's
 // pixel bounds when the rasteriser is nil.
 func (f *Font) outline(face uint8, gid font.GID, k, dx, dy float32, r *vector.Rasterizer) (minX, minY, maxX, maxY float32, ok bool) {
-	ol, has := f.faces[face].face.GlyphData(gid).(font.GlyphOutline)
+	b, ok := f.walkOutline(face, gid, affine{a: k, d: -k, tx: dx, ty: dy}, r)
+	return b.minX, b.minY, b.maxX, b.maxY, ok
+}
+
+// walkOutline flattens a glyph's outline through a transform into the
+// rasteriser, or measures it alone when the rasteriser is nil. The
+// transform maps font units, y up, to the pixels of the glyph being
+// rendered, y down. The bounds are of the control points, so a curve is
+// held loosely.
+func (f *Font) walkOutline(face uint8, gid font.GID, m affine, r *vector.Rasterizer) (box, bool) {
+	// The library takes a glyph index in its table form here.
+	ol, has := f.faces[face].face.GlyphDataOutline(uint16(gid))
 	if !has || len(ol.Segments) == 0 {
-		return 0, 0, 0, 0, false
+		return box{}, false
 	}
-	minX, minY, maxX, maxY = math.MaxFloat32, math.MaxFloat32, -math.MaxFloat32, -math.MaxFloat32
+	b := emptyBox
 	pt := func(p ot.SegmentPoint) (float32, float32) {
-		x, y := p.X*k+dx, -p.Y*k+dy
-		minX, minY, maxX, maxY = min(minX, x), min(minY, y), max(maxX, x), max(maxY, y)
+		x, y := m.apply(p.X, p.Y)
+		b.add(x, y)
 		return x, y
 	}
 	for _, s := range ol.Segments {
@@ -297,7 +308,7 @@ func (f *Font) outline(face uint8, gid font.GID, k, dx, dy float32, r *vector.Ra
 	if r != nil {
 		r.ClosePath()
 	}
-	return minX, minY, maxX, maxY, true
+	return b, true
 }
 
 // rasterise renders a glyph's coverage at k pixels per font unit,
@@ -322,10 +333,24 @@ func (f *Font) rasterise(face uint8, gid font.GID, k float32, pad int) (mask *im
 	return mask, ox, oy, true
 }
 
-// add rasterises one glyph into the CPU atlas at the font's size.
+// add rasterises one glyph into the CPU atlas at the font's size. A
+// glyph the font describes in colour, as COLR layers, an SVG document or
+// a bitmap strike, is drawn in its own colours; anything else, and
+// anything in those forms this cannot draw, falls back to the outline.
 func (f *Font) add(face uint8, gid font.GID) glyph {
-	if bm, ok := f.faces[face].face.GlyphData(gid).(font.GlyphBitmap); ok && (bm.Format == font.PNG || bm.Format == font.JPG) {
-		return f.addBitmap(face, gid, bm)
+	switch data := f.faces[face].face.GlyphData(gid).(type) {
+	case font.GlyphColor:
+		if gl, ok := f.addCOLR(face, gid, data); ok {
+			return gl
+		}
+	case font.GlyphSVG:
+		if gl, ok := f.addSVG(face, gid, data); ok {
+			return gl
+		}
+	case font.GlyphBitmap:
+		if data.Format == font.PNG || data.Format == font.JPG {
+			return f.addBitmap(face, gid, data)
+		}
 	}
 	k := f.pxPerEm / f.faces[face].upem
 	mask, ox, oy, ok := f.rasterise(face, gid, k, 0)

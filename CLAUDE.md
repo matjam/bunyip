@@ -35,7 +35,7 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, emoji, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
@@ -157,8 +157,9 @@ Headless tests: `newHeadless(t, w, h)` in `gfx` and `newContext(t)` in
 `ui` give a `Graphics` on an offscreen surface; `renderMaterial` in
 `gfx/material_test.go` renders one frame and returns the image. UI tests
 must feed a mouse move and run one frame before a press, because hover
-is one frame behind. A glyph first drawn in a frame appears the next
-frame (the atlas uploads after drawing), so text tests draw two frames.
+is one frame behind. A glyph first drawn in a frame appears in that
+frame, because the atlas upload is recorded into the frame before the
+render pass, so text tests draw one frame.
 
 ## Rules
 
@@ -254,6 +255,18 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   linear light before uploading to an sRGB image (`linearPremultiply`);
   Go's `image.RGBA` premultiplies in sRGB space, which an sRGB sampler
   would decode too dark. `Data` textures upload as given.
+- The glyph atlas is one texture written in place. `Font.flush` uploads
+  the glyphs rasterised so far through `Texture.Write`, whose in-frame
+  path records the copy into the frame's command buffer before any
+  render pass, so a glyph first drawn in a frame appears in it. Text
+  drawing flushes before it queues its sprites. The atlas never grows,
+  so a font whose atlas is full drops later glyphs rather than replacing
+  the texture the frame's draws already point at.
+- A colour glyph (COLR layers, an SVG document, a bitmap strike) is
+  composited on the CPU in `gfx/colr.go` and `gfx/svgglyph.go` and
+  stored premultiplied in linear light, because the atlas is a `Data`
+  texture that samples without gamma decoding. `DrawGlyphs` draws such a
+  glyph with a white tint, so a game's text colour does not reach it.
 - Descriptor sets come from a chain of pools that grows on
   `VK_ERROR_OUT_OF_POOL_MEMORY`; the capacities in `newGraphics` and
   `post.go` are starting sizes, not limits.

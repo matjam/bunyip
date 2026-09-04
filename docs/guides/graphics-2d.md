@@ -393,13 +393,15 @@ render up front.
 aligns and rotates a paragraph through `TextOptions`: a `Width` to wrap
 in, an `Align` (`AlignLeft`, `AlignCenter`, `AlignRight`,
 `AlignJustify`), `LineSpacing`, a `Size`, an `Angle`, `LetterSpacing`,
-`Baseline`, a `Hyphenate` hyphenator (`EnglishHyphenator` is built in),
-a `Direction` and a `Language`. `Font.Measure` sizes text without
+`Baseline`, a `Hyphenate` hyphenator, an `AutoHyphenate` that picks one
+for the `Language`, a `Direction` and a `Language`. `Font.Measure` sizes text without
 drawing it and `Font.Layout` returns the wrapped lines, without the soft
 hyphens a hyphenator inserted. A font caches what it shapes, wraps,
 measures and lays out, keyed by the text and the options, so drawing or
 measuring the same string every frame costs a map lookup and the entries
-a frame uses stay resident however many one-off strings pass through.
+a frame uses stay resident however many one-off strings pass through. A
+glyph drawn for the first time is rasterised and uploaded during that
+frame, so new text shows up in the frame that asks for it.
 
 ```go
 g.font, err = asset.Font(ctx.Gfx, g.fs, "fonts/body.ttf", 18, gfx.FontOptions{
@@ -413,13 +415,46 @@ gr.FillRect(38, y-4, w+4, h+8, gfx.RGBA(0, 0, 0, 160))
 gr.DrawTextBlock(g.font, story, 40, y, opts, gfx.White)
 ```
 
+Hyphenation uses the TeX patterns, by Liang's method. The engine ships
+patterns for American and British English, German, French, Spanish,
+Italian, Dutch, Portuguese, Swedish, Danish, Norwegian, Finnish, Polish
+and Russian; `gfx/hyph/README.md` lists the files and their licences.
+`EnglishHyphenator` returns the American English one and
+`HyphenatorFor("de-AT")` any other, falling back from a regional tag to
+its primary language and loading the patterns on first use. Text that
+sets `AutoHyphenate` and a `Language` picks its own hyphenator, so a
+translated interface hyphenates in the language it is showing, and a
+language with no shipped patterns is left unhyphenated.
+`ParseTeXPatterns` loads any other pattern file a game ships.
+
+```go
+opts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify,
+	Language: g.tr.Lang(), AutoHyphenate: true} // g.tr is a locale.Translator
+```
+
 `NewSDFFont` builds a signed-distance atlas that stays sharp at any size
 and angle, so one font object serves damage numbers and a zooming
-strategy map. Colour emoji draw in their own colours when a bitmap emoji
-font is given as a fallback. `ParseRich` reads a small
+strategy map; it draws a colour glyph as its outline.
+
+Colour glyphs draw in their own colours, whichever way the font
+describes them: a bitmap strike (`sbix` or `CBDT`, which is Apple's and
+Google's emoji), COLR layers, or an SVG document per glyph. COLR version
+1 paints are drawn too, with their gradients, transforms and
+compositing, so a font like Noto Color Emoji comes out right. A colour
+glyph ignores the colour the text is drawn in. Give the emoji font as a
+`Fallbacks` entry and emoji appear in ordinary strings. What is not
+drawn is listed in `docs/design/gaps.md`: the variable paint tables'
+deltas in COLR, and strokes, clipping and filters in SVG.
+
+`ParseRich` reads a small
 markup (`[b]`, `[i]`, `[u]`, `[#ff8800]`, `[link=name]`) into a
 `RichText` that `DrawRichText` lays out across regular, bold and italic
-faces, returning each link's rectangle for clicks.
+faces, returning each link's rectangle for clicks. Every stretch of rich
+text in one face is shaped as a whole, so kerning and ligatures work
+across a colour or link change inside it; the glyphs are cut apart by
+cluster afterwards, and a glyph that straddles a change takes the colour
+of the run its first byte came from. A change of face starts a new
+shaped run, since its glyphs come from another font.
 
 ```go
 rich := gfx.ParseRich("You found the [#ffcc44]Brass Key[/#]. [link=map]Open it[/link].")
@@ -435,7 +470,9 @@ for _, l := range links {
 `DrawTextOnPath` draws a line of text along a path with each glyph
 rotated to follow it, for labels such as a river name on a strategy map.
 `Font.Shape` returns positioned glyphs for custom drawing and
-hit-testing, `DrawGlyphs` draws them, and fonts have `Destroy`.
+hit-testing, each with the byte it came from and the `Advance` the pen
+took after it, so a caret lands between clusters; `DrawGlyphs` draws
+them, and fonts have `Destroy`.
 
 ## Shapes and paths
 

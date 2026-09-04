@@ -1,7 +1,6 @@
 package gfx
 
 import (
-	"image"
 	"testing"
 
 	"golang.org/x/image/font/gofont/goregular"
@@ -20,19 +19,14 @@ func TestText(t *testing.T) {
 	if w < 40 || w > 120 || h < 20 || h > 40 {
 		t.Fatalf("measure = %v x %v, implausible for 24px text", w, h)
 	}
-	var img *image.RGBA
-	for range 2 {
-		ok, err := g.begin(Black)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !ok {
-			continue
-		}
-		g.DrawText(f, "Bunyip", 10, 10, White)
-		if img, err = g.end(true); err != nil {
-			t.Fatal(err)
-		}
+	ok, err := g.begin(Black)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	g.DrawText(f, "Bunyip", 10, 10, White)
+	img, err := g.end(true)
+	if err != nil {
+		t.Fatal(err)
 	}
 	inside, outside := 0, 0
 	for y := range 64 {
