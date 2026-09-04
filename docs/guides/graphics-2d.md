@@ -333,8 +333,8 @@ render up front.
 aligns and rotates a paragraph through `TextOptions`: a `Width` to wrap
 in, an `Align` (`AlignLeft`, `AlignCenter`, `AlignRight`,
 `AlignJustify`), `LineSpacing`, a `Size`, an `Angle`, `LetterSpacing`,
-`Baseline`, a `Hyphenate` hyphenator (`EnglishHyphenator` is built in),
-a `Direction` and a `Language`. `Font.Measure` sizes text without
+`Baseline`, a `Hyphenate` hyphenator, an `AutoHyphenate` that picks one
+for the `Language`, a `Direction` and a `Language`. `Font.Measure` sizes text without
 drawing it and `Font.Layout` returns the wrapped lines, without the soft
 hyphens a hyphenator inserted. A font caches what it shapes, wraps,
 measures and lays out, keyed by the text and the options, so drawing or
@@ -353,6 +353,23 @@ opts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify, Hyphenate: gfx.Engl
 w, h := g.font.Measure(story, opts)
 gr.FillRect(38, y-4, w+4, h+8, gfx.RGBA(0, 0, 0, 160))
 gr.DrawTextBlock(g.font, story, 40, y, opts, gfx.White)
+```
+
+Hyphenation uses the TeX patterns, by Liang's method. The engine ships
+patterns for American and British English, German, French, Spanish,
+Italian, Dutch, Portuguese, Swedish, Danish, Norwegian, Finnish, Polish
+and Russian; `gfx/hyph/README.md` lists the files and their licences.
+`EnglishHyphenator` returns the American English one and
+`HyphenatorFor("de-AT")` any other, falling back from a regional tag to
+its primary language and loading the patterns on first use. Text that
+sets `AutoHyphenate` and a `Language` picks its own hyphenator, so a
+translated interface hyphenates in the language it is showing, and a
+language with no shipped patterns is left unhyphenated.
+`ParseTeXPatterns` loads any other pattern file a game ships.
+
+```go
+opts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify,
+	Language: g.tr.Lang(), AutoHyphenate: true} // g.tr is a locale.Translator
 ```
 
 `NewSDFFont` builds a signed-distance atlas that stays sharp at any size

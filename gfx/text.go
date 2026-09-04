@@ -60,10 +60,28 @@ type TextOptions struct {
 	// Hyphenate breaks long words at the hyphenator's points when a line
 	// wraps, drawing a hyphen at the break.
 	Hyphenate *Hyphenator
-	Direction Direction
+	// AutoHyphenate breaks long words with the hyphenator for Language, or
+	// American English when Language is empty. A language the engine ships
+	// no patterns for is not hyphenated. Hyphenate wins when both are set.
+	AutoHyphenate bool
+	Direction     Direction
 	// Language is a BCP 47 tag ("tr", "zh-Hant") that picks language-specific
 	// glyph forms; empty means the font's default.
 	Language string
+}
+
+// resolved fills in the hyphenator AutoHyphenate asks for, so that
+// everything below it, the caches included, sees the hyphenator the text
+// is laid out with.
+func (o TextOptions) resolved() TextOptions {
+	if o.Hyphenate == nil && o.AutoHyphenate {
+		lang := o.Language
+		if lang == "" {
+			lang = "en-us"
+		}
+		o.Hyphenate, _ = HyphenatorFor(lang)
+	}
+	return o
 }
 
 // runKey identifies a shaped paragraph in the cache.
@@ -249,6 +267,7 @@ type Glyph struct {
 // for drawing them yourself with Draw and the font's Texture, or for
 // hit-testing.
 func (f *Font) Shape(text string, opts TextOptions) []Glyph {
+	opts = opts.resolved()
 	var out []Glyph
 	for _, line := range f.wrap(text, opts, 0) {
 		out = f.appendLine(out, text, line, lin.V2(0, f.Ascent), 0)
@@ -401,6 +420,7 @@ func (g *Graphics) DrawGlyphs(f *Font, glyphs []Glyph, x, y, scale float32, c Co
 // broken by a Hyphenator is given without the soft hyphens the
 // hyphenator inserted and without the hyphen drawn at the break.
 func (f *Font) Layout(text string, opts TextOptions) []string {
+	opts = opts.resolved()
 	var out []string
 	for para := range strings.SplitSeq(text, "\n") {
 		// The lines index the shaped text, which carries the soft hyphens
@@ -442,6 +462,7 @@ func (f *Font) Layout(text string, opts TextOptions) []string {
 // The result is cached, so measuring the same static label every frame
 // costs a map lookup.
 func (f *Font) Measure(text string, opts TextOptions) (w, h float32) {
+	opts = opts.resolved()
 	key := measureKey{
 		text: text, lang: opts.Language, hyph: opts.Hyphenate,
 		width: opts.Width, size: opts.Size, lineSpacing: opts.LineSpacing,
@@ -504,6 +525,7 @@ func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOption
 // glyphs; nothing is shaped, wrapped or aligned a second time. The
 // returned slice belongs to the font and must not be modified.
 func (f *Font) blockGlyphs(text string, opts TextOptions) []Glyph {
+	opts = opts.resolved()
 	key := blockKey{
 		text: text, lang: opts.Language, hyph: opts.Hyphenate,
 		width: opts.Width, size: opts.Size, lineSpacing: opts.LineSpacing,
@@ -522,6 +544,7 @@ func (f *Font) blockGlyphs(text string, opts TextOptions) []Glyph {
 // relative to the block's origin. The result is the font's scratch
 // storage, valid until the next layout.
 func (f *Font) layoutBlock(text string, opts TextOptions) []Glyph {
+	opts = opts.resolved()
 	scale := f.sizeScale(opts.Size)
 	spacing := opts.LineSpacing
 	if spacing == 0 {

@@ -27,8 +27,8 @@ window.
   clamp and shake that culls what it cannot see, sort keys within a
   layer, atlases with tag animations, vector paths
   with gradients and dashes, particles, HarfBuzz-shaped text with colour
-  emoji and rich markup, colour matrices, lit sprites, blend modes and
-  game-written fragment shaders.
+  emoji, rich markup and hyphenation in thirteen languages, colour
+  matrices, lit sprites, blend modes and game-written fragment shaders.
 - 3D: physically based materials with clearcoat, sheen, subsurface and
   glass; glTF models with skeletal animation, blend spaces, IK and morph
   targets; cascaded shadows, spot lights with shadows, a procedural sky

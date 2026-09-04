@@ -1,14 +1,38 @@
 package gfx
 
 import (
-	_ "embed"
+	"embed"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
 )
 
-//go:embed hyph/en-us.tex
-var englishPatterns string
+//go:embed hyph/*.tex
+var hyphFS embed.FS
+
+// hyphFiles maps the language tags the engine ships TeX patterns for to
+// their files under hyph/. A tag with a region ("en-gb") is listed where
+// the patterns differ from the plain language's.
+var hyphFiles = map[string]string{
+	"da":    "da.tex",
+	"de":    "de-1996.tex",
+	"en":    "en-us.tex",
+	"en-gb": "en-gb.tex",
+	"en-us": "en-us.tex",
+	"es":    "es.tex",
+	"fi":    "fi.tex",
+	"fr":    "fr.tex",
+	"it":    "it.tex",
+	"nb":    "nb.tex",
+	"nl":    "nl.tex",
+	"no":    "no.tex",
+	"pl":    "pl.tex",
+	"pt":    "pt.tex",
+	"ru":    "ru.tex",
+	"sv":    "sv.tex",
+}
 
 // Hyphenator finds the points where a word may break at a line end, by
 // Liang's pattern method as TeX does. Set one on TextOptions.Hyphenate
@@ -24,44 +48,158 @@ type Hyphenator struct {
 }
 
 var (
-	englishOnce sync.Once
-	english     *Hyphenator
+	hyphMu    sync.Mutex
+	hyphCache = map[string]*Hyphenator{}
 )
 
 // EnglishHyphenator returns the shared American English hyphenator,
 // built from the standard TeX patterns on first use.
 func EnglishHyphenator() *Hyphenator {
-	englishOnce.Do(func() { english = ParseTeXPatterns(englishPatterns) })
-	return english
+	h, _ := HyphenatorFor("en-us")
+	return h
 }
 
-// ParseTeXPatterns reads a TeX hyphenation file: the \patterns{...}
-// block and an optional \hyphenation{...} block of exceptions.
+// HyphenatorFor returns the shared hyphenator for a BCP 47 language tag,
+// built from the TeX patterns the engine ships on first use. A tag with
+// no patterns of its own falls back to its primary language, so "de-AT"
+// gives the German hyphenator and "en-AU" the American English one;
+// "en-GB" has patterns of its own. Languages the engine ships no
+// patterns for return an error, and the shipped set is listed in
+// gfx/hyph/README.md. The hyphenator is shared, so treat MinLeft and
+// MinRight as read-only.
+func HyphenatorFor(lang string) (*Hyphenator, error) {
+	tag := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(lang), "_", "-"))
+	name, ok := hyphFiles[tag]
+	if !ok {
+		if i := strings.IndexByte(tag, '-'); i > 0 {
+			name, ok = hyphFiles[tag[:i]]
+		}
+	}
+	if !ok {
+		return nil, fmt.Errorf("gfx: no hyphenation patterns for %q", lang)
+	}
+	hyphMu.Lock()
+	defer hyphMu.Unlock()
+	if h, ok := hyphCache[name]; ok {
+		return h, nil
+	}
+	src, err := readPatternFile(name, 0)
+	if err != nil {
+		return nil, err
+	}
+	h := ParseTeXPatterns(src)
+	hyphCache[name] = h
+	return h, nil
+}
+
+// readPatternFile reads a shipped pattern file and the files it inputs,
+// returning the inputs first so that the file's own exceptions win.
+func readPatternFile(name string, depth int) (string, error) {
+	if depth > 4 {
+		return "", fmt.Errorf("gfx: hyphenation patterns %q input too deeply", name)
+	}
+	data, err := hyphFS.ReadFile("hyph/" + name)
+	if err != nil {
+		return "", fmt.Errorf("gfx: read hyphenation patterns: %w", err)
+	}
+	src := string(data)
+	var inputs strings.Builder
+	for line := range strings.SplitSeq(src, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `\input`) {
+			continue
+		}
+		// The shipped files drop the "hyph-" prefix TeX distributions use.
+		in := strings.TrimSpace(strings.TrimPrefix(line, `\input`))
+		in = strings.TrimPrefix(in, "hyph-")
+		if !strings.HasSuffix(in, ".tex") {
+			in += ".tex"
+		}
+		text, err := readPatternFile(in, depth+1)
+		if err != nil {
+			return "", err
+		}
+		inputs.WriteString(text)
+		inputs.WriteByte('\n')
+	}
+	return inputs.String() + src, nil
+}
+
+// ParseTeXPatterns reads a TeX hyphenation file: every \patterns{...}
+// block and every \hyphenation{...} block of exceptions. A hyphenmins
+// comment in the file's header, which the hyph-utf8 pattern files carry,
+// sets MinLeft and MinRight from its typesetting values; without one
+// they are TeX's 2 and 3.
 func ParseTeXPatterns(src string) *Hyphenator {
-	var patterns, exceptions []string
-	strip := func(block string) []string {
+	left, right, hasMins := texHyphenmins(src)
+	// Comments are stripped whole so that a block's braces and the words
+	// inside it are read from the code alone.
+	var code strings.Builder
+	code.Grow(len(src))
+	for line := range strings.SplitSeq(src, "\n") {
+		if i := strings.IndexByte(line, '%'); i >= 0 {
+			line = line[:i]
+		}
+		code.WriteString(line)
+		code.WriteByte('\n')
+	}
+	words := func(name string) []string {
 		var out []string
-		for _, line := range strings.Split(block, "\n") {
-			if i := strings.IndexByte(line, '%'); i >= 0 {
-				line = line[:i]
+		rest := code.String()
+		for {
+			i := strings.Index(rest, name)
+			if i < 0 {
+				return out
 			}
-			out = append(out, strings.Fields(line)...)
-		}
-		return out
-	}
-	if i := strings.Index(src, `\patterns{`); i >= 0 {
-		rest := src[i+len(`\patterns{`):]
-		if j := strings.IndexByte(rest, '}'); j >= 0 {
-			patterns = strip(rest[:j])
-		}
-	}
-	if i := strings.Index(src, `\hyphenation{`); i >= 0 {
-		rest := src[i+len(`\hyphenation{`):]
-		if j := strings.IndexByte(rest, '}'); j >= 0 {
-			exceptions = strip(rest[:j])
+			rest = rest[i+len(name):]
+			j := strings.IndexByte(rest, '}')
+			if j < 0 {
+				return out
+			}
+			out = append(out, strings.Fields(rest[:j])...)
+			rest = rest[j+1:]
 		}
 	}
-	return NewHyphenator(patterns, exceptions)
+	h := NewHyphenator(words(`\patterns{`), words(`\hyphenation{`))
+	if hasMins {
+		h.MinLeft, h.MinRight = left, right
+	}
+	return h
+}
+
+// texHyphenmins reads the typesetting hyphenmins from the YAML comment
+// header of a hyph-utf8 pattern file.
+func texHyphenmins(src string) (left, right int, ok bool) {
+	inMins, inTypeset := false, false
+	for line := range strings.SplitSeq(src, "\n") {
+		if !strings.HasPrefix(line, "%") {
+			continue
+		}
+		// The header is YAML behind "% ", so the single space after the
+		// per cent sign is not indentation.
+		body := strings.TrimPrefix(strings.TrimRight(line[1:], " \t\r"), " ")
+		key := strings.TrimSpace(body)
+		indented := strings.HasPrefix(body, " ") || strings.HasPrefix(body, "\t")
+		if !indented {
+			if inMins {
+				return left, right, left > 0 && right > 0
+			}
+			inMins = key == "hyphenmins:"
+			continue
+		}
+		if !inMins {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(key, ":"):
+			inTypeset = key == "typesetting:"
+		case inTypeset && strings.HasPrefix(key, "left:"):
+			left, _ = strconv.Atoi(strings.TrimSpace(key[len("left:"):]))
+		case inTypeset && strings.HasPrefix(key, "right:"):
+			right, _ = strconv.Atoi(strings.TrimSpace(key[len("right:"):]))
+		}
+	}
+	return left, right, left > 0 && right > 0
 }
 
 // NewHyphenator builds a hyphenator from Liang patterns ("hy3ph",
