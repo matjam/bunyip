@@ -47,10 +47,6 @@ in each package's comment.
 - Multiple windows.
 - Windows IME, X input methods and Wayland `zwp_text_input_v3`; only
   macOS composes text natively.
-- X11 key repeat: X delivers a repeat as a release and press pair, and
-  the layer forwards both without marking the press as a repeat, so a
-  held key releases every repeat on X11. Detectable auto-repeat through
-  XKB would fix it; Wayland, Windows and macOS mark repeats.
 - App bundling for Windows and Linux (installers, AppImage); code
   signing.
 

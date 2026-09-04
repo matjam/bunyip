@@ -50,6 +50,14 @@ type App struct {
 
 	xkbCtx, xkbKeymap, xkbState unsafe.Pointer
 	xkbDevice                   int32
+
+	// Key repeat. keysDown is indexed by X11 key code, which is one byte,
+	// and says whether a press is the first or a repeat. detectableRepeat
+	// says the server agreed to send repeats as presses alone; peeked
+	// holds the event the fallback took off the queue to look at.
+	keysDown         [256]bool
+	detectableRepeat bool
+	peeked           *xcbGenericEvent
 }
 
 // Window is one window. Only the fields of the live backend are set.

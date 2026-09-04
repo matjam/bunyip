@@ -194,6 +194,30 @@ type xcbGetPropertyReply struct {
 	Pad          [12]uint8
 }
 
+type xcbUseExtensionReply struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Supported    uint8
+	Sequence     uint16
+	Length       uint32
+	ServerMajor  uint16
+	ServerMinor  uint16
+	Pad          [20]uint8
+}
+
+type xcbPerClientFlagsReply struct {
+	_               structs.HostLayout
+	ResponseType    uint8
+	DeviceID        uint8
+	Sequence        uint16
+	Length          uint32
+	Supported       uint32
+	Value           uint32
+	AutoCtrls       uint32
+	AutoCtrlsValues uint32
+	Pad             [8]uint8
+}
+
 type xcbInternAtomReply struct {
 	_            structs.HostLayout
 	ResponseType uint8
@@ -244,6 +268,7 @@ type xlib struct {
 	mapWindow          func(c unsafe.Pointer, w uint32) xcbCookie
 	flush              func(c unsafe.Pointer) int32
 	pollForEvent       func(c unsafe.Pointer) *xcbGenericEvent
+	pollForQueuedEvent func(c unsafe.Pointer) *xcbGenericEvent
 	waitForEvent       func(c unsafe.Pointer) *xcbGenericEvent
 	internAtom         func(c unsafe.Pointer, onlyIfExists uint8, nameLen uint16, name *byte) xcbCookie
 	internAtomReply    func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbInternAtomReply
@@ -266,6 +291,14 @@ type xlib struct {
 	createGlyphCursor  func(c unsafe.Pointer, cid, sourceFont, maskFont uint32, sourceChar, maskChar uint16, foreR, foreG, foreB, backR, backG, backB uint16) xcbCookie
 	freeCursor         func(c unsafe.Pointer, cid uint32) xcbCookie
 	free               func(p unsafe.Pointer)
+
+	// libxcb-xkb, optional. It carries the requests that turn detectable
+	// auto-repeat on, which is what stops a held key reporting a release
+	// between every repeat.
+	xkbUseExtension        func(c unsafe.Pointer, major, minor uint16) xcbCookie
+	xkbUseExtensionReply   func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbUseExtensionReply
+	xkbPerClientFlags      func(c unsafe.Pointer, device uint16, change, value, ctrlsToChange, autoCtrls, autoCtrlsValues uint32) xcbCookie
+	xkbPerClientFlagsReply func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbPerClientFlagsReply
 
 	// xkbcommon, optional.
 	xkbContextNew       func(flags int32) unsafe.Pointer
@@ -305,6 +338,7 @@ func loadX11() (*xlib, error) {
 		"xcb_get_setup": &x.getSetup, "xcb_setup_roots_iterator": &x.setupRootsIterator, "xcb_screen_next": &x.screenNext, "xcb_generate_id": &x.generateID,
 		"xcb_create_window": &x.createWindow, "xcb_destroy_window": &x.destroyWindow, "xcb_map_window": &x.mapWindow,
 		"xcb_flush": &x.flush, "xcb_poll_for_event": &x.pollForEvent, "xcb_wait_for_event": &x.waitForEvent,
+		"xcb_poll_for_queued_event": &x.pollForQueuedEvent,
 		"xcb_intern_atom": &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
 		"xcb_delete_property": &x.deleteProperty, "xcb_get_property": &x.getProperty, "xcb_get_property_reply": &x.getPropertyReply,
 		"xcb_get_property_value": &x.getPropertyValue, "xcb_get_property_value_length": &x.getPropertyValueLn,
@@ -320,6 +354,20 @@ func loadX11() (*xlib, error) {
 	}
 	if err := load(libc, "free", &x.free); err != nil {
 		return nil, err
+	}
+	// Detectable auto-repeat is optional: without libxcb-xkb the layer
+	// falls back to spotting the release and press pair by its timestamp.
+	if xkb, err := purego.Dlopen("libxcb-xkb.so.1", purego.RTLD_NOW|purego.RTLD_GLOBAL); err == nil {
+		ok := true
+		for name, fptr := range map[string]any{
+			"xcb_xkb_use_extension": &x.xkbUseExtension, "xcb_xkb_use_extension_reply": &x.xkbUseExtensionReply,
+			"xcb_xkb_per_client_flags": &x.xkbPerClientFlags, "xcb_xkb_per_client_flags_reply": &x.xkbPerClientFlagsReply,
+		} {
+			ok = ok && load(xkb, name, fptr) == nil
+		}
+		if !ok {
+			x.xkbUseExtension = nil
+		}
 	}
 	// Text input is optional.
 	if xkb, err := purego.Dlopen("libxkbcommon.so.0", purego.RTLD_NOW|purego.RTLD_GLOBAL); err == nil {
@@ -377,7 +425,47 @@ func (a *App) connectX11() error {
 	a.atomNetWMHidden = a.atom("_NET_WM_STATE_HIDDEN")
 	a.atomWake = a.atom("BUNYIP_WAKE")
 	a.setupXKB()
+	a.detectableRepeat = a.setDetectableRepeat()
 	return nil
+}
+
+// XKB constants for the detectable auto-repeat request.
+const (
+	xkbUseCoreKbd            = 0x0100
+	xkbDetectableAutoRepeat  = 1 << 0
+	xkbExtensionMajorVersion = 1
+	xkbExtensionMinorVersion = 0
+)
+
+// setDetectableRepeat asks the server to deliver a held key as presses
+// alone. Without it X sends a release before every repeat, which reads as
+// the key having been let go. It reports whether the server agreed;
+// keyFromX11 events fall back to matching the release and press by their
+// timestamps when it did not.
+func (a *App) setDetectableRepeat() bool {
+	x := a.x
+	if x.xkbUseExtension == nil {
+		return false
+	}
+	// The extension has to be set up on this connection before any of its
+	// requests are sent, whether or not xkbcommon already did it.
+	use := x.xkbUseExtensionReply(a.conn, x.xkbUseExtension(a.conn, xkbExtensionMajorVersion, xkbExtensionMinorVersion), nil)
+	if use == nil {
+		return false
+	}
+	supported := use.Supported != 0
+	x.free(unsafe.Pointer(use))
+	if !supported {
+		return false
+	}
+	cookie := x.xkbPerClientFlags(a.conn, xkbUseCoreKbd, xkbDetectableAutoRepeat, xkbDetectableAutoRepeat, 0, 0, 0)
+	reply := x.xkbPerClientFlagsReply(a.conn, cookie, nil)
+	if reply == nil {
+		return false
+	}
+	on := reply.Value&xkbDetectableAutoRepeat != 0
+	x.free(unsafe.Pointer(reply))
+	return on
 }
 
 func (a *App) atom(name string) uint32 {
@@ -511,18 +599,26 @@ func (a *App) x11Poll(wait bool) []Event {
 			}
 			return a.pending
 		}
-		a.handle(ev)
-		x.free(unsafe.Pointer(ev))
+		a.dispatch(ev)
 	}
 	for {
 		ev := x.pollForEvent(a.conn)
 		if ev == nil {
 			break
 		}
-		a.handle(ev)
-		x.free(unsafe.Pointer(ev))
+		a.dispatch(ev)
 	}
 	return a.pending
+}
+
+// dispatch handles one event and frees it, then handles whatever the key
+// repeat lookahead took off the queue behind it.
+func (a *App) dispatch(ev *xcbGenericEvent) {
+	for ev != nil {
+		a.handle(ev)
+		a.x.free(unsafe.Pointer(ev))
+		ev, a.peeked = a.peeked, nil
+	}
 }
 
 func (a *App) push(e Event) { a.pending = append(a.pending, e) }
@@ -550,6 +646,40 @@ func modsFromState(state uint16) Mods {
 	return m
 }
 
+// repeatPress reports whether a key release and the event that follows it
+// are one key repeat. Without detectable auto-repeat the server sends a
+// repeat as a release and a press for the same key, on the same window,
+// carrying the same timestamp; no hand releases and presses a key inside
+// the one millisecond an X timestamp counts.
+func repeatPress(release *xcbInputEvent, next *xcbGenericEvent) bool {
+	if release == nil || next == nil || next.ResponseType&^0x80 != xcbKeyPress {
+		return false
+	}
+	press := (*xcbInputEvent)(unsafe.Pointer(next))
+	return press.Detail == release.Detail && press.Time == release.Time && press.Event == release.Event
+}
+
+// pushKeyDown reports a key press, or a repeat of one, with the text the
+// key produces after it.
+func (a *App) pushKeyDown(w *Window, ev *xcbInputEvent, repeat bool) {
+	x := a.x
+	a.push(Event{Kind: EventKeyDown, Window: w, Key: keyFromX11(ev.Detail), Mods: a.mods, Repeat: repeat})
+	if a.xkbState == nil || a.mods&(input.ModControl|input.ModSuper) != 0 {
+		return
+	}
+	// The event carries the server's modifier and group state, which
+	// includes keys pressed before this window had focus; tracking presses
+	// locally would miss those.
+	x.xkbStateUpdateMask(a.xkbState, uint32(ev.State&0xff), 0, 0, 0, 0, uint32(ev.State>>13)&3)
+	var buf [16]byte
+	n := x.xkbStateKeyGetUTF8(a.xkbState, uint32(ev.Detail), &buf[0], uintptr(len(buf)))
+	for _, r := range string(buf[:max(min(int(n), len(buf)-1), 0)]) {
+		if r >= ' ' || r == '\t' || r == '\n' || r == '\r' {
+			a.push(Event{Kind: EventChar, Window: w, Rune: r, Mods: a.mods})
+		}
+	}
+}
+
 func (a *App) handle(ge *xcbGenericEvent) {
 	x := a.x
 	switch ge.ResponseType &^ 0x80 {
@@ -560,25 +690,27 @@ func (a *App) handle(ge *xcbGenericEvent) {
 			return
 		}
 		a.mods = modsFromState(ev.State)
-		key := keyFromX11(ev.Detail)
 		if ge.ResponseType&^0x80 == xcbKeyRelease {
-			a.push(Event{Kind: EventKeyUp, Window: w, Key: key, Mods: a.mods})
+			if !a.detectableRepeat {
+				// Without detectable auto-repeat the server sends a repeat
+				// as this release followed by an identical press. Look at
+				// the next event: a match is one repeat, and anything else
+				// is handed back to the poll loop.
+				next := x.pollForQueuedEvent(a.conn)
+				if repeatPress(ev, next) {
+					x.free(unsafe.Pointer(next))
+					a.pushKeyDown(w, ev, true)
+					return
+				}
+				a.peeked = next
+			}
+			a.keysDown[ev.Detail] = false
+			a.push(Event{Kind: EventKeyUp, Window: w, Key: keyFromX11(ev.Detail), Mods: a.mods})
 			return
 		}
-		a.push(Event{Kind: EventKeyDown, Window: w, Key: key, Mods: a.mods})
-		if a.xkbState != nil && a.mods&(input.ModControl|input.ModSuper) == 0 {
-			// The event carries the server's modifier and group state,
-			// which includes keys pressed before this window had focus;
-			// tracking presses locally would miss those.
-			x.xkbStateUpdateMask(a.xkbState, uint32(ev.State&0xff), 0, 0, 0, 0, uint32(ev.State>>13)&3)
-			var buf [16]byte
-			n := x.xkbStateKeyGetUTF8(a.xkbState, uint32(ev.Detail), &buf[0], uintptr(len(buf)))
-			for _, r := range string(buf[:max(n, 0)]) {
-				if r >= ' ' || r == '\t' || r == '\n' || r == '\r' {
-					a.push(Event{Kind: EventChar, Window: w, Rune: r, Mods: a.mods})
-				}
-			}
-		}
+		repeat := a.keysDown[ev.Detail]
+		a.keysDown[ev.Detail] = true
+		a.pushKeyDown(w, ev, repeat)
 	case xcbButtonPress, xcbButtonRelease:
 		ev := (*xcbInputEvent)(unsafe.Pointer(ge))
 		w := a.windows[ev.Event]
@@ -658,7 +790,13 @@ func (a *App) handle(ge *xcbGenericEvent) {
 	case xcbFocusIn, xcbFocusOut:
 		ev := (*xcbFocusEvent)(unsafe.Pointer(ge))
 		if w := a.windows[ev.Event]; w != nil {
-			a.push(Event{Kind: EventFocus, Window: w, Focused: ge.ResponseType&^0x80 == xcbFocusIn})
+			focused := ge.ResponseType&^0x80 == xcbFocusIn
+			if !focused {
+				// A key let go while another window has focus reports
+				// nothing here, so forget what was held.
+				a.keysDown = [256]bool{}
+			}
+			a.push(Event{Kind: EventFocus, Window: w, Focused: focused})
 		}
 	case xcbConfigureNotify:
 		ev := (*xcbConfigureEvent)(unsafe.Pointer(ge))
