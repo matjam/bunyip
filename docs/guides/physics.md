@@ -317,6 +317,29 @@ w.Update(ctx.Delta)
 step.End()
 ```
 
+## Seeing what the solver sees
+
+`phys.DrawColliders3` outlines every collider in a world over the 3D
+scene as debug lines and draws the normal of each contact the last
+update reported; `DrawColliders2` does the same in 2D as stroked paths.
+Awake bodies, sleeping bodies and static colliders are told apart by
+colour, which `DrawCollidersColors3` chooses. `DrawShape3` and
+`DrawShape2` outline one shape placed by a transform, for a query result
+or a shape the game is about to cast.
+
+```go
+func (g *game) Draw(ctx *bunyip.Context) error {
+	// ... the scene ...
+	if g.showColliders {
+		phys.DrawColliders3(ctx.Gfx, g.world)
+	}
+	return nil
+}
+```
+
+The [debug console](console.html) has a switch for the same drawing, and
+counts the bodies, contacts and joints beside it.
+
 ## Orbital mechanics
 
 For spaceflight, planets and moons, use the [orbit](space.html)

@@ -53,6 +53,10 @@ window.
 - The window: a fixed view scaled into the window, fullscreen, cursor
   capture and images, clipboard, gamepads, IME text input, action maps
   with rebinding, a frame-timing overlay on F3, and optional pprof.
+- Debugging: an in-game console with commands, variables, key bindings
+  and the log, and panels for the frame timings, the GPU resources and
+  post-processing, a world's entities and systems, the physics
+  simulation, the mixer, the input devices and a game's own services.
 
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
 (Wayland or X11, ALSA, joystick devices) layers sit behind the same
@@ -90,6 +94,7 @@ with it.
 | `bunyip` | `Run`, `Config`, `Game`, `Context`: the loop and the values a game uses |
 | `gfx` | textures, sprites, paths, text, meshes, materials, cameras, lights, fog, culling, LOD, billboards, models, post-processing |
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
+| `console` | in-game debug console: commands, variables, log capture, and panels for the engine, graphics, entities, physics, audio, input and services |
 | `particle` | CPU particle systems drawn through the sprite batch |
 | `tiled` | maps from the Tiled editor in JSON or XML form, built into drawable levels |
 | `audio` | mixer, voices, streams; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
@@ -153,7 +158,7 @@ itself without a person watching the screen.
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
-| `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay |
+| `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay, and the debug console on ` and F4 |
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
 | `go run ./examples/audio [-music file.ogg]` | positional voices, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream and streamed music files |
 | `go run ./examples/solar` | the ECS driving a scene: hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
@@ -165,7 +170,7 @@ itself without a person watching the screen.
 | `go run ./examples/animation` | keyframe clips on 2D sprites and 3D transforms, a flipbook walker, crossfades between a hero's clips, Finished events chaining back to idle, a robot arm firing an animation event and another reaching a target by two-bone IK |
 | `go run ./examples/physics3d` | five hundred cubes of plastic, metal, gold, car paint, velvet, glass and glowing materials dropped into a pile, with a raycast highlighting the one under the pointer |
 | `go run ./examples/physics2d` | balls, boxes and triangles in a pit with a ramp, a kinematic paddle, a trigger zone and a raycast |
-| `go run ./examples/physics-lab` | capsules, hulls and spheres tumbling onto a mesh terrain, a hinge chain, a motorised paddle wheel, a ragdoll, a character controller climbing stairs, colliders and contacts drawn with debug lines |
+| `go run ./examples/physics-lab` | capsules, hulls and spheres tumbling onto a mesh terrain, a hinge chain, a motorised paddle wheel, a ragdoll, a character controller climbing stairs, colliders and contacts drawn with debug lines, and the debug console driving the world |
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |

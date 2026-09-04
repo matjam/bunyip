@@ -564,14 +564,22 @@ gr.DebugText3D(scout.Position, "scout")
 `ctx.Stats` and `Graphics.Stats()` report the last frame as a
 `FrameStats`: `Draws3D` is mesh draw calls after instancing across all
 passes, `Instances` is mesh instances in the main pass, `Culled` is the
-draws skipped as out of view, and `Draws2D` and `Vertices2D` cover the
-sprite stream. The F3 overlay shows them and `Config.DrawBudget` warns
-when a frame goes over a number you set.
+draws skipped as out of view, `Lights` and `LightsDropped` are the point
+and spot lights the frame kept and threw away, and `Draws2D` and
+`Vertices2D` cover the sprite stream. The F3 overlay shows them and
+`Config.DrawBudget` warns when a frame goes over a number you set.
 
 ```go
 s := gr.Stats()
 gr.Debugf(10, 10, "draws %d  instances %d  culled %d", s.Draws3D, s.Instances, s.Culled)
 ```
+
+`Graphics.Resources()` lists every texture, mesh, model, font, render
+texture and environment the context has made and not destroyed, with
+sizes and an estimate of the GPU memory each holds: what to print when a
+scene is using more memory than it should, or to check that a level
+teardown freed what it loaded. The [debug console](console.html) shows
+the same list with a running total.
 
 Draw calls cost more than triangles. A high `Draws3D` next to a low
 `Instances` means batching is breaking. Merge static geometry with

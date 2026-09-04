@@ -277,6 +277,12 @@ ctx.Audio.Play(g.step, audio.PlayOptions{Priority: 0, Volume: 0.3})
 n := ctx.Audio.Playing() // for the debug overlay
 ```
 
+`Voices` returns a snapshot of what is playing, one `VoiceInfo` per
+voice with its bus, gain, pan, pitch, playhead and position, and `Buses`
+returns every bus in the order it was made. Both are for a mixing panel
+or a test rather than for the game's own logic; the [debug
+console](console.html) shows them.
+
 ## Tracker music
 
 [audio/tracker](../pkg/audio/tracker.html) loads and plays MOD, S3M, XM
