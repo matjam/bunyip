@@ -348,8 +348,12 @@ func (rf RichFonts) layout(rt RichText, opts TextOptions) []richLine {
 	return lines
 }
 
-// MeasureRich returns the size rich text takes with the options.
+// MeasureRich returns the size rich text takes with the options. It is
+// zero without a Regular font, which every run falls back to.
 func (rf RichFonts) MeasureRich(rt RichText, opts TextOptions) (w, h float32) {
+	if rf.Regular == nil {
+		return 0, 0
+	}
 	spacing := opts.LineSpacing
 	if spacing == 0 {
 		spacing = 1

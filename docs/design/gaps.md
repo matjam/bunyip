@@ -130,8 +130,10 @@ kerning and ligatures cross the style changes inside it.
   source over, and a layer that asks for the text colour draws white,
   since a colour glyph is drawn untinted. In SVG, strokes, clipping
   paths, masks, filters, patterns, images, text, style sheets and
-  animation are not drawn, the even-odd fill rule draws as non-zero, and
-  a gradient does not inherit from another through `href`. A
+  animation are not drawn, the even-odd fill rule draws as non-zero, a
+  gradient does not inherit from another through `href`, and a group's
+  opacity applies to each of its shapes rather than to the group as one.
+  A
   distance-field font draws a colour glyph as its outline.
 - Hyphenation patterns for languages outside the shipped set, which are
   Danish, Dutch, English (American and British), Finnish, French,

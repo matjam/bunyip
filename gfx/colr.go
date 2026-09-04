@@ -21,20 +21,32 @@ import (
 const (
 	colrMaxDepth  = 64 // paint tables deep, against a font that loops
 	colrMaxLayers = 4096
+	// colrMaxPaints bounds the whole graph, since compositing branches in
+	// two and a depth limit alone would let a font ask for far too much
+	// work.
+	colrMaxPaints = 20000
 )
 
 // colrPainter draws one glyph's paint graph onto a canvas.
 type colrPainter struct {
-	f     *Font
-	face  uint8
-	colr  *tables.COLR1
-	pal   []tables.ColorRecord
-	k     float32 // pixels per font unit
-	toPix affine  // font units, y up, to canvas pixels, y down
-	w, h  int
-	rast  *vector.Rasterizer
-	alpha *image.Alpha
-	seen  []tables.GlyphID // base glyphs being painted, against a loop
+	f      *Font
+	face   uint8
+	colr   *tables.COLR1
+	pal    []tables.ColorRecord
+	k      float32 // pixels per font unit
+	toPix  affine  // font units, y up, to canvas pixels, y down
+	w, h   int
+	rast   *vector.Rasterizer
+	alpha  *image.Alpha
+	seen   []tables.GlyphID // base glyphs being painted, against a loop
+	budget int              // paint tables left to visit
+}
+
+// spend reports whether there is work left in the budget, and takes one
+// paint table's worth of it.
+func (p *colrPainter) spend() bool {
+	p.budget--
+	return p.budget > 0
 }
 
 // addCOLR draws a glyph the font describes as COLR layers and puts it in
@@ -46,7 +58,7 @@ func (f *Font) addCOLR(face uint8, gid font.GID, data font.GlyphColor) (glyph, b
 	if colr == nil || len(cpal) == 0 || len(cpal[0]) == 0 || data.Paint == nil {
 		return glyph{}, false
 	}
-	p := &colrPainter{f: f, face: face, colr: colr, pal: cpal[0], k: f.pxPerEm / ff.upem}
+	p := &colrPainter{f: f, face: face, colr: colr, pal: cpal[0], k: f.pxPerEm / ff.upem, budget: colrMaxPaints}
 	// A clip box, when the font gives one, is the glyph's extent; without
 	// one the extent is what the layers cover.
 	b, clipped := clipBox(colr.ClipList, uint16(gid))
@@ -122,7 +134,7 @@ func (p *colrPainter) paletteColor(index uint16, alpha float32) rgba {
 // bounds returns the font-unit box the paint graph covers, which is the
 // box of the outlines its glyph paints fill.
 func (p *colrPainter) bounds(pt tables.PaintTable, m affine, depth int) box {
-	if depth > colrMaxDepth {
+	if depth > colrMaxDepth || !p.spend() {
 		return emptyBox
 	}
 	b := emptyBox
@@ -215,13 +227,16 @@ func fromAffine2x3(xx, yx, xy, yy, dx, dy float32) affine {
 }
 
 // paint draws one paint table onto the canvas, clipped to a coverage
-// mask. m is the transform from the paint's own space to font units.
+// mask. m is the transform from the paint's own space to font units. The
+// pass gets its own budget, spent by the bounds pass first, so a graph
+// that branches cannot ask for unbounded work.
 func (p *colrPainter) paint(dst *colorCanvas, clip []float32, m affine, pt tables.PaintTable) {
+	p.budget = colrMaxPaints
 	p.paintAt(dst, clip, m, pt, 0)
 }
 
 func (p *colrPainter) paintAt(dst *colorCanvas, clip []float32, m affine, pt tables.PaintTable, depth int) {
-	if depth > colrMaxDepth {
+	if depth > colrMaxDepth || !p.spend() {
 		return
 	}
 	switch t := pt.(type) {

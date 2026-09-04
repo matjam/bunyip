@@ -194,7 +194,7 @@ func (r *svgRender) bounds(el *svgElem, st svgState, depth int) box {
 // draw paints the element and its children onto the canvas.
 func (r *svgRender) draw(dst *colorCanvas, el *svgElem, st svgState, depth int) {
 	r.walk(el, st, depth, func(el *svgElem, st svgState, path []svgSeg) {
-		fill := svgFillOf(el, st)
+		fill := st.fill // resolved against the element by the walk
 		if !fill.has || len(path) == 0 {
 			return
 		}
@@ -243,6 +243,14 @@ func (r *svgRender) walk(el *svgElem, st svgState, depth int, shape func(*svgEle
 		x, y := svgNumber(el.attr["x"], 0), svgNumber(el.attr["y"], 0)
 		if x != 0 || y != 0 {
 			st.xform = st.xform.mul(translateAffine(x, y))
+		}
+		if target.tag == "symbol" {
+			// A symbol draws only where a use puts it, so its children are
+			// walked in its place.
+			for _, k := range target.kids {
+				r.walk(k, st, depth+1, shape)
+			}
+			return
 		}
 		r.walk(target, st, depth+1, shape)
 		return
