@@ -30,3 +30,22 @@ func TestAtlasResolvesImage(t *testing.T) {
 		t.Errorf("atlas without an image name: %v", err)
 	}
 }
+
+// Aseprite names the file in its errors and fails before the GPU when
+// the bytes are not an Aseprite file.
+func TestAsepriteNamesTheFile(t *testing.T) {
+	fs, err := OpenFS(FSSource(fstest.MapFS{
+		"sprites/hero.aseprite": {Data: []byte("not an aseprite file at all, but long enough to reach the magic")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	_, err = Aseprite(nil, fs, "sprites/hero.aseprite", gfx.AsepriteOptions{}, gfx.TextureOptions{})
+	if err == nil || !strings.Contains(err.Error(), "sprites/hero.aseprite") {
+		t.Errorf("error %v", err)
+	}
+	if _, err := Aseprite(nil, fs, "sprites/missing.aseprite", gfx.AsepriteOptions{}, gfx.TextureOptions{}); err == nil {
+		t.Error("a missing file loaded")
+	}
+}

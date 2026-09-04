@@ -83,6 +83,36 @@ gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
 idle, ok := atlas.Region("hero_idle_0")
 ```
 
+## Aseprite files
+
+`ParseAseprite` reads Aseprite's own `.aseprite` and `.ase` files, so a
+game ships the file the artist saved rather than an export. It
+composites each frame from the layers that are visible in the editor,
+packs the frames into one image and describes them as an `AtlasData`,
+with the file's tags as animations that play at the timings it recorded.
+RGBA, greyscale and indexed files all read, layer opacity and group
+visibility are honoured, and a layer in a blend mode other than normal
+is drawn as normal. `asset.Aseprite` reads, packs, uploads and binds in
+one call.
+
+Composited frames are named by number, `"0"` upwards. Set
+`AsepriteOptions.Layers` and each layer's own frames are packed beside
+them as `"<layer>/<number>"`, a layer inside a group carrying the
+group's name first, for a hat or a damage overlay drawn on its own.
+Slices come through as named rectangles, and the result also carries the
+layers, tags and palette.
+
+```go
+hero, err := asset.Aseprite(ctx.Gfx, fs, "sprites/hero.aseprite",
+	gfx.AsepriteOptions{Layers: true}, gfx.TextureOptions{})
+g.run = hero.Atlas.Animation("run")
+hitbox, _ := hero.Slice("hitbox")
+hat, _ := hero.Atlas.Region("gear/hat/2")
+
+frame, _ := g.run.At(ctx.Time)
+gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
+```
+
 `DrawNineSlice` stretches a `NineSlice` over any rectangle while its
 corners keep their size, so a 24 by 24 png draws a panel or a speech
 bubble at any size. Set `Tile` to repeat the edges and centre instead of

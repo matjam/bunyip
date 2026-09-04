@@ -4,8 +4,8 @@
 // sources taking precedence so a modder's or developer's copy overrides
 // the packed or embedded one. Open takes directory and pack paths;
 // OpenFS also takes an io/fs.FS. The one-call loaders (Image, Texture,
-// Font, Sound, Music, Model, Tracker) read and decode an asset into an
-// engine object. A
+// Atlas, Aseprite, Font, Sound, Music, Model, Tracker) read and decode
+// an asset into an engine object. A
 // Loader decodes assets on worker goroutines for loading screens, and a
 // Watcher reports loose files that change on disk for hot reload.
 package asset

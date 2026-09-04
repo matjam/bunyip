@@ -26,7 +26,8 @@ window.
   and Wang tilesets on square, hexagonal and isometric grids, Tiled maps
   and terrain sets, a camera with follow,
   clamp and shake that culls what it cannot see, sort keys within a
-  layer, atlases with tag animations, vector paths
+  layer, atlases with tag animations, Aseprite files read as they are
+  saved, vector paths
   with gradients and dashes, particles, HarfBuzz-shaped text with colour
   emoji and rich markup, colour matrices, lit sprites with shadows cast
   from occluders, blend modes and

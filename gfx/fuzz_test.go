@@ -25,6 +25,19 @@ func FuzzParseAtlas(f *testing.F) {
 	})
 }
 
+// FuzzParseAseprite feeds the Aseprite reader corrupt files: an error,
+// never a panic and never an unbounded allocation.
+func FuzzParseAseprite(f *testing.F) {
+	f.Add(twoLayerFile(f))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		a, err := ParseAseprite(data, AsepriteOptions{Layers: true})
+		if err == nil && a.Image == nil {
+			t.Fatal("parsed with no image")
+		}
+	})
+}
+
 // FuzzParseRich feeds the rich text parser arbitrary markup.
 func FuzzParseRich(f *testing.F) {
 	f.Add("plain")

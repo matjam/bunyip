@@ -88,7 +88,8 @@ isometric layouts), the
 `tiled` importer in both of Tiled's file forms with every layer
 encoding it writes (CSV, base64 plain, zlib, gzip and zstd),
 TexturePacker and
-Aseprite atlases with `asset.Atlas` to load one and
+Aseprite atlases with `asset.Atlas` to load one, Aseprite's own binary
+files with `ParseAseprite` and `asset.Aseprite`,
 `Atlas.Animation` to play a tag at its own timings, sprite culling
 against the 2D camera by the sprite's own corners, under the transform
 stack as well, a sort key within a layer (`SetSortKey`),
@@ -203,8 +204,9 @@ slide) are in.
   few thousand vertices each.
 - Sparse accessors in glTF, which Blender writes for morph targets, are
   read as dense; a file that relies on them loads with zero deltas.
-- Sprite animation authoring from Aseprite or similar, beyond the atlas
-  frame tags `ParseAtlas` reads.
+- Aseprite tilemap layers and tilesets, which `ParseAseprite` skips, and
+  the blend modes past normal, which it draws as normal. Layers, groups,
+  cels, tags, slices, palettes and the three colour modes read.
 
 ## Audio
 
@@ -303,8 +305,8 @@ reload is `Shader.Reload` behind an `asset.Watcher`.
   runs each one headless (`BUNYIP_HEADLESS=1`) and checks that it drew
   something, but not what.
 - Longer fuzzing campaigns. Every parser (glTF, the sound decoders, the
-  tracker loaders, HDR, atlases, rich text, Tiled maps and tilesets in
-  both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
+  tracker loaders, HDR, atlases, Aseprite files, rich text, Tiled maps
+  and tilesets in both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
   package; the first runs found two third-party decoder panics, now
   turned into errors, and an unchecked accessor bound in the glTF
   reader.
