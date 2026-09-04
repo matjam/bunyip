@@ -314,6 +314,16 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 // SetCamera sets the camera for this frame's meshes.
 func (g *Graphics) SetCamera(c Camera) { g.cur.camera, g.cur.hasCam = c, true }
 
+// ensureCamera gives a queue that drew a 3D scene without SetCamera the
+// default camera, five units back down the z axis. It runs before the
+// draws are prepared and again before the frame block is written, so
+// culling, sorting and the shader see one view.
+func (q *drawQueue) ensureCamera() {
+	if !q.hasCam {
+		q.camera, q.hasCam = Camera{Position: lin.V3(0, 0, 5)}, true
+	}
+}
+
 // SetLight sets the directional light, ambient term and shadow settings.
 func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 
@@ -628,9 +638,7 @@ func abs32(v float32) float32 {
 // after prepareDraws, whose caster bounds the cascades need, and keeps
 // the cascade matrices for the shadow pass to cull against.
 func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
-	if !q.hasCam {
-		q.camera = Camera{Position: lin.V3(0, 0, 5)}
-	}
+	q.ensureCamera()
 	l := q.light
 	strength := l.ShadowStrength
 	if strength == 0 {
@@ -698,13 +706,17 @@ func boolFloat(b bool) float32 {
 	return 0
 }
 
-// prepareDraws resolves material sets, culls draws outside the camera's
-// view, sorts opaque draws for instancing and blended draws back to
-// front, and uploads the instance stream. Culled draws sort to the end
-// of their group and stay in the lists for the shadow pass, which sees
-// them from the light; q.visOpaque and q.visBlended count the draws the
-// camera sees at the front of each list.
+// prepareDraws resolves material sets and bounds, culls draws outside
+// the camera's view, sorts opaque draws for instancing and blended draws
+// back to front, and uploads the instance stream. Culled draws sort to
+// the end of their group and stay in the lists for the shadow pass,
+// which sees them from the light; q.visOpaque and q.visBlended count the
+// draws the camera sees at the front of each list. It runs before
+// writeUniforms and leaves each draw's bounding sphere on the draw, for
+// the shadow pass to cull against, and the furthest caster's reach
+// against the light in q.casterAlong, for the cascades.
 func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, blended drawList, err error) {
+	q.ensureCamera() // culling, sorting and the frame block share one view
 	view := q.camera.viewMatrix()
 	frustum := FrustumOf(q.camera.ViewProj(aspect))
 	env := q.light.Environment

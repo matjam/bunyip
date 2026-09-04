@@ -58,6 +58,37 @@ func TestSkinBoundsFollowThePose(t *testing.T) {
 	}
 }
 
+// TestDefaultCameraCulling draws a scene that never called SetCamera:
+// culling has to use the same default camera the frame is rendered with,
+// or it culls what the frame then draws.
+func TestDefaultCameraCulling(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	v, i := CubeMesh()
+	cube, err := g.NewMesh(v, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cube.Destroy()
+	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
+	// One frame, since the queue keeps the camera it was given last.
+	if ok, err := g.begin(Black); err != nil || !ok {
+		t.Fatal(err)
+	}
+	g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: White, Ambient: Color{0.3, 0.3, 0.3, 1}})
+	g.DrawMesh(cube, Material{Roughness: 1}, lin.Identity())
+	g.DrawMesh(cube, Material{Roughness: 1}, lin.Translate(lin.V3(50, 0, 0)))
+	img, err := g.end(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := g.Stats(); s.Culled != 1 || s.Instances != 1 {
+		t.Errorf("without SetCamera: culled %d, instances %d, want 1 and 1", s.Culled, s.Instances)
+	}
+	if !bright(img, 32, 32) {
+		t.Errorf("the cube is missing from the default camera's view: %v", img.RGBAAt(32, 32))
+	}
+}
+
 // TestJointBounds checks the per-joint boxes a skinned mesh keeps and the
 // sphere they give under a pose.
 func TestJointBounds(t *testing.T) {
