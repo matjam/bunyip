@@ -33,6 +33,12 @@ func init() {
 // Wayland. A read that runs out of time returns what it has.
 const clipboardWait = time.Second
 
+// ErrNoInputYet is returned when the Wayland clipboard is written before
+// the window has had any input. Changing the selection quotes the serial
+// of a key, a button or a pointer or keyboard entering the window, and
+// until one of those has happened there is no serial to quote.
+var ErrNoInputYet = errors.New("platform: the Wayland clipboard cannot be set before the window has had input")
+
 // ErrUnsupported is returned when neither window system can be reached.
 var ErrUnsupported = errors.New("platform: cannot reach a Wayland compositor or an X server (is WAYLAND_DISPLAY or DISPLAY set?)")
 

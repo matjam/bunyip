@@ -201,7 +201,9 @@ func (a *App) Clipboard() (string, error) {
 
 // SetClipboard puts text on the system clipboard. Both backends hand the
 // text over when another client asks for it, so it stays available for as
-// long as this process owns the selection and no longer.
+// long as this process owns the selection and no longer. Under Wayland it
+// returns ErrNoInputYet before the window has had any input, because
+// changing the selection quotes the serial of an input event.
 func (a *App) SetClipboard(text string) error {
 	if a.wl != nil {
 		return a.wl.setClipboard(text)

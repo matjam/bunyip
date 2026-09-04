@@ -124,6 +124,7 @@ func wlInitCallbacks() {
 	// wl_pointer.
 	cbPointerEnter = purego.NewCallback(func(data, proxy unsafe.Pointer, serial uint32, surface unsafe.Pointer, sx, sy int32) {
 		if a := wlCurrent; a != nil {
+			a.lastSerial = serial // the earliest serial set_selection can quote
 			a.onPointerEnter(serial, surface, sx, sy)
 		}
 	})
@@ -183,6 +184,7 @@ func wlInitCallbacks() {
 		if w == nil {
 			return
 		}
+		a.lastSerial = serial // the earliest serial set_selection can quote
 		a.kbFocus = w
 		w.setFocused(true)
 	})

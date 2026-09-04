@@ -197,6 +197,14 @@ selection holds, so a read while another window has focus finds nothing.
 A compositor with no `wl_data_device_manager` returns an error from both
 calls.
 
+`SetClipboard` under Wayland also returns an error until the window has
+had some input. The compositor changes the selection only in answer to a
+key, a button, or the pointer or keyboard arriving, and quotes that
+event; a game that copies to the clipboard before the player has touched
+anything has nothing to quote. In practice a copy always follows a key
+press or a click, so this shows up only in a game that writes the
+clipboard from `Init`.
+
 Three things behave differently under Wayland. The title bar is the
 compositor's: the layer asks for server-side decorations through
 `zxdg_decoration_manager_v1`, and a compositor that does not offer that

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
-	"io"
 	"os"
 	"strings"
 	"structs"
@@ -592,7 +591,13 @@ func (a *wlApp) close() {
 	a.dropOffer(a.selection)
 	a.dropOffer(a.newOffer)
 	if a.dataDevice != nil {
-		l.destroy(a.dataDevice)
+		// release is the destructor from version two; an older device is
+		// only destroyed locally, which is all its version allows.
+		if a.dataMgrVer >= 2 {
+			l.marshal(a.dataDevice, opDataDeviceRelease, nil, wlMarshalFlagDestroy)
+		} else {
+			l.destroy(a.dataDevice)
+		}
 		a.freeListener(a.dataDevice)
 		a.dataDevice = nil
 	}
@@ -1383,10 +1388,13 @@ func (w *wlWindow) setIcon(img image.Image) {
 	w.dropIcon()
 	if img == nil {
 		l.send(a.iconMgr, opToplevelIconMgrSetIcon, uintptr(w.xdgToplevel), 0)
-		l.flush(a.display)
+		w.commitIcon()
 		return
 	}
-	buf := a.shmBuffer(img)
+	// The protocol requires a square buffer and raises invalid_buffer on
+	// anything else, which would disconnect the client; a non-square icon
+	// is legal on X11 and Windows, so pad it here.
+	buf := a.shmBuffer(squareIcon(img))
 	if buf == nil {
 		return
 	}
@@ -1401,7 +1409,32 @@ func (w *wlWindow) setIcon(img image.Image) {
 	l.send(icon, opToplevelIconAddBuffer, uintptr(buf), 1)
 	l.send(a.iconMgr, opToplevelIconMgrSetIcon, uintptr(w.xdgToplevel), uintptr(icon))
 	w.icon, w.iconBuffer = icon, buf
-	l.flush(a.display)
+	w.commitIcon()
+}
+
+// commitIcon applies a set_icon. The request is double-buffered on the
+// toplevel's surface, so without a commit the icon changes only at the
+// next frame the game draws, and never at all while it is hidden.
+func (w *wlWindow) commitIcon() {
+	l := w.app.l
+	l.send(w.surface, opSurfaceCommit)
+	l.flush(w.app.display)
+}
+
+// squareIcon pads an image out to a square with transparent edges,
+// centred, because xdg-toplevel-icon-v1 takes square buffers only. An
+// image that is already square is returned as it is.
+func squareIcon(img image.Image) image.Image {
+	b := img.Bounds()
+	width, height := b.Dx(), b.Dy()
+	if width == height || width <= 0 || height <= 0 {
+		return img
+	}
+	side := max(width, height)
+	out := image.NewNRGBA(image.Rect(0, 0, side, side))
+	at := image.Pt((side-width)/2, (side-height)/2)
+	draw.Draw(out, image.Rectangle{Min: at, Max: at.Add(image.Pt(width, height))}, img, b.Min, draw.Src)
+	return out
 }
 
 // dropIcon releases the icon in force. Both the icon and its buffer are
@@ -1450,7 +1483,9 @@ func (a *wlApp) shmBuffer(img image.Image) unsafe.Pointer {
 	if pool == nil {
 		return nil
 	}
-	buf := l.marshal(pool, opShmPoolCreateBuf, a.iface["wl_buffer"], 0, 0, 0,
+	// create_buffer takes the new id, then the offset into the pool, the
+	// size, the stride and the format.
+	buf := l.marshal(pool, opShmPoolCreateBuf, a.iface["wl_buffer"], 0, 0, 0, 0,
 		uintptr(int32(width)), uintptr(int32(height)), uintptr(int32(width*4)), uintptr(uint32(shmFormatARGB8888)))
 	// The pool can go as soon as the buffer exists, and the file has to
 	// reach the compositor before this process closes its descriptor.
@@ -1776,23 +1811,76 @@ func (a *wlApp) clipboard() (string, error) {
 	// copy of that end is closed, so flush first and close ours second.
 	a.flushDisplay()
 	syscall.Close(fds[1])
-	// Only the read end is made non-blocking, so that a deadline works
-	// here; the owner writes into a pipe that behaves as it expects.
+	// Only the read end is made non-blocking, so that the read below can
+	// wait on the display as well; the owner writes into a pipe that
+	// behaves as it expects.
 	if err := syscall.SetNonblock(fds[0], true); err != nil {
 		syscall.Close(fds[0])
 		return "", fmt.Errorf("platform: clipboard pipe: %w", err)
 	}
-	f := os.NewFile(uintptr(fds[0]), "wayland-clipboard")
-	defer f.Close()
-	if err := f.SetReadDeadline(time.Now().Add(clipboardWait)); err != nil {
-		// Without a deadline the read could wait on an owner that never
-		// writes, which would stop the game rather than the paste.
-		return "", nil
-	}
+	defer syscall.Close(fds[0])
 	// A read that stops early keeps what it has: a truncated paste is
 	// better than none, and an owner that says nothing gives none.
-	data, _ := io.ReadAll(f)
-	return string(data), nil
+	return string(a.readOffer(fds[0], time.Now().Add(clipboardWait))), nil
+}
+
+// readOffer reads the pipe the selection's owner writes into, until the
+// owner closes it or the deadline passes. It waits on the display as well
+// as the pipe and dispatches what arrives, because a compositor that goes
+// unanswered for a second may take the window for hung, and because the
+// owner is sometimes this process, whose source cannot write until its
+// send event is dispatched. Events that arrive are queued for the next
+// Poll rather than added to the slice the last one returned.
+func (a *wlApp) readOffer(fd int, deadline time.Time) []byte {
+	l := a.l
+	a.out.deferQueue = true
+	defer func() { a.out.deferQueue = false }()
+	var out []byte
+	buf := make([]byte, 4096)
+	for {
+		for {
+			n, err := syscall.Read(fd, buf)
+			if n > 0 {
+				out = append(out, buf[:n]...)
+				continue
+			}
+			if err == syscall.EINTR {
+				continue
+			}
+			if err != syscall.EAGAIN {
+				return out // end of file, or a pipe that broke
+			}
+			break
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return out
+		}
+		if l.dispatchPending(a.display) < 0 {
+			return out
+		}
+		// prepare_read reserves the connection so the read below races no
+		// other reader; it fails while the queue still holds events.
+		for l.prepareRead(a.display) != 0 {
+			if l.dispatchPending(a.display) < 0 {
+				return out
+			}
+		}
+		if !a.flushDisplay() {
+			l.cancelRead(a.display)
+			return out
+		}
+		fds := [2]pollFD{{Fd: l.getFD(a.display), Events: pollIn}, {Fd: int32(fd), Events: pollIn}}
+		n := l.poll(&fds[0], 2, int32(left/time.Millisecond)+1)
+		if n <= 0 || fds[0].Revents&pollIn == 0 {
+			l.cancelRead(a.display)
+		} else if l.readEvents(a.display) < 0 {
+			return out
+		}
+		if n < 0 || l.dispatchPending(a.display) < 0 {
+			return out
+		}
+	}
 }
 
 // setClipboard offers the text as the selection. The compositor keeps the
@@ -1801,6 +1889,12 @@ func (a *wlApp) clipboard() (string, error) {
 func (a *wlApp) setClipboard(text string) error {
 	if a.dataDevice == nil {
 		return ErrNoClipboard
+	}
+	if a.lastSerial == 0 {
+		// set_selection has to quote the serial of an input event, and a
+		// window that has never been touched has none to quote. A
+		// compositor that checks would drop the request in silence.
+		return ErrNoInputYet
 	}
 	l := a.l
 	a.destroySource()
@@ -1862,9 +1956,13 @@ func (a *wlApp) onDataOffer(offer unsafe.Pointer) {
 // onSelection takes the offer the compositor says is the selection, or
 // nothing when the selection was cleared.
 func (a *wlApp) onSelection(offer unsafe.Pointer) {
-	if a.newOffer == offer {
-		a.newOffer = nil
+	// An announced offer that turns out not to be the selection is this
+	// layer's to destroy, and a cleared selection leaves one behind every
+	// time; without this its proxy and listener live to the next offer.
+	if a.newOffer != nil && a.newOffer != offer {
+		a.dropOffer(a.newOffer)
 	}
+	a.newOffer = nil
 	if a.selection != nil && a.selection != offer {
 		a.dropOffer(a.selection)
 	}

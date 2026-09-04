@@ -336,7 +336,9 @@ func (c *Context) Clipboard() (string, error) { return c.app.Clipboard() }
 
 // SetClipboard puts text on the system clipboard. On Linux the text is
 // handed over when another program asks for it, so it stays on the
-// clipboard only while the game runs.
+// clipboard only while the game runs. Under Wayland it returns an error
+// until the window has had input, because the compositor changes the
+// selection only in answer to a key, a button or the pointer arriving.
 func (c *Context) SetClipboard(text string) error { return c.app.SetClipboard(text) }
 
 // SetTextInputRect tells the operating system's input method where text

@@ -192,6 +192,7 @@ const (
 
 	opDataDeviceStartDrag    = 0
 	opDataDeviceSetSelection = 1
+	opDataDeviceRelease      = 2 // the destructor, from version two
 
 	opDataOfferAccept  = 0
 	opDataOfferReceive = 1
