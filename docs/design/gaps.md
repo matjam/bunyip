@@ -28,7 +28,10 @@ Wayland through `wl_data_device` with a pipe.
 - Windows has been cross-compiled and vetted but never run on a real
   machine. The Linux window layer has: both the Wayland and X11 backends
   have opened windows, presented frames and delivered input on a Linux
-  desktop. Linux audio and gamepads remain unexercised.
+  desktop. Linux audio and gamepads remain unexercised, and so do the
+  clipboard, X11 detectable key repeat, Wayland fractional scale and the
+  Wayland window icon, which were written against the protocols and
+  compile but have not been driven by hand.
 - What the Wayland layer does not do yet: text input through
   `zwp_text_input_v3`. Fractional scale is in, through
   `wp_fractional_scale_v1` and `wp_viewporter`, with the integer buffer

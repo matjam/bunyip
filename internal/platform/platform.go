@@ -1,5 +1,6 @@
 // Package platform owns the operating system: windows, the event queue,
-// keyboard and mouse input, display scaling and Vulkan surface creation.
+// keyboard and mouse input, display scaling, window visibility, the
+// clipboard and Vulkan surface creation.
 //
 // Each operating system has its own implementation of App and Window in a
 // build-tagged file with an identical method set, so the rest of the engine

@@ -51,8 +51,9 @@ window.
   pathfinding and field of view, and networking over TCP (with TLS) and
   UDP (with reliable channels, prediction and interpolation helpers).
 - The window: a fixed view scaled into the window, fullscreen, cursor
-  capture and images, clipboard, gamepads, IME text input, action maps
-  with rebinding, a frame-timing overlay on F3, and optional pprof.
+  capture and images, the clipboard on every platform, pausing while
+  unfocused or hidden, gamepads, IME text input, action maps with
+  rebinding, a frame-timing overlay on F3, and optional pprof.
 
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
 (Wayland or X11, ALSA, joystick devices) layers sit behind the same
@@ -194,8 +195,9 @@ a specific library.
 
 Linux: a Vulkan driver, `libasound`, and either `libwayland-client` 1.20 or
 later for a Wayland session or `libxcb` for an X11 one. `libxkbcommon` gives
-text input on both, `libxkbcommon-x11` is needed for X11, and
-`libwayland-cursor` gives the pointer its shapes under Wayland. Windows: a
+text input on both, `libxkbcommon-x11` is needed for X11, `libxcb-xkb` gives
+X11 detectable key repeat, and `libwayland-cursor` gives the pointer its
+shapes under Wayland. Windows: a
 Vulkan driver (`vulkan-1.dll` ships with GPU drivers).
 
 ## Developing
