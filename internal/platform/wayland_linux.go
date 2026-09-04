@@ -567,7 +567,7 @@ func (a *wlApp) close() {
 	}
 }
 
-func (a *wlApp) push(e Event) { a.out.pending = append(a.out.pending, e) }
+func (a *wlApp) push(e Event) { a.out.push(e) }
 
 // --- registry ---
 
@@ -1364,7 +1364,7 @@ func (w *wlWindow) setFullscreen(on bool) {
 // an event, a Wake or a due key repeat.
 func (a *wlApp) poll(wait bool) []Event {
 	l := a.l
-	a.out.pending = a.out.pending[:0]
+	a.out.startPoll()
 	a.pumpRepeats(time.Now())
 	if l.dispatchPending(a.display) < 0 {
 		return a.closeAll()
@@ -1447,6 +1447,12 @@ func (a *wlApp) closeAll() []Event {
 	}
 	return a.out.pending
 }
+
+// clipboard and setClipboard are not wired yet: the compositor hands
+// selections over through wl_data_device, which this layer does not bind.
+func (a *wlApp) clipboard() (string, error) { return "", ErrNoClipboard }
+
+func (a *wlApp) setClipboard(string) error { return ErrNoClipboard }
 
 // wake writes to the pipe Poll waits on. Safe from any goroutine.
 func (a *wlApp) wake() {

@@ -172,12 +172,22 @@ backend`.
 | `SetPosition`, `Position` | yes | no-op | no-op | no-op |
 | `SetAlwaysOnTop` | yes | no-op | no-op | no-op |
 | `SetCursorImage` | yes | no-op | no-op | no-op |
-| `Clipboard`, `SetClipboard` | yes | yes | error | error |
+| `Clipboard`, `SetClipboard` | yes | yes | error | yes |
 | `ctx.Visible` | miniaturised and occluded | minimised | suspended (xdg_toplevel 6) | unmapped, minimised and obscured |
 | DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | the output's integer scale | always 1 |
 
 Where a control is a no-op, the call returns and nothing happens.
 `Position` returns (0, 0) where it is not implemented.
+
+The clipboard is not a place the system keeps text on X11. One program
+owns the CLIPBOARD selection and hands the text over when another asks,
+so `SetClipboard` makes the game the owner and the text is available only
+while the game runs; a clipboard manager is what keeps it afterwards.
+`Clipboard` asks the current owner and waits about a second for the
+answer, returning empty text when nobody owns the selection or nobody
+replies. Text longer than one X request is transferred in chunks through
+INCR, in both directions. Both calls need an open window, because a
+selection belongs to one.
 
 Three things behave differently under Wayland. The title bar is the
 compositor's: the layer asks for server-side decorations through

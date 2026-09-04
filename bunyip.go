@@ -329,10 +329,14 @@ func (c *Context) Visible() bool { return c.visible }
 func (c *Context) CloseRequested() bool { return c.closeReq }
 
 // Clipboard returns the system clipboard's text, empty when it holds
-// none. Linux under X11 has no clipboard yet and returns an error.
+// none. Under X11 the read waits about a second for whoever owns the
+// selection to answer and returns empty text if nobody does. A Wayland
+// compositor without wl_data_device_manager returns an error.
 func (c *Context) Clipboard() (string, error) { return c.app.Clipboard() }
 
-// SetClipboard puts text on the system clipboard.
+// SetClipboard puts text on the system clipboard. On Linux the text is
+// handed over when another program asks for it, so it stays on the
+// clipboard only while the game runs.
 func (c *Context) SetClipboard(text string) error { return c.app.SetClipboard(text) }
 
 // SetTextInputRect tells the operating system's input method where text

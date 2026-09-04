@@ -17,9 +17,10 @@ named frames, tweens over any value, engine plumbing hidden behind an
 internal hook package, and the naming and zero-value conventions stated
 in each package's comment.
 
-- The Linux clipboard: X11 selections need a request loop the platform
-  layer does not run yet, and Wayland needs `wl_data_device` with a pipe
-  to read an offer from. macOS and Windows have it.
+- The Wayland clipboard: it needs `wl_data_device` with a pipe to read an
+  offer from. macOS, Windows and X11 have it; the X11 layer owns the
+  CLIPBOARD selection, answers requests for it and transfers text longer
+  than one request through INCR.
 
 ## Platforms and window
 

@@ -180,10 +180,26 @@ func (w *Window) SetIcon(img image.Image) {
 	x.flush(a.conn)
 }
 
-// Clipboard is not available on Linux yet: X11 selections need a request
-// loop the platform layer does not run, and Wayland needs wl_data_device
-// with a pipe to read the offer from.
-func (a *App) Clipboard() (string, error) { return "", ErrNoClipboard }
+// Clipboard returns the system clipboard's text, empty when it holds
+// none. Under X11 it asks whoever owns the CLIPBOARD selection and waits
+// about a second for the answer, and under Wayland it reads the offer the
+// compositor gave the seat. Text this process put there is returned
+// without asking anyone. It fails only where the window system has no
+// clipboard for a client with no window, or where the compositor has no
+// wl_data_device_manager.
+func (a *App) Clipboard() (string, error) {
+	if a.wl != nil {
+		return a.wl.clipboard()
+	}
+	return a.clipboardX11()
+}
 
-// SetClipboard is not available on Linux yet.
-func (a *App) SetClipboard(string) error { return ErrNoClipboard }
+// SetClipboard puts text on the system clipboard. Both backends hand the
+// text over when another client asks for it, so it stays available for as
+// long as this process owns the selection and no longer.
+func (a *App) SetClipboard(text string) error {
+	if a.wl != nil {
+		return a.wl.setClipboard(text)
+	}
+	return a.setClipboardX11(text)
+}

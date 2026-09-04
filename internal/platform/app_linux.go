@@ -35,7 +35,12 @@ type App struct {
 	wl *wlApp // nil under X11
 
 	pending []Event
-	mu      sync.Mutex
+	// queued holds what arrived while a blocking clipboard read was
+	// waiting for the selection, so that the next Poll delivers it
+	// instead of losing it; deferQueue sends pushes there.
+	queued     []Event
+	deferQueue bool
+	mu         sync.Mutex
 
 	// X11.
 	x       *xlib
@@ -47,6 +52,17 @@ type App struct {
 
 	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
 	atomNetWMHidden                                                                                      uint32
+	atomClipboard, atomTargets, atomText, atomIncr, atomSelection                                        uint32
+
+	// The clipboard. clipText is what SetClipboard put on the CLIPBOARD
+	// selection and clipOwned says the layer still owns it, so a read
+	// needs no round trip. clipChunk is the largest property one request
+	// can write, which is what decides when a transfer goes through INCR,
+	// and incr holds the transfers in progress.
+	clipText  string
+	clipOwned bool
+	clipChunk int
+	incr      []incrSend
 
 	xkbCtx, xkbKeymap, xkbState unsafe.Pointer
 	xkbDevice                   int32
@@ -134,6 +150,23 @@ func (a *App) Poll(wait bool) []Event {
 		return a.wl.poll(wait)
 	}
 	return a.x11Poll(wait)
+}
+
+// startPoll empties the event slice for a fresh poll and puts back what a
+// clipboard read queued while it was waiting.
+func (a *App) startPoll() {
+	a.pending = append(a.pending[:0], a.queued...)
+	a.queued = a.queued[:0]
+}
+
+// push records one event for this poll, or queues it when a clipboard
+// read is holding the loop.
+func (a *App) push(e Event) {
+	if a.deferQueue {
+		a.queued = append(a.queued, e)
+		return
+	}
+	a.pending = append(a.pending, e)
 }
 
 // Wake makes a blocked Poll return, delivering an EventWake. It is safe to
