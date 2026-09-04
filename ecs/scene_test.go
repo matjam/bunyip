@@ -328,6 +328,10 @@ func TestSceneMissingPrefab(t *testing.T) {
 	if w.Count() != 0 {
 		t.Fatal("entities spawned despite the error")
 	}
+	// A library holding the name but no prefab is missing all the same.
+	if _, err := w.Instantiate(s, InstantiateOptions{Prefabs: PrefabLibrary{"nosuch": nil}}); !errors.As(err, &mp) {
+		t.Fatalf("nil prefab error %v", err)
+	}
 }
 
 func TestSceneUnregisteredComponent(t *testing.T) {

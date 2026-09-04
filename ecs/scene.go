@@ -258,7 +258,7 @@ func (s *Scene) validate() error {
 type PrefabLibrary map[string]*Prefab
 
 // MissingPrefabError reports a scene reference to a prefab the library
-// does not hold. Name is the name the scene asked for.
+// does not hold, or holds as nil. Name is the name the scene asked for.
 type MissingPrefabError struct{ Name string }
 
 func (e *MissingPrefabError) Error() string {
@@ -353,7 +353,7 @@ func (w *World) Instantiate(scene *Scene, opts ...InstantiateOptions) (*SceneIns
 			}
 		}
 		if rec.Prefab != "" {
-			if _, ok := lib[rec.Prefab]; !ok {
+			if p, ok := lib[rec.Prefab]; !ok || p == nil {
 				return nil, &MissingPrefabError{Name: rec.Prefab}
 			}
 		}
