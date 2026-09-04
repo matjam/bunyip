@@ -322,31 +322,38 @@ func (s *Shader) uniformOffset() int32 {
 // Reload replaces the shader's program with newly compiled SPIR-V from
 // bunyip-shader, rebuilding its pipelines, so a game watching its shader
 // files (asset.Watcher) can swap them while it runs. Images and uniforms
-// are kept. It waits for the GPU first.
+// are kept. The old pipelines are freed once the frame that may still be
+// drawing with them has finished.
 func (s *Shader) Reload(spirv []byte) error {
 	fresh, err := s.g.newShader(spirv, s.mesh)
 	if err != nil {
 		return err
 	}
-	_ = s.g.r.Device.WaitIdle()
-	for _, p := range s.pipes {
-		p.Destroy()
-	}
+	s.retirePipelines()
 	s.frag, s.stages, s.pipes = fresh.frag, fresh.stages, fresh.pipes
 	return nil
 }
 
-// Destroy frees the shader's pipelines. It must not be in use by a frame
-// in flight.
+// Destroy frees the shader's pipelines. Called inside a frame it costs
+// no wait: they go on the frame slot's retire list and are freed once
+// that frame has finished.
 func (s *Shader) Destroy() {
 	if s == nil || s.pipes == nil {
 		return
 	}
-	_ = s.g.r.Device.WaitIdle()
-	for _, p := range s.pipes {
-		p.Destroy()
-	}
+	s.retirePipelines()
 	s.pipes = nil
+}
+
+// retirePipelines hands the shader's pipelines to the frame slot's
+// retire list, so draws already recorded keep their pipeline.
+func (s *Shader) retirePipelines() {
+	pipes := slices.Collect(maps.Values(s.pipes))
+	s.g.deferDestroy(func() {
+		for _, p := range pipes {
+			p.Destroy()
+		}
+	})
 }
 
 // SetShader makes later 2D drawing in the current queue use a sprite

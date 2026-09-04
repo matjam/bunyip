@@ -58,6 +58,7 @@ type Mesh struct {
 	verts      []Vertex // kept for picking
 	indices    []uint32
 	skinned    bool
+	destroyed  bool // Destroy was called; the buffers live until the frame retires them
 	g          *Graphics
 }
 
@@ -78,7 +79,7 @@ func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
 	if m.skinned {
 		return fmt.Errorf("gfx: a skinned mesh cannot be updated")
 	}
-	if m.vbuf == nil {
+	if m.vbuf == nil || m.destroyed {
 		return fmt.Errorf("gfx: update of a destroyed mesh")
 	}
 	if len(verts) == 0 {
@@ -92,10 +93,25 @@ func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
 	if err != nil {
 		return err
 	}
-	m.g.retireBuffers(m.vbuf, m.ibuf)
+	m.retire()
 	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
 	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
 	return nil
+}
+
+// retire hands the mesh's current buffers to the frame slot's retire
+// list, so draws already queued keep drawing them. The mesh keeps
+// pointing at them until then; Update overwrites the fields with the
+// fresh buffers, and Destroy leaves them for the retire to clear.
+func (m *Mesh) retire() {
+	vbuf, ibuf := m.vbuf, m.ibuf
+	m.g.deferDestroy(func() {
+		vbuf.Destroy()
+		ibuf.Destroy()
+		if m.vbuf == vbuf {
+			m.vbuf, m.ibuf = nil, nil
+		}
+	})
 }
 
 // boundingSphere is the mesh's bounds under a model matrix as a sphere:
@@ -140,25 +156,48 @@ func (g *Graphics) newMesh(verts []Vertex, indices []uint32, vdata []byte) (*Mes
 		m.Max = lin.V3(max(m.Max.X, v.Pos.X), max(m.Max.Y, v.Pos.Y), max(m.Max.Z, v.Pos.Z))
 	}
 	var err error
-	if m.vbuf, err = g.r.Device.NewDeviceLocalBuffer(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
+	if m.vbuf, err = g.uploadGeometry(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
 		return nil, err
 	}
 	idata := unsafe.Slice((*byte)(unsafe.Pointer(&indices[0])), len(indices)*4)
-	if m.ibuf, err = g.r.Device.NewDeviceLocalBuffer(idata, vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT); err != nil {
+	if m.ibuf, err = g.uploadGeometry(idata, vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT); err != nil {
 		m.vbuf.Destroy()
 		return nil, err
 	}
 	return m, nil
 }
 
-// Destroy frees the mesh; it must not be in use by a frame in flight.
-func (m *Mesh) Destroy() {
-	if m.vbuf != nil {
-		_ = m.vbuf.Dev().WaitIdle()
-		m.vbuf.Destroy()
-		m.ibuf.Destroy()
-		m.vbuf, m.ibuf = nil, nil
+// uploadGeometry puts vertex or index bytes in device-local memory.
+// Inside a frame the copy is recorded into the frame's command buffer
+// from the staging arena, with a barrier so a draw later in the same
+// frame reads the new data; outside one it goes through a one-shot
+// submission that waits.
+func (g *Graphics) uploadGeometry(data []byte, usage vk.VkBufferUsageFlags) (*render.Buffer, error) {
+	if g.frame == nil {
+		return g.r.Device.NewDeviceLocalBuffer(data, usage)
 	}
+	buf, err := g.r.Device.NewDeviceBuffer(vk.VkDeviceSize(len(data)), usage)
+	if err != nil {
+		return nil, err
+	}
+	staging, offset, err := g.stage(data)
+	if err != nil {
+		buf.Destroy()
+		return nil, err
+	}
+	render.RecordBufferUpload(g.frame.CB, buf, staging, offset, vk.VkDeviceSize(len(data)))
+	return buf, nil
+}
+
+// Destroy frees the mesh. Called inside a frame it costs no wait: the
+// buffers go on the frame slot's retire list and are freed once that
+// frame has finished, so draws already queued this frame still draw.
+func (m *Mesh) Destroy() {
+	if m.vbuf == nil || m.destroyed {
+		return
+	}
+	m.destroyed = true
+	m.retire()
 }
 
 // Material is how a mesh is shaded, in the metallic-roughness model. Every

@@ -19,26 +19,15 @@ type instanceStream struct {
 func (s *instanceStream) reset()              { s.items = s.items[:0] }
 func (s *instanceStream) add(in meshInstance) { s.items = append(s.items, in) }
 
-func (s *instanceStream) upload(dev *render.Device, slot int) error {
+func (s *instanceStream) upload(g *Graphics, slot int) error {
 	s.slot = slot
 	if len(s.items) > s.capacity {
-		if err := dev.WaitIdle(); err != nil {
-			return err
-		}
 		newCap := max(s.capacity*2, 1024)
 		for newCap < len(s.items) {
 			newCap *= 2
 		}
-		for i := range s.buffers {
-			if s.buffers[i] != nil {
-				s.buffers[i].Destroy()
-			}
-			buf, err := dev.NewBuffer(vk.VkDeviceSize(newCap*meshInstanceSize), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-			if err != nil {
-				return err
-			}
-			s.buffers[i] = buf
+		if err := g.growStream(&s.buffers, vk.VkDeviceSize(newCap*meshInstanceSize)); err != nil {
+			return err
 		}
 		s.capacity = newCap
 	}

@@ -239,25 +239,14 @@ func (s *stream2D) build() {
 
 // upload copies this frame's vertices into the slot's buffer, growing every
 // slot's buffer when the stream outgrew them.
-func (s *stream2D) upload(dev *render.Device, slot int) error {
+func (s *stream2D) upload(g *Graphics, slot int) error {
 	if len(s.ordered) > s.capacity {
-		if err := dev.WaitIdle(); err != nil {
-			return err
-		}
 		newCap := max(s.capacity*2, initialVertexCapacity)
 		for newCap < len(s.ordered) {
 			newCap *= 2
 		}
-		for i := range s.buffers {
-			if s.buffers[i] != nil {
-				s.buffers[i].Destroy()
-			}
-			buf, err := dev.NewBuffer(vk.VkDeviceSize(newCap*vertex2DSize), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-			if err != nil {
-				return err
-			}
-			s.buffers[i] = buf
+		if err := g.growStream(&s.buffers, vk.VkDeviceSize(newCap*vertex2DSize)); err != nil {
+			return err
 		}
 		s.capacity = newCap
 	}

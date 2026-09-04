@@ -22,6 +22,8 @@ type Device struct {
 	portability bool
 	alloc       allocator
 	anisotropy  float32 // max anisotropy the device allows, 1 when unsupported
+	arrayIndex  bool    // sampler and sampled-image arrays may be indexed dynamically
+	waits       uint64  // times the device or its queue was waited on
 }
 
 // NewDevice picks a GPU able to present to surface and creates the logical
@@ -62,6 +64,14 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 		features.Features.SamplerAnisotropy = vk.VK_TRUE
 		d.anisotropy = min(g.props.Limits.MaxSamplerAnisotropy, 8)
 	}
+	// The mesh material set holds one array of samplers that a shader
+	// indexes per texture slot, which needs this feature. Every desktop
+	// driver and MoltenVK report it; a device without it cannot run the
+	// mesh pipelines, and initMeshPass says so.
+	if g.features.ShaderSampledImageArrayDynamicIndexing != 0 {
+		features.Features.ShaderSampledImageArrayDynamicIndexing = vk.VK_TRUE
+		d.arrayIndex = true
+	}
 	info := vk.VkDeviceCreateInfo{
 		SType:                   vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		PNext:                   unsafe.Pointer(&features),
@@ -91,10 +101,24 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	return d, nil
 }
 
-// WaitIdle blocks until the device has finished all submitted work.
+// WaitIdle blocks until the device has finished all submitted work. It
+// stalls the GPU, so it belongs in setup and teardown rather than in a
+// frame; Waits counts every such stall.
 func (d *Device) WaitIdle() error {
+	d.waits++
 	return vk.Check("vkDeviceWaitIdle", vk.VkDeviceWaitIdle(d.Handle))
 }
+
+// Waits is how many times the device or its queue has been waited on
+// since it was created. A frame that uploads and destroys through the
+// staging arena and the retire ring adds nothing to it, so the count
+// stands still once a game is running.
+func (d *Device) Waits() uint64 { return d.waits }
+
+// ArrayIndexing reports whether sampler and sampled-image arrays may be
+// indexed by a dynamically uniform expression, which the mesh material
+// set's sampler array needs.
+func (d *Device) ArrayIndexing() bool { return d.arrayIndex }
 
 // Destroy releases the device after waiting for it to go idle.
 func (d *Device) Destroy() {
@@ -149,5 +173,6 @@ func (d *Device) OneShot(record func(cb vk.VkCommandBuffer)) error {
 	if err := vk.Check("vkQueueSubmit2", vk.VkQueueSubmit2(d.Queue, 1, &submit, 0)); err != nil {
 		return err
 	}
+	d.waits++
 	return vk.Check("vkQueueWaitIdle", vk.VkQueueWaitIdle(d.Queue))
 }

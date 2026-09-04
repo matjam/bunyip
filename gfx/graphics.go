@@ -27,10 +27,11 @@ type Graphics struct {
 	spriteShader  *Shader                                 // the default 2D shader
 	sdfShader     *Shader                                 // distance-field text
 	matrixShader  *Shader                                 // sprites through a colour matrix
-	litShader     *Shader                                 // normal-mapped sprites under 2D lights
-	staging       [render.FramesInFlight][]*render.Buffer // texture writes in flight, freed when the slot comes round
-	stats         FrameStats                              // counts for the frame being recorded
-	lastStats     FrameStats                              // the last finished frame's counts
+	litShader     *Shader          // normal-mapped sprites under 2D lights
+	staging       *render.Staging  // this frame's upload arena, one per frame slot
+	waitBase      uint64           // the device's wait count when the frame began
+	stats         FrameStats       // counts for the frame being recorded
+	lastStats     FrameStats       // the last finished frame's counts
 	meshes        meshPass
 	post          postPass
 	white         *Texture
@@ -40,9 +41,10 @@ type Graphics struct {
 	main          *drawQueue // the screen
 	cur           *drawQueue // where Draw* calls land
 	subFrames     []subFrame
-	retired       []*Texture       // replaced mid-frame; destroyed once the frame is submitted
-	retiredBufs   []*render.Buffer // a mesh's old geometry after Update, likewise
-	scratch       []vertex2D
+	// retire holds what each frame slot destroyed or replaced, freed at
+	// that slot's next begin, once its fence has been waited on.
+	retire  [render.FramesInFlight][]func()
+	scratch []vertex2D
 	pathSubs      []subpath        // flattened sub-paths, reused by FillPath and StrokePath
 	pathFill      filler           // likewise the scanline filler
 	pathStroke    stroker          // and the stroke expander
@@ -126,36 +128,86 @@ func clipCoord(v float32) int32 {
 	return int32(math.Floor(float64(lin.Clamp(v, -limit, limit))))
 }
 
-// retire schedules a texture that queued sprites may still reference for
-// destruction at the end of the frame.
-func (g *Graphics) retire(t *Texture) { g.retired = append(g.retired, t) }
-
-// retireBuffers schedules a mesh's old buffers for destruction once the
-// frame that may draw them is submitted.
-func (g *Graphics) retireBuffers(bufs ...*render.Buffer) {
-	g.retiredBufs = append(g.retiredBufs, bufs...)
-}
-
-// freeRetired destroys what was retired, after waiting for the device
-// when anything is pending.
-func (g *Graphics) freeRetired() {
-	if len(g.retired) == 0 && len(g.retiredBufs) == 0 {
+// deferDestroy frees a GPU object once the frame that may still use it
+// has finished. Inside a frame the work goes on that slot's retire list,
+// run at the slot's next begin; outside one it runs at once, after
+// waiting for the device, because the last frame submitted may still be
+// reading the object.
+func (g *Graphics) deferDestroy(free func()) {
+	if fr := g.frame; fr != nil {
+		g.retire[fr.Slot] = append(g.retire[fr.Slot], free)
 		return
 	}
 	_ = g.r.Device.WaitIdle()
-	for _, t := range g.retired {
-		t.Destroy()
+	free()
+}
+
+// freeRetired runs a slot's retire list. The slot's fence has been
+// waited on by then, and the queue runs submissions in order, so every
+// earlier frame has finished too.
+func (g *Graphics) freeRetired(slot int) {
+	// Freeing one object can retire another, and the frame is open by
+	// now, so those land on this same list; the index walk picks them up.
+	for i := 0; i < len(g.retire[slot]); i++ {
+		g.retire[slot][i]()
 	}
-	for _, b := range g.retiredBufs {
-		b.Destroy()
+	g.retire[slot] = g.retire[slot][:0]
+}
+
+// stage copies data into this frame's upload arena. It returns the
+// buffer and offset to record a copy from; the caller must record that
+// copy into the open frame's command buffer.
+func (g *Graphics) stage(data []byte) (*render.Buffer, vk.VkDeviceSize, error) {
+	return g.staging.Alloc(g.frame.Slot, data)
+}
+
+// growStream gives every frame slot a fresh host-visible buffer of size
+// bytes, for a per-frame vertex stream that outgrew the ones it had. The
+// old buffers go on the retire list, since a frame in flight may still
+// be drawing from them, so growing costs no wait.
+func (g *Graphics) growStream(bufs *[render.FramesInFlight]*render.Buffer, size vk.VkDeviceSize) error {
+	var fresh [render.FramesInFlight]*render.Buffer
+	for i := range fresh {
+		buf, err := g.r.Device.NewBuffer(size, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+			vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		if err != nil {
+			for _, b := range fresh {
+				if b != nil {
+					b.Destroy()
+				}
+			}
+			return err
+		}
+		fresh[i] = buf
 	}
-	g.retired, g.retiredBufs = g.retired[:0], g.retiredBufs[:0]
+	old := *bufs
+	*bufs = fresh
+	g.deferDestroy(func() {
+		for _, b := range old {
+			if b != nil {
+				b.Destroy()
+			}
+		}
+	})
+	return nil
+}
+
+// setup records commands that prepare a resource. Inside a frame they go
+// into the frame's command buffer, before any pass; outside one they are
+// submitted on their own and waited for.
+func (g *Graphics) setup(record func(cb vk.VkCommandBuffer)) error {
+	if fr := g.frame; fr != nil {
+		record(fr.CB)
+		return nil
+	}
+	return g.r.Device.OneShot(record)
 }
 
 // newGraphics builds the drawing context over a renderer. The engine
 // loop calls it through internal/hook.
 func newGraphics(r *render.Renderer) (*Graphics, error) {
 	g := &Graphics{r: r, imageSets: map[[5]*Texture]vk.VkDescriptorSet{}}
+	g.staging = r.Device.NewStaging()
 	var err error
 	if g.descriptors, err = r.Device.NewSamplerDescriptors(5, 2048); err != nil {
 		return nil, err
@@ -227,10 +279,11 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	}
 	g.frameNo++
 	g.arena.Reset()
-	for _, b := range g.staging[g.frame.Slot] {
-		b.Destroy() // the frame that used it has finished; BeginFrame waited
-	}
-	g.staging[g.frame.Slot] = g.staging[g.frame.Slot][:0]
+	// BeginFrame waited on this slot's fence, so everything the last
+	// frame in this slot staged or retired is finished with.
+	g.staging.Begin(g.frame.Slot)
+	g.freeRetired(g.frame.Slot)
+	g.waitBase = g.r.Device.Waits()
 	g.stats = FrameStats{}
 	g.main.reset()
 	g.main.clear = clear
@@ -339,6 +392,12 @@ type FrameStats struct {
 	// which a frame keeps none of; a nonzero count means the scene should
 	// add its nearest lights first.
 	LightsDropped int
+	// Waits counts the times the frame stopped and waited for the GPU to
+	// go idle. Uploads and destroys inside a frame go through the staging
+	// arena and the retire ring, so a running game reports zero; a
+	// nonzero count means something stalled the whole pipeline, such as a
+	// vertex stream outgrowing its buffer or a Texture.Read.
+	Waits int
 }
 
 // Stats returns the last finished frame's counts.
@@ -396,7 +455,9 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 		return nil, fmt.Errorf("gfx: end without begin")
 	}
 	fr := g.frame
-	g.frame = nil
+	// The frame stays open while the passes are recorded, so anything
+	// retired or staged while recording still lands on this slot.
+	defer func() { g.frame = nil }()
 	g.cur = g.main
 	if err := g.uniforms.Write(fr.Slot, g.arena.Bytes()); err != nil {
 		return nil, err
@@ -410,8 +471,8 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 		return nil, err
 	}
 	img, err := g.r.EndFrame(fr, capture)
+	g.stats.Waits = int(g.r.Device.Waits() - g.waitBase)
 	g.lastStats = g.stats
-	g.freeRetired()
 	return img, err
 }
 
@@ -493,7 +554,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		return nil
 	}
 	st.build()
-	if err := st.upload(g.r.Device, fr.Slot); err != nil {
+	if err := st.upload(g, fr.Slot); err != nil {
 		return err
 	}
 	g.stats.Draws2D += len(st.draws)
@@ -550,8 +611,10 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 // must be destroyed first or are leaked with the device.
 func (g *Graphics) destroy() {
 	_ = g.r.Device.WaitIdle()
-	g.freeRetired()
-	g.retired, g.retiredBufs = nil, nil
+	for slot := range g.retire {
+		g.freeRetired(slot)
+		g.retire[slot] = nil
+	}
 	if g.main != nil {
 		g.main.destroy()
 	}
@@ -571,11 +634,8 @@ func (g *Graphics) destroy() {
 	g.sdfShader.Destroy()
 	g.matrixShader.Destroy()
 	g.litShader.Destroy()
-	for slot := range g.staging {
-		for _, b := range g.staging[slot] {
-			b.Destroy()
-		}
-		g.staging[slot] = nil
+	if g.staging != nil {
+		g.staging.Destroy()
 	}
 	if g.uniforms != nil {
 		g.uniforms.Destroy()

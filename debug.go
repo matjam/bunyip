@@ -27,6 +27,10 @@ type Stats struct {
 	// instances they covered. A rising Draws2D means state changes are
 	// breaking batches: textures, shaders, blend modes, clips.
 	Draws2D, Vertices2D, Draws3D, Instances int
+	// Waits counts the times the last finished frame stopped for the GPU
+	// to go idle. Uploads and destroys inside a frame do not, so a
+	// running game reports zero; the overlay names it when it is not.
+	Waits int
 }
 
 // Scope is one timed section recorded with Context.Profile.
@@ -102,6 +106,9 @@ func (o *overlay) draw(ctx *Context) error {
 		fmt.Sprintf("update %.2f ms x%d  draw %.2f ms  present %.2f ms", s.UpdateMS, s.Updates, s.DrawMS, s.PresentMS),
 		fmt.Sprintf("voices %d  frame %d", ctx.Audio.Playing(), ctx.Frame),
 		fmt.Sprintf("2D %d draws %d verts  3D %d draws %d instances", s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances),
+	}
+	if s.Waits > 0 {
+		lines = append(lines, fmt.Sprintf("GPU STALLS: %d this frame", s.Waits))
 	}
 	for _, sc := range s.Scopes {
 		lines = append(lines, fmt.Sprintf("  %s %.2f ms", sc.Name, sc.MS))

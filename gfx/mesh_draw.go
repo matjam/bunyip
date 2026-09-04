@@ -232,7 +232,7 @@ func (g *Graphics) initMeshPass() error {
 		return err
 	}
 	atlasDepth := mp.shadowAtlas.Depth
-	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
+	if err := g.setup(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
 		return err
 	}
 	if mp.shadowSet, err = mp.shadowDesc.AllocateMany([]render.SamplerBinding{{View: atlasDepth.View, Sampler: mp.shadowSamp}}); err != nil {
@@ -443,12 +443,24 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 	}
 	key.tex[9] = orTex(mat.ThicknessTexture, thin)
 	key.tex[10] = orTex(mat.TransmissionTexture, g.white)
-	if mp.lastMatOK && key == mp.lastMatKey {
-		return mp.lastMatSet, nil
+	// A texture destroyed earlier this frame still has its image until
+	// the frame retires it, so the draw keeps its pixels; the set it
+	// needs is not cached, since a later frame must not find it.
+	cache := true
+	for _, t := range key.tex {
+		if t != nil && t.destroyed {
+			cache = false
+			break
+		}
 	}
-	if set, ok := mp.matSets[key]; ok {
-		mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
-		return set, nil
+	if cache {
+		if mp.lastMatOK && key == mp.lastMatKey {
+			return mp.lastMatSet, nil
+		}
+		if set, ok := mp.matSets[key]; ok {
+			mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
+			return set, nil
+		}
 	}
 	// Bindings 0..8 are the material and image textures, 9 the environment
 	// cube, 10 the thickness map, 11 the scene copy, 12 the transmission map.
@@ -473,6 +485,10 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 	if err != nil {
 		return 0, err
 	}
+	if !cache {
+		g.deferDestroy(func() { mp.materials.Free(set) })
+		return set, nil
+	}
 	mp.matSets[key] = set
 	mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
 	return set, nil
@@ -481,25 +497,36 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 // forgetEnvironment drops cached material sets that reference a destroyed
 // environment.
 func (g *Graphics) forgetEnvironment(env *Environment) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if key.env == env {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
-		}
-	}
+	g.forgetMaterialSets(func(key materialKey) bool { return key.env == env })
 }
 
 // forgetScene drops cached material sets that reference an output's
 // destroyed scene copy.
 func (g *Graphics) forgetScene(scene *render.Image) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if key.scene == scene {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
+	g.forgetMaterialSets(func(key materialKey) bool { return key.scene == scene })
+}
+
+// forgetMaterialSets drops every cached material set matching a
+// predicate. The sets themselves are freed once the frame that may still
+// bind them has finished.
+func (g *Graphics) forgetMaterialSets(match func(materialKey) bool) {
+	mp := &g.meshes
+	mp.lastMatOK = false
+	var freed []vk.VkDescriptorSet
+	for key, set := range mp.matSets {
+		if match(key) {
+			freed = append(freed, set)
+			delete(mp.matSets, key)
 		}
 	}
+	if len(freed) == 0 {
+		return
+	}
+	g.deferDestroy(func() {
+		for _, set := range freed {
+			mp.materials.Free(set)
+		}
+	})
 }
 
 func orTex(t, fallback *Texture) *Texture {
@@ -511,19 +538,22 @@ func orTex(t, fallback *Texture) *Texture {
 
 // forgetTexture drops cached descriptor sets that reference a destroyed texture.
 func (g *Graphics) forgetTexture(t *Texture) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if slices.Contains(key.tex[:], t) {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
-		}
-	}
+	g.forgetMaterialSets(func(key materialKey) bool { return slices.Contains(key.tex[:], t) })
+	var freed []vk.VkDescriptorSet
 	for key, set := range g.imageSets {
 		if slices.Contains(key[:], t) {
-			g.descriptors.Free(set)
+			freed = append(freed, set)
 			delete(g.imageSets, key)
 		}
 	}
+	if len(freed) == 0 {
+		return
+	}
+	g.deferDestroy(func() {
+		for _, set := range freed {
+			g.descriptors.Free(set)
+		}
+	})
 }
 
 // cascades fits one orthographic light frustum to each slice of the
@@ -823,7 +853,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			atten:     [4]float32{atten.R, atten.G, atten.B, 0},
 		})
 	}
-	if err := q.inst.upload(g.r.Device, slot); err != nil {
+	if err := q.inst.upload(g, slot); err != nil {
 		return drawList{}, drawList{}, err
 	}
 	if len(q.joints) > 0 {

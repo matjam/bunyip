@@ -174,8 +174,20 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   output storage; copy in and out (see `gfx/text.go`).
 - The render-target colour images need `TRANSFER_DST` because
   `ClearColorForSampling` clears them before their first pass.
-- `Mesh.Update` and texture replacement retire the old GPU objects until
-  the frame that may use them has been submitted (`Graphics.retire*`).
+- Uploads inside a frame (`NewMesh`, `Mesh.Update`, `UpdateSkinned`,
+  `NewTexture`, `Texture.Write`, `NewEnvironment`) copy through the
+  per-slot staging arena (`render.Staging`, taken with
+  `Graphics.stage`) into the frame's command buffer before any pass,
+  with the barriers that let a draw recorded later in the frame read
+  the data. Outside a frame they keep the `OneShot` path. Everything
+  destroyed or replaced inside a frame goes on that slot's retire list
+  through `Graphics.deferDestroy` and is freed at the slot's next
+  `begin`, when its fence has been waited on; outside a frame
+  `deferDestroy` waits the device and frees at once. A `Texture` or
+  `Mesh` destroyed inside a frame keeps its image or buffers (and sets
+  `destroyed`) until the retire runs, so draws already queued still
+  draw. `FrameStats.Waits` counts the stalls a frame caused; a running
+  game reports zero.
 - Culling uses each mesh's bind-pose bounds and skips meshes whose
   shader has a vertex hook.
 - Immediate-mode identity comes from the label plus the enclosing
