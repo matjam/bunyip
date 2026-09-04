@@ -154,7 +154,10 @@ func (w *Window) SetIcon(img image.Image) {
 		bgra[i], bgra[i+1], bgra[i+2], bgra[i+3] = rgba.Pix[i+2], rgba.Pix[i+1], rgba.Pix[i], rgba.Pix[i+3]
 	}
 	color, _, _ := procCreateBitmap.Call(uintptr(b.Dx()), uintptr(b.Dy()), 1, 32, uintptr(unsafe.Pointer(&bgra[0])))
-	mask, _, _ := procCreateBitmap.Call(uintptr(b.Dx()), uintptr(b.Dy()), 1, 1, 0)
+	// The mask must be defined even for an icon with alpha; a zeroed one
+	// means "draw everywhere" and leaves the alpha channel in charge.
+	maskBits := make([]byte, (b.Dx()+15)/16*2*b.Dy())
+	mask, _, _ := procCreateBitmap.Call(uintptr(b.Dx()), uintptr(b.Dy()), 1, 1, uintptr(unsafe.Pointer(&maskBits[0])))
 	info := iconInfo{Icon: 1, Mask: mask, Color: color}
 	icon, _, _ := procCreateIconIndirect.Call(uintptr(unsafe.Pointer(&info)))
 	procDeleteObject.Call(mask)

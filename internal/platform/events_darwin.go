@@ -113,7 +113,11 @@ func (a *App) handleFlagsChanged(w *Window, ev objc.ID) {
 	case input.KeyRightSuper:
 		mask = nxDeviceRCmdKeyMask
 	case input.KeyCapsLock:
+		// AppKit reports the lock's state, not the key's travel, so each
+		// change is a press and a release; otherwise the key would read
+		// as held for the rest of the session.
 		a.push(Event{Kind: EventKeyDown, Window: w, Key: key, Mods: a.mods})
+		a.push(Event{Kind: EventKeyUp, Window: w, Key: key, Mods: a.mods})
 		return
 	default:
 		return

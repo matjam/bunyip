@@ -144,7 +144,11 @@ func Open(rate int, cb Callback) (*Device, error) {
 	d := &Device{Rate: rate, client: client, render: render, event: event, stop: make(chan struct{}), done: make(chan struct{}), cb: cb, frames: frames}
 	d.fill()                                  // prime the buffer before starting
 	if hr := client.call(10); int32(hr) < 0 { // Start
-		d.Close()
+		// Not Close: that waits for the loop goroutine, which has not
+		// been started, so it would wait forever.
+		render.release()
+		client.release()
+		procCloseHandle.Call(event)
 		return nil, fmt.Errorf("audioout: IAudioClient.Start: %#x", hr)
 	}
 	go d.loop()

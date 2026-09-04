@@ -178,6 +178,7 @@ type xlib struct {
 	connectionHasError func(c unsafe.Pointer) int32
 	getSetup           func(c unsafe.Pointer) unsafe.Pointer
 	setupRootsIterator func(setup unsafe.Pointer) xcbScreenIterator
+	screenNext         func(it *xcbScreenIterator)
 	generateID         func(c unsafe.Pointer) uint32
 	createWindow       func(c unsafe.Pointer, depth uint8, wid, parent uint32, x, y int16, w, h, border uint16, class uint16, visual uint32, mask uint32, values *uint32) xcbCookie
 	destroyWindow      func(c unsafe.Pointer, w uint32) xcbCookie
@@ -213,6 +214,7 @@ type xlib struct {
 	xkbStateUnref       func(st unsafe.Pointer)
 	xkbStateKeyGetUTF8  func(st unsafe.Pointer, key uint32, buf *byte, size uintptr) int32
 	xkbStateUpdateKey   func(st unsafe.Pointer, key uint32, direction int32) int32
+	xkbStateUpdateMask  func(st unsafe.Pointer, depressed, latched, locked, baseGroup, latchedGroup, lockedGroup uint32) int32
 }
 
 func load(lib uintptr, name string, fptr any) error {
@@ -236,7 +238,7 @@ func loadX11() (*xlib, error) {
 	x := &xlib{}
 	for name, fptr := range map[string]any{
 		"xcb_connect": &x.connect, "xcb_disconnect": &x.disconnect, "xcb_connection_has_error": &x.connectionHasError,
-		"xcb_get_setup": &x.getSetup, "xcb_setup_roots_iterator": &x.setupRootsIterator, "xcb_generate_id": &x.generateID,
+		"xcb_get_setup": &x.getSetup, "xcb_setup_roots_iterator": &x.setupRootsIterator, "xcb_screen_next": &x.screenNext, "xcb_generate_id": &x.generateID,
 		"xcb_create_window": &x.createWindow, "xcb_destroy_window": &x.destroyWindow, "xcb_map_window": &x.mapWindow,
 		"xcb_flush": &x.flush, "xcb_poll_for_event": &x.pollForEvent, "xcb_wait_for_event": &x.waitForEvent,
 		"xcb_intern_atom": &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
@@ -260,6 +262,7 @@ func loadX11() (*xlib, error) {
 			for name, fptr := range map[string]any{
 				"xkb_context_new": &x.xkbContextNew, "xkb_context_unref": &x.xkbContextUnref, "xkb_keymap_unref": &x.xkbKeymapUnref,
 				"xkb_state_unref": &x.xkbStateUnref, "xkb_state_key_get_utf8": &x.xkbStateKeyGetUTF8, "xkb_state_update_key": &x.xkbStateUpdateKey,
+				"xkb_state_update_mask": &x.xkbStateUpdateMask,
 			} {
 				ok = ok && load(xkb, name, fptr) == nil
 			}
@@ -294,8 +297,9 @@ func (a *App) connectX11() error {
 	}
 	it := x.setupRootsIterator(x.getSetup(conn))
 	for i := int32(0); i < screenNum && it.Rem > 0; i++ {
-		it.Data = (*xcbScreen)(unsafe.Add(unsafe.Pointer(it.Data), unsafe.Sizeof(xcbScreen{})))
-		it.Rem--
+		// Each screen is followed by its variable-length depth list, so
+		// only xcb knows how far the next one is.
+		x.screenNext(&it)
 	}
 	a.x, a.conn, a.screen, a.windows = x, conn, it.Data, map[uint32]*Window{}
 	a.atomWMProtocols = a.atom("WM_PROTOCOLS")
@@ -362,6 +366,7 @@ func (a *App) newX11Window(cfg Config) (*Window, error) {
 		xcbWindowClassInputOutput, a.screen.RootVisual, xcbCWBackPixel|xcbCWEventMask, &values[0])
 	w := &Window{app: a, id: id, width: cfg.Width, height: cfg.Height}
 	a.windows[id] = w
+	a.wakeWin.CompareAndSwap(0, id)
 	title := []byte(cfg.Title)
 	if len(title) > 0 {
 		x.changeProperty(a.conn, xcbPropModeReplace, id, xcbAtomWMName, xcbAtomString, 8, uint32(len(title)), unsafe.Pointer(&title[0]))
@@ -445,17 +450,17 @@ func (a *App) handle(ge *xcbGenericEvent) {
 		a.mods = modsFromState(ev.State)
 		key := keyFromX11(ev.Detail)
 		if ge.ResponseType&^0x80 == xcbKeyRelease {
-			if a.xkbState != nil {
-				x.xkbStateUpdateKey(a.xkbState, uint32(ev.Detail), 0)
-			}
 			a.push(Event{Kind: EventKeyUp, Window: w, Key: key, Mods: a.mods})
 			return
 		}
 		a.push(Event{Kind: EventKeyDown, Window: w, Key: key, Mods: a.mods})
 		if a.xkbState != nil && a.mods&(input.ModControl|input.ModSuper) == 0 {
+			// The event carries the server's modifier and group state,
+			// which includes keys pressed before this window had focus;
+			// tracking presses locally would miss those.
+			x.xkbStateUpdateMask(a.xkbState, uint32(ev.State&0xff), 0, 0, 0, 0, uint32(ev.State>>13)&3)
 			var buf [16]byte
 			n := x.xkbStateKeyGetUTF8(a.xkbState, uint32(ev.Detail), &buf[0], uintptr(len(buf)))
-			x.xkbStateUpdateKey(a.xkbState, uint32(ev.Detail), 1)
 			for _, r := range string(buf[:max(n, 0)]) {
 				if r >= ' ' || r == '\t' || r == '\n' || r == '\r' {
 					a.push(Event{Kind: EventChar, Window: w, Rune: r, Mods: a.mods})
@@ -563,6 +568,7 @@ func (a *App) handle(ge *xcbGenericEvent) {
 		if w := a.windows[ev.Window]; w != nil {
 			w.closed = true
 			delete(a.windows, ev.Window)
+			a.wakeWin.CompareAndSwap(ev.Window, 0)
 		}
 	case xcbMappingNotify:
 		a.refreshKeymap()
@@ -570,18 +576,19 @@ func (a *App) handle(ge *xcbGenericEvent) {
 }
 
 // x11Wake sends a client message to the window so a blocked Poll returns
-// with EventWake. Safe from any goroutine: xcb serialises its calls.
+// with EventWake. Safe from any goroutine: xcb serialises its calls, and
+// the target window is read from an atomic rather than the window map,
+// which the main goroutine writes without a lock.
 func (a *App) x11Wake() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for id := range a.windows {
-		var ev [32]byte
-		msg := (*xcbClientMessageEvent)(unsafe.Pointer(&ev[0]))
-		msg.ResponseType, msg.Format, msg.Window, msg.Type = xcbClientMessage, 32, id, a.atomWake
-		a.x.sendEvent(a.conn, 0, id, 0, &ev[0])
-		a.x.flush(a.conn)
+	id := a.wakeWin.Load()
+	if id == 0 {
 		return
 	}
+	var ev [32]byte
+	msg := (*xcbClientMessageEvent)(unsafe.Pointer(&ev[0]))
+	msg.ResponseType, msg.Format, msg.Window, msg.Type = xcbClientMessage, 32, id, a.atomWake
+	a.x.sendEvent(a.conn, 0, id, 0, &ev[0])
+	a.x.flush(a.conn)
 }
 
 // Gamepads reads the Linux joystick devices; see gamepad_linux.go.
@@ -634,8 +641,11 @@ func (w *Window) setCursorCapturedX11(on bool) {
 		x.warpPointer(a.conn, 0, w.id, 0, 0, 0, 0, int16(w.width/2), int16(w.height/2))
 	} else {
 		x.ungrabPointer(a.conn, xcbCurrentTime)
-		values := [1]uint32{0}
-		x.changeWindowAttrs(a.conn, w.id, xcbCWCursor, &values[0])
+		if w.cursor != 0 {
+			x.freeCursor(a.conn, w.cursor)
+			w.cursor = 0
+		}
+		w.applyCursorX11() // back to the shape or hidden state in force
 	}
 	x.flush(a.conn)
 }

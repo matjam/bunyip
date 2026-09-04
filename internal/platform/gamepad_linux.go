@@ -2,7 +2,6 @@ package platform
 
 import (
 	"encoding/binary"
-	"os"
 	"syscall"
 	"time"
 	"unsafe"
@@ -13,9 +12,13 @@ import (
 // Gamepads come from the kernel joystick interface, /dev/input/js0 to
 // js3, read without blocking each poll. The button and axis numbering
 // follows the xpad driver's Xbox layout, which most controllers report.
+// The devices are read through raw descriptors rather than os.File: an
+// os.File opened non-blocking joins the runtime's poller, and a Read on
+// it parks the goroutine until the device has data, which would stop the
+// game loop whenever an idle controller is plugged in.
 
 type joystick struct {
-	f     *os.File
+	fd    int
 	state GamepadState
 }
 
@@ -59,17 +62,17 @@ func (a *App) Gamepads() []GamepadState {
 				jsStates[i] = GamepadState{}
 				continue
 			}
-			f, err := os.OpenFile(jsPaths[i], os.O_RDONLY|syscall.O_NONBLOCK, 0)
+			fd, err := syscall.Open(jsPaths[i], syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 			if err != nil {
 				jsRetry[i] = now.Add(jsRetryInterval)
 				jsStates[i] = GamepadState{}
 				continue
 			}
-			js = &joystick{f: f, state: GamepadState{Connected: true, Name: jsName(f)}}
+			js = &joystick{fd: fd, state: GamepadState{Connected: true, Name: jsName(fd)}}
 			joysticks[i] = js
 		}
 		if !js.read() {
-			js.f.Close()
+			syscall.Close(js.fd)
 			joysticks[i] = nil
 			jsRetry[i] = now.Add(jsRetryInterval)
 			jsStates[i] = GamepadState{}
@@ -80,10 +83,10 @@ func (a *App) Gamepads() []GamepadState {
 	return jsStates[:]
 }
 
-func jsName(f *os.File) string {
+func jsName(fd int) string {
 	var buf [128]byte
 	req := uintptr(jsiocgname | (uintptr(len(buf)) << 16))
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), req, uintptr(unsafe.Pointer(&buf[0]))); errno != 0 {
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), req, uintptr(unsafe.Pointer(&buf[0]))); errno != 0 {
 		return "joystick"
 	}
 	n := 0
@@ -98,12 +101,15 @@ func jsName(f *os.File) string {
 func (js *joystick) read() bool {
 	var buf [8 * 64]byte
 	for {
-		n, err := js.f.Read(buf[:])
+		n, err := syscall.Read(js.fd, buf[:])
 		if err != nil {
-			if pe, ok := err.(*os.PathError); ok && pe.Err == syscall.EAGAIN {
-				return true
+			if err == syscall.EAGAIN || err == syscall.EINTR {
+				return true // nothing queued; the device is still there
 			}
 			return false
+		}
+		if n <= 0 {
+			return false // end of file: the device went away
 		}
 		for i := 0; i+8 <= n; i += 8 {
 			value := int16(binary.LittleEndian.Uint16(buf[i+4:]))

@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -41,6 +42,7 @@ type App struct {
 	conn    unsafe.Pointer
 	screen  *xcbScreen
 	windows map[uint32]*Window
+	wakeWin atomic.Uint32 // the window Wake targets; read off the main goroutine
 	mods    Mods
 
 	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
@@ -65,7 +67,6 @@ type Window struct {
 	inputRect textRect
 	mouseX    float64
 	mouseY    float64
-	warping   bool
 
 	minW, minH, maxW, maxH int // content size limits; zero is none
 	cursorHidden           bool

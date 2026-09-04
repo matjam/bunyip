@@ -427,9 +427,6 @@ func (l *wllib) send(proxy unsafe.Pointer, opcode uint32, args ...uintptr) {
 // fixed converts a wl_fixed_t, which is 24.8 signed fixed point.
 func fixed(v int32) float64 { return float64(v) / 256 }
 
-// toFixed converts back.
-func toFixed(v float64) int32 { return int32(v * 256) }
-
 // listen attaches a listener to a proxy. The array is sized from the
 // interface the local libwayland knows, so a handler this layer does not
 // have, or an event a newer library added, lands on a callback that does
@@ -1078,7 +1075,10 @@ func (w *wlWindow) onSurfaceConfigure(serial uint32) {
 			width, height = w.width, w.height
 		}
 	}
-	if !w.resizable {
+	if !w.resizable && !w.pendFullscreen && !w.pendMaximized {
+		// A fixed-size window keeps its size, except when the compositor
+		// is showing it full screen or maximised, where the whole screen
+		// is the engine's to letterbox as on the other platforms.
 		width, height = w.defW, w.defH
 	}
 	sizeChanged := width != w.width || height != w.height

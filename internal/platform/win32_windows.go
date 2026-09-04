@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
@@ -199,6 +200,7 @@ type App struct {
 	instance uintptr
 	class    uint16
 	windows  map[uintptr]*Window
+	wakeWnd  atomic.Uintptr // the window Wake posts to; read off the main goroutine
 	pending  []Event
 	mods     Mods
 	mu       sync.Mutex // guards nothing hot; Wake posts a message instead
@@ -274,6 +276,7 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	}
 	w := &Window{app: a, hwnd: hwnd, style: style, scale: 1}
 	a.windows[hwnd] = w
+	a.wakeWnd.CompareAndSwap(0, hwnd)
 	// Relative mouse motion arrives as raw input even while captured.
 	rid := rawInputDevice{UsagePage: hidUsagePageGen, Usage: hidUsageMouse, Target: hwnd}
 	procRegisterRawInputDevices.Call(uintptr(unsafe.Pointer(&rid)), 1, unsafe.Sizeof(rid))
@@ -351,11 +354,11 @@ func (a *App) Poll(wait bool) []Event {
 func (a *App) push(e Event) { a.pending = append(a.pending, e) }
 
 // Wake posts a message so a blocked Poll returns with EventWake. Safe
-// from any goroutine.
+// from any goroutine: the target is read from an atomic, not the window
+// map the main goroutine writes.
 func (a *App) Wake() {
-	for hwnd := range a.windows {
+	if hwnd := a.wakeWnd.Load(); hwnd != 0 {
 		procPostMessageW.Call(hwnd, wmWake, 0, 0)
-		return
 	}
 }
 
@@ -417,6 +420,7 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 	case wmDestroy:
 		w.closed = true
 		delete(a.windows, hwnd)
+		a.wakeWnd.CompareAndSwap(hwnd, 0)
 		return 0
 	case wmSize, wmDPIChanged:
 		if message == wmDPIChanged {
@@ -480,16 +484,19 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 		size := uint32(unsafe.Sizeof(hdr) + unsafe.Sizeof(rawMouse{}) + 16)
 		buf := make([]byte, size)
 		n, _, _ := procGetRawInputData.Call(lparam, ridInput, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), unsafe.Sizeof(hdr))
-		if int(n) > 0 {
+		if uint32(n) != 0xFFFFFFFF && n > 0 { // (UINT)-1 means the buffer was too small
 			h := (*rawInputHeader)(unsafe.Pointer(&buf[0]))
 			if h.Type == rimTypeMouse {
 				m := (*rawMouse)(unsafe.Pointer(&buf[unsafe.Sizeof(hdr)]))
 				if m.Flags&1 == 0 && (m.LastX != 0 || m.LastY != 0) { // MOUSE_MOVE_RELATIVE
-					a.push(Event{Kind: EventMouseMove, Window: w, X: w.mouseX, Y: w.mouseY, DX: float64(m.LastX), DY: float64(m.LastY), Mods: a.mods})
+					// Raw counts are device pixels; the other backends
+					// report points.
+					a.push(Event{Kind: EventMouseMove, Window: w, X: w.mouseX, Y: w.mouseY, DX: float64(m.LastX) / w.scale, DY: float64(m.LastY) / w.scale, Mods: a.mods})
 				}
 			}
 		}
-		return 0
+		// The system cleans up after WM_INPUT in DefWindowProc.
+		break
 	case wmLButtonDown, wmRButtonDown, wmMButtonDown, wmXButtonDown:
 		procSetCapture.Call(hwnd)
 		a.push(w.mouseButton(message, wparam, lparam, EventMouseDown))
