@@ -1784,7 +1784,11 @@ func (a *wlApp) clipboard() (string, error) {
 	}
 	f := os.NewFile(uintptr(fds[0]), "wayland-clipboard")
 	defer f.Close()
-	f.SetReadDeadline(time.Now().Add(clipboardWait))
+	if err := f.SetReadDeadline(time.Now().Add(clipboardWait)); err != nil {
+		// Without a deadline the read could wait on an owner that never
+		// writes, which would stop the game rather than the paste.
+		return "", nil
+	}
 	// A read that stops early keeps what it has: a truncated paste is
 	// better than none, and an owner that says nothing gives none.
 	data, _ := io.ReadAll(f)
