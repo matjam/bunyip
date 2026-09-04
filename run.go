@@ -247,6 +247,9 @@ func (l *loop) run() error {
 	if catchUp <= 0 {
 		catchUp = 250 * time.Millisecond
 	}
+	if catchUp < step {
+		catchUp = step // clamping below one step would never run an update
+	}
 	for !l.ctx.quit && !l.win.Closed() {
 		wait := l.cfg.TurnBased && !l.ctx.redraw
 		l.ctx.redraw = false
@@ -326,20 +329,24 @@ func (l *loop) beginFrame(now time.Time) {
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 
+// scrollLinePoints is how many points of smooth (trackpad) scrolling
+// count as one line of wheel scrolling.
+const scrollLinePoints = 24
+
 func (l *loop) draw() error {
 	// Draw sees every input edge since the last frame, so an interface
 	// built here reacts to clicks that Update already consumed.
 	l.input.SetDrawing(true)
 	l.gfx.SetTime(l.ctx.Time)
-	defer func() {
-		l.input.SetDrawing(false)
-		l.input.EndFrame()
-	}()
+	defer l.input.SetDrawing(false)
 	c := l.ctx.Clear
 	ok, err := l.gfx.Begin([4]float32{c.R, c.G, c.B, c.A})
 	if err != nil || !ok {
+		// No frame was drawn (the swapchain is being rebuilt), so the
+		// edges latched for Draw stay for the next frame that is.
 		return err
 	}
+	defer l.input.EndFrame()
 	drawStart := time.Now()
 	if err := l.game.Draw(l.ctx); err != nil {
 		return err
@@ -433,7 +440,12 @@ func (l *loop) handleEvents(events []platform.Event) {
 			x, y := l.toView(e.X, e.Y)
 			in.FeedMouseButton(uint8(e.Button), false, x, y)
 		case platform.EventScroll:
-			in.FeedScroll(float32(e.DX), float32(e.DY))
+			dx, dy := float32(e.DX), float32(e.DY)
+			if e.Precise {
+				// A trackpad reports points; the input state counts lines.
+				dx, dy = dx/scrollLinePoints, dy/scrollLinePoints
+			}
+			in.FeedScroll(dx, dy)
 		}
 	}
 }

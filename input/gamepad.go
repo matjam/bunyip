@@ -95,10 +95,10 @@ func (s *State) feedGamepad(i int, connected bool, name string, buttons [Gamepad
 	g := &s.gamepads[i]
 	for b := range buttons {
 		if buttons[b] && !g.Buttons[b] {
-			g.pressed[b] = true
+			g.pressed[b], g.framePressed[b] = true, true
 		}
 		if !buttons[b] && g.Buttons[b] {
-			g.released[b] = true
+			g.released[b], g.frameReleased[b] = true, true
 		}
 	}
 	if connected && !g.Connected {
@@ -122,10 +122,15 @@ func (g *Gamepad) JustDisconnected() bool { return g.justDisconnected }
 // it keeps reporting while the cursor is captured.
 func (s *State) MouseDelta() (dx, dy float32) {
 	if s.drawing {
-		return s.mouseDX + s.frame.mouseDX, s.mouseDY + s.frame.mouseDY
+		return s.frame.mouseDX, s.frame.mouseDY
 	}
 	return s.mouseDX, s.mouseDY
 }
 
 // feedMouseDelta accumulates relative pointer movement.
-func (s *State) feedMouseDelta(dx, dy float32) { s.mouseDX += dx; s.mouseDY += dy }
+func (s *State) feedMouseDelta(dx, dy float32) {
+	s.mouseDX += dx
+	s.mouseDY += dy
+	s.frame.mouseDX += dx
+	s.frame.mouseDY += dy
+}

@@ -33,9 +33,12 @@ type State struct {
 	doubleClicked    [MouseButtonCount]bool
 
 	// Transients are cleared after every Update, but a frame may run
-	// several updates (or none) before Draw. So each update's transients
-	// are also latched into frame, which Draw reads and which clears at
-	// the end of the frame; drawing selects which set the accessors show.
+	// several updates (or none) before Draw. So every edge is fed into
+	// both the per-update set and frame, which Draw reads and which
+	// clears at the end of the frame; drawing selects which set the
+	// accessors show. Feeding both directly, rather than latching one
+	// into the other at the end of an update, keeps an edge from a frame
+	// that ran no update from being reported again by the next frames.
 	frame   frameTransients
 	drawing bool
 }
@@ -52,26 +55,11 @@ type frameTransients struct {
 }
 
 // endUpdate clears the per-update transients (pressed, released, scroll,
-// typed text), first latching them for Draw. The engine calls it after
-// each game update.
+// typed text) and advances the held times. The engine calls it after
+// each game update. Draw's copy of the edges lives in frame and is
+// cleared by endFrame.
 func (s *State) endUpdate() {
-	f := &s.frame
-	for k := range s.pressed {
-		f.pressed[k] = f.pressed[k] || s.pressed[k]
-		f.released[k] = f.released[k] || s.released[k]
-		f.repeated[k] = f.repeated[k] || s.repeated[k]
-	}
 	s.repeated = [KeyCount]bool{}
-	for b := range s.buttonsPressed {
-		f.buttonsPressed[b] = f.buttonsPressed[b] || s.buttonsPressed[b]
-		f.buttonsReleased[b] = f.buttonsReleased[b] || s.buttonsReleased[b]
-		f.doubleClicked[b] = f.doubleClicked[b] || s.doubleClicked[b]
-	}
-	f.scrollX += s.scrollX
-	f.scrollY += s.scrollY
-	f.mouseDX += s.mouseDX
-	f.mouseDY += s.mouseDY
-	f.chars = append(f.chars, s.chars...)
 	step := s.step
 	if step <= 0 {
 		step = 1.0 / 60
@@ -94,10 +82,6 @@ func (s *State) endUpdate() {
 	s.chars = s.chars[:0]
 	for i := range s.gamepads {
 		g := &s.gamepads[i]
-		for b := range g.pressed {
-			g.framePressed[b] = g.framePressed[b] || g.pressed[b]
-			g.frameReleased[b] = g.frameReleased[b] || g.released[b]
-		}
 		g.pressed = [GamepadButtonCount]bool{}
 		g.released = [GamepadButtonCount]bool{}
 		g.justConnected, g.justDisconnected = false, false
@@ -168,16 +152,29 @@ const (
 // MouseDoubleClicked reports whether the button was pressed twice within
 // DoubleClickTime and DoubleClickDistance, on the second press.
 func (s *State) MouseDoubleClicked(b MouseButton) bool {
-	return s.doubleClicked[b] || s.drawing && s.frame.doubleClicked[b]
+	if s.drawing {
+		return s.frame.doubleClicked[b]
+	}
+	return s.doubleClicked[b]
 }
 
 // KeyPressed reports whether the key went down since the last update
 // (or, during Draw, since the last frame). Key repeats count as presses
 // so held keys scroll and step.
-func (s *State) KeyPressed(k Key) bool { return s.pressed[k] || s.drawing && s.frame.pressed[k] }
+func (s *State) KeyPressed(k Key) bool {
+	if s.drawing {
+		return s.frame.pressed[k]
+	}
+	return s.pressed[k]
+}
 
 // KeyReleased reports whether the key went up since the last update.
-func (s *State) KeyReleased(k Key) bool { return s.released[k] || s.drawing && s.frame.released[k] }
+func (s *State) KeyReleased(k Key) bool {
+	if s.drawing {
+		return s.frame.released[k]
+	}
+	return s.released[k]
+}
 
 // Mods returns the modifier keys currently held.
 func (s *State) Mods() Mods { return s.mods }
@@ -192,7 +189,12 @@ func (s *State) MousePos() lin.Vec2 { return lin.V2(s.mouseX, s.mouseY) }
 // repeat since the last update: a held key in a menu or a text field.
 // KeyPressed already counts repeats; use KeyPressed and not KeyRepeated
 // for the first press alone.
-func (s *State) KeyRepeated(k Key) bool { return s.repeated[k] || s.drawing && s.frame.repeated[k] }
+func (s *State) KeyRepeated(k Key) bool {
+	if s.drawing {
+		return s.frame.repeated[k]
+	}
+	return s.repeated[k]
+}
 
 // MouseDown reports whether the button is held.
 func (s *State) MouseDown(b MouseButton) bool { return s.buttons[b] }
@@ -200,26 +202,33 @@ func (s *State) MouseDown(b MouseButton) bool { return s.buttons[b] }
 // MousePressed reports whether the button went down since the last
 // update (or, during Draw, since the last frame).
 func (s *State) MousePressed(b MouseButton) bool {
-	return s.buttonsPressed[b] || s.drawing && s.frame.buttonsPressed[b]
+	if s.drawing {
+		return s.frame.buttonsPressed[b]
+	}
+	return s.buttonsPressed[b]
 }
 
 // MouseReleased reports whether the button went up since the last update.
 func (s *State) MouseReleased(b MouseButton) bool {
-	return s.buttonsReleased[b] || s.drawing && s.frame.buttonsReleased[b]
+	if s.drawing {
+		return s.frame.buttonsReleased[b]
+	}
+	return s.buttonsReleased[b]
 }
 
-// Scroll returns wheel movement since the last update, in lines.
+// Scroll returns wheel movement since the last update, in lines. A
+// trackpad's smooth scrolling is scaled to lines by the engine.
 func (s *State) Scroll() (dx, dy float32) {
 	if s.drawing {
-		return s.scrollX + s.frame.scrollX, s.scrollY + s.frame.scrollY
+		return s.frame.scrollX, s.frame.scrollY
 	}
 	return s.scrollX, s.scrollY
 }
 
 // Chars returns the text typed since the last update, in order.
 func (s *State) Chars() []rune {
-	if s.drawing && len(s.frame.chars) > 0 {
-		return append(append([]rune{}, s.frame.chars...), s.chars...)
+	if s.drawing {
+		return s.frame.chars
 	}
 	return s.chars
 }
@@ -237,20 +246,23 @@ func (s *State) feedKey(k Key, down, repeat bool, mods Mods) {
 		return
 	}
 	if down {
-		s.pressed[k] = true
+		s.pressed[k], s.frame.pressed[k] = true, true
 		if repeat {
-			s.repeated[k] = true
+			s.repeated[k], s.frame.repeated[k] = true, true
 		} else {
 			s.down[k] = true
 		}
 		return
 	}
 	s.down[k] = false
-	s.released[k] = true
+	s.released[k], s.frame.released[k] = true, true
 }
 
 // feedChar records a typed character.
-func (s *State) feedChar(r rune) { s.chars = append(s.chars, r) }
+func (s *State) feedChar(r rune) {
+	s.chars = append(s.chars, r)
+	s.frame.chars = append(s.frame.chars, r)
+}
 
 // feedComposition records the input method's uncommitted text.
 func (s *State) feedComposition(text string) { s.composition = text }
@@ -266,29 +278,34 @@ func (s *State) feedMouseButton(b MouseButton, down bool, x, y float32) {
 	}
 	s.buttons[b] = down
 	if down {
-		s.buttonsPressed[b] = true
+		s.buttonsPressed[b], s.frame.buttonsPressed[b] = true, true
 		dx, dy := x-s.lastClickX[b], y-s.lastClickY[b]
 		if s.lastClick[b] > 0 && s.clock-s.lastClick[b] <= DoubleClickTime && dx*dx+dy*dy <= DoubleClickDistance*DoubleClickDistance {
-			s.doubleClicked[b] = true
+			s.doubleClicked[b], s.frame.doubleClicked[b] = true, true
 			s.lastClick[b] = 0 // a third click starts over
 		} else {
 			s.lastClick[b] = s.clock + 1e-6 // never exactly zero
 		}
 		s.lastClickX[b], s.lastClickY[b] = x, y
 	} else {
-		s.buttonsReleased[b] = true
+		s.buttonsReleased[b], s.frame.buttonsReleased[b] = true, true
 	}
 }
 
 // feedScroll accumulates wheel movement in lines.
-func (s *State) feedScroll(dx, dy float32) { s.scrollX += dx; s.scrollY += dy }
+func (s *State) feedScroll(dx, dy float32) {
+	s.scrollX += dx
+	s.scrollY += dy
+	s.frame.scrollX += dx
+	s.frame.scrollY += dy
+}
 
 // feedFocusLost releases everything, since key-up events stop arriving.
 func (s *State) feedFocusLost() {
 	for k := range s.down {
 		if s.down[k] {
 			s.down[k] = false
-			s.released[k] = true
+			s.released[k], s.frame.released[k] = true, true
 		}
 	}
 	for b := range s.buttons {

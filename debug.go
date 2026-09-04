@@ -68,6 +68,7 @@ func (p ProfileScope) End() {
 // overlay draws frame timings in the corner when enabled.
 type overlay struct {
 	on     bool
+	f3Down bool // F3 last seen held, so one press toggles once
 	font   *gfx.Font
 	budget int // Config.DrawBudget
 	// A one-second window for the FPS figure.
@@ -141,9 +142,13 @@ func (o *overlay) destroy() {
 
 // toggle flips the overlay on its hotkey, F3.
 func (o *overlay) toggle(in *input.State) {
-	if in.KeyPressed(input.KeyF3) {
+	// The toggle runs once per loop iteration, which may be more often
+	// than updates, so it watches the key's level rather than an edge.
+	down := in.KeyDown(input.KeyF3)
+	if down && !o.f3Down {
 		o.on = !o.on
 	}
+	o.f3Down = down
 }
 
 // servePprof exposes Go's profiler on addr, for `go tool pprof`.

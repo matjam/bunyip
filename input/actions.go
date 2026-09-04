@@ -329,7 +329,9 @@ func (a *Actions) value(s *State, src Source) float32 {
 		if g := a.pad(s); g != nil && src.Code >= 0 && src.Code < int(GamepadAxisCount) {
 			v := g.Axis(GamepadAxis(src.Code))
 			dz := a.deadZone()
-			if v > dz {
+			if v > dz && scale > 0 {
+				// The positive half; a source with a negative scale reads
+				// the other half only, so a Neg pair never cancels.
 				return (v - dz) / (1 - dz) * scale
 			}
 			if v < -dz && scale < 0 {
