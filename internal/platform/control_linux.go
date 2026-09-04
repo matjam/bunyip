@@ -159,11 +159,16 @@ func (w *Window) SetAlwaysOnTop(bool)                  {}
 func (w *Window) SetCursorImage(image.Image, int, int) {}
 
 // SetIcon sets _NET_WM_ICON under X11: width, height and ARGB pixels as
-// cardinals. Under Wayland it does nothing, because the icon comes from the
-// desktop entry the app id names; xdg-toplevel-icon-v1, which would let the
-// client send pixels, is not wired yet.
+// cardinals. Under Wayland it sends the pixels through
+// xdg-toplevel-icon-v1, and does nothing where the compositor lacks that
+// protocol, because the icon then comes from the desktop entry whose name
+// matches the app id.
 func (w *Window) SetIcon(img image.Image) {
-	if img == nil || w.wl != nil {
+	if w.wl != nil {
+		w.wl.setIcon(img)
+		return
+	}
+	if img == nil {
 		return
 	}
 	b := img.Bounds()

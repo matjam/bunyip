@@ -9,9 +9,9 @@ import (
 // and built into C interface tables at run time. libwayland-client exports
 // wl_registry_interface, wl_compositor_interface and the rest of the core
 // protocol as symbols, so those are read from the library instead; xdg-shell,
-// xdg-decoration, relative-pointer, pointer-constraints, fractional-scale
-// and viewporter live in wayland-protocols, which ships only XML, so their
-// tables are built here.
+// xdg-decoration, relative-pointer, pointer-constraints, fractional-scale,
+// viewporter and xdg-toplevel-icon live in wayland-protocols, which ships
+// only XML, so their tables are built here.
 //
 // Every signature string is what wayland-scanner emits for the same message:
 // a leading decimal "since" version when the message is not in version one,
@@ -106,6 +106,13 @@ const (
 	opRelativePointerManagerDestroy = 0
 	opRelativePointerManagerGetPtr  = 1
 	opRelativePointerDestroy        = 0
+
+	opToplevelIconMgrDestroy    = 0
+	opToplevelIconMgrCreateIcon = 1
+	opToplevelIconMgrSetIcon    = 2
+	opToplevelIconDestroy       = 0
+	opToplevelIconSetName       = 1
+	opToplevelIconAddBuffer     = 2
 
 	opFractionalScaleMgrDestroy = 0
 	opFractionalScaleMgrGet     = 1
@@ -249,6 +256,8 @@ const (
 	evOutputScale           = 3
 	evOutputName            = 4
 	evOutputDescription     = 5
+	evToplevelIconSize      = 0
+	evToplevelIconDone      = 1
 	evFractionalScalePref   = 0
 	evXdgWMBasePing         = 0
 	evXdgSurfaceConfigure   = 0
@@ -362,6 +371,26 @@ var wlProtocols = []protoInterface{
 		},
 		events: []protoMessage{
 			{name: "configure", sig: "u", types: []string{""}},
+		},
+	},
+	{
+		name: "xdg_toplevel_icon_manager_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "create_icon", sig: "n", types: []string{"xdg_toplevel_icon_v1"}},
+			{name: "set_icon", sig: "o?o", types: []string{"xdg_toplevel", "xdg_toplevel_icon_v1"}},
+		},
+		events: []protoMessage{
+			{name: "icon_size", sig: "i", types: []string{""}},
+			{name: "done", sig: "", types: nil},
+		},
+	},
+	{
+		name: "xdg_toplevel_icon_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "set_name", sig: "s", types: []string{""}},
+			{name: "add_buffer", sig: "oi", types: []string{"wl_buffer", ""}},
 		},
 	},
 	{

@@ -163,7 +163,7 @@ backend`.
 | Control | macOS | Windows | Wayland | X11 |
 |---|---|---|---|---|
 | `SetTitle` | yes | yes | yes | yes |
-| `SetIcon` | yes | yes | no-op | yes |
+| `SetIcon` | yes | yes | with `xdg-toplevel-icon-v1` | yes |
 | `SetSizeLimits` | yes | yes | yes | yes |
 | `SetCursor`, `SetCursorVisible` | yes | yes | yes | yes |
 | `SetCursorCaptured` | yes | yes | yes | yes |
@@ -201,10 +201,11 @@ Three things behave differently under Wayland. The title bar is the
 compositor's: the layer asks for server-side decorations through
 `zxdg_decoration_manager_v1`, and a compositor that does not offer that
 protocol shows the window with no frame, because drawing one is the
-client's job and this layer does not draw. `SetIcon` does nothing,
-because the protocol has no request for it; the icon comes from the
-desktop entry whose name matches the app id, which the layer derives
-from `Config.Title`. `SetCursorCaptured` uses
+client's job and this layer does not draw. `SetIcon` sends the pixels
+through `xdg-toplevel-icon-v1` where the compositor has it and does
+nothing where it does not, in which case the icon comes from the desktop
+entry whose name matches the app id, which the layer derives from
+`Config.Title`. `SetCursorCaptured` uses
 `zwp_pointer_constraints_v1` and `zwp_relative_pointer_v1` where the
 compositor has them, and where it does not the pointer is only hidden
 and the deltas come from absolute motion, so it can leave the window.

@@ -3,6 +3,8 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"image"
+	"image/draw"
 	"io"
 	"os"
 	"strings"
@@ -174,6 +176,7 @@ type wlApp struct {
 	dataMgrVer     uint32
 	fracScaleMgr   unsafe.Pointer
 	viewporter     unsafe.Pointer
+	iconMgr        unsafe.Pointer
 
 	// The clipboard. dataDevice is the seat's; clipSource is the source
 	// this process offered and clipText what it offers, so a read of our
@@ -272,6 +275,9 @@ type wlWindow struct {
 	shape         CursorShape
 	cursorSurface unsafe.Pointer
 	cursorScale   int
+
+	icon       unsafe.Pointer // the xdg_toplevel_icon_v1 in force, or nil
+	iconBuffer unsafe.Pointer // the shm buffer it holds, kept alive with it
 
 	captured     bool
 	lockedPtr    unsafe.Pointer
@@ -654,6 +660,13 @@ func (a *wlApp) onGlobal(name uint32, ifaceName string, version uint32) {
 	case "zxdg_decoration_manager_v1":
 		iface := a.iface["zxdg_decoration_manager_v1"]
 		a.decorManager = a.bind(name, iface, 1)
+	case "xdg_toplevel_icon_manager_v1":
+		iface := a.iface["xdg_toplevel_icon_manager_v1"]
+		a.iconMgr = a.bind(name, iface, 1)
+		// The manager lists the icon sizes it likes and says when the
+		// list ends; the layer sends whatever image the game gave it, so
+		// neither event needs a handler.
+		a.listen(a.iconMgr, iface, nil)
 	case "wp_fractional_scale_manager_v1":
 		a.fracScaleMgr = a.bind(name, a.iface["wp_fractional_scale_manager_v1"], 1)
 	case "wp_viewporter":
@@ -1297,6 +1310,7 @@ func (w *wlWindow) refreshScale() {
 func (w *wlWindow) destroy() {
 	a, l := w.app, w.app.l
 	w.setCaptured(false)
+	w.dropIcon()
 	if w.cursorSurface != nil {
 		l.marshal(w.cursorSurface, opSurfaceDestroy, nil, wlMarshalFlagDestroy)
 		w.cursorSurface = nil
@@ -1349,6 +1363,120 @@ func (w *wlWindow) destroy() {
 	w.decoration, w.xdgToplevel, w.xdgSurface, w.surface = nil, nil, nil, nil
 	w.closed = true
 	l.flush(a.display)
+}
+
+// --- the window icon ---
+
+// shmFormatARGB8888 is wl_shm's premultiplied 32-bit format, which on a
+// little-endian machine is blue, green, red then alpha in memory.
+const shmFormatARGB8888 = 0
+
+// setIcon hands the compositor an icon through xdg-toplevel-icon-v1. A
+// compositor without the protocol keeps the icon from the desktop entry
+// whose name matches the app id, which is all a client can do there, so
+// this does nothing.
+func (w *wlWindow) setIcon(img image.Image) {
+	a, l := w.app, w.app.l
+	if a.iconMgr == nil || a.shm == nil || w.xdgToplevel == nil {
+		return
+	}
+	w.dropIcon()
+	if img == nil {
+		l.send(a.iconMgr, opToplevelIconMgrSetIcon, uintptr(w.xdgToplevel), 0)
+		l.flush(a.display)
+		return
+	}
+	buf := a.shmBuffer(img)
+	if buf == nil {
+		return
+	}
+	icon := l.marshal(a.iconMgr, opToplevelIconMgrCreateIcon, a.iface["xdg_toplevel_icon_v1"], 0, 0)
+	if icon == nil {
+		l.marshal(buf, opBufferDestroy, nil, wlMarshalFlagDestroy)
+		return
+	}
+	// One buffer at scale one. The image is sent as the game gave it,
+	// rather than resampled to each size the compositor listed, because
+	// the compositor scales an icon it does not have at the size it wants.
+	l.send(icon, opToplevelIconAddBuffer, uintptr(buf), 1)
+	l.send(a.iconMgr, opToplevelIconMgrSetIcon, uintptr(w.xdgToplevel), uintptr(icon))
+	w.icon, w.iconBuffer = icon, buf
+	l.flush(a.display)
+}
+
+// dropIcon releases the icon in force. Both the icon and its buffer are
+// kept until the icon is replaced, because the compositor reads them for
+// as long as the toplevel wears it.
+func (w *wlWindow) dropIcon() {
+	l := w.app.l
+	if w.icon != nil {
+		l.marshal(w.icon, opToplevelIconDestroy, nil, wlMarshalFlagDestroy)
+		w.icon = nil
+	}
+	if w.iconBuffer != nil {
+		l.marshal(w.iconBuffer, opBufferDestroy, nil, wlMarshalFlagDestroy)
+		w.iconBuffer = nil
+	}
+}
+
+// shmBuffer copies an image into shared memory the compositor can read
+// and returns the wl_buffer over it, or nil where the memory could not be
+// made. The caller owns the buffer and destroys it.
+func (a *wlApp) shmBuffer(img image.Image) unsafe.Pointer {
+	b := img.Bounds()
+	width, height := b.Dx(), b.Dy()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	// image.RGBA is premultiplied, which is what the format wants; only
+	// the channel order changes.
+	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
+	pix := make([]byte, len(rgba.Pix))
+	for i := 0; i+3 < len(pix); i += 4 {
+		pix[i], pix[i+1], pix[i+2], pix[i+3] = rgba.Pix[i+2], rgba.Pix[i+1], rgba.Pix[i], rgba.Pix[i+3]
+	}
+	f, err := shmFile(len(pix))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	if _, err := f.Write(pix); err != nil {
+		return nil
+	}
+	l := a.l
+	pool := l.marshal(a.shm, opShmCreatePool, a.iface["wl_shm_pool"], 0, 0,
+		uintptr(f.Fd()), uintptr(int32(len(pix))))
+	if pool == nil {
+		return nil
+	}
+	buf := l.marshal(pool, opShmPoolCreateBuf, a.iface["wl_buffer"], 0, 0, 0,
+		uintptr(int32(width)), uintptr(int32(height)), uintptr(int32(width*4)), uintptr(uint32(shmFormatARGB8888)))
+	// The pool can go as soon as the buffer exists, and the file has to
+	// reach the compositor before this process closes its descriptor.
+	l.marshal(pool, opShmPoolDestroy, nil, wlMarshalFlagDestroy)
+	a.flushDisplay()
+	return buf
+}
+
+// shmFile makes a file the compositor can map. It goes in
+// XDG_RUNTIME_DIR, where the socket already is, and is unlinked at once,
+// so it lives only as long as the two descriptors do.
+func shmFile(size int) (*os.File, error) {
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	f, err := os.CreateTemp(dir, "bunyip-shm-")
+	if err != nil {
+		return nil, err
+	}
+	os.Remove(f.Name())
+	if err := f.Truncate(int64(size)); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // --- cursor ---
