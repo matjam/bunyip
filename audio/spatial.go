@@ -40,6 +40,41 @@ func (m *Mixer) Listener() Listener {
 	return m.listener
 }
 
+// SpatialSettings choose how a positional voice is placed between the
+// listener's ears. The zero value pans by direction with a constant-power
+// law, which is what a game gets without calling SetSpatial.
+type SpatialSettings struct {
+	// Binaural renders each positional voice through a head model
+	// instead: an interaural time difference, an interaural level
+	// difference with head shadow, and an elevation cue. It suits
+	// headphones; on speakers the two ears mix and the cues weaken.
+	Binaural bool
+
+	// HeadRadius is the modelled head's radius in metres, which sets how
+	// far apart the ears are and so how large the time difference grows.
+	// A zero radius means 0.0875, an average adult head; values above 0.3
+	// are clamped.
+	HeadRadius float32
+}
+
+// SetSpatial chooses how positional voices are placed between the ears.
+// The zero value restores the constant-power pan law, which is the
+// default. The change takes effect at the start of the next mixed block
+// and every parameter is interpolated across it, so switching mode or
+// moving the listener while sounds play does not click.
+func (m *Mixer) SetSpatial(s SpatialSettings) {
+	m.mu.Lock()
+	m.spatial = s
+	m.mu.Unlock()
+}
+
+// Spatial reports the spatial settings, as given to SetSpatial.
+func (m *Mixer) Spatial() SpatialSettings {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.spatial
+}
+
 // SetDoppler turns the Doppler effect on for positional sounds: a source
 // closing on the listener plays sharp, one receding plays flat, by how
 // fast each moves along the line between them. The factor scales the

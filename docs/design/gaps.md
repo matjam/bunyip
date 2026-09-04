@@ -202,18 +202,21 @@ slide) are in.
 ## Audio
 
 Reverb zones and per-bus reverb, occlusion, mute and solo on voices and
-buses, Doppler, click-free pausing, and tracker seek, position and
-per-channel mute and solo are in.
+buses, Doppler, binaural rendering, click-free pausing and stopping,
+microphone capture, and tracker seek, position and per-channel mute and
+solo are in.
 
-- Hardware or platform mixing (spatialiser plugins, HRTF); the mixer is
-  a Go loop.
-- Microphone input.
-- `Voice.Stop`, `StopAll` and voice stealing cut the signal at once
-  rather than fading it out over a millisecond, so a stopped voice can
-  click; pausing fades.
-- A reverb `RoomSize` above about 1.07 has comb feedback at or above
-  one and runs away to NaN, which the output clamp passes through.
-- The Windows and Linux audio layers are untested on hardware.
+- Measured head-related transfer functions. The binaural mode is a
+  parametric head model, so it cannot tell front from back and is the
+  same head for every player; loading a SOFA file of measured responses
+  and convolving per ear would fix both.
+- Hardware or platform mixing (spatialiser plugins); the mixer is a Go
+  loop.
+- Choosing which input or output device to use, and being told when the
+  machine's default changes; both directions open the default device and
+  keep it.
+- The Windows audio layer, and macOS capture, are untested on hardware.
+  Linux output and capture run on real hardware.
 
 ## User interface
 
