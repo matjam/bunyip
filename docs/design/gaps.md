@@ -233,9 +233,25 @@ distance, hinge, revolute, ball, spring and fixed joints with limits and
 motors, ragdolls, continuous collision for fast bodies (against static
 geometry and between two moving bodies), sleeping, and character
 controllers are in; the physics-lab example draws colliders and
-contacts with the 3D debug lines.
+contacts with the 3D debug lines. Cloth, volumetric soft bodies and 2D
+fluids are in `phys/soft`, on the same colliders, with the softbody
+example.
 
-- Soft bodies, cloth simulation and fluids.
+- Soft bodies do not push rigid bodies back: a cloth or a jelly reads
+  the static and kinematic colliders and never writes an impulse to a
+  dynamic one, so a crate cannot be knocked over by a falling jelly.
+- Cloth has no self-collision, so a sheet folded onto itself passes
+  through. A fluid particle and a cloth particle do not meet either;
+  the three soft components only collide with the `phys` colliders.
+- Soft bodies are a surface of particles with one volume constraint,
+  not a tetrahedral mesh, so a body squashed hard can invert a face,
+  and stiffness is uniform rather than a material with a Poisson ratio.
+- Fluids are 2D only. There is no 3D fluid, and no surface meshing or
+  screen-space rendering for the 2D one: a game draws the particles.
+- `phys.SignedDistance2` and `SignedDistance3` cover spheres, boxes,
+  capsules, circles, polygons and compounds of those. Convex hulls,
+  triangle meshes, edges and chains have no signed distance, so soft
+  bodies pass through them.
 - Continuous collision, shape casts and the character controller build
   their convex parts afresh per query, several hundred allocations a
   step with a hundred fast bodies over a large static set, and scan
