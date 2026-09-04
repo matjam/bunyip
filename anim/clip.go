@@ -209,6 +209,26 @@ func (c *Clip) plan() {
 
 // local maps an unbounded playback time onto the clip according to its
 // loop mode, reporting whether a Once clip has ended.
+// fold brings a player's clock back into the clip's first cycle, so a
+// looping clip's time does not grow until float32 steps lose precision.
+func (c *Clip) fold(time float32) float32 {
+	d := c.Duration()
+	if d <= 0 {
+		return time
+	}
+	switch c.Mode {
+	case Loop:
+		if time >= d {
+			return time - d*float32(int(time/d))
+		}
+	case PingPong:
+		if cycle := 2 * d; time >= cycle {
+			return time - cycle*float32(int(time/cycle))
+		}
+	}
+	return time
+}
+
 func (c *Clip) local(time float32) (t float32, done bool) {
 	d := c.Duration()
 	if d <= 0 {

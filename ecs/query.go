@@ -21,6 +21,25 @@ type matcher struct {
 	excl    mask
 	version uint64
 	archs   []*archetype
+	// snap is the row count of each matched table when a walk began, so
+	// an entity that moves into a later table during the walk is not
+	// visited a second time there.
+	snap []int
+}
+
+// begin refreshes the tables and takes the row snapshot for one walk.
+func (m *matcher) begin() {
+	m.refresh()
+	m.snap = m.snap[:0]
+	for _, a := range m.archs {
+		m.snap = append(m.snap, len(a.entities))
+	}
+}
+
+// start is the first row to visit in table k: the last row it had when
+// the walk began, or fewer if rows have gone since.
+func (m *matcher) start(k int) int {
+	return min(m.snap[k], len(m.archs[k].entities)) - 1
 }
 
 func (m *matcher) refresh() {
@@ -58,12 +77,13 @@ func newMatcher(w *World, ids []ComponentID, filters []Filter) matcher {
 
 // Rows are visited from the last to the first, so despawning or
 // restructuring the entity being visited is safe: the row swapped into
-// its place has already been seen. Entities that move into a table
-// during the walk land past the row count captured at its start and are
-// not visited. Changes to other entities should go through Commands.
-
-// rows returns the starting row index for a table walk.
-func rows(a *archetype) int { return len(a.entities) - 1 }
+// its place has already been seen. Every matched table's row count is
+// captured when the walk begins, so an entity that moves into another
+// matched table during the walk lands past that count and is not
+// visited again. Changes to other entities, including despawning an
+// entity with children (the cascade removes rows the walk has not
+// reached), should go through Commands. A walk must not start another
+// walk of the same query inside its callback.
 
 // Query1 iterates entities with an A.
 type Query1[A any] struct {
@@ -80,10 +100,10 @@ func NewQuery1[A any](w *World, filters ...Filter) *Query1[A] {
 
 // Each calls fn for every matching entity.
 func (q *Query1[A]) Each(fn func(e Entity, a *A)) {
-	q.m.refresh()
-	for _, arch := range q.m.archs {
+	q.m.begin()
+	for k, arch := range q.m.archs {
 		ca := arch.columns[arch.column(q.a)].(*typedColumn[A])
-		for i := rows(arch); i >= 0 && i < len(arch.entities); i-- {
+		for i := q.m.start(k); i >= 0 && i < len(arch.entities); i-- {
 			fn(arch.entities[i], &ca.data[i])
 		}
 	}
@@ -120,11 +140,11 @@ func NewQuery2[A, B any](w *World, filters ...Filter) *Query2[A, B] {
 
 // Each calls fn for every matching entity.
 func (q *Query2[A, B]) Each(fn func(e Entity, a *A, b *B)) {
-	q.m.refresh()
-	for _, arch := range q.m.archs {
+	q.m.begin()
+	for k, arch := range q.m.archs {
 		ca := arch.columns[arch.column(q.a)].(*typedColumn[A])
 		cb := arch.columns[arch.column(q.b)].(*typedColumn[B])
-		for i := rows(arch); i >= 0 && i < len(arch.entities); i-- {
+		for i := q.m.start(k); i >= 0 && i < len(arch.entities); i-- {
 			fn(arch.entities[i], &ca.data[i], &cb.data[i])
 		}
 	}
@@ -150,12 +170,12 @@ func NewQuery3[A, B, C any](w *World, filters ...Filter) *Query3[A, B, C] {
 
 // Each calls fn for every matching entity.
 func (q *Query3[A, B, C]) Each(fn func(e Entity, a *A, b *B, c *C)) {
-	q.m.refresh()
-	for _, arch := range q.m.archs {
+	q.m.begin()
+	for k, arch := range q.m.archs {
 		ca := arch.columns[arch.column(q.a)].(*typedColumn[A])
 		cb := arch.columns[arch.column(q.b)].(*typedColumn[B])
 		cc := arch.columns[arch.column(q.c)].(*typedColumn[C])
-		for i := rows(arch); i >= 0 && i < len(arch.entities); i-- {
+		for i := q.m.start(k); i >= 0 && i < len(arch.entities); i-- {
 			fn(arch.entities[i], &ca.data[i], &cb.data[i], &cc.data[i])
 		}
 	}
@@ -182,13 +202,13 @@ func NewQuery4[A, B, C, D any](w *World, filters ...Filter) *Query4[A, B, C, D] 
 
 // Each calls fn for every matching entity.
 func (q *Query4[A, B, C, D]) Each(fn func(e Entity, a *A, b *B, c *C, d *D)) {
-	q.m.refresh()
-	for _, arch := range q.m.archs {
+	q.m.begin()
+	for k, arch := range q.m.archs {
 		ca := arch.columns[arch.column(q.a)].(*typedColumn[A])
 		cb := arch.columns[arch.column(q.b)].(*typedColumn[B])
 		cc := arch.columns[arch.column(q.c)].(*typedColumn[C])
 		cd := arch.columns[arch.column(q.d)].(*typedColumn[D])
-		for i := rows(arch); i >= 0 && i < len(arch.entities); i-- {
+		for i := q.m.start(k); i >= 0 && i < len(arch.entities); i-- {
 			fn(arch.entities[i], &ca.data[i], &cb.data[i], &cc.data[i], &cd.data[i])
 		}
 	}

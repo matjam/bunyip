@@ -25,6 +25,4 @@ type scratch3 struct {
 	epaVerts []gjkVert
 	epaFaces []epaFace
 	horizon  []epaEdge
-	parts    []convexPart
-	targets  []convexPart
 }

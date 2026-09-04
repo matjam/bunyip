@@ -173,10 +173,11 @@ type FixedJoint3 struct {
 // jointSide3 is one end of a joint: the transform and body, or the
 // world when the entity is ecs.None.
 type jointSide3 struct {
-	e   ecs.Entity
-	t   *gfx.Transform
-	b   *Body3
-	rot mat3
+	e    ecs.Entity
+	t    *gfx.Transform
+	b    *Body3 // the body when it takes part in the solve; nil when static or asleep
+	body *Body3 // the body whether or not it takes part, to wake it
+	rot  mat3
 	// Position, rotation, inverse mass and inertia in the world.
 	pos     lin.Vec3
 	invMass float32
@@ -195,11 +196,26 @@ func sideOf3(w *ecs.World, e ecs.Entity) (jointSide3, bool) {
 	s.t = t
 	s.pos = t.Position
 	s.rot = mat3FromQuat(t.Rotation)
-	if b, ok := ecs.Get[Body3](w, e); ok && !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
-		s.b = b
-		s.invMass, s.invI = b.invMass, b.invInertia
+	if b, ok := ecs.Get[Body3](w, e); ok {
+		s.body = b
+		if !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
+			s.b = b
+			s.invMass, s.invI = b.invMass, b.invInertia
+		}
 	}
 	return s, true
+}
+
+// wakeAcross3 wakes a sleeping body joined to one that is awake, so a
+// pushed body drags its joint partners with it as a contact would; the
+// woken body joins the solve from the next step.
+func wakeAcross3(a, b *jointSide3) {
+	if a.b != nil && b.body != nil && b.body.asleep {
+		b.body.Wake()
+	}
+	if b.b != nil && a.body != nil && a.body.asleep {
+		a.body.Wake()
+	}
 }
 
 // anchor places a local anchor in the world and returns the lever arm.
@@ -279,6 +295,7 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.distance.Each(func(e ecs.Entity, j *DistanceJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
+		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointDistance3, int32(len(s.distanceSolvers))})
 			s.distanceSolvers = append(s.distanceSolvers, distanceSolver3{j: j, a: a, b: b})
@@ -287,6 +304,7 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.hinge.Each(func(e ecs.Entity, j *HingeJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
+		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointHinge3, int32(len(s.hingeSolvers))})
 			s.hingeSolvers = append(s.hingeSolvers, hingeSolver3{j: j, a: a, b: b})
@@ -295,6 +313,7 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.ball.Each(func(e ecs.Entity, j *BallJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
+		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointBall3, int32(len(s.ballSolvers))})
 			s.ballSolvers = append(s.ballSolvers, ballSolver3{j: j, a: a, b: b})
@@ -303,6 +322,7 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
+		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointSpring3, int32(len(s.springSolvers))})
 			s.springSolvers = append(s.springSolvers, springSolver3{j: j, a: a, b: b})
@@ -311,6 +331,7 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.fixed.Each(func(e ecs.Entity, j *FixedJoint3) {
 		a, oka := sideOf3(w, j.A)
 		b, okb := sideOf3(w, j.B)
+		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointFixed3, int32(len(s.fixedSolvers))})
 			s.fixedSolvers = append(s.fixedSolvers, fixedSolver3{j: j, a: a, b: b})

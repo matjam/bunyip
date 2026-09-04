@@ -97,7 +97,8 @@ type FixedJoint2 struct {
 type jointSide2 struct {
 	e       ecs.Entity
 	t       *gfx.Transform2
-	b       *Body2
+	b       *Body2 // the body when it takes part in the solve; nil when static or asleep
+	body    *Body2 // the body whether or not it takes part, to wake it
 	pos     lin.Vec2
 	rot     float32
 	invMass float32
@@ -114,11 +115,26 @@ func sideOf2(w *ecs.World, e ecs.Entity) (jointSide2, bool) {
 		return s, false
 	}
 	s.t, s.pos, s.rot = t, t.Position, t.Rotation
-	if b, ok := ecs.Get[Body2](w, e); ok && !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
-		s.b = b
-		s.invMass, s.invI = b.invMass, b.invInertia
+	if b, ok := ecs.Get[Body2](w, e); ok {
+		s.body = b
+		if !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
+			s.b = b
+			s.invMass, s.invI = b.invMass, b.invInertia
+		}
 	}
 	return s, true
+}
+
+// wakeAcross2 wakes a sleeping body joined to one that is awake, so a
+// pushed body drags its joint partners with it as a contact would; the
+// woken body joins the solve from the next step.
+func wakeAcross2(a, b *jointSide2) {
+	if a.b != nil && b.body != nil && b.body.asleep {
+		b.body.Wake()
+	}
+	if b.b != nil && a.body != nil && a.body.asleep {
+		a.body.Wake()
+	}
 }
 
 func (s *jointSide2) anchor(local lin.Vec2) (p, r lin.Vec2) {
@@ -194,6 +210,7 @@ func gatherJoints2(w *ecs.World, s *state2) []jointSolver2 {
 	sides := func(ea, eb ecs.Entity) (jointSide2, jointSide2, bool) {
 		a, oka := sideOf2(w, ea)
 		b, okb := sideOf2(w, eb)
+		wakeAcross2(&a, &b)
 		return a, b, oka && okb && (a.b != nil || b.b != nil)
 	}
 	s.distance.Each(func(e ecs.Entity, j *DistanceJoint2) {
@@ -475,10 +492,10 @@ func (s *fixedSolver2) solve() {
 
 // wrapAngle brings an angle into (-π, π].
 func wrapAngle(a float32) float32 {
-	for a > math.Pi {
-		a -= 2 * math.Pi
-	}
-	for a <= -math.Pi {
+	// One remainder rather than a loop, which a rotation that has wound
+	// up over many turns would spin through once per turn.
+	a = float32(math.Remainder(float64(a), 2*math.Pi))
+	if a <= -math.Pi {
 		a += 2 * math.Pi
 	}
 	return a

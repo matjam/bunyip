@@ -596,12 +596,12 @@ func initArbiter2(arb *arbiter2, a, b *entry2, contacts []contact2, h float32) {
 
 func (arb *arbiter2) solve() {
 	a, b := arb.ba, arb.bb
-	va, wa, ima, iia := bodyVel2(a)
-	vb, wb, imb, iib := bodyVel2(b)
+	_, _, ima, iia := bodyVel2(a)
+	_, _, imb, iib := bodyVel2(b)
 	for i := range arb.contacts {
 		c := &arb.contacts[i]
-		va, wa, _, _ = bodyVel2(a)
-		vb, wb, _, _ = bodyVel2(b)
+		va, wa, _, _ := bodyVel2(a)
+		vb, wb, _, _ := bodyVel2(b)
 		dv := vb.Add(crossSV(wb, c.rB)).Sub(va).Sub(crossSV(wa, c.rA))
 		vn := dv.Dot(c.normal)
 		dpn := c.massNormal * (-vn + c.bias)

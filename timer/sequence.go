@@ -65,6 +65,7 @@ func (s *Sequence) Loop() *Sequence { s.loop = true; return s }
 // Update advances the sequence by dt seconds, running as many steps as
 // finish within it. It reports whether the sequence is done.
 func (s *Sequence) Update(dt float32) bool {
+	wrapped := false // a looping sequence goes round at most once per update
 	for s.i < len(s.steps) {
 		st := &s.steps[s.i]
 		switch {
@@ -90,9 +91,12 @@ func (s *Sequence) Update(dt float32) bool {
 		s.i++
 		if s.i >= len(s.steps) && s.loop {
 			s.i = 0
-			if dt <= 0 {
+			if dt <= 0 || wrapped {
+				// Steps that take no time would otherwise loop forever
+				// inside one update.
 				return false
 			}
+			wrapped = true
 		}
 	}
 	return true

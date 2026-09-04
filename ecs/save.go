@@ -291,6 +291,20 @@ func (w *World) Load(in io.Reader, opts ...LoadOptions) error {
 		}
 		w.setComponents(ids[rec.ID], comps)
 	}
+	// Parent links come from the file; a cycle among them would spin
+	// every ancestor walk forever.
+	for _, e := range ids {
+		for a, n := e, 0; ; n++ {
+			p, ok := Get[Parent](w, a)
+			if !ok || !w.Alive(p.Entity) {
+				break
+			}
+			if n >= len(ids) {
+				return fmt.Errorf("ecs: load: entity %d is in a parent cycle", e.ID())
+			}
+			a = p.Entity
+		}
+	}
 	for _, name := range sortedKeys(doc.Resources) {
 		t, ok := typeNamed(name)
 		if !ok {

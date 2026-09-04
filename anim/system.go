@@ -175,10 +175,10 @@ func System(w *ecs.World, dt float64) {
 		if speed == 0 {
 			speed = 1
 		}
-		p.Time += step * speed
+		p.Time = p.Clip.fold(p.Time + step*speed)
 		weight := float32(1)
 		if p.prev != nil {
-			p.prevTime += step * speed
+			p.prevTime = p.prev.fold(p.prevTime + step*speed)
 			p.fadeLeft -= step
 			if p.fadeLeft <= 0 {
 				p.prev = nil

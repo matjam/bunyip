@@ -81,11 +81,12 @@ type Tween struct {
 	Repeat   int     // extra plays after the first; -1 forever
 	YoYo     bool    // alternate direction on repeats
 
-	elapsed float32
-	plays   int
-	done    bool
-	over    float32 // time past the end on the update that finished
-	onDone  func()
+	elapsed  float32
+	plays    int
+	done     bool
+	reversed bool    // a YoYo play running from To back to From
+	over     float32 // time past the end on the update that finished
+	onDone   func()
 }
 
 // New makes a tween; a nil ease is linear.
@@ -105,6 +106,19 @@ func (tw *Tween) Update(dt float32) float32 {
 		return tw.Value()
 	}
 	tw.elapsed += dt
+	if tw.Duration <= 0 {
+		// Nothing to play: the tween is at its end as soon as the delay
+		// has passed, however often it was asked to repeat.
+		if tw.elapsed >= tw.Delay {
+			tw.over = tw.elapsed - tw.Delay
+			tw.elapsed = tw.Delay
+			tw.done = true
+			if tw.onDone != nil {
+				tw.onDone()
+			}
+		}
+		return tw.Value()
+	}
 	for tw.elapsed-tw.Delay >= tw.Duration {
 		if tw.Repeat >= 0 && tw.plays >= tw.Repeat {
 			tw.over = tw.elapsed - tw.Delay - tw.Duration
@@ -118,7 +132,7 @@ func (tw *Tween) Update(dt float32) float32 {
 		tw.plays++
 		tw.elapsed -= tw.Duration
 		if tw.YoYo {
-			tw.From, tw.To = tw.To, tw.From
+			tw.reversed = !tw.reversed
 		}
 	}
 	return tw.Value()
@@ -137,13 +151,21 @@ func (tw *Tween) Progress() float32 {
 }
 
 // Value is the current value.
-func (tw *Tween) Value() float32 { return lerp(tw.From, tw.To, tw.Progress()) }
+func (tw *Tween) Value() float32 {
+	if tw.reversed {
+		return lerp(tw.To, tw.From, tw.Progress())
+	}
+	return lerp(tw.From, tw.To, tw.Progress())
+}
 
 // Done reports whether the tween has finished.
 func (tw *Tween) Done() bool { return tw.done }
 
-// Reset starts the tween over.
-func (tw *Tween) Reset() { tw.elapsed, tw.plays, tw.done, tw.over = 0, 0, false, 0 }
+// Reset starts the tween over, forwards.
+func (tw *Tween) Reset() {
+	tw.elapsed, tw.plays, tw.done, tw.over = 0, 0, false, 0
+	tw.reversed = false
+}
 
 // Sequence plays tweens one after another.
 type Sequence struct {

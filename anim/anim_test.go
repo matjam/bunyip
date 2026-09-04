@@ -137,8 +137,9 @@ func (c countingTrack) Duration() float32                              { return 
 func TestClipCaches(t *testing.T) {
 	w := ecs.NewWorld()
 	clip := NewClip("c", Loop, Position(Vec3s(At(0, lin.V3(0, 0, 0)), At(2, lin.V3(2, 0, 0)))))
-	if clip.Duration() != 2 || clip.Duration() != 2 {
-		t.Fatalf("duration %v", clip.Duration())
+	// The duration is computed once and then read from the cache.
+	if first, again := clip.Duration(), clip.Duration(); first != 2 || again != 2 {
+		t.Fatalf("duration %v then %v", first, again)
 	}
 	n := 0
 	clip.AddTrack(countingTrack{&n}, Scale(Vec3s(At(0, lin.V3(1, 1, 1)), At(1, lin.V3(2, 2, 2)))))

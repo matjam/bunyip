@@ -162,17 +162,29 @@ func convexContacts(sc *scratch3, out []contact3, a, b *convex, forced *lin.Vec3
 	if !ok {
 		return out
 	}
-	if forced != nil {
+	// A forced normal is a mesh triangle's face normal, so a shape resting
+	// on the face is pushed straight off it. It only applies when the
+	// shapes meet face on: a shape that grazes the triangle's edge or
+	// corner keeps the direction and depth the penetration found, since
+	// measured from the face plane it would be as deep as its distance
+	// below the plane and be thrown off the edge.
+	if forced != nil && n.Dot(*forced) > faceOnCos {
 		n = *forced
 		deepest := a.support(n)
-		depth = n.Dot(deepest.Sub(planePoint))
-		if depth <= 0 {
+		d := n.Dot(deepest.Sub(planePoint))
+		if d <= 0 {
 			return out
 		}
+		depth = min(d, depth)
 		point = deepest.Sub(n.Mul(depth / 2))
 	}
 	return manifold(sc, out, a, b, n, depth, point)
 }
+
+// faceOnCos is the cosine of the widest angle between a penetration
+// normal and a triangle's face normal at which the contact still counts
+// as face on: 45 degrees.
+const faceOnCos = 0.7071
 
 // manifold turns one penetration into a set of contacts: the incident
 // face of one shape clipped to the reference face of the other when both
