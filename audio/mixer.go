@@ -280,7 +280,6 @@ type voiceMix struct {
 // its own thread, through internal/hook.
 func (m *Mixer) mix(out []float32) {
 	m.mixMu.Lock()
-	defer m.mixMu.Unlock()
 	clear(out)
 	frames := len(out) / 2
 	send := m.snapshot(out)
@@ -297,7 +296,11 @@ func (m *Mixer) mix(out []float32) {
 	for i, s := range out {
 		out[i] = max(-1, min(1, s))
 	}
-	run(m.apply())
+	fns := m.apply()
+	// The callbacks run with the lock released, as promised, so one that
+	// seeks a voice does not deadlock the audio thread.
+	m.mixMu.Unlock()
+	run(fns)
 }
 
 // snapshot copies the block's voices and their settled gains out from
@@ -777,9 +780,11 @@ func (sn *voiceMix) readSound(dst []float32) (int, bool) {
 				sn.pos = pos
 				return i, false
 			}
-			pos -= float64(total)
+			// A step longer than the sound (a high pitch on a short
+			// sample) can pass the end more than once.
+			pos = math.Mod(pos, float64(total))
 		}
-		j := int(pos)
+		j := min(int(pos), total-1)
 		t := float32(pos - float64(j))
 		k := j + 1
 		if k >= total {

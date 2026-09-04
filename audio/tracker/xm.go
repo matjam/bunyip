@@ -244,7 +244,8 @@ func loadXMInstrument(m *Module, data []byte, off int) (int, error) {
 		}
 		count := h.length / bytesPer
 		end := min(off+h.length, len(data))
-		count = min(count, (end-off)/bytesPer)
+		// A header size past the data leaves off beyond the end.
+		count = max(min(count, (end-off)/bytesPer), 0)
 		s.Data = make([]float32, count)
 		var acc int32
 		for j := range count {

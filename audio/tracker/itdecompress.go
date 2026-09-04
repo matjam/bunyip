@@ -6,7 +6,12 @@ import "fmt"
 // variable-width delta-coded values with in-band width changes. Version
 // 2.15 files integrate the deltas twice.
 func itDecompress(src []byte, count int, sixteen bool, it215 bool) ([]float32, error) {
-	out := make([]float32, 0, count)
+	if count < 0 {
+		return nil, fmt.Errorf("compressed sample has a negative length")
+	}
+	// The data cannot hold more samples than it has bits, so a header
+	// claiming billions of samples does not reserve memory for them.
+	out := make([]float32, 0, min(count, len(src)*8))
 	blockSamples := 0x8000
 	widthMax, borderMax := 9, 0xFF
 	if sixteen {
@@ -53,6 +58,9 @@ func itDecompress(src []byte, count int, sixteen bool, it215 bool) ([]float32, e
 			default:
 				if v&(1<<(widthMax-1)) != 0 {
 					width = int(v+1) & 0xFF
+					if width < 1 || width > widthMax {
+						return nil, fmt.Errorf("compressed sample sets a width of %d bits", width)
+					}
 					continue
 				}
 			}

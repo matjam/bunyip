@@ -300,15 +300,21 @@ func flattenChunks(l *Layer, chunks []chunk) error {
 	x0, y0 := chunks[0].x, chunks[0].y
 	x1, y1 := x0, y0
 	for _, c := range chunks {
+		// The extents come from the file; keep them where the arithmetic
+		// below cannot overflow.
+		if c.width <= 0 || c.height <= 0 || c.width > maxChunkSide || c.height > maxChunkSide ||
+			c.x < -maxMapSide || c.x > maxMapSide || c.y < -maxMapSide || c.y > maxMapSide {
+			return fmt.Errorf("chunk (%d,%d) of %dx%d is out of range", c.x, c.y, c.width, c.height)
+		}
+		if len(c.cells) != c.width*c.height {
+			return fmt.Errorf("chunk (%d,%d): %d cells for %dx%d", c.x, c.y, len(c.cells), c.width, c.height)
+		}
 		x0, y0 = min(x0, c.x), min(y0, c.y)
 		x1, y1 = max(x1, c.x+c.width), max(y1, c.y+c.height)
 	}
 	l.StartX, l.StartY, l.Width, l.Height = x0, y0, x1-x0, y1-y0
 	l.Data = make([]uint32, l.Width*l.Height)
 	for _, c := range chunks {
-		if len(c.cells) != c.width*c.height {
-			return fmt.Errorf("chunk (%d,%d): %d cells for %dx%d", c.x, c.y, len(c.cells), c.width, c.height)
-		}
 		for y := range c.height {
 			row := (c.y-y0+y)*l.Width + c.x - x0
 			copy(l.Data[row:row+c.width], c.cells[y*c.width:(y+1)*c.width])
@@ -316,6 +322,13 @@ func flattenChunks(l *Layer, chunks []chunk) error {
 	}
 	return nil
 }
+
+// Bounds on the chunk geometry of infinite maps: a chunk side and how
+// far from the origin a chunk may sit, in tiles.
+const (
+	maxChunkSide = 1 << 12
+	maxMapSide   = 1 << 24
+)
 
 // decodeCells reads JSON layer data: an array of ids, or a base64
 // string.

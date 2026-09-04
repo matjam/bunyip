@@ -338,7 +338,7 @@ func (l *loader) bufferView(i int) ([]byte, int, error) {
 		return nil, 0, fmt.Errorf("bufferView %d: buffer %d out of range", i, v.Buffer)
 	}
 	buf := l.buffers[v.Buffer]
-	if v.ByteOffset+v.ByteLength > len(buf) {
+	if v.ByteOffset < 0 || v.ByteLength < 0 || v.ByteStride < 0 || v.ByteOffset+v.ByteLength > len(buf) {
 		return nil, 0, fmt.Errorf("bufferView %d overruns buffer", i)
 	}
 	return buf[v.ByteOffset : v.ByteOffset+v.ByteLength], v.ByteStride, nil

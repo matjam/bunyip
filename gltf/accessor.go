@@ -12,6 +12,11 @@ var componentSizes = map[int]int{5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 51
 
 var typeCounts = map[string]int{"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
 
+// maxAccessorFloats bounds an accessor with no buffer view, which the
+// specification reads as all zeros and would otherwise be sized by the
+// file alone.
+const maxAccessorFloats = 64 << 20
+
 // floats reads an accessor as float32 components, converting integer
 // types (normalised or not) the way the specification says.
 func (l *loader) floats(index int) ([]float32, int, error) {
@@ -27,9 +32,13 @@ func (l *loader) floats(index int) ([]float32, int, error) {
 	if a.Count < 0 || a.ByteOffset < 0 || a.Count > 1<<28 {
 		return nil, 0, fmt.Errorf("accessor %d: bad count %d or offset %d", index, a.Count, a.ByteOffset)
 	}
-	out := make([]float32, a.Count*n)
 	if a.BufferView == nil {
-		return out, n, nil // all zeros, per spec
+		// All zeros, per spec; the count is bounded so a file cannot ask
+		// for gigabytes of nothing.
+		if a.Count*n > maxAccessorFloats {
+			return nil, 0, fmt.Errorf("accessor %d: %d values without a buffer view", index, a.Count*n)
+		}
+		return make([]float32, a.Count*n), n, nil
 	}
 	data, stride, err := l.bufferView(*a.BufferView)
 	if err != nil {
@@ -38,9 +47,12 @@ func (l *loader) floats(index int) ([]float32, int, error) {
 	if stride == 0 {
 		stride = n * size
 	}
+	// The overrun check runs before the output is allocated, so the
+	// buffer bounds the memory a file can claim.
 	if a.ByteOffset+(a.Count-1)*stride+n*size > len(data) && a.Count > 0 {
 		return nil, 0, fmt.Errorf("accessor %d overruns its buffer view", index)
 	}
+	out := make([]float32, a.Count*n)
 	for i := range a.Count {
 		base := a.ByteOffset + i*stride
 		for c := range n {

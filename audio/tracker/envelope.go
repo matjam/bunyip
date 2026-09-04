@@ -31,13 +31,16 @@ func (e *Envelope) advance(st *envState, keyOff bool) {
 	}
 	st.value = e.value(st.tick)
 	pts := e.Points
-	if e.Sustain && !keyOff && e.SustainEnd < len(pts) && st.tick >= pts[e.SustainEnd].Tick {
+	// The loop and sustain points come from the file and may name points
+	// the envelope does not have.
+	inRange := func(i int) bool { return i >= 0 && i < len(pts) }
+	if e.Sustain && !keyOff && inRange(e.SustainEnd) && inRange(e.SustainStart) && st.tick >= pts[e.SustainEnd].Tick {
 		st.tick = pts[e.SustainStart].Tick
 		if e.SustainStart == e.SustainEnd {
 			return // hold on the sustain point
 		}
 	}
-	if e.Loop && e.LoopEnd < len(pts) && st.tick >= pts[e.LoopEnd].Tick {
+	if e.Loop && inRange(e.LoopEnd) && inRange(e.LoopStart) && st.tick >= pts[e.LoopEnd].Tick {
 		st.tick = pts[e.LoopStart].Tick
 		if e.LoopStart == e.LoopEnd {
 			return

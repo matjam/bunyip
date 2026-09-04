@@ -357,8 +357,11 @@ func (p *Player) advanceTick() {
 	}
 	p.tick = 0
 	if p.patDelay > 0 {
+		// A delayed row repeats its tick effects but not its notes and
+		// not its row effects, or the delay would arm itself again and
+		// retrigger every note on each repeat.
 		p.patDelay--
-		p.processRow()
+		p.processTick()
 		p.updateVoices()
 		return
 	}
@@ -395,7 +398,9 @@ func (p *Player) nextRow() {
 	default:
 		p.row++
 	}
-	for {
+	// A module whose orders name no playable pattern would otherwise be
+	// scanned forever, with the mixer's lock held.
+	for tried := 0; tried <= len(p.mod.Orders); tried++ {
 		if p.order >= len(p.mod.Orders) {
 			if !p.Loop {
 				p.done = true
@@ -410,6 +415,7 @@ func (p *Player) nextRow() {
 		p.order++
 		p.row = 0
 	}
+	p.done = true
 }
 
 func (p *Player) currentRow() []Cell {

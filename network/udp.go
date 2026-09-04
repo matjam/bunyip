@@ -607,7 +607,11 @@ func (p *Peer) maintain(now time.Time) {
 		}
 		if now.Sub(since) > p.timeout {
 			delete(p.links, key)
-			evs = append(evs, Event{Kind: Disconnected, From: l.addr, Err: ErrTimeout})
+			if l.connected {
+				// A peer that never answered was never connected, so it
+				// does not disconnect either.
+				evs = append(evs, Event{Kind: Disconnected, From: l.addr, Err: ErrTimeout})
+			}
 			continue
 		}
 		for rid, pm := range l.pending {

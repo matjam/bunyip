@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 
 	"github.com/hajimehoshi/go-mp3"
@@ -184,6 +185,7 @@ func (mu *Music) fill() {
 	src := make([]float32, 4096*ch)
 	stereo := make([]float32, 4096*2)
 	var out []float32
+	rewound := false // the end was reached and nothing has decoded since
 	for {
 		gen, ok := mu.applySeek()
 		if !ok {
@@ -191,6 +193,7 @@ func (mu *Music) fill() {
 		}
 		n, err := mu.dec.Read(src)
 		if n > 0 {
+			rewound = false
 			n -= n % ch
 			stereo = toStereo(src[:n], ch, stereo[:0])
 			out = mu.rs.process(stereo, out[:0])
@@ -201,9 +204,12 @@ func (mu *Music) fill() {
 		if err == nil {
 			continue
 		}
-		if errors.Is(err, io.EOF) && mu.loop {
+		// A looping track rewinds at its end, unless the rewind produced
+		// nothing: a track with no frames would otherwise spin forever.
+		if errors.Is(err, io.EOF) && mu.loop && !rewound {
 			if rerr := mu.dec.SeekFrame(0); rerr == nil {
 				mu.rs.reset()
+				rewound = true
 				continue
 			}
 		}
@@ -316,7 +322,9 @@ func (r *resampler) process(in []float32, dst []float32) []float32 {
 	// Frame -1 is last, frames 0..frames-1 are in; interpolate between
 	// frame i and i+1 while i+1 exists.
 	for ; r.pos < float64(frames-1); r.pos += r.step {
-		i := int(r.pos)
+		// Floor, not truncation: a position carried over from the last
+		// chunk is in (-1, 0) and must read frame -1, which is last.
+		i := int(math.Floor(r.pos))
 		t := float32(r.pos - float64(i))
 		var a0, a1 float32
 		if i < 0 {

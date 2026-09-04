@@ -55,7 +55,9 @@ func Plural(lang string, n float64) Category {
 	whole := float64(i) == n
 	mod := func(m int64) int64 { return ((i % m) + m) % m }
 	switch base {
-	case "ja", "zh", "ko", "vi", "th", "id", "ms", "tr", "hu", "ka":
+	case "ja", "zh", "ko", "vi", "th", "id", "ms":
+		// Turkish, Hungarian and Georgian are not here: CLDR gives them
+		// one and other like English.
 		return Other
 	case "fr", "hy", "kab":
 		if n >= 0 && n < 2 {

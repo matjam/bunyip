@@ -90,8 +90,20 @@ func (s *Store) file(name string) string {
 	return filepath.Join(s.dir, name+".json")
 }
 
+// checkName rejects names that would reach outside the store: path
+// separators and dot components. Names are file names, not paths.
+func checkName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("save: %q is not a valid save name", name)
+	}
+	return nil
+}
+
 // Write stores v as name.json, replacing any previous file atomically.
 func (s *Store) Write(name string, v any) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("save: encode %s: %w", name, err)
@@ -125,6 +137,9 @@ func (s *Store) Write(name string, v any) error {
 // Read decodes name.json into v. A missing file returns an error that
 // satisfies errors.Is(err, os.ErrNotExist).
 func (s *Store) Read(name string, v any) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(s.file(name))
 	if err != nil {
 		return err
@@ -137,12 +152,18 @@ func (s *Store) Read(name string, v any) error {
 
 // Exists reports whether name.json is present.
 func (s *Store) Exists(name string) bool {
+	if checkName(name) != nil {
+		return false
+	}
 	_, err := os.Stat(s.file(name))
 	return err == nil
 }
 
 // Delete removes name.json; a missing file is not an error.
 func (s *Store) Delete(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
 	if err := os.Remove(s.file(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("save: %w", err)
 	}
@@ -169,7 +190,16 @@ func (s *Store) List() ([]string, error) {
 // keep their default values and a missing file yields the defaults
 // without error. Use it for settings.
 func Load[T any](s *Store, name string, defaults T) (T, error) {
-	v := defaults
+	// A deep copy: decoding into a value that shares the defaults'
+	// slices and maps would write into them.
+	var v T
+	if data, err := json.Marshal(defaults); err == nil {
+		if err := json.Unmarshal(data, &v); err != nil {
+			v = defaults
+		}
+	} else {
+		v = defaults
+	}
 	err := s.Read(name, &v)
 	if errors.Is(err, os.ErrNotExist) {
 		return defaults, nil
