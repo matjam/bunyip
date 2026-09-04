@@ -172,11 +172,16 @@ func (g *Graphics) DrawTextOnPath(f *Font, text string, p *Path, offset float32,
 // dashed cuts a flattened sub-path into the "on" pieces of a dash
 // pattern, starting the pattern offset units in.
 func dashed(sub subpath, pattern []float32, offset float32) []subpath {
+	// A negative or zero dash would never advance along the path; the
+	// pattern is sanitised once and used in that form throughout.
+	clean := make([]float32, len(pattern))
 	total := float32(0)
-	for _, d := range pattern {
-		total += max(d, 0)
+	for i, d := range pattern {
+		clean[i] = max(d, 0.001)
+		total += clean[i]
 	}
-	if total <= 0 {
+	pattern = clean
+	if len(pattern) == 0 || total <= 0 {
 		return []subpath{sub}
 	}
 	pts := sub.pts

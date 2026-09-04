@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"cmp"
 	"math"
 	"slices"
 
@@ -441,6 +442,7 @@ type filler struct {
 	verts    []vertex2D
 	edges    []fillEdge
 	active   []int
+	order    []int // edges by their top, the order they enter the sweep
 	ys       []float32
 }
 
@@ -511,20 +513,30 @@ func (b *filler) run(subs []subpath) {
 	}
 	slices.Sort(b.ys)
 	b.ys = slices.Compact(b.ys)
+	// The sweep keeps an active edge list: edges join it in order of
+	// their top, through a cursor over that order, and leave when the
+	// sweep passes their bottom. Each slab then costs the edges that
+	// cross it rather than every edge of the path.
+	b.order = b.order[:0]
+	for j := range b.edges {
+		b.order = append(b.order, j)
+	}
+	slices.SortFunc(b.order, func(p, q int) int { return cmp.Compare(b.edges[p].y0, b.edges[q].y0) })
+	next := 0
+	b.active = b.active[:0]
 	for i := 0; i+1 < len(b.ys); i++ {
 		ya, yb := b.ys[i], b.ys[i+1]
+		for next < len(b.order) && b.edges[b.order[next]].y0 <= ya {
+			b.active = append(b.active, b.order[next])
+			next++
+		}
+		b.active = slices.DeleteFunc(b.active, func(j int) bool { return b.edges[j].y1 <= ya })
 		if yb-ya < 1e-6 {
 			continue
 		}
-		// Edges spanning this slab, ordered by x at its middle.
-		b.active = b.active[:0]
+		// Every endpoint is a slab boundary, so an edge still active here
+		// spans the whole slab. Order them by x at its middle.
 		ym := (ya + yb) / 2
-		for j := range b.edges {
-			e := &b.edges[j]
-			if e.y0 <= ya && e.y1 >= yb {
-				b.active = append(b.active, j)
-			}
-		}
 		slices.SortFunc(b.active, func(p, q int) int {
 			xp, xq := b.edges[p].at(ym), b.edges[q].at(ym)
 			if xp < xq {

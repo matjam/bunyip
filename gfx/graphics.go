@@ -3,6 +3,7 @@ package gfx
 import (
 	"fmt"
 	"image"
+	"math"
 	"unsafe"
 
 	"github.com/matjam/bunyip/gfx/shaders"
@@ -103,15 +104,26 @@ func (g *Graphics) rebuildMain() error {
 }
 
 // pixelRect maps a view-space clip rectangle into the viewport's pixels.
+// Both edges round the same way, so a rectangle thinner than a pixel
+// (which is how a disjoint clip is represented) covers no pixels rather
+// than leaking a one-pixel sliver.
 func pixelRect(vp vk.VkRect2D, clip lin.Rect, sx, sy float32) vk.VkRect2D {
-	x0 := vp.Offset.X + int32(clip.X*sx)
-	y0 := vp.Offset.Y + int32(clip.Y*sy)
-	x1 := vp.Offset.X + int32((clip.X+clip.W)*sx+0.5)
-	y1 := vp.Offset.Y + int32((clip.Y+clip.H)*sy+0.5)
+	x0 := vp.Offset.X + clipCoord(clip.X*sx)
+	y0 := vp.Offset.Y + clipCoord(clip.Y*sy)
+	x1 := vp.Offset.X + clipCoord((clip.X+clip.W)*sx)
+	y1 := vp.Offset.Y + clipCoord((clip.Y+clip.H)*sy)
 	x0, y0 = max(x0, vp.Offset.X), max(y0, vp.Offset.Y)
 	x1 = min(x1, vp.Offset.X+int32(vp.Extent.Width))
 	y1 = min(y1, vp.Offset.Y+int32(vp.Extent.Height))
 	return vk.VkRect2D{Offset: vk.VkOffset2D{X: x0, Y: y0}, Extent: vk.VkExtent2D{Width: uint32(max(x1-x0, 0)), Height: uint32(max(y1-y0, 0))}}
+}
+
+// clipCoord floors a pixel coordinate into an int32, clamping the huge
+// values a "clip to nothing in particular" rectangle carries instead of
+// letting the conversion wrap.
+func clipCoord(v float32) int32 {
+	const limit = 1 << 30
+	return int32(math.Floor(float64(lin.Clamp(v, -limit, limit))))
 }
 
 // retire schedules a texture that queued sprites may still reference for
@@ -277,18 +289,22 @@ type Vertex2D struct {
 // three indices per triangle, for meshes whose vertices are shared.
 func (g *Graphics) DrawIndexed(tex *Texture, verts []Vertex2D, indices []uint32) {
 	g.scratch = g.scratch[:0]
-	for _, i := range indices[:len(indices)/3*3] {
-		if int(i) >= len(verts) {
+	// A triangle with an index out of range is dropped whole, so the
+	// ones after it keep their vertices.
+	for t := 0; t+2 < len(indices); t += 3 {
+		i0, i1, i2 := indices[t], indices[t+1], indices[t+2]
+		if int(i0) >= len(verts) || int(i1) >= len(verts) || int(i2) >= len(verts) {
 			continue
 		}
-		v := verts[i]
-		c := v.Color
-		if c == (Color{}) {
-			c = White
+		for _, i := range [3]uint32{i0, i1, i2} {
+			v := verts[i]
+			c := v.Color
+			if c == (Color{}) {
+				c = White
+			}
+			g.scratch = append(g.scratch, vertex2D{pos: v.Pos, uv: v.UV, color: c.premultiplied()})
 		}
-		g.scratch = append(g.scratch, vertex2D{pos: v.Pos, uv: v.UV, color: c.premultiplied()})
 	}
-	g.scratch = g.scratch[:len(g.scratch)/3*3]
 	g.emit(tex, g.scratch)
 }
 

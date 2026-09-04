@@ -90,8 +90,10 @@ func (rt *RenderTexture) Destroy() {
 	g := rt.g
 	_ = g.r.Device.WaitIdle()
 	if rt.tex != nil {
-		g.forgetTexture(rt.tex)
-		g.descriptors.Free(rt.tex.set)
+		// The texture frees both its descriptor sets and marks itself
+		// destroyed, so a pointer a game kept from Texture cannot draw
+		// with a freed image.
+		rt.tex.Destroy()
 		rt.tex = nil
 	}
 	if rt.queue != nil {
@@ -107,16 +109,36 @@ func (rt *RenderTexture) Destroy() {
 
 // DrawTo runs draw with the render texture as the output; every Draw*,
 // SetCamera and SetLight call inside it lands on the texture. The texture
-// is rendered before the main frame, so it can be drawn in the same frame.
+// is rendered before the main frame, so it can be drawn in the same
+// frame. A second DrawTo on the same texture in one frame adds to what
+// the first queued, with the first call's clear colour.
 func (g *Graphics) DrawTo(rt *RenderTexture, clear Color, draw func()) {
 	if g.frame == nil {
 		return
 	}
 	prev := g.cur
 	g.cur = rt.queue
-	rt.queue.reset()
-	rt.queue.clear = clear
+	if !g.queuedTo(rt) {
+		rt.queue.reset()
+		rt.queue.clear = clear
+		g.subFrames = append(g.subFrames, subFrame{rt: rt, queue: rt.queue})
+	}
 	draw()
 	g.cur = prev
-	g.subFrames = append(g.subFrames, subFrame{rt: rt, queue: rt.queue})
+	// The colour matrix and 2D light blocks live on their shaders, not on
+	// the queue, so what the inner draws set is put back for the outer.
+	if prev.colorMatrix != nil {
+		g.matrixShader.SetUniforms(prev.colorMatrix)
+	}
+	prev.lightsDirty = true
+}
+
+// queuedTo reports whether a render texture already has a pass this frame.
+func (g *Graphics) queuedTo(rt *RenderTexture) bool {
+	for _, sf := range g.subFrames {
+		if sf.rt == rt {
+			return true
+		}
+	}
+	return false
 }

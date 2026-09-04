@@ -19,6 +19,8 @@ type Texture struct {
 	nearest       bool
 	repeat        bool
 	external      bool // image owned elsewhere (render textures)
+	data          bool // sampled without gamma decoding; pixels upload as given
+	retiring      bool // destroyed inside a frame; freed once it is submitted
 	g             *Graphics
 }
 
@@ -47,7 +49,45 @@ func (g *Graphics) NewTexture(src image.Image, opts TextureOptions) (*Texture, e
 		rgba = image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
 		draw.Draw(rgba, rgba.Bounds(), src, b.Min, draw.Src)
 	}
-	return g.newTexture(b.Dx(), b.Dy(), rgba.Pix, opts)
+	pix := rgba.Pix
+	if !opts.Data && needsLinearPremultiply(pix) {
+		// The caller's image is left as it is.
+		pix = append([]byte(nil), pix...)
+		linearPremultiply(pix)
+	}
+	return g.newTexture(b.Dx(), b.Dy(), pix, opts)
+}
+
+// needsLinearPremultiply reports whether any texel is translucent, which
+// is the only case linearPremultiply changes.
+func needsLinearPremultiply(pix []byte) bool {
+	for i := 3; i < len(pix); i += 4 {
+		if a := pix[i]; a != 0 && a != 255 {
+			return true
+		}
+	}
+	return false
+}
+
+// linearPremultiply rewrites premultiplied sRGB bytes, which is what
+// image.RGBA holds, so that an sRGB sampler decodes them to linear
+// premultiplied colour. Go premultiplies in sRGB space (a*c); the sampler
+// decodes that to linear(a*c), which is darker than the a*linear(c) the
+// blend needs, so a half-transparent white texel would read as grey.
+// Each translucent texel is unpremultiplied, decoded, premultiplied in
+// linear light and encoded again; opaque and clear texels are unchanged.
+func linearPremultiply(pix []byte) {
+	for i := 0; i+3 < len(pix); i += 4 {
+		a := pix[i+3]
+		if a == 0 || a == 255 {
+			continue
+		}
+		af := float32(a) / 255
+		for k := range 3 {
+			straight := min(float32(pix[i+k])/af, 255)
+			pix[i+k] = linearToSRGB8(srgbToLinear(uint8(straight+0.5)) * af)
+		}
+	}
 }
 
 func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Texture, error) {
@@ -67,7 +107,7 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		img.Destroy()
 		return nil, err
 	}
-	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat, g: g}, nil
+	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat, data: opts.Data, g: g}, nil
 }
 
 // setFor returns the descriptor set sampling the texture with a filter:
@@ -112,6 +152,9 @@ func (t *Texture) Write(x, y int, src image.Image) error {
 	}
 	rgba := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
 	draw.Draw(rgba, rgba.Bounds(), src, b.Min.Add(image.Pt(r.Min.X-x, r.Min.Y-y)), draw.Src)
+	if !t.data {
+		linearPremultiply(rgba.Pix)
+	}
 	g := t.g
 	if fr := g.frame; fr != nil {
 		staging, err := g.r.Device.NewStaging(rgba.Pix)
@@ -144,6 +187,15 @@ func (t *Texture) Read() (*image.RGBA, error) {
 // Destroy frees the texture. It must not be in use by a frame in flight.
 func (t *Texture) Destroy() {
 	if t.img == nil {
+		return
+	}
+	if t.g.frame != nil {
+		// Sprites queued this frame may still reference the texture, so
+		// it is destroyed after the frame is submitted rather than now.
+		if !t.retiring {
+			t.retiring = true
+			t.g.retire(t)
+		}
 		return
 	}
 	_ = t.g.r.Device.WaitIdle()

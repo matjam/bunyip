@@ -66,7 +66,7 @@ func (f *Font) addSDF(face uint8, gid font.GID) glyph {
 		}
 	}
 	side := float32(f.packer.width)
-	f.dirty = true
+	f.touched(x, y, w, h)
 	return glyph{
 		uv0:     lin.V2(float32(x)/side, float32(y)/side),
 		uv1:     lin.V2(float32(x+w)/side, float32(y+h)/side),

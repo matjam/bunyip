@@ -31,26 +31,27 @@ type Font struct {
 	Ascent     float32 // baseline to the top of the tallest glyph
 	Descent    float32 // baseline to the bottom of the deepest glyph, positive
 
-	faces    []*fontFace // the main face first, then fallbacks
-	features []shaping.FontFeature
-	atlas    *Texture
-	glyphs   map[glyphKey]glyph
-	scale    float32 // atlas pixels per view unit
-	pxPerEm  float32 // face pixels per em, the shaping size
-	packer   shelfPacker
-	pix      *image.RGBA
-	dirty    bool
-	sdf      bool
-	g        *Graphics
-	shaper   shaping.HarfbuzzShaper
-	seg      shaping.Segmenter
-	wrapper  shaping.LineWrapper
-	runs     genCache[runKey, []shaping.Output]
-	lines    genCache[lineKey, []shaping.Line]
-	blocks   genCache[blockKey, []Glyph]
-	measures genCache[measureKey, lin.Vec2]
-	scratch  textScratch
-	rast     *vector.Rasterizer
+	faces     []*fontFace // the main face first, then fallbacks
+	features  []shaping.FontFeature
+	atlas     *Texture
+	glyphs    map[glyphKey]glyph
+	scale     float32 // atlas pixels per view unit
+	pxPerEm   float32 // face pixels per em, the shaping size
+	packer    shelfPacker
+	pix       *image.RGBA
+	dirty     bool
+	dirtyRect image.Rectangle // the atlas pixels changed since the last flush
+	sdf       bool
+	g         *Graphics
+	shaper    shaping.HarfbuzzShaper
+	seg       shaping.Segmenter
+	wrapper   shaping.LineWrapper
+	runs      genCache[runKey, []shaping.Output]
+	lines     genCache[lineKey, []shaping.Line]
+	blocks    genCache[blockKey, []Glyph]
+	measures  genCache[measureKey, lin.Vec2]
+	scratch   textScratch
+	rast      *vector.Rasterizer
 }
 
 // fontFace is one parsed face and the metrics it contributes.
@@ -341,7 +342,7 @@ func (f *Font) add(face uint8, gid font.GID) glyph {
 		}
 	}
 	side := float32(f.packer.width)
-	f.dirty = true
+	f.touched(x, y, w, h)
 	return glyph{
 		uv0:     lin.V2(float32(x)/side, float32(y)/side),
 		uv1:     lin.V2(float32(x+w)/side, float32(y+h)/side),
@@ -392,7 +393,7 @@ func (f *Font) addBitmap(face uint8, gid font.GID, bm font.GlyphBitmap) glyph {
 	box := (f.Ascent + f.Descent) * f.scale
 	oy := -f.Ascent*f.scale + (box-float32(h))/2
 	side := float32(f.packer.width)
-	f.dirty = true
+	f.touched(x, y, w, h)
 	return glyph{
 		uv0:     lin.V2(float32(x)/side, float32(y)/side),
 		uv1:     lin.V2(float32(x+w)/side, float32(y+h)/side),
@@ -403,32 +404,42 @@ func (f *Font) addBitmap(face uint8, gid font.GID, bm font.GlyphBitmap) glyph {
 }
 
 // flush uploads the CPU atlas when glyphs were added.
+// touched marks atlas pixels as changed since the last flush.
+func (f *Font) touched(x, y, w, h int) {
+	f.dirty = true
+	f.dirtyRect = f.dirtyRect.Union(image.Rect(x, y, x+w, y+h))
+}
+
+// flush sends the glyphs rasterised since the last flush to the atlas.
+// The atlas texture is made once and then written in place, inside the
+// frame, so a glyph first drawn this frame appears this frame and the
+// texture is never replaced or retired.
 func (f *Font) flush() error {
 	if !f.dirty {
 		return nil
 	}
-	if f.atlas != nil {
-		// Sprites queued this frame still point at the old atlas, so it is
-		// destroyed after the frame is submitted rather than now.
-		if f.g.frame != nil {
-			f.g.retire(f.atlas)
-		} else {
-			f.atlas.Destroy()
+	if f.atlas == nil {
+		// No mip chain: a padded atlas sampled at lower mips bleeds
+		// neighbouring glyphs into each other.
+		tex, err := f.g.NewTexture(f.pix, TextureOptions{Linear: true, Data: true, NoMipmaps: true})
+		if err != nil {
+			return err
+		}
+		tex.sdf = f.sdf
+		f.atlas = tex
+	} else if r := f.dirtyRect.Intersect(f.pix.Bounds()); !r.Empty() {
+		if err := f.atlas.Write(r.Min.X, r.Min.Y, f.pix.SubImage(r)); err != nil {
+			return err
 		}
 	}
-	tex, err := f.g.NewTexture(f.pix, TextureOptions{Linear: true, Data: true})
-	if err != nil {
-		return err
-	}
-	tex.sdf = f.sdf
-	f.atlas = tex
 	f.dirty = false
+	f.dirtyRect = image.Rectangle{}
 	return nil
 }
 
 // Texture returns the glyph atlas, for drawing glyphs from Shape by
-// hand. It is replaced when new glyphs are rasterised, so fetch it each
-// frame rather than keeping it.
+// hand. The atlas is written in place as glyphs are added, so the
+// texture stays the same for the life of the font.
 func (f *Font) Texture() *Texture { return f.atlas }
 
 // Destroy frees the atlas.

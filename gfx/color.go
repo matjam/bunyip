@@ -174,3 +174,15 @@ var srgbTable = func() (t [256]float32) {
 }()
 
 func srgbToLinear(v uint8) float32 { return srgbTable[v] }
+
+// linearToSRGB8 encodes a linear value in 0..1 as an sRGB byte.
+func linearToSRGB8(v float32) uint8 {
+	v = lin.Clamp(v, 0, 1)
+	var s float64
+	if v <= 0.0031308 {
+		s = float64(v) * 12.92
+	} else {
+		s = 1.055*pow(float64(v), 1/2.4) - 0.055
+	}
+	return uint8(s*255 + 0.5)
+}

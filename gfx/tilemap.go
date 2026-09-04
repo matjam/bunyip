@@ -45,6 +45,9 @@ func (g *Graphics) drawTiledSlices(tex *Texture, x, y float32, xs, ys, us, vs [4
 			if row != 1 {
 				stepY = dh
 			}
+			if stepX <= 0 || stepY <= 0 {
+				continue // no source pixels to repeat: borders that meet or overlap
+			}
 			for py := float32(0); py < dh; py += stepY {
 				ph := min(stepY, dh-py)
 				for px := float32(0); px < dw; px += stepX {
@@ -218,6 +221,11 @@ func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
 	x0, y0, x1, y1 := 0, 0, t.Width, t.Height
 	if cam, ok := g.Camera2D(); ok {
 		vis := cam.VisibleRect(g.cur.viewW, g.cur.viewH)
+		if xf := g.cur.xform; !xf.IsIdentity() {
+			// The map is drawn through the transform stack, so the view
+			// is taken back into the map's own units before culling.
+			vis = transformedBounds(xf.Inverse(), vis)
+		}
 		x0 = max(0, int((vis.X-x)/tw)-1)
 		y0 = max(0, int((vis.Y-y)/th)-1)
 		x1 = min(t.Width, int((vis.X+vis.W-x)/tw)+2)
@@ -239,6 +247,19 @@ func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
 			g.DrawFrame(t.Sheet, t.current(frame), s)
 		}
 	}
+}
+
+// transformedBounds is the axis-aligned bounds of a rectangle's corners
+// after a transform.
+func transformedBounds(m lin.Affine, r lin.Rect) lin.Rect {
+	lo := lin.V2(math.MaxFloat32, math.MaxFloat32)
+	hi := lin.V2(-math.MaxFloat32, -math.MaxFloat32)
+	for _, c := range [4]lin.Vec2{{X: r.X, Y: r.Y}, {X: r.X + r.W, Y: r.Y}, {X: r.X, Y: r.Y + r.H}, {X: r.X + r.W, Y: r.Y + r.H}} {
+		p := m.Apply(c)
+		lo = lin.V2(min(lo.X, p.X), min(lo.Y, p.Y))
+		hi = lin.V2(max(hi.X, p.X), max(hi.Y, p.Y))
+	}
+	return lin.R(lo.X, lo.Y, hi.X-lo.X, hi.Y-lo.Y)
 }
 
 // DrawNineSlice draws a nine-slice stretched over r while keeping its
