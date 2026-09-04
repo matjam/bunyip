@@ -146,6 +146,10 @@ func main() {
 Every example takes `-seconds N` and `-shot file.png`, so a run verifies
 itself without a person watching the screen.
 
+Each one has a walkthrough on the documentation site that quotes the
+whole program and explains it section by section:
+[matjam.github.io/bunyip/examples/](https://matjam.github.io/bunyip/examples/index.html).
+
 | Command | Shows |
 |---|---|
 | `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites |
