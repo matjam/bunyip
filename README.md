@@ -42,9 +42,10 @@ window.
 - Audio: a mixer with streamed WAV, Ogg Vorbis and MP3, positional
   voices with Doppler and occlusion, buses, reverb zones, and a tracker
   player for MOD, S3M, XM and IT.
-- Simulation: an archetype entity component system with saving, prefabs
-  and cloning; 2D and 3D rigid bodies with joints, ragdolls, character
-  controllers and queries; celestial mechanics for any star system.
+- Simulation: an archetype entity component system with saving, prefabs,
+  cloning and a JSON scene format; 2D and 3D rigid bodies with joints,
+  ragdolls, character controllers and queries; celestial mechanics for
+  any star system.
 - Services: assets and pack files with background loading and hot
   reload, saves and settings, translation with plural rules, seeded
   random numbers, timers and cutscene sequences, tweens, grids with
@@ -97,11 +98,11 @@ with it.
 | `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State`, action maps |
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
 | `lin` | vectors, matrices, quaternions |
-| `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs |
+| `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs, scene documents |
 | `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons with layers, events, root motion, IK and morph targets |
 | `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps and shape casts |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
-| `asset` | files from directories and pack files, async loading, hot reload |
+| `asset` | files from directories and pack files, one-call loaders, async loading, hot reload |
 | `save` | JSON saves and settings in the platform's data directory |
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
 | `timer`, `tween` | game-time timers and step sequences for cutscenes; eased value animation |

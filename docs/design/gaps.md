@@ -250,12 +250,15 @@ contacts with the 3D debug lines.
 
 ## Entities, data and scripting
 
-World saves and loads, prefabs with children, cloning, the `locale`
-package (string tables, placeholders, plural rules, fallbacks) and
-`timer.Sequence` for cutscene-style sequencing are in.
+World saves and loads, prefabs with children, cloning, the `ecs.Scene`
+document format with `Instantiate`, `ExportScene`, prefab libraries and
+`asset.Scene`, the `locale` package (string tables, placeholders, plural
+rules, fallbacks) and `timer.Sequence` for cutscene-style sequencing are
+in.
 
-- A scene format and a scene editor; a prefab's JSON is the data format
-  for now.
+- A scene editor. The format and the API are what one would read and
+  write; placing entities is still a matter of editing JSON or building
+  the scene in code and calling `ExportScene`.
 - Scripting for game logic in something other than Go (Lua or similar),
   or hot code reload.
 - Right-to-left layout of the interface; the text itself shapes

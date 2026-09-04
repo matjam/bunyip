@@ -35,7 +35,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
 | `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, paths, gradients, text (HarfBuzz shaping, atlases, SDF, emoji, rich text), colour matrices, lit sprites. 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
-| `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning. |
+| `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
 | `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries. |
 | `anim/` | Keyframe curves and clips for components, flipbooks, skeleton playback, IK, blend spaces. |
 | `orbit/`, `orbit/sol/` | Celestial mechanics, unit-agnostic; real solar-system constants only in `sol`. |
@@ -257,7 +257,7 @@ goroutine.
 | Meshes, materials, lights, shadows, sky, fog, post-processing | `gfx` (3D half), `gltf` for loading models |
 | Game-written shaders | `cmd/bunyip-shader`, the shaders guide |
 | Widgets, menus, text fields, themes | `ui` |
-| Entities, queries, systems, saves, prefabs | `ecs` |
+| Entities, queries, systems, saves, prefabs, scene files | `ecs`, `asset.Scene` |
 | Rigid bodies, joints, ragdolls, character controllers, raycasts | `phys` |
 | Skeletal and keyframe animation, IK, blend spaces | `anim`, `gfx.AnimPlayer` |
 | Orbits, planets, ships | `orbit`, `orbit/sol` |
