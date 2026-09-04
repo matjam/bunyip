@@ -125,13 +125,24 @@ sweep a shape along a direction and report the first collider it would
 hit and how far along the sweep it got. `Nearest2` and `Nearest3` find
 the closest collider to a point within a radius.
 
-A game that casts the same ray every frame can avoid the result slice by
-calling `RaycastAll2Into` or `RaycastAll3Into`, which append to a slice
-the caller keeps and hands back truncated with `[:0]`:
+A game that queries every frame can avoid the result slice by calling
+`RaycastAll2Into`, `RaycastAll3Into`, `OverlapShape2Into` or
+`OverlapShape3Into`, which append to a slice the caller keeps and hands
+back truncated with `[:0]`. Every query then allocates nothing once the
+slice has grown to fit:
 
 ```go
 g.hits = phys.RaycastAll3Into(g.hits[:0], w, ray, 0)
+g.near = phys.OverlapShape3Into(g.near[:0], w, blast, pos, lin.Quat{}, 0)
 ```
+
+Casts and sweeps take their candidates from the broadphase's sorted axis
+rather than looking at every collider, order them along the sweep so the
+nearest is found first, and keep each collider's placed shape between
+queries. A cast across a level therefore costs what is near its path, not
+what the level contains. A collider's placed shape is rebuilt when it
+moves, turns or changes size; a shape whose points are edited in place
+without any of those changing must be assigned to the collider again.
 
 ```go
 // The body under the pointer.

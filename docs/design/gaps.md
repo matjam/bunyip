@@ -236,13 +236,11 @@ joints with limits, motors and springs,
 ragdolls, continuous collision for fast bodies (against static
 geometry and between two moving bodies), sleeping, and character
 controllers are in; the physics-lab example draws colliders and
-contacts with the 3D debug lines.
+contacts with the 3D debug lines. Casts, sweeps and character moves take
+their candidates from the sorted sweep and allocate nothing once their
+buffers have grown.
 
 - Soft bodies, cloth simulation and fluids.
-- Continuous collision, shape casts and the character controller build
-  their convex parts afresh per query, several hundred allocations a
-  step with a hundred fast bodies over a large static set, and scan
-  every entry rather than the sorted sweep.
 - A stack whose boxes are turned relative to each other keeps creeping
   into place at the default solver quality, so it sleeps late or not at
   all; an aligned stack settles within a second or two.

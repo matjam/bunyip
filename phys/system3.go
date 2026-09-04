@@ -145,13 +145,25 @@ type state3 struct {
 	// Scratch kept between steps so a step allocates nothing: ss serves
 	// the step and qs the queries, which the game may call while the
 	// step's buffers still hold contacts.
-	ss, qs          scratch3
-	sweep           sweepState
-	contacts        []contact3
-	arbiters        []arbiter3
-	events          []pending3
-	reported        pairSet
-	rest            []float32
+	ss, qs scratch3
+	sweep  sweepState
+	// The colliders' convex parts in world space, and the buffers the
+	// sweeps and the queries gather their candidates into.
+	shapes    shapeCache3
+	cands     []int32
+	qcands    []candidate3
+	castParts []convexPart
+	hits      []Hit3
+	// The furthest any moving body travels along the sweep axis this
+	// substep, which widens the band a moving pair is searched for in,
+	// and whether any body sweeps at all.
+	motion           float32
+	anyCCD           bool
+	contacts         []contact3
+	arbiters         []arbiter3
+	events           []pending3
+	reported         pairSet
+	rest             []float32
 	joints           []jointSolver3
 	items            []jointItem3
 	distanceSolvers  []distanceSolver3
@@ -276,13 +288,20 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 			b.AngVel = b.AngVel.Mul(max(0, 1-b.AngularDamping*h))
 		}
 	})
-	// Gather colliders with bounds.
+	// Gather colliders with bounds. The furthest a moving body travels
+	// and whether any of them sweeps are noted here, where each body is
+	// already in hand, rather than in a pass of their own.
 	s.entries = s.entries[:0]
+	s.motion, s.anyCCD = 0, false
 	s.colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
 		if c.Shape == nil {
 			return
 		}
 		b, _ := ecs.Get[Body3](w, e)
+		if b != nil && b.invMass > 0 {
+			s.motion = max(s.motion, abs32(b.Vel.X)*h)
+			s.anyCCD = s.anyCCD || b.CCD
+		}
 		rot := mat3FromQuat(t.Rotation)
 		pos := t.Position.Add(rot.mulVec(c.Offset))
 		lo, hi := c.Shape.bounds(pos, rot)
@@ -382,6 +401,9 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 	}
 	// Continuous collision: clamp fast bodies to their first static hit.
 	for i := range en {
+		if !s.anyCCD {
+			break
+		}
 		e := &en[i]
 		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
 			continue
@@ -489,23 +511,25 @@ func (s *state3) sleep(settings *Settings3, h float32) {
 
 // sweepStatic sweeps a body's collider along delta against colliders
 // that cannot move this step and returns the fraction at which it first
-// touches one.
+// touches one. Candidates come from the broadphase's sorted axis, so the
+// cost is the colliders near the sweep rather than every collider.
 func (s *state3) sweepStatic(e *entry3, delta lin.Vec3) (float32, bool) {
-	parts := convexParts(e.c.Shape, e.pos, e.rot)
+	parts := s.shapes.parts(e.e, e.c.Shape, e.pos, e.rot, e.lo, e.hi)
 	if len(parts) == 0 {
 		return 0, false
 	}
 	slo, shi := e.lo.Min(e.lo.Add(delta)), e.hi.Max(e.hi.Add(delta))
 	best, found := float32(1), false
-	for i := range s.entries {
-		o := &s.entries[i]
+	s.cands = s.sweep.overlapping(s.cands[:0], slo.X, shi.X)
+	for _, ci := range s.cands {
+		o := &s.entries[ci]
 		if o == e || o.c.Trigger || active3(o.b) || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
-		if o.lo.X > shi.X || slo.X > o.hi.X || o.lo.Y > shi.Y || slo.Y > o.hi.Y || o.lo.Z > shi.Z || slo.Z > o.hi.Z {
+		if o.lo.Y > shi.Y || slo.Y > o.hi.Y || o.lo.Z > shi.Z || slo.Z > o.hi.Z {
 			continue
 		}
-		if t, ok := sweepParts(parts, o.c.Shape, o.pos, o.rot, delta); ok && t < best {
+		if t, ok := s.sweepAgainst(parts, o, delta); ok && t < best {
 			best, found = t, true
 		}
 	}
@@ -516,12 +540,17 @@ func (s *state3) sweepStatic(e *entry3, delta lin.Vec3) (float32, bool) {
 // other moving bodies: for each pair whose bounding spheres meet along
 // their relative motion this substep, the body's shape is swept against
 // the other's and both are held at the moment they would touch, so the
-// next substep's contact catches them.
+// next substep's contact catches them. The search band is widened by the
+// furthest anything travels this substep, so a partner moving toward the
+// body is still found.
 func (s *state3) sweepDynamic(e *entry3, h float32) {
 	ca, ra := sphereOfBounds3(e.lo, e.hi)
+	slo := min(e.lo.X, e.lo.X+e.b.Vel.X*h) - s.motion
+	shi := max(e.hi.X, e.hi.X+e.b.Vel.X*h) + s.motion
 	var parts []convexPart
-	for i := range s.entries {
-		o := &s.entries[i]
+	s.cands = s.sweep.overlapping(s.cands[:0], slo, shi)
+	for _, ci := range s.cands {
+		o := &s.entries[ci]
 		if o == e || o.b == nil || o.b.invMass == 0 || o.c.Trigger || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
@@ -536,16 +565,25 @@ func (s *state3) sweepDynamic(e *entry3, h float32) {
 			continue
 		}
 		if parts == nil {
-			if parts = convexParts(e.c.Shape, e.pos, e.rot); len(parts) == 0 {
+			if parts = s.shapes.parts(e.e, e.c.Shape, e.pos, e.rot, e.lo, e.hi); len(parts) == 0 {
 				return
 			}
 		}
-		if t, ok := sweepParts(parts, o.c.Shape, o.pos, o.rot, delta); ok && t < 1 {
+		if t, ok := s.sweepAgainst(parts, o, delta); ok && t < 1 {
 			f := min(1, t+0.5*slop/length)
 			e.b.fraction = min(e.b.fraction, f)
 			o.b.fraction = min(o.b.fraction, f)
 		}
 	}
+}
+
+// sweepAgainst sweeps prepared convex pieces against one entry's
+// collider, taking that collider's pieces from the cache.
+func (s *state3) sweepAgainst(parts []convexPart, o *entry3, delta lin.Vec3) (float32, bool) {
+	if m, ok := o.c.Shape.(MeshShape); ok {
+		return sweepMeshParts(parts, m, o.pos, o.rot, delta)
+	}
+	return sweepAgainstParts(parts, s.shapes.parts(o.e, o.c.Shape, o.pos, o.rot, o.lo, o.hi), delta)
 }
 
 // sphereOfBounds3 is the sphere around a bounding box.
@@ -568,19 +606,23 @@ func spheresMeet(dd, dv, vv, radius float32) bool {
 	return disc >= 0 && (-dv-float32(math.Sqrt(float64(disc))))/vv < 1
 }
 
-// sweepParts sweeps convex pieces against one placed shape.
-func sweepParts(parts []convexPart, shape Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3) (float32, bool) {
+// sweepMeshParts sweeps convex pieces against a placed triangle mesh.
+func sweepMeshParts(parts []convexPart, m MeshShape, pos lin.Vec3, rot mat3, delta lin.Vec3) (float32, bool) {
 	best, found := float32(math.Inf(1)), false
 	for i := range parts {
-		a := &parts[i].conv
-		if m, ok := shape.(MeshShape); ok {
-			if t, _, _, hit := sweepMesh(m, pos, rot, a, parts[i].lo, parts[i].hi, delta); hit && t < best {
-				best, found = t, true
-			}
-			continue
+		if t, _, _, hit := sweepMesh(m, pos, rot, &parts[i].conv, parts[i].lo, parts[i].hi, delta); hit && t < best {
+			best, found = t, true
 		}
-		for _, target := range convexParts(shape, pos, rot) {
-			if t, _, _, hit := sweepConvex(a, &target.conv, delta); hit && t < best {
+	}
+	return best, found
+}
+
+// sweepAgainstParts sweeps one set of convex pieces against another.
+func sweepAgainstParts(parts, targets []convexPart, delta lin.Vec3) (float32, bool) {
+	best, found := float32(math.Inf(1)), false
+	for i := range parts {
+		for j := range targets {
+			if t, _, _, hit := sweepConvex(&parts[i].conv, &targets[j].conv, delta); hit && t < best {
 				best, found = t, true
 			}
 		}

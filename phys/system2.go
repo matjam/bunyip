@@ -144,13 +144,23 @@ type state2 struct {
 	// Scratch kept between steps so a step allocates nothing: ss serves
 	// the step and qs the queries, which the game may call while the
 	// step's buffers still hold contacts.
-	ss, qs          scratch2
-	sweep           sweepState
-	contacts        []contact2
-	arbiters        []arbiter2
-	events          []pending2
-	reported        pairSet
-	rest            []float32
+	ss, qs scratch2
+	sweep  sweepState
+	// The buffers the sweeps and the queries gather their candidates
+	// into, and the hits a character controller reads back.
+	cands  []int32
+	qcands []candidate2
+	hits   []Hit2
+	// The furthest any moving body travels along the sweep axis this
+	// substep, which widens the band a moving pair is searched for in,
+	// and whether any body sweeps at all.
+	motion           float32
+	anyCCD           bool
+	contacts         []contact2
+	arbiters         []arbiter2
+	events           []pending2
+	reported         pairSet
+	rest             []float32
 	joints           []jointSolver2
 	items            []jointItem2
 	distanceSolvers  []distanceSolver2
@@ -269,13 +279,20 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			b.AngVel *= max(0, 1-b.AngularDamping*h)
 		}
 	})
-	// Gather colliders with bounds.
+	// Gather colliders with bounds. The furthest a moving body travels
+	// and whether any of them sweeps are noted here, where each body is
+	// already in hand, rather than in a pass of their own.
 	s.entries = s.entries[:0]
+	s.motion, s.anyCCD = 0, false
 	s.colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
 		if c.Shape == nil {
 			return
 		}
 		b, _ := ecs.Get[Body2](w, e)
+		if b != nil && b.invMass > 0 {
+			s.motion = max(s.motion, abs32(b.Vel.X)*h)
+			s.anyCCD = s.anyCCD || b.CCD
+		}
 		cs, sn := cosSin(t.Rotation)
 		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
 		lo, hi := c.Shape.bounds(pos, t.Rotation)
@@ -373,6 +390,9 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 	}
 	// Continuous collision: clamp fast bodies to their first static hit.
 	for i := range en {
+		if !s.anyCCD {
+			break
+		}
 		e := &en[i]
 		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
 			continue
@@ -468,18 +488,20 @@ func (s *state2) sleep(settings *Settings2, h float32) {
 
 // sweepStatic sweeps a body's collider along delta against colliders
 // that cannot move this step and returns the fraction at which it first
-// touches one.
+// touches one. Candidates come from the broadphase's sorted axis, so the
+// cost is the colliders near the sweep rather than every collider.
 func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
 	slo, shi := e.lo.Min(e.lo.Add(delta)), e.hi.Max(e.hi.Add(delta))
 	ext := e.hi.Sub(e.lo)
 	minHalf := min(ext.X, ext.Y) / 2
 	best, found := float32(1), false
-	for i := range s.entries {
-		o := &s.entries[i]
+	s.cands = s.sweep.overlapping(s.cands[:0], slo.X, shi.X)
+	for _, ci := range s.cands {
+		o := &s.entries[ci]
 		if o == e || o.c.Trigger || active2(o.b) || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
-		if o.lo.X > shi.X || slo.X > o.hi.X || o.lo.Y > shi.Y || slo.Y > o.hi.Y {
+		if o.lo.Y > shi.Y || slo.Y > o.hi.Y {
 			continue
 		}
 		oext := o.hi.Sub(o.lo)
@@ -494,13 +516,18 @@ func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
 // other moving bodies: for each pair whose bounding circles meet along
 // their relative motion this substep, the body's shape is swept against
 // the other's and both are held at the moment they would touch, so the
-// next substep's contact catches them.
+// next substep's contact catches them. The search band is widened by the
+// furthest anything travels this substep, so a partner moving toward the
+// body is still found.
 func (s *state2) sweepDynamic(e *entry2, h float32) {
 	ca, ra := circleOfBounds2(e.lo, e.hi)
 	ext := e.hi.Sub(e.lo)
 	minHalf := min(ext.X, ext.Y) / 2
-	for i := range s.entries {
-		o := &s.entries[i]
+	slo := min(e.lo.X, e.lo.X+e.b.Vel.X*h) - s.motion
+	shi := max(e.hi.X, e.hi.X+e.b.Vel.X*h) + s.motion
+	s.cands = s.sweep.overlapping(s.cands[:0], slo, shi)
+	for _, ci := range s.cands {
+		o := &s.entries[ci]
 		if o == e || o.b == nil || o.b.invMass == 0 || o.c.Trigger || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}

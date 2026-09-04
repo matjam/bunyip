@@ -31,13 +31,17 @@
 //
 // Queries inspect the world between updates. Raycast2
 // and Raycast3 return the nearest collider along a ray and RaycastAll2
-// and RaycastAll3 every one in order, with RaycastAll2Into and
-// RaycastAll3Into appending to a slice the caller reuses;
-// OverlapShape2 and OverlapShape3
+// and RaycastAll3 every one in order; OverlapShape2 and OverlapShape3
 // (with OverlapCircle2, OverlapBox2, OverlapSphere3 and OverlapBox3)
 // return everything a placed shape touches; ShapeCast2 and ShapeCast3
 // sweep a shape and return the first thing in its way; Nearest2 and
-// Nearest3 find the closest collider to a point.
+// Nearest3 find the closest collider to a point. The queries that return
+// a slice have an Into form (RaycastAll2Into, RaycastAll3Into,
+// OverlapShape2Into, OverlapShape3Into) that appends to a slice the
+// caller reuses, so a game querying every frame allocates nothing once
+// its buffers have grown. The sweeps take their candidates from the
+// broadphase's sorted axis and keep each collider's placed shape between
+// queries, so a cast pays for what is near its path.
 //
 // Joints are components on their own entities that name the bodies they
 // connect: DistanceJoint2 and DistanceJoint3 (rods and ropes),
@@ -125,6 +129,51 @@ type sweepState struct {
 	order []int
 	keys  []float32
 	ends  []float32
+	// The longest interval, so a search that walks back from the last
+	// interval starting inside its target knows when to stop. It is
+	// measured on the first search of a step and not at all when a step
+	// makes none, which is every step with no body sweeping.
+	span    float32
+	spanned bool
+}
+
+// overlapping appends the index of every interval reaching into
+// [lo, hi] on the sweep axis to dst, so a query pays for the candidates
+// it finds rather than for every collider. The order is sorted by
+// interval start, so the walk begins at the last interval starting at or
+// before hi and stops one span before lo, which nothing can reach
+// across. It is only valid after pairs has sorted the order.
+func (s *sweepState) overlapping(dst []int32, lo, hi float32) []int32 {
+	n := len(s.keys)
+	if n == 0 || len(s.order) != n {
+		return dst
+	}
+	if !s.spanned {
+		for i := range n {
+			s.span = max(s.span, s.ends[i]-s.keys[i])
+		}
+		s.spanned = true
+	}
+	// The first position whose interval starts past hi.
+	first, last := 0, n
+	for first < last {
+		mid := int(uint(first+last) >> 1)
+		if s.keys[s.order[mid]] > hi {
+			last = mid
+		} else {
+			first = mid + 1
+		}
+	}
+	for x := first - 1; x >= 0; x-- {
+		i := s.order[x]
+		if s.keys[i] < lo-s.span {
+			break
+		}
+		if s.ends[i] >= lo {
+			dst = append(dst, int32(i))
+		}
+	}
+	return dst
 }
 
 // begin sizes the interval buffers for n bodies and returns them for
@@ -145,6 +194,7 @@ func (s *sweepState) pairs(fn func(i, j int)) {
 			s.order = append(s.order, i)
 		}
 	}
+	s.span, s.spanned = 0, false
 	s.sort()
 	for x := range n {
 		i := s.order[x]

@@ -182,6 +182,13 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   containers plus call order; overlays (menus, modals, drag ghosts) are
   drawn deferred at `end`, and overlays may add overlays, so that list
   is iterated by index.
+- A placed convex in `phys` (`convex` in `gjk.go`) holds its core
+  vertices in a fixed array, so placing a shape allocates nothing. Take
+  its address only where the pointer cannot escape, or the whole value
+  lands on the heap; `convexPair` and `meshContacts` keep theirs in the
+  scratch for that reason. `phys/cache3.go` keeps each collider's placed
+  parts between queries, keyed by the collider's placement and bounds, so
+  a shape edited in place without moving goes stale.
 - Each physics substep ends with a relax pass over the contacts that
   solves them again with the position-correction bias dropped. The bias
   leaves the bodies separating at about the sleep threshold, so without
