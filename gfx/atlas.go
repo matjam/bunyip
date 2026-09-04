@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/matjam/bunyip/lin"
 )
@@ -208,6 +209,61 @@ func (a *Atlas) Durations(name string) []float32 {
 		out = append(out, a.Data.Frames[n].Duration)
 	}
 	return out
+}
+
+// RegionAnimation is a tag's frames with the timing the atlas gave each
+// one, for playing an Aseprite animation as authored. Build one with
+// Atlas.Animation and read the frame to draw with At.
+type RegionAnimation struct {
+	Frames    []Region
+	Durations []float32 // seconds per frame; a zero duration means 0.1
+	Loop      bool
+}
+
+// Animation returns a tag's frames and durations as an animation that
+// loops. An unknown tag gives an animation with no frames.
+func (a *Atlas) Animation(tag string) RegionAnimation {
+	return RegionAnimation{Frames: a.Tag(tag), Durations: a.Durations(tag), Loop: true}
+}
+
+// Length is the animation's total time in seconds.
+func (r RegionAnimation) Length() float64 {
+	var total float64
+	for i := range r.Frames {
+		total += float64(r.duration(i))
+	}
+	return total
+}
+
+func (r RegionAnimation) duration(i int) float32 {
+	if i < len(r.Durations) && r.Durations[i] > 0 {
+		return r.Durations[i]
+	}
+	return 0.1
+}
+
+// At returns the frame showing at a time from the start, and whether the
+// animation has ended (never, for one that loops). An animation with no
+// frames returns an empty region and done.
+func (r RegionAnimation) At(t float64) (Region, bool) {
+	if len(r.Frames) == 0 {
+		return Region{}, true
+	}
+	total := r.Length()
+	if r.Loop && total > 0 {
+		t = math.Mod(t, total)
+		if t < 0 {
+			t += total
+		}
+	}
+	for i, f := range r.Frames {
+		d := float64(r.duration(i))
+		if t < d {
+			return f, false
+		}
+		t -= d
+	}
+	return r.Frames[len(r.Frames)-1], !r.Loop
 }
 
 // The shared JSON shape of TexturePacker and Aseprite atlases.

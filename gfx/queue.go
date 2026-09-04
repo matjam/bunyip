@@ -31,7 +31,9 @@ type drawQueue struct {
 	spriteProj  lin.Mat4 // projection for sprite draws right now
 	cam2D       Camera2D
 	hasCam2D    bool
+	visible     lin.Rect // the 2D camera's view in world units, for culling sprites
 	layer       int32
+	sortKey     float32    // order within the layer for later sprite draws
 	clips       []lin.Rect // clip stack; the last entry applies
 	shader      *Shader    // 2D shader in force, nil for the default
 	blend       Blend
@@ -56,6 +58,7 @@ func (q *drawQueue) reset() {
 	q.hasCam2D = false
 	q.spriteProj = q.proj
 	q.layer = 0
+	q.sortKey = 0
 	q.clips = q.clips[:0]
 	q.shader = nil
 	q.blend = BlendAlpha
@@ -99,6 +102,7 @@ func (q *drawQueue) setView(w, h float32) {
 	q.proj = lin.Ortho2D(w, h)
 	if q.hasCam2D {
 		q.spriteProj = q.proj.Mul(q.cam2D.Matrix(w, h))
+		q.visible = q.cam2D.VisibleRect(w, h)
 	} else {
 		q.spriteProj = q.proj
 	}

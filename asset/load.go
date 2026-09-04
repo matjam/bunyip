@@ -43,6 +43,28 @@ func Texture(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gf
 	return tex, nil
 }
 
+// Atlas reads a TexturePacker or Aseprite JSON atlas, loads the image it
+// names from the same directory, uploads it and binds the frames: one
+// call where a game would otherwise parse, load and bind by hand.
+func Atlas(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.Atlas, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	d, err := gfx.ParseAtlas(data)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	if d.Image == "" {
+		return nil, fmt.Errorf("asset %s: the atlas names no image", name)
+	}
+	tex, err := Texture(g, fs, path.Join(path.Dir(name), d.Image), opts)
+	if err != nil {
+		return nil, err
+	}
+	return d.Bind(tex), nil
+}
+
 // Font reads a TTF or OTF file and prepares a bitmap atlas at size.
 func Font(g *gfx.Graphics, fs *FS, name string, size float32, opts gfx.FontOptions) (*gfx.Font, error) {
 	data, err := fs.Read(name)

@@ -184,7 +184,7 @@ func benchSprites(b *testing.B, layered bool) {
 			if layered {
 				layer = int32(i % 16)
 			}
-			s.add(state2D{set: sets[i%len(sets)], uniform: -1, blend: BlendAlpha, proj: pr}, layer, verts)
+			s.add(state2D{set: sets[i%len(sets)], uniform: -1, blend: BlendAlpha, proj: pr}, layer, 0, verts)
 		}
 		s.build()
 	}

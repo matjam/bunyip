@@ -43,6 +43,7 @@ type item2D struct {
 	state        state2D
 	first, count int32
 	layer        int32
+	key          float32 // order within the layer; equal keys keep submission order
 }
 
 type draw2D struct {
@@ -67,6 +68,7 @@ type stream2D struct {
 	capacity   int
 	projs      []lin.Mat4 // projections referenced this frame, at stable addresses
 	sorted     bool
+	keyed      bool // some item has a sort key, so layers need an inner sort
 }
 
 const initialVertexCapacity = 6 * 4096
@@ -97,19 +99,22 @@ func (s *stream2D) proj(m lin.Mat4) *lin.Mat4 {
 
 // add appends vertices under a state, merging with the previous item
 // when nothing changed.
-func (s *stream2D) add(st state2D, layer int32, verts []vertex2D) {
+func (s *stream2D) add(st state2D, layer int32, key float32, verts []vertex2D) {
 	first := int32(len(s.verts))
 	s.verts = append(s.verts, verts...)
 	if n := len(s.items); n > 0 {
 		last := &s.items[n-1]
-		if last.state == st && last.layer == layer && last.first+last.count == first {
+		if last.state == st && last.layer == layer && last.key == key && last.first+last.count == first {
 			last.count += int32(len(verts))
 			return
 		}
 	}
-	s.items = append(s.items, item2D{state: st, first: first, count: int32(len(verts)), layer: layer})
+	s.items = append(s.items, item2D{state: st, first: first, count: int32(len(verts)), layer: layer, key: key})
 	if layer != 0 {
 		s.sorted = false
+	}
+	if key != 0 {
+		s.sorted, s.keyed = false, true
 	}
 }
 
@@ -121,6 +126,7 @@ func (s *stream2D) reset() {
 	s.draws = s.draws[:0]
 	s.projs = s.projs[:0]
 	s.sorted = true
+	s.keyed = false
 }
 
 // maxLayerSpread is how many layers wide a frame may be before the
@@ -142,7 +148,12 @@ func (s *stream2D) sortItems() {
 	if span > maxLayerSpread || span > int64(4*len(s.items)+64) {
 		// cmp.Compare, not a subtraction: layers at opposite ends of int32
 		// would wrap.
-		slices.SortStableFunc(s.items, func(x, y item2D) int { return cmp.Compare(x.layer, y.layer) })
+		slices.SortStableFunc(s.items, func(x, y item2D) int {
+			if c := cmp.Compare(x.layer, y.layer); c != 0 {
+				return c
+			}
+			return cmp.Compare(x.key, y.key)
+		})
 		return
 	}
 	if cap(s.counts) < int(span) {
@@ -170,6 +181,18 @@ func (s *stream2D) sortItems() {
 		counts[k]++
 	}
 	s.items, s.sortBuf = out, s.items[:0]
+	if s.keyed {
+		// Each layer's run is sorted by key on its own, stably, so the
+		// keys order within a layer and submission order breaks ties.
+		for i := 0; i < len(s.items); {
+			j := i + 1
+			for j < len(s.items) && s.items[j].layer == s.items[i].layer {
+				j++
+			}
+			slices.SortStableFunc(s.items[i:j], func(x, y item2D) int { return cmp.Compare(x.key, y.key) })
+			i = j
+		}
+	}
 }
 
 // build orders items by layer (stable) and groups them into draw runs.
@@ -303,7 +326,7 @@ func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
 	} else {
 		st.set = tex.setFor(filter)
 	}
-	q.stream.add(st, q.layer, verts)
+	q.stream.add(st, q.layer, q.sortKey, verts)
 }
 
 // imageSet returns a descriptor set binding a texture plus a shader's

@@ -239,7 +239,7 @@ func TestLayerOrder(t *testing.T) {
 			// Each item gets its own state so none of them merge.
 			for i, layer := range c.layers {
 				v := []vertex2D{{pos: lin.V2(float32(i), 0)}}
-				s.add(state2D{set: 1, uniform: int32(i), proj: s.proj(proj)}, layer, v)
+				s.add(state2D{set: 1, uniform: int32(i), proj: s.proj(proj)}, layer, 0, v)
 			}
 			s.build()
 			if len(s.items) != len(c.layers) {

@@ -319,9 +319,11 @@ func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 // flashes, glowing ore. A frame keeps its first 32 point and spot lights
 // (MaxLights); add the nearest ones first when a scene has more.
 func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
-	if len(g.cur.points) < maxPointLights {
-		g.cur.points = append(g.cur.points, pointLight{pos: pos, color: c, rng: rng})
+	if len(g.cur.points) >= maxPointLights {
+		g.stats.LightsDropped++
+		return
 	}
+	g.cur.points = append(g.cur.points, pointLight{pos: pos, color: c, rng: rng})
 }
 
 // MaxLights is how many point and spot lights a frame keeps.
@@ -359,6 +361,7 @@ const MaxSpotShadows = maxSpotShadows
 // AddSpot adds a spot light for this frame.
 func (g *Graphics) AddSpot(s SpotLight) {
 	if len(g.cur.points) >= maxPointLights {
+		g.stats.LightsDropped++
 		return
 	}
 	if s.OuterAngle <= 0 {

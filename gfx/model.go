@@ -104,6 +104,27 @@ func (m *Model) NodeParent(node int) int {
 	return m.nodes[node].Parent
 }
 
+// NodeMatrix returns a node's rest-pose world matrix in model space, for
+// a socket on a model that is not animated: a lamp's bulb, a turret's
+// muzzle. An animated model's current pose comes from AnimPlayer.NodeMatrix.
+// An unknown index gives the identity.
+func (m *Model) NodeMatrix(node int) lin.Mat4 {
+	if node < 0 || node >= len(m.nodes) {
+		return lin.Identity()
+	}
+	mat := m.nodes[node].Local()
+	for p := m.nodes[node].Parent; p >= 0 && p < len(m.nodes); p = m.nodes[p].Parent {
+		mat = m.nodes[p].Local().Mul(mat)
+	}
+	return mat
+}
+
+// NodePosition returns a node's rest-pose position in model space.
+func (m *Model) NodePosition(node int) lin.Vec3 {
+	mat := m.NodeMatrix(node)
+	return lin.V3(mat[12], mat[13], mat[14])
+}
+
 // AnimMask is the set of nodes an animation layer affects, one flag per
 // node; nil means every node. Build one with MaskNodes or MaskSubtree.
 type AnimMask []bool

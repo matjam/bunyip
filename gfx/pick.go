@@ -11,39 +11,53 @@ type Ray struct {
 	Origin, Dir lin.Vec3
 }
 
-// ScreenRay returns the world-space ray under a point in the current 2D
-// view (the same units the mouse reports), using the queue's camera.
-// Project maps a world point to the current 2D view: where a label or a
-// health bar for it belongs. ok is false when the point is behind the
-// camera; a point outside the view still projects, off the edges.
-func (g *Graphics) Project(p lin.Vec3) (x, y float32, ok bool) {
-	q := g.cur
-	cam := q.camera
-	if !q.hasCam {
-		cam = Camera{Position: lin.V3(0, 0, 5)}
-	}
-	clip := cam.ViewProj(q.viewW / q.viewH).MulVec4(p.Vec4(1))
+// Project maps a world point to a view of the given size: where a label
+// or a health bar for it belongs. ok is false when the point is behind
+// the camera; a point outside the view still projects, off the edges.
+// The view size is what Graphics.View reports, so this answers from
+// Update as well as from Draw.
+func (c Camera) Project(p lin.Vec3, viewW, viewH float32) (x, y float32, ok bool) {
+	clip := c.ViewProj(viewW / viewH).MulVec4(p.Vec4(1))
 	if clip.W <= 0 {
 		return 0, 0, false
 	}
-	return (clip.X/clip.W*0.5 + 0.5) * q.viewW, (clip.Y/clip.W*0.5 + 0.5) * q.viewH, true
+	return (clip.X/clip.W*0.5 + 0.5) * viewW, (clip.Y/clip.W*0.5 + 0.5) * viewH, true
 }
 
-func (g *Graphics) ScreenRay(x, y float32) Ray {
-	q := g.cur
-	cam := q.camera
-	if !q.hasCam {
-		cam = Camera{Position: lin.V3(0, 0, 5)}
-	}
-	aspect := q.viewW / q.viewH
-	inv := cam.ViewProj(aspect).Inverse()
-	nx := x/q.viewW*2 - 1
-	ny := y/q.viewH*2 - 1 // Vulkan clip space has +Y down, like the screen
+// ScreenRay returns the world-space ray under a point of a view of the
+// given size (the units the mouse reports), for picking from Update.
+func (c Camera) ScreenRay(x, y, viewW, viewH float32) Ray {
+	inv := c.ViewProj(viewW / viewH).Inverse()
+	nx := x/viewW*2 - 1
+	ny := y/viewH*2 - 1 // Vulkan clip space has +Y down, like the screen
 	near := inv.MulVec4(lin.V4(nx, ny, 0, 1))
 	far := inv.MulVec4(lin.V4(nx, ny, 1, 1))
 	n := near.Vec3().Mul(1 / near.W)
 	f := far.Vec3().Mul(1 / far.W)
 	return Ray{Origin: n, Dir: f.Sub(n).Norm()}
+}
+
+// Project maps a world point to the current 2D view through the queue's
+// camera; see Camera.Project. It only answers while drawing.
+func (g *Graphics) Project(p lin.Vec3) (x, y float32, ok bool) {
+	q := g.cur
+	return g.pickCamera().Project(p, q.viewW, q.viewH)
+}
+
+// ScreenRay returns the world-space ray under a point in the current 2D
+// view through the queue's camera; see Camera.ScreenRay. It only answers
+// while drawing.
+func (g *Graphics) ScreenRay(x, y float32) Ray {
+	q := g.cur
+	return g.pickCamera().ScreenRay(x, y, q.viewW, q.viewH)
+}
+
+// pickCamera is the queue's camera, or the default one when none is set.
+func (g *Graphics) pickCamera() Camera {
+	if q := g.cur; q.hasCam {
+		return q.camera
+	}
+	return Camera{Position: lin.V3(0, 0, 5)}
 }
 
 // Hit describes where a ray met geometry.

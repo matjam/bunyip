@@ -251,6 +251,10 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.Color == (Color{}) {
 		s.Color = White
 	}
+	if q := g.cur; q.hasCam2D && q.xform.IsIdentity() && !spriteVisible(s, q.visible) {
+		g.stats.Culled2D++
+		return
+	}
 	if s.FlipX {
 		s.UV0.X, s.UV1.X = s.UV1.X, s.UV0.X
 	}
@@ -259,6 +263,18 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	}
 	g.scratch = spriteVertices(s, g.scratch[:0])
 	g.emitFiltered(tex, g.scratch, s.Filter)
+}
+
+// spriteVisible reports whether any of a sprite can lie inside a
+// world-space view. It tests the circle around the sprite's position
+// that holds its corners at any rotation, so it is conservative and
+// costs no trigonometry.
+func spriteVisible(s Sprite, view lin.Rect) bool {
+	ox, oy := s.Origin.X*s.Size.X, s.Origin.Y*s.Size.Y
+	dx := max(abs32(ox), abs32(s.Size.X-ox))
+	dy := max(abs32(oy), abs32(s.Size.Y-oy))
+	r := float32(math.Hypot(float64(dx), float64(dy)))
+	return s.Pos.X+r >= view.X && s.Pos.X-r <= view.X+view.W && s.Pos.Y+r >= view.Y && s.Pos.Y-r <= view.Y+view.H
 }
 
 // DrawTriangles queues textured triangles: three vertices each, with
@@ -316,6 +332,13 @@ type FrameStats struct {
 	Draws3D    int // mesh draw calls after instancing, all passes
 	Instances  int // mesh instances drawn in the main pass
 	Culled     int // mesh draws outside the camera's view, skipped in the main pass
+	// Culled2D counts sprites outside the 2D camera's view that were
+	// dropped before reaching the vertex stream.
+	Culled2D int
+	// LightsDropped counts point and spot lights added past MaxLights,
+	// which a frame keeps none of; a nonzero count means the scene should
+	// add its nearest lights first.
+	LightsDropped int
 }
 
 // Stats returns the last finished frame's counts.
