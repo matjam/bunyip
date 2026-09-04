@@ -312,6 +312,10 @@ reload is `Shader.Reload` behind an `asset.Watcher`.
 - Screenshot comparison for the examples. `examples/examples_test.go`
   runs each one headless (`BUNYIP_HEADLESS=1`) and checks that it drew
   something, but not what.
+- Regenerating the example screenshots in `docs/examples/` is manual.
+  The test in `cmd/bunyip-docs` catches a walkthrough whose excerpts have
+  drifted from the source, but nothing notices when a committed
+  screenshot no longer shows what the example draws.
 - Longer fuzzing campaigns. Every parser (glTF, the sound decoders, the
   tracker loaders, HDR, atlases, rich text, Tiled maps and tilesets in
   both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
