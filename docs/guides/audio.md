@@ -316,6 +316,46 @@ ctx.Audio.Play(g.step, audio.PlayOptions{Priority: 0, Volume: 0.3})
 n := ctx.Audio.Playing() // for the debug overlay
 ```
 
+## Microphone input
+
+`OpenCapture` records from the machine's default input, the one the
+desktop is set to. It hands back a `Capture` whose `Read` copies
+whatever the device has recorded since the last call and returns at
+once, so the game loop calls it every update and never waits for the
+device. `Level` is the root mean square of the block that arrived most
+recently, which is what a meter draws, and `Close` releases the device.
+
+`CaptureOptions` take a rate and a channel count, defaulting to the
+mixer's rate and mono, and `Buffer` sets how many seconds the ring holds
+before the oldest samples are dropped; the default is half a second.
+`Dropped` counts what was lost that way, so a rising count means the
+game is not reading often enough.
+
+```go
+if g.mic, err = ctx.Audio.OpenCapture(audio.CaptureOptions{}); err != nil {
+	return err // no device, no permission, or a headless run
+}
+...
+// In Update, every frame.
+for {
+	n := g.mic.Read(g.buf)
+	if n == 0 {
+		break
+	}
+	g.pushToVoiceChat(g.buf[:n])
+}
+g.meter = g.mic.Level()
+```
+
+Capture is separate from the mixer: nothing recorded is played back
+unless the game plays it, which avoids a feedback loop by default. A
+headless run and `Config.NoAudio` have no device at all, so `OpenCapture`
+returns `ErrNoDevice` there rather than reaching the hardware behind the
+game's back. On macOS the operating system asks the player for
+microphone access the first time a game records, and a sandboxed
+application needs the audio-input entitlement. `go run ./examples/audio
+-mic` records and draws a level meter.
+
 ## Tracker music
 
 [audio/tracker](../pkg/audio/tracker.html) loads and plays MOD, S3M, XM

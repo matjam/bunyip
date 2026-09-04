@@ -202,8 +202,9 @@ slide) are in.
 ## Audio
 
 Reverb zones and per-bus reverb, occlusion, mute and solo on voices and
-buses, Doppler, click-free pausing and stopping, and tracker seek,
-position and per-channel mute and solo are in.
+buses, Doppler, binaural rendering, click-free pausing and stopping,
+microphone capture, and tracker seek, position and per-channel mute and
+solo are in.
 
 - Measured head-related transfer functions. The binaural mode is a
   parametric head model, so it cannot tell front from back and is the
@@ -211,8 +212,11 @@ position and per-channel mute and solo are in.
   and convolving per ear would fix both.
 - Hardware or platform mixing (spatialiser plugins); the mixer is a Go
   loop.
-- Microphone input.
-- The Windows and Linux audio layers are untested on hardware.
+- Choosing which input or output device to use, and being told when the
+  machine's default changes; both directions open the default device and
+  keep it.
+- The Windows audio layer, and macOS capture, are untested on hardware.
+  Linux output and capture run on real hardware.
 
 ## User interface
 

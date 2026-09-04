@@ -22,6 +22,10 @@
 // The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole
 // file as bytes. The streams (OpenMusic) take readers, because they seek
 // while they play.
+//
+// OpenCapture records from the machine's default input into a ring the
+// game drains with Read. It is separate from the mix: what it records is
+// not played back unless the game plays it.
 package audio
 
 import (
@@ -52,7 +56,8 @@ type Mixer struct {
 	master     float32
 	paused     bool
 	maxVoices  int
-	stopFrames int // length of a stop's ramp to silence, about a millisecond
+	stopFrames int  // length of a stop's ramp to silence, about a millisecond
+	noDevice   bool // the run opened no audio device, so capture is refused
 	scratch    []float32
 	sendBuf    []float32
 	listener   Listener

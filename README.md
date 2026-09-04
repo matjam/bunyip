@@ -41,7 +41,8 @@ window.
   drop, and keyboard or gamepad navigation, with an accessibility tree.
 - Audio: a mixer with streamed WAV, Ogg Vorbis and MP3, positional
   voices with panning or a binaural head model, Doppler and occlusion,
-  buses, reverb zones, and a tracker player for MOD, S3M, XM and IT.
+  buses, reverb zones, microphone capture, and a tracker player for MOD,
+  S3M, XM and IT.
 - Simulation: an archetype entity component system with saving, prefabs
   and cloning; 2D and 3D rigid bodies with joints, ragdolls, character
   controllers and queries; celestial mechanics for any star system.
@@ -57,9 +58,10 @@ window.
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
 (Wayland or X11, ALSA, joystick devices) layers sit behind the same
 `internal/platform` and `internal/audioout` interfaces. The Linux window
-layer has run on real hardware, both Wayland and X11; the Linux audio and
-gamepad layers and the whole Windows layer cross-compile and vet but have
-not. On Linux the window layer uses
+layer has run on real hardware, both Wayland and X11, and so have Linux
+audio output and capture; the Linux gamepad layer, macOS capture and the
+whole Windows layer cross-compile and vet but have not. On Linux the
+window layer uses
 Wayland where a compositor is running and falls back to X11 through xcb;
 `BUNYIP_X11=1` forces X11.
 
@@ -92,7 +94,7 @@ with it.
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
 | `particle` | CPU particle systems drawn through the sprite batch |
 | `tiled` | maps from the Tiled editor in JSON or XML form, built into drawable levels |
-| `audio` | mixer, voices, streams; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
+| `audio` | mixer, voices, streams, microphone capture; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
 | `audio/tracker` | MOD, S3M, XM and IT loader and player |
 | `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State`, action maps |
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
@@ -111,7 +113,7 @@ with it.
 | `internal/vk` | generated Vulkan binding plus hand-written loader |
 | `internal/render` | Vulkan backend: device, swapchain, frames in flight, pipelines, uploads, readback |
 | `internal/platform` | per-OS window, events, surface creation |
-| `internal/audioout` | per-OS audio output |
+| `internal/audioout` | per-OS audio output and microphone input |
 
 ## A game
 
@@ -155,7 +157,7 @@ itself without a person watching the screen.
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
 | `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay |
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
-| `go run ./examples/audio [-music file.ogg]` | positional voices, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream and streamed music files |
+| `go run ./examples/audio [-music file.ogg] [-zone] [-mic]` | positional voices with panning or the binaural head model, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream, streamed music files and a microphone level meter |
 | `go run ./examples/solar` | the ECS driving a scene: hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
 | `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, a procedural sky with a slider that raises the altitude to orbit, image-based lighting from a panorama, every post-processing setting on a slider, glTF animation clips |
 | `go run ./examples/pathfinding` | A*, Dijkstra maps, field of view, flood fill and lines on a paintable grid; save and load through the save package |
