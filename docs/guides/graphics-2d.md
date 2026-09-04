@@ -2,7 +2,7 @@
 title: 2D graphics
 group: Graphics
 order: 1
-summary: sprites, atlases, the camera, layers and sorting, tilemaps, autotiling, text, vector paths, particles, lights and render textures for a 2D game
+summary: sprites, atlases and Aseprite files, the camera, layers and sorting, tilemaps, autotiling, text, vector paths, particles, lights and shadows, and render textures for a 2D game
 ---
 
 The [gfx](../pkg/gfx.html) package is one drawing context for a window.

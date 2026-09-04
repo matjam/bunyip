@@ -80,20 +80,18 @@ events are in.
 
 Streaming texture writes, colour matrices, flips and per-draw
 filtering, gradients, dashed strokes, text on paths, indexed draws, the
-`particle` package, lit sprites with occluder shadows, tilemap flips and
-animations,
-autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
-template expansion, Tiled terrain sets, and square, hexagonal and
-isometric layouts), the
-`tiled` importer in both of Tiled's file forms with every layer
-encoding it writes (CSV, base64 plain, zlib, gzip and zstd),
-TexturePacker and
-Aseprite atlases with `asset.Atlas` to load one, Aseprite's own binary
-files with `ParseAseprite` and `asset.Aseprite`,
+`particle` package, lit sprites with shadows cast from occluder
+outlines, tilemap flips and animations, autotiling (blob, edge,
+dual-grid and Wang rules in `grid/autotile`, template expansion, Tiled
+terrain sets, and square, hexagonal and isometric layouts), the `tiled`
+importer in both of Tiled's file forms with every layer encoding it
+writes (CSV, base64 plain, zlib, gzip and zstd), TexturePacker and
+Aseprite JSON atlases with `asset.Atlas` to load one, Aseprite's own
+binary files through `ParseAseprite` and `asset.Aseprite`,
 `Atlas.Animation` to play a tag at its own timings, sprite culling
-against the 2D camera by the sprite's own corners, under the transform
-stack as well, a sort key within a layer (`SetSortKey`),
-camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
+against the 2D camera by the sprite's own corners and under the
+transform stack, a sort key within a layer (`SetSortKey`), camera
+follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
 
 - 2D shadows are cast by the occluder outlines a frame adds, not by the

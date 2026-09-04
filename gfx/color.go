@@ -17,8 +17,13 @@
 // StrokePath) draw vector shapes, gradients and dashes anti-aliased.
 // Fonts shape text with HarfBuzz (DrawText, TextOptions, RichText,
 // Hyphenator) and rasterise glyphs, colour emoji included, into an
-// atlas. SetShader, SetBlend, SetColorMatrix and SetLights2D change how
-// later sprites are drawn. PushTransform and PushClip nest.
+// atlas. An Atlas names packed frames from a TexturePacker or Aseprite
+// JSON export (ParseAtlas) or from Aseprite's own file (ParseAseprite),
+// and plays its tags with the timings they were authored at.
+// SetShader, SetBlend, SetColorMatrix and SetLights2D change how
+// later sprites are drawn; DrawLit lights a sprite through a normal map,
+// and AddOccluder2D casts shadows from the lights that want them.
+// PushTransform and PushClip nest.
 //
 // # 3D
 //

@@ -136,7 +136,7 @@ const (
 	aseFrameHeader = 16
 	aseMagic       = 0xA5E0
 	aseFrameMagic  = 0xF1FA
-	// Limits that keep a corrupt file from asking for the world.
+	// Limits a corrupt file cannot allocate past.
 	aseMaxSide   = 1 << 14
 	aseMaxFrames = 1 << 12
 	aseMaxPixels = 1 << 26 // the packed image, four bytes each
