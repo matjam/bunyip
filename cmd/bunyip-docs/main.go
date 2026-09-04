@@ -52,7 +52,7 @@ var groups = []struct {
 }{
 	{"Engine", []string{"bunyip", "input"}},
 	{"Graphics", []string{"gfx", "anim", "ui", "particle", "tiled", "gltf", "lin"}},
-	{"Simulation", []string{"ecs", "phys", "orbit", "orbit/sol"}},
+	{"Simulation", []string{"ecs", "phys", "phys/soft", "orbit", "orbit/sol"}},
 	{"Audio", []string{"audio", "audio/tracker"}},
 	{"Services", []string{"asset", "save", "locale", "rng", "timer", "tween", "grid", "network"}},
 	{"Tools", []string{"cmd/"}},

@@ -44,7 +44,8 @@ window.
   player for MOD, S3M, XM and IT.
 - Simulation: an archetype entity component system with saving, prefabs
   and cloning; 2D and 3D rigid bodies with joints, ragdolls, character
-  controllers and queries; celestial mechanics for any star system.
+  controllers and queries; cloth, volumetric soft bodies and 2D fluids
+  on the same colliders; celestial mechanics for any star system.
 - Services: assets and pack files with background loading and hot
   reload, saves and settings, translation with plural rules, seeded
   random numbers, timers and cutscene sequences, tweens, grids with
@@ -99,7 +100,8 @@ with it.
 | `lin` | vectors, matrices, quaternions |
 | `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs |
 | `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons with layers, events, root motion, IK and morph targets |
-| `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps and shape casts |
+| `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps, shape casts and signed distance to a placed shape |
+| `phys/soft` | cloth, volumetric soft bodies and 2D fluids as particles: extended position-based dynamics, distance, bending, volume and density constraints, shape matching, wind, mesh helpers; collides with the static and kinematic `phys` colliders |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
 | `asset` | files from directories and pack files, async loading, hot reload |
 | `save` | JSON saves and settings in the platform's data directory |
@@ -166,6 +168,7 @@ itself without a person watching the screen.
 | `go run ./examples/physics3d` | five hundred cubes of plastic, metal, gold, car paint, velvet, glass and glowing materials dropped into a pile, with a raycast highlighting the one under the pointer |
 | `go run ./examples/physics2d` | balls, boxes and triangles in a pit with a ramp, a kinematic paddle, a trigger zone and a raycast |
 | `go run ./examples/physics-lab` | capsules, hulls and spheres tumbling onto a mesh terrain, a hinge chain, a motorised paddle wheel, a ragdoll, a character controller climbing stairs, colliders and contacts drawn with debug lines |
+| `go run ./examples/softbody` | a cloth flag flapping on a pole in a swinging gust, a jelly cube that drops and can be kicked beside a rigid crate, and a tank of 2D fluid breaking around a post |
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |

@@ -36,7 +36,8 @@ X11 and `platform.Backend()` says which was chosen.
 | `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, paths, gradients, text (HarfBuzz shaping, atlases, SDF, emoji, rich text), colour matrices, lit sprites. 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning. |
-| `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries. |
+| `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries, the signed distance to a placed shape. |
+| `phys/soft/` | Cloth, volumetric soft bodies and 2D fluids as particles under extended position-based dynamics, stepped by `soft.System` on the same world and the same static colliders. |
 | `anim/` | Keyframe curves and clips for components, flipbooks, skeleton playback, IK, blend spaces. |
 | `orbit/`, `orbit/sol/` | Celestial mechanics, unit-agnostic; real solar-system constants only in `sol`. |
 | `audio/`, `audio/tracker/` | The mixer (voices, buses, reverb, occlusion, Doppler, streams) and the MOD/S3M/XM/IT player. |
@@ -102,7 +103,11 @@ are `func(w *World, dt float64)` run in registration order.
 or `gfx.Transform2`. Names carry the dimension: `Body2`/`Body3`,
 `Collider2`/`Collider3`, `Box2`/`Box3`; shapes that only exist in one
 dimension have no suffix (`Circle`, `Sphere`, `Capsule`). Convex 3D
-pairs use GJK and EPA; boxes keep a dedicated path.
+pairs use GJK and EPA; boxes keep a dedicated path. `phys/soft` adds
+deformable components (`Cloth`, `SoftBody3`, `Fluid2`) stepped by
+`soft.System`, solved by extended position-based dynamics; they read the
+static and kinematic colliders through `phys.SignedDistance2` and
+`SignedDistance3` and never write back to a rigid body.
 
 **Zero values mean the default.** A zero `Roughness` is 0.6, a zero
 `Color` where a tint is expected is white, a zero field of view is 60
@@ -259,6 +264,7 @@ goroutine.
 | Widgets, menus, text fields, themes | `ui` |
 | Entities, queries, systems, saves, prefabs | `ecs` |
 | Rigid bodies, joints, ragdolls, character controllers, raycasts | `phys` |
+| Cloth, jelly and soft bodies, 2D fluids | `phys/soft` |
 | Skeletal and keyframe animation, IK, blend spaces | `anim`, `gfx.AnimPlayer` |
 | Orbits, planets, ships | `orbit`, `orbit/sol` |
 | Sounds, music, positional audio, tracker modules | `audio`, `audio/tracker` |

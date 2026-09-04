@@ -12,14 +12,16 @@
 //	}))
 //	w.AddSystem("soft", soft.System)
 //
-// The solver is extended position-based dynamics. Each update is split
-// into Settings.Substeps substeps. A substep predicts positions from the
-// velocities, projects the constraints Settings.Iterations times, pushes
-// particles out of the solids they ended up inside, and reads the new
-// velocities back from how far each particle moved. Constraint stiffness
-// is compliance in metres per newton, so it does not change with the
-// substep count or the iteration count: zero is rigid and larger is
-// softer.
+// The solver is extended position-based dynamics. A cloth or soft body
+// update is split into Settings.Substeps substeps. A substep predicts
+// positions from the velocities, projects the constraints
+// Settings.Iterations times, pushes particles out of the solids they
+// ended up inside, and reads the new velocities back from how far each
+// particle moved. Constraint stiffness is compliance in metres per
+// newton, so it does not change with the substep count or the iteration
+// count: zero is rigid and larger is softer. A fluid keeps its own
+// substep count, one by default, for the reason Fluid2Spec.Substeps
+// gives.
 //
 // Particle positions are world space. A cloth or a soft body carries no
 // transform, and is drawn by keeping a gfx.Mesh in step with it:

@@ -2,7 +2,7 @@
 title: Physics
 group: Simulation
 order: 1
-summary: rigid bodies in 2D and 3D: shapes, collisions, queries, joints, ragdolls and character controllers
+summary: rigid bodies in 2D and 3D: shapes, collisions, queries, joints, ragdolls and character controllers, and the cloth, soft bodies and fluids beside them
 ---
 
 The [phys](../pkg/phys.html) package simulates rigid bodies on the
@@ -124,6 +124,14 @@ explosion radii and selection boxes. `ShapeCast2` and `ShapeCast3`
 sweep a shape along a direction and report the first collider it would
 hit and how far along the sweep it got. `Nearest2` and `Nearest3` find
 the closest collider to a point within a radius.
+
+`SignedDistance2` and `SignedDistance3` measure a point against one
+shape placed in the world, without touching the entity world at all.
+They return the distance to the surface, negative inside, and the
+outward normal there, which is what code that pushes points out of
+solids needs. They understand `Sphere`, `Box3`, `Capsule` and compounds
+of those in 3D, and `Circle`, `Box2`, `Polygon2` and `Capsule2` in 2D,
+and report false for the rest.
 
 A game that casts the same ray every frame can avoid the result slice by
 calling `RaycastAll2Into` or `RaycastAll3Into`, which append to a slice
@@ -316,6 +324,134 @@ step := ctx.Profile("physics")
 w.Update(ctx.Delta)
 step.End()
 ```
+
+## Soft bodies
+
+Rigid bodies keep their shape. For things that bend, squash and flow,
+the [phys/soft](../pkg/phys/soft.html) package simulates particles held
+together by constraints: `Cloth` for sheets, `SoftBody3` for a closed
+mesh that keeps its volume, and `Fluid2` for liquid in the plane. All
+three are components stepped by one system, `soft.System`, on the same
+world as the rigid bodies. Register it after `System3`, so soft bodies
+see where the rigid ones ended the update.
+
+```go
+ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
+w.AddSystem("physics", phys.System3)
+w.AddSystem("soft", soft.System)
+```
+
+A zero `Gravity3` takes the gravity from the `phys.Settings3` resource,
+and a zero `Gravity2` from `phys.Settings2`, so rigid and soft bodies
+fall together without saying it twice. `Ground` turns on a floor plane
+at `GroundY` for scenes with no collider under them.
+
+Particles collide with the static and kinematic colliders already in
+the world, through the signed-distance queries above: spheres, boxes,
+capsules and compounds in 3D, and circles, boxes, polygons and capsules
+in 2D. They do not push rigid bodies back, and dynamic bodies are
+ignored.
+
+### Cloth
+
+`NewCloth` builds a rectangular sheet of particles: distance
+constraints along the edges, diagonals across each cell, and a bending
+constraint across each pair of edges in line. Pinned particles hang the
+sheet up, and `Wind` pushes each cell by the air blowing through it, so
+a sheet edge-on to the wind is barely moved.
+
+```go
+pins := []int{0, 1, 2, 3} // the top-left corner, held
+flag := w.SpawnWith(soft.NewCloth(soft.ClothSpec{
+	Width: 26, Height: 16, Spacing: 0.14, Mass: 0.4,
+	Origin: lin.V3(-2, 3.6, 0), Pinned: pins, Wind: lin.V3(0, 0, 5),
+}))
+```
+
+`Pin`, `Free` and `Move` change what is held while the game runs, which
+is how a cape follows a running character. `Positions` and
+`Velocities` are the particles themselves.
+
+### A mesh that follows
+
+Cloth and soft bodies are drawn by keeping a `gfx.Mesh` in step with
+their particles. `NewMesh` uploads a mesh shaped like the body, and
+`UpdateMesh` writes the positions and recomputes the normals each
+frame. Particle positions are world space, so the mesh is drawn with an
+identity matrix and needs no transform. Give cloth a `DoubleSided`
+material, because it is seen from both sides.
+
+```go
+c, _ := ecs.Get[soft.Cloth](w, flag)
+mesh, err := c.NewMesh(ctx.Gfx) // in Init; Destroy it in Shutdown
+
+// In Draw, after the world has stepped.
+c.UpdateMesh(mesh)
+ctx.Gfx.DrawMesh(mesh, gfx.Material{BaseColor: gfx.RGB(220, 60, 70), DoubleSided: true}, lin.Identity())
+```
+
+### Volumetric soft bodies
+
+`NewSoftBody3` takes a closed triangle mesh, from `gfx.CubeMesh`,
+`gfx.SphereMesh`, `gfx.TorusMesh` or a loaded glTF model, welds the
+vertices that share a position into particles, and holds them with
+constraints along the surface edges, one constraint on the enclosed
+volume, and shape matching that pulls the body back toward its original
+shape rotated to where it is now. A body resting under gravity keeps
+its volume within a few percent.
+
+```go
+cv, ci := gfx.CubeMesh()
+jelly := w.SpawnWith(soft.NewSoftBody3(soft.SoftBody3Spec{
+	Vertices: cv, Indices: ci, Scale: 1.4, Position: lin.V3(0, 2.4, 0),
+	Mass: 3, Compliance: 0.001, ShapeMatch: 0.04,
+}))
+
+b, _ := ecs.Get[soft.SoftBody3](w, jelly)
+b.AddImpulse(lin.V3(-9, 16, 0)) // kicked
+b.Pressure = 1.3                // inflated
+```
+
+### Fluids
+
+`Fluid2` is position-based fluids: a density constraint over a spatial
+hash keeps the liquid incompressible, a small push at close range stops
+it clumping, and viscosity pulls neighbours toward a shared velocity.
+`Bounds` is the tank, and the 2D colliders in the world are obstacles
+in it. The game draws the particles itself, from `Positions`, as
+sprites or circles.
+
+```go
+f := soft.NewFluid2(soft.Fluid2Spec{Bounds: tank, Spacing: 7})
+f.Fill(lin.Rect{X: tank.X + 8, Y: tank.Y + 8, W: tank.W/2, H: tank.H - 16})
+w.SpawnWith(f)
+
+// In Draw.
+for i, p := range f.Positions() {
+	shade := lin.Clamp(f.Density(i)/f.RestDensity(), 0, 1)
+	ctx.Gfx.Draw(drop, gfx.Sprite{Pos: p, Size: lin.V2(16, 16), Color: water(shade)})
+}
+```
+
+A fluid keeps its own `Substeps`, one by default, because its density
+solve is a whole-step pressure solve: splitting it finer leaves the
+same residual in a shorter step, and the velocity read back from that
+is noise. The `Substeps` in the world settings belongs to cloth and
+soft bodies.
+
+### Tuning the soft solver
+
+Constraint stiffness is compliance, in metres per newton: zero is
+rigid, larger is softer, and it does not drift with the substep or
+iteration count. `Settings.Substeps` (default 4) and `Iterations`
+(default 4) trade time for stiffness; cloth is stiffer for the same
+work with more substeps and fewer iterations than the other way around.
+A thousand-particle sheet and two thousand fluid particles each step in
+a few milliseconds, and a step allocates nothing.
+
+The `examples/softbody` program puts all three together:
+a flag on a pole, a jelly cube beside a rigid crate, and a tank of
+fluid in the corner of the screen.
 
 ## Orbital mechanics
 
