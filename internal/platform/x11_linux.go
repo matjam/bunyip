@@ -1241,11 +1241,15 @@ func (a *App) sendSelectionNotify(req *xcbSelectionRequestEvent, property uint32
 	a.x.flush(a.conn)
 }
 
-// bytesPointer is the address of a byte slice's first element, or nil for
-// an empty one, which is what a zero-length property needs.
+// emptyProperty stands in for the data of a zero-length property, which
+// ends an INCR transfer. Nothing reads it; xcb is given an address rather
+// than nothing at all.
+var emptyProperty byte
+
+// bytesPointer is the address of a byte slice's first element.
 func bytesPointer(b []byte) unsafe.Pointer {
 	if len(b) == 0 {
-		return nil
+		return unsafe.Pointer(&emptyProperty)
 	}
 	return unsafe.Pointer(&b[0])
 }
