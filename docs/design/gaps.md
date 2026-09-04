@@ -118,10 +118,11 @@ rich text with links and hyphenation are in. A glyph first drawn in a
 frame appears in that frame: the atlas upload is recorded into the frame
 before the render pass. Hyphenation patterns for thirteen languages ship
 with the engine and `AutoHyphenate` picks one from the text's
-`Language`.
+`Language`. Rich text shapes each stretch of one face as a whole, so
+kerning and ligatures cross the style changes inside it.
 
-- Rich text shapes each word on its own, so ligatures and kerning do not
-  cross a style change.
+- Rich text breaks lines at spaces and newlines rather than by the
+  Unicode rules, and does not hyphenate.
 - COLR and SVG colour glyphs; only bitmap strikes (sbix, CBDT) draw in
   colour, which covers Apple's and Google's emoji fonts.
 - Hyphenation patterns for languages outside the shipped set, which are

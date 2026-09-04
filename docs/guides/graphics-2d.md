@@ -378,7 +378,12 @@ strategy map. Colour emoji draw in their own colours when a bitmap emoji
 font is given as a fallback. `ParseRich` reads a small
 markup (`[b]`, `[i]`, `[u]`, `[#ff8800]`, `[link=name]`) into a
 `RichText` that `DrawRichText` lays out across regular, bold and italic
-faces, returning each link's rectangle for clicks.
+faces, returning each link's rectangle for clicks. Every stretch of rich
+text in one face is shaped as a whole, so kerning and ligatures work
+across a colour or link change inside it; the glyphs are cut apart by
+cluster afterwards, and a glyph that straddles a change takes the colour
+of the run its first byte came from. A change of face starts a new
+shaped run, since its glyphs come from another font.
 
 ```go
 rich := gfx.ParseRich("You found the [#ffcc44]Brass Key[/#]. [link=map]Open it[/link].")
@@ -394,7 +399,9 @@ for _, l := range links {
 `DrawTextOnPath` draws a line of text along a path with each glyph
 rotated to follow it, for labels such as a river name on a strategy map.
 `Font.Shape` returns positioned glyphs for custom drawing and
-hit-testing, `DrawGlyphs` draws them, and fonts have `Destroy`.
+hit-testing, each with the byte it came from and the `Advance` the pen
+took after it, so a caret lands between clusters; `DrawGlyphs` draws
+them, and fonts have `Destroy`.
 
 ## Shapes and paths
 

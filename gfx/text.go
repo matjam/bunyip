@@ -259,8 +259,13 @@ type Glyph struct {
 	Size     lin.Vec2
 	UV0, UV1 lin.Vec2 // region of the font's Texture
 	Index    int      // index of the first byte of its text in the string
-	Empty    bool     // no image (a space)
-	Color    bool     // a colour glyph such as an emoji, drawn untinted
+	// Advance is how far the pen moves after the glyph, in view units at
+	// the font's own size, for caret positions and hit-testing. It is the
+	// line height for vertical text and includes the extra a justified
+	// line adds to a space.
+	Advance float32
+	Empty   bool // no image (a space)
+	Color   bool // a colour glyph such as an emoji, drawn untinted
 }
 
 // Shape lays out one line of text and returns its glyphs in visual order,
@@ -353,6 +358,7 @@ func (f *Font) appendLine(out []Glyph, text string, line shaping.Line, origin li
 					g.Size = gl.size
 					g.UV0, g.UV1 = gl.uv0, gl.uv1
 				}
+				g.Advance = f.LineHeight
 				out = append(out, g)
 				pen.Y += f.LineHeight
 				continue
@@ -365,11 +371,12 @@ func (f *Font) appendLine(out []Glyph, text string, line shaping.Line, origin li
 				g.UV0, g.UV1 = gl.uv0, gl.uv1
 				g.Color = gl.color
 			}
-			out = append(out, g)
-			pen.X += fixedToFloat(sg.Advance) / f.scale
+			g.Advance = fixedToFloat(sg.Advance) / f.scale
 			if spaceExtra != 0 && index.isSpace(sg.TextIndex()) {
-				pen.X += spaceExtra
+				g.Advance += spaceExtra
 			}
+			out = append(out, g)
+			pen.X += g.Advance
 		}
 	}
 	// A line that wrapped at a soft hyphen shows the hyphen.
@@ -379,7 +386,8 @@ func (f *Font) appendLine(out []Glyph, text string, line shaping.Line, origin li
 			ff := f.faces[face]
 			if gid, ok := ff.face.NominalGlyph('-'); ok {
 				gl := f.glyph(face, gid)
-				g := Glyph{Index: last.Index, Empty: gl.empty}
+				adv := ff.face.HorizontalAdvance(gid) * f.pxPerEm / ff.upem / f.scale
+				g := Glyph{Index: last.Index, Advance: adv, Empty: gl.empty}
 				if !gl.empty {
 					g.Pos = lin.V2(pen.X+gl.bearing.X, pen.Y+gl.bearing.Y)
 					g.Size, g.UV0, g.UV1 = gl.size, gl.uv0, gl.uv1
