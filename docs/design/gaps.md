@@ -113,8 +113,9 @@ camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
 
 ## Text
 
-Bitmap colour emoji, letter spacing, justification, text on a path,
-rich text with links and hyphenation are in. A glyph first drawn in a
+Colour glyphs from COLR layers, SVG documents and bitmap strikes, letter
+spacing, justification, text on a path, rich text with links and
+hyphenation are in. A glyph first drawn in a
 frame appears in that frame: the atlas upload is recorded into the frame
 before the render pass. Hyphenation patterns for thirteen languages ship
 with the engine and `AutoHyphenate` picks one from the text's
@@ -123,8 +124,15 @@ kerning and ligatures cross the style changes inside it.
 
 - Rich text breaks lines at spaces and newlines rather than by the
   Unicode rules, and does not hyphenate.
-- COLR and SVG colour glyphs; only bitmap strikes (sbix, CBDT) draw in
-  colour, which covers Apple's and Google's emoji fonts.
+- Parts of the colour glyph formats. In COLR, the variation deltas of
+  the variable paint tables are not applied, the four non-separable
+  blend modes (hue, saturation, colour and luminosity) composite as
+  source over, and a layer that asks for the text colour draws white,
+  since a colour glyph is drawn untinted. In SVG, strokes, clipping
+  paths, masks, filters, patterns, images, text, style sheets and
+  animation are not drawn, the even-odd fill rule draws as non-zero, and
+  a gradient does not inherit from another through `href`. A
+  distance-field font draws a colour glyph as its outline.
 - Hyphenation patterns for languages outside the shipped set, which are
   Danish, Dutch, English (American and British), Finnish, French,
   German, Italian, Norwegian, Polish, Portuguese, Russian, Spanish and

@@ -121,8 +121,19 @@ func TestLetterSpacingJustifyRich(t *testing.T) {
 }
 
 func TestEmoji(t *testing.T) {
-	data, err := os.ReadFile("/System/Library/Fonts/Apple Color Emoji.ttc")
-	if err != nil {
+	// A bitmap strike font: Apple's is sbix, Google's is CBDT.
+	var data []byte
+	for _, path := range []string{
+		"/System/Library/Fonts/Apple Color Emoji.ttc",
+		"/usr/share/fonts/noto/NotoColorEmoji.ttf",
+		"/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+	} {
+		if d, err := os.ReadFile(path); err == nil {
+			data = d
+			break
+		}
+	}
+	if data == nil {
 		t.Skip("no colour emoji font on this machine")
 	}
 	g := newHeadless(t, 64, 64)

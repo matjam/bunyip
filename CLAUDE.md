@@ -33,7 +33,7 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, paths, gradients, text (HarfBuzz shaping, atlases, SDF, emoji, rich text), colour matrices, lit sprites. 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites. 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning. |
 | `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries. |
@@ -201,6 +201,11 @@ render pass, so text tests draw one frame.
   drawing flushes before it queues its sprites. The atlas never grows,
   so a font whose atlas is full drops later glyphs rather than replacing
   the texture the frame's draws already point at.
+- A colour glyph (COLR layers, an SVG document, a bitmap strike) is
+  composited on the CPU in `gfx/colr.go` and `gfx/svgglyph.go` and
+  stored premultiplied in linear light, because the atlas is a `Data`
+  texture that samples without gamma decoding. `DrawGlyphs` draws such a
+  glyph with a white tint, so a game's text colour does not reach it.
 - Descriptor sets come from a chain of pools that grows on
   `VK_ERROR_OUT_OF_POOL_MEMORY`; the capacities in `newGraphics` and
   `post.go` are starting sizes, not limits.

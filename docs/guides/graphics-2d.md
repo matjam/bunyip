@@ -374,8 +374,19 @@ opts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify,
 
 `NewSDFFont` builds a signed-distance atlas that stays sharp at any size
 and angle, so one font object serves damage numbers and a zooming
-strategy map. Colour emoji draw in their own colours when a bitmap emoji
-font is given as a fallback. `ParseRich` reads a small
+strategy map; it draws a colour glyph as its outline.
+
+Colour glyphs draw in their own colours, whichever way the font
+describes them: a bitmap strike (`sbix` or `CBDT`, which is Apple's and
+Google's emoji), COLR layers, or an SVG document per glyph. COLR version
+1 paints are drawn too, with their gradients, transforms and
+compositing, so a font like Noto Color Emoji comes out right. A colour
+glyph ignores the colour the text is drawn in. Give the emoji font as a
+`Fallbacks` entry and emoji appear in ordinary strings. What is not
+drawn is listed in `docs/design/gaps.md`: the variable paint tables'
+deltas in COLR, and strokes, clipping and filters in SVG.
+
+`ParseRich` reads a small
 markup (`[b]`, `[i]`, `[u]`, `[#ff8800]`, `[link=name]`) into a
 `RichText` that `DrawRichText` lays out across regular, bold and italic
 faces, returning each link's rectangle for clicks. Every stretch of rich
