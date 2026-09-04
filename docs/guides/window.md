@@ -172,7 +172,7 @@ backend`.
 | `SetPosition`, `Position` | yes | no-op | no-op | no-op |
 | `SetAlwaysOnTop` | yes | no-op | no-op | no-op |
 | `SetCursorImage` | yes | no-op | no-op | no-op |
-| `Clipboard`, `SetClipboard` | yes | yes | error | yes |
+| `Clipboard`, `SetClipboard` | yes | yes | yes | yes |
 | `ctx.Visible` | miniaturised and occluded | minimised | suspended (xdg_toplevel 6) | unmapped, minimised and obscured |
 | DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | the output's integer scale | always 1 |
 
@@ -188,6 +188,14 @@ answer, returning empty text when nobody owns the selection or nobody
 replies. Text longer than one X request is transferred in chunks through
 INCR, in both directions. Both calls need an open window, because a
 selection belongs to one.
+
+Wayland works the same way underneath, through `wl_data_device`. The
+compositor tells the window what types the selection holds and the text
+comes over a pipe the owner writes into, so `Clipboard` waits about a
+second for it. A compositor tells only the focused window what the
+selection holds, so a read while another window has focus finds nothing.
+A compositor with no `wl_data_device_manager` returns an error from both
+calls.
 
 Three things behave differently under Wayland. The title bar is the
 compositor's: the layer asks for server-side decorations through

@@ -15,12 +15,10 @@ take bytes, buses, embedded assets and one-call loaders, debug drawing,
 the fixed view, headless runs, the window controls, atlas formats with
 named frames, tweens over any value, engine plumbing hidden behind an
 internal hook package, and the naming and zero-value conventions stated
-in each package's comment.
-
-- The Wayland clipboard: it needs `wl_data_device` with a pipe to read an
-  offer from. macOS, Windows and X11 have it; the X11 layer owns the
-  CLIPBOARD selection, answers requests for it and transfers text longer
-  than one request through INCR.
+in each package's comment. The clipboard now works on every platform:
+macOS and Windows through the system clipboard, X11 by owning the
+CLIPBOARD selection and answering requests for it (INCR included), and
+Wayland through `wl_data_device` with a pipe.
 
 ## Platforms and window
 
@@ -31,11 +29,13 @@ in each package's comment.
   machine. The Linux window layer has: both the Wayland and X11 backends
   have opened windows, presented frames and delivered input on a Linux
   desktop. Linux audio and gamepads remain unexercised.
-- What the Wayland layer does not do yet: the clipboard through
-  `wl_data_device`, text input through `zwp_text_input_v3`, fractional
-  scale through `wp_fractional_scale_v1` and `wp_viewporter` (the buffer
-  scale is an integer today), and the window icon through
-  `xdg-toplevel-icon-v1`. Without `zxdg_decoration_manager_v1` the window
+- What the Wayland layer does not do yet: text input through
+  `zwp_text_input_v3`, fractional scale through `wp_fractional_scale_v1`
+  and `wp_viewporter` (the buffer scale is an integer today), and the
+  window icon through `xdg-toplevel-icon-v1`. Drag and drop is not
+  handled either, so a drag offer is dropped rather than read; the
+  clipboard side of `wl_data_device` is in. Without
+  `zxdg_decoration_manager_v1` the window
   has no title bar, because drawing one client-side is not written.
   libwayland 1.20 or later is required, for `wl_proxy_marshal_flags`.
 - Window position, always-on-top and custom cursor images work on macOS

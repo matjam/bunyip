@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -25,6 +26,12 @@ func init() {
 	// Wayland and through xcb, which is thread-safe, under X11.
 	runtime.LockOSThread()
 }
+
+// clipboardWait is how long a clipboard read waits on whoever owns the
+// selection: for the answer to a convert request and for each chunk of an
+// INCR transfer under X11, and for the owner to write into the pipe under
+// Wayland. A read that runs out of time returns what it has.
+const clipboardWait = time.Second
 
 // ErrUnsupported is returned when neither window system can be reached.
 var ErrUnsupported = errors.New("platform: cannot reach a Wayland compositor or an X server (is WAYLAND_DISPLAY or DISPLAY set?)")
@@ -51,8 +58,8 @@ type App struct {
 	mods    Mods
 
 	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
-	atomNetWMHidden                                                                                      uint32
-	atomClipboard, atomTargets, atomText, atomIncr, atomSelection                                        uint32
+	atomNetWMHidden                                                                                       uint32
+	atomClipboard, atomTargets, atomText, atomIncr, atomSelection                                         uint32
 
 	// The clipboard. clipText is what SetClipboard put on the CLIPBOARD
 	// selection and clipOwned says the layer still owns it, so a read

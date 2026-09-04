@@ -3,6 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"structs"
@@ -38,6 +39,7 @@ const (
 	outputVersionCap     = 4
 	shmVersionCap        = 1
 	wmBaseVersionCap     = 7
+	dataDeviceVersionCap = 3 // wl_data_source.set_actions
 )
 
 // evdev button codes, from input-event-codes.h.
@@ -168,6 +170,23 @@ type wlApp struct {
 	decorManager   unsafe.Pointer
 	relPointerMgr  unsafe.Pointer
 	ptrConstraints unsafe.Pointer
+	dataMgr        unsafe.Pointer
+	dataMgrVer     uint32
+
+	// The clipboard. dataDevice is the seat's; clipSource is the source
+	// this process offered and clipText what it offers, so a read of our
+	// own selection needs no pipe. selection is the offer the compositor
+	// last handed over and offerMimes the types each live offer carries;
+	// newOffer holds an offer the compositor has made but not yet used.
+	dataDevice unsafe.Pointer
+	clipSource unsafe.Pointer
+	clipText   string
+	selection  unsafe.Pointer
+	newOffer   unsafe.Pointer
+	offerMimes map[unsafe.Pointer][]string
+	// lastSerial is the most recent serial from a key or button, which is
+	// what wl_data_device.set_selection has to quote.
+	lastSerial uint32
 
 	keyboard unsafe.Pointer
 	pointer  unsafe.Pointer
@@ -317,7 +336,7 @@ func loadWayland() (*wllib, map[string]*wlInterface, error) {
 	for _, name := range []string{
 		"wl_display", "wl_registry", "wl_callback", "wl_compositor", "wl_surface", "wl_region",
 		"wl_seat", "wl_keyboard", "wl_pointer", "wl_output", "wl_shm", "wl_shm_pool", "wl_buffer",
-		"wl_data_device_manager",
+		"wl_data_device_manager", "wl_data_device", "wl_data_source", "wl_data_offer",
 	} {
 		sym, err := purego.Dlsym(lib, name+"_interface")
 		if err != nil {
@@ -475,8 +494,8 @@ func newWaylandApp(out *App) (*wlApp, error) {
 	a := &wlApp{
 		out: out, l: l, display: display, iface: table,
 		outputs: map[unsafe.Pointer]*wlOutput{}, owner: map[unsafe.Pointer]*wlWindow{},
-		listeners: map[unsafe.Pointer]unsafe.Pointer{},
-		wakeR:     -1, wakeW: -1,
+		listeners: map[unsafe.Pointer]unsafe.Pointer{}, offerMimes: map[unsafe.Pointer][]string{},
+		wakeR: -1, wakeW: -1,
 	}
 	wlCurrent = a
 	wlInitCallbacks()
@@ -503,6 +522,19 @@ func newWaylandApp(out *App) (*wlApp, error) {
 	if a.compositor == nil || a.wmBase == nil {
 		a.close()
 		return nil, fmt.Errorf("platform: the compositor has no %s", missingGlobal(a))
+	}
+	// The seat and the data device manager arrive as globals in whichever
+	// order the compositor lists them, so the clipboard's data device is
+	// made once both are in hand. A third round trip brings the selection
+	// the compositor is already holding.
+	if a.dataMgr != nil && a.seat != nil {
+		iface := table["wl_data_device"]
+		a.dataDevice = l.marshal(a.dataMgr, opDataDeviceManagerGetDevice, iface, 0, 0, uintptr(a.seat))
+		a.listen(a.dataDevice, iface, []uintptr{
+			cbDataDeviceDataOffer, cbDataDeviceEnter, cbDataDeviceLeave,
+			cbDataDeviceMotion, cbDataDeviceDrop, cbDataDeviceSelection,
+		})
+		l.roundtrip(display)
 	}
 	return a, nil
 }
@@ -540,6 +572,14 @@ func (a *wlApp) bind(name uint32, iface *wlInterface, version uint32) unsafe.Poi
 // close tears the connection down.
 func (a *wlApp) close() {
 	l := a.l
+	a.destroySource()
+	a.dropOffer(a.selection)
+	a.dropOffer(a.newOffer)
+	if a.dataDevice != nil {
+		l.destroy(a.dataDevice)
+		a.freeListener(a.dataDevice)
+		a.dataDevice = nil
+	}
 	if a.xkbState != nil {
 		l.xkbStateUnref(a.xkbState)
 	}
@@ -597,6 +637,10 @@ func (a *wlApp) onGlobal(name uint32, ifaceName string, version uint32) {
 		iface := a.iface["xdg_wm_base"]
 		a.wmBase = a.bind(name, iface, a.bindVersion(version, iface, wmBaseVersionCap))
 		a.listen(a.wmBase, iface, []uintptr{cbWMBasePing})
+	case "wl_data_device_manager":
+		iface := a.iface["wl_data_device_manager"]
+		a.dataMgrVer = a.bindVersion(version, iface, dataDeviceVersionCap)
+		a.dataMgr = a.bind(name, iface, a.dataMgrVer)
 	case "zxdg_decoration_manager_v1":
 		iface := a.iface["zxdg_decoration_manager_v1"]
 		a.decorManager = a.bind(name, iface, 1)
@@ -1448,11 +1492,173 @@ func (a *wlApp) closeAll() []Event {
 	return a.out.pending
 }
 
-// clipboard and setClipboard are not wired yet: the compositor hands
-// selections over through wl_data_device, which this layer does not bind.
-func (a *wlApp) clipboard() (string, error) { return "", ErrNoClipboard }
+// --- the clipboard ---
+//
+// A Wayland selection is a live offer from whichever client owns it: the
+// compositor names the types on offer and a reader asks for one over a
+// pipe the owner writes into. Only the focused client is told what the
+// selection holds, which is why a read outside focus finds nothing.
 
-func (a *wlApp) setClipboard(string) error { return ErrNoClipboard }
+// clipMimes are the types this process offers when it owns the
+// selection, best first. Everything is UTF-8, whatever the type is
+// called, because the older names have no encoding of their own.
+var clipMimes = []string{"text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT"}
+
+// pickTextMime chooses the type to ask an offer for: the best of the ones
+// this layer names, or any other text type the owner offers.
+func pickTextMime(offered []string) string {
+	for _, want := range clipMimes {
+		for _, have := range offered {
+			if have == want {
+				return have
+			}
+		}
+	}
+	for _, have := range offered {
+		if strings.HasPrefix(have, "text/") {
+			return have
+		}
+	}
+	return ""
+}
+
+// clipboard reads the selection the compositor is holding. It returns
+// what this process put there without a round trip, and empty text when
+// the selection holds nothing this layer can read or the owner does not
+// write in time.
+func (a *wlApp) clipboard() (string, error) {
+	if a.dataDevice == nil {
+		return "", ErrNoClipboard
+	}
+	if a.clipSource != nil {
+		return a.clipText, nil
+	}
+	if a.selection == nil {
+		return "", nil
+	}
+	mime := pickTextMime(a.offerMimes[a.selection])
+	if mime == "" {
+		return "", nil
+	}
+	var fds [2]int
+	if err := syscall.Pipe2(fds[:], syscall.O_CLOEXEC); err != nil {
+		return "", fmt.Errorf("platform: clipboard pipe: %w", err)
+	}
+	l := a.l
+	c := l.cstring(mime)
+	l.send(a.selection, opDataOfferReceive, uintptr(unsafe.Pointer(c)), uintptr(fds[1]))
+	l.cfree(unsafe.Pointer(c))
+	// The owner is handed the write end only once the request reaches the
+	// compositor, and the read below ends at end of file only once every
+	// copy of that end is closed, so flush first and close ours second.
+	a.flushDisplay()
+	syscall.Close(fds[1])
+	// Only the read end is made non-blocking, so that a deadline works
+	// here; the owner writes into a pipe that behaves as it expects.
+	if err := syscall.SetNonblock(fds[0], true); err != nil {
+		syscall.Close(fds[0])
+		return "", fmt.Errorf("platform: clipboard pipe: %w", err)
+	}
+	f := os.NewFile(uintptr(fds[0]), "wayland-clipboard")
+	defer f.Close()
+	f.SetReadDeadline(time.Now().Add(clipboardWait))
+	// A read that stops early keeps what it has: a truncated paste is
+	// better than none, and an owner that says nothing gives none.
+	data, _ := io.ReadAll(f)
+	return string(data), nil
+}
+
+// setClipboard offers the text as the selection. The compositor keeps the
+// offer alive until another client takes the selection or this one goes
+// away, and asks for the text over a pipe whenever someone pastes.
+func (a *wlApp) setClipboard(text string) error {
+	if a.dataDevice == nil {
+		return ErrNoClipboard
+	}
+	l := a.l
+	a.destroySource()
+	src := l.marshal(a.dataMgr, opDataDeviceManagerCreateSource, a.iface["wl_data_source"], 0, 0)
+	if src == nil {
+		return ErrNoClipboard
+	}
+	a.clipSource, a.clipText = src, text
+	a.listen(src, a.iface["wl_data_source"], []uintptr{
+		cbDataSourceTarget, cbDataSourceSend, cbDataSourceCancelled,
+		cbDataSourceDndDrop, cbDataSourceDndFinished, cbDataSourceAction,
+	})
+	for _, m := range clipMimes {
+		c := l.cstring(m)
+		l.send(src, opDataSourceOffer, uintptr(unsafe.Pointer(c)))
+		l.cfree(unsafe.Pointer(c))
+	}
+	l.send(a.dataDevice, opDataDeviceSetSelection, uintptr(src), uintptr(a.lastSerial))
+	a.flushDisplay()
+	return nil
+}
+
+// writeClipboard hands the text to a client that asked for it. The write
+// runs on another goroutine because a pipe blocks once it is full, and
+// the event loop cannot wait for whoever is reading.
+func (a *wlApp) writeClipboard(fd int) {
+	text := a.clipText
+	go func() {
+		f := os.NewFile(uintptr(fd), "wayland-clipboard")
+		defer f.Close()
+		f.WriteString(text) // the reader may leave early, which is not an error here
+	}()
+}
+
+// destroySource drops the selection this process offered.
+func (a *wlApp) destroySource() {
+	if a.clipSource == nil {
+		return
+	}
+	a.l.marshal(a.clipSource, opDataSourceDestroy, nil, wlMarshalFlagDestroy)
+	a.freeListener(a.clipSource)
+	a.clipSource, a.clipText = nil, ""
+}
+
+// onDataOffer records a new offer from the compositor and starts
+// collecting the types it carries. It is not the selection until a
+// selection event says so, and an offer that never becomes one, such as
+// a drag this layer does not handle, is dropped when the next arrives.
+func (a *wlApp) onDataOffer(offer unsafe.Pointer) {
+	if offer == nil {
+		return
+	}
+	a.dropOffer(a.newOffer)
+	a.newOffer = offer
+	a.offerMimes[offer] = nil
+	a.listen(offer, a.iface["wl_data_offer"], []uintptr{cbDataOfferOffer, cbDataOfferSourceActions, cbDataOfferAction})
+}
+
+// onSelection takes the offer the compositor says is the selection, or
+// nothing when the selection was cleared.
+func (a *wlApp) onSelection(offer unsafe.Pointer) {
+	if a.newOffer == offer {
+		a.newOffer = nil
+	}
+	if a.selection != nil && a.selection != offer {
+		a.dropOffer(a.selection)
+	}
+	a.selection = offer
+}
+
+// dropOffer destroys an offer this layer will not read.
+func (a *wlApp) dropOffer(offer unsafe.Pointer) {
+	if offer == nil {
+		return
+	}
+	if a.selection == offer {
+		a.selection = nil
+	}
+	if a.newOffer == offer {
+		a.newOffer = nil
+	}
+	delete(a.offerMimes, offer)
+	a.l.marshal(offer, opDataOfferDestroy, nil, wlMarshalFlagDestroy)
+	a.freeListener(offer)
+}
 
 // wake writes to the pipe Poll waits on. Safe from any goroutine.
 func (a *wlApp) wake() {

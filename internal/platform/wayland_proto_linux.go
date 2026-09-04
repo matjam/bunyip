@@ -133,7 +133,9 @@ const (
 )
 
 // Request opcodes for the core protocol, whose interface tables come from
-// libwayland-client.
+// libwayland-client. The clipboard is core: wl_data_device_manager,
+// wl_data_device, wl_data_source and wl_data_offer are all exported by
+// the library, so only their opcodes are named here.
 const (
 	opDisplaySync        = 0
 	opDisplayGetRegistry = 1
@@ -163,6 +165,19 @@ const (
 	opKeyboardRelease = 0
 
 	opOutputRelease = 0
+
+	opDataDeviceManagerCreateSource = 0
+	opDataDeviceManagerGetDevice    = 1
+
+	opDataSourceOffer   = 0
+	opDataSourceDestroy = 1
+
+	opDataDeviceStartDrag    = 0
+	opDataDeviceSetSelection = 1
+
+	opDataOfferAccept  = 0
+	opDataOfferReceive = 1
+	opDataOfferDestroy = 2
 
 	opShmCreatePool    = 0
 	opShmPoolCreateBuf = 0
@@ -205,6 +220,18 @@ const (
 	evKeyboardKey           = 3
 	evKeyboardModifiers     = 4
 	evKeyboardRepeatInfo    = 5
+	evDataSourceTarget      = 0
+	evDataSourceSend        = 1
+	evDataSourceCancelled   = 2
+	evDataDeviceDataOffer   = 0
+	evDataDeviceEnter       = 1
+	evDataDeviceLeave       = 2
+	evDataDeviceMotion      = 3
+	evDataDeviceDrop        = 4
+	evDataDeviceSelection   = 5
+	evDataOfferOffer        = 0
+	evDataOfferSourceAction = 1
+	evDataOfferAction       = 2
 	evOutputGeometry        = 0
 	evOutputMode            = 1
 	evOutputDone            = 2

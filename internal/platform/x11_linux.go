@@ -394,7 +394,7 @@ func loadX11() (*xlib, error) {
 		"xcb_create_window": &x.createWindow, "xcb_destroy_window": &x.destroyWindow, "xcb_map_window": &x.mapWindow,
 		"xcb_flush": &x.flush, "xcb_poll_for_event": &x.pollForEvent, "xcb_wait_for_event": &x.waitForEvent,
 		"xcb_poll_for_queued_event": &x.pollForQueuedEvent,
-		"xcb_intern_atom": &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
+		"xcb_intern_atom":           &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
 		"xcb_delete_property": &x.deleteProperty, "xcb_get_property": &x.getProperty, "xcb_get_property_reply": &x.getPropertyReply,
 		"xcb_get_property_value": &x.getPropertyValue, "xcb_get_property_value_length": &x.getPropertyValueLn,
 		"xcb_set_selection_owner": &x.setSelectionOwner, "xcb_get_selection_owner": &x.getSelectionOwner,
@@ -968,10 +968,6 @@ func (a *App) x11Wake() {
 // selection and asks the current owner when a game reads. Text larger
 // than one request goes through INCR, a chunk at a time, with the
 // requestor deleting the property to ask for the next.
-
-// clipboardWait is how long a read waits for the owner to answer, and how
-// long it waits for each chunk of an INCR transfer.
-const clipboardWait = time.Second
 
 // incrSend is one INCR transfer this process is handing over.
 type incrSend struct {
