@@ -45,10 +45,10 @@ type Map struct {
 	// along the stagger axis. It is zero except on hexagonal maps.
 	HexSideLength   int
 	BackgroundColor color.RGBA // zero when the map has none
-	Infinite              bool
-	Layers                []Layer
-	Tilesets              []Tileset // sorted by FirstGID
-	Properties            Properties
+	Infinite        bool
+	Layers          []Layer
+	Tilesets        []Tileset // sorted by FirstGID
+	Properties      Properties
 }
 
 // LayerKind is what a layer holds.

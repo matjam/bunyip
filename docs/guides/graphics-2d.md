@@ -475,19 +475,37 @@ g.fire.Draw(gr)          // Draw
 `SetLights2D` places an ambient colour and up to eight `Light2D` point
 lights above the sprite plane for the frame, and `DrawLit` draws a
 sprite lit by them through a tangent-space normal map uploaded with
-`TextureOptions{Data: true}`. Lit sprites take light from every
-direction. There are no 2D shadows cast by occluders, which is a known
-gap. For hard light shafts, draw your own occlusion, usually by
-rendering a light mask to a render texture and compositing it with
-`BlendMultiply`.
+`TextureOptions{Data: true}`.
+
+Set `Shadows` on a light and it is blocked by the occluders the frame
+adds with `AddOccluder2D`, which takes a closed polygon in the same
+units as sprite positions; two points make a single wall. `Softness` is
+the width of the shadow's soft edge in view units, 8 by default. Both
+the lights and the occluders are set every frame, and every lit sprite
+in the frame sees the same set, so it does not matter whether the
+occluders are added before or after the draws.
+
+Each shadowed light gets a polar shadow map built on the CPU: 512
+directions around the light, each holding the distance to the nearest
+occluder edge, uploaded as one small texture the lit shader reads. The
+cost is the occluder edges times the shadowed lights, so a few hundred
+edges are free; only edges within a light's radius are visited. Add the
+walls near the player, not the whole level.
 
 ```go
 gr.SetLights2D(gfx.RGB(30, 30, 45),
-	gfx.Light2D{Pos: g.player, Radius: 220, Color: gfx.RGB(255, 200, 120)},
+	gfx.Light2D{Pos: g.player, Radius: 220, Color: gfx.RGB(255, 200, 120), Shadows: true},
 	gfx.Light2D{Pos: brazier, Radius: 140, Height: 20, Color: gfx.RGB(255, 140, 60)},
 )
+for _, w := range g.walls { // a rectangle's four corners
+	gr.AddOccluder2D(w.TopLeft(), w.TopRight(), w.BottomRight(), w.BottomLeft())
+}
 gr.DrawLit(g.wallTex, g.wallNormal, gfx.Sprite{Pos: lin.V2(x, y), Size: lin.V2(64, 64)})
 ```
+
+The [sprites example](https://github.com/matjam/bunyip/tree/main/examples/sprites)
+draws a lit floor in the corner of the window with a lamp circling three
+crates that block it.
 
 ## Render textures
 

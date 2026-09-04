@@ -28,7 +28,8 @@ window.
   clamp and shake that culls what it cannot see, sort keys within a
   layer, atlases with tag animations, vector paths
   with gradients and dashes, particles, HarfBuzz-shaped text with colour
-  emoji and rich markup, colour matrices, lit sprites, blend modes and
+  emoji and rich markup, colour matrices, lit sprites with shadows cast
+  from occluders, blend modes and
   game-written fragment shaders.
 - 3D: physically based materials with clearcoat, sheen, subsurface and
   glass; glTF models with skeletal animation, blend spaces, IK and morph
@@ -149,7 +150,7 @@ itself without a person watching the screen.
 
 | Command | Shows |
 |---|---|
-| `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites |
+| `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites, and a lit brick floor where a moving lamp throws shadows from three crates |
 | `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |

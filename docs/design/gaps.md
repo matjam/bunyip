@@ -80,7 +80,8 @@ events are in.
 
 Streaming texture writes, colour matrices, flips and per-draw
 filtering, gradients, dashed strokes, text on paths, indexed draws, the
-`particle` package, lit sprites, tilemap flips and animations,
+`particle` package, lit sprites with occluder shadows, tilemap flips and
+animations,
 autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
 template expansion, Tiled terrain sets, and square, hexagonal and
 isometric layouts), the
@@ -94,8 +95,9 @@ stack as well, a sort key within a layer (`SetSortKey`),
 camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
 
-- 2D shadows cast by occluders from the point lights; lit sprites take
-  light from every direction today.
+- 2D shadows are cast by the occluder outlines a frame adds, not by the
+  sprites themselves: nothing derives an occluder from a sprite's alpha,
+  and an occluder blocks a light whatever height the light is at.
 - Hexagonal Wang sets match the six sides of a hexagon. A set that
   paints its six vertices instead has nowhere to put them: the eight
   direction slots hold the sides, and the mapper computes a corner

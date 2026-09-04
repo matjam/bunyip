@@ -9,42 +9,48 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	stream      stream2D
-	draws       []meshDraw
-	order       []int32 // draws in draw order, as indices into draws
-	visOpaque   int     // draws at the front of the opaque group the camera sees
-	visBlended  int     // the same for the blended group
-	decals      []decal
-	camera      Camera
-	light       Light
-	hasCam      bool
-	points      []pointLight
-	uniforms    *render.UniformSets
-	inst        instanceStream
-	joints      []lin.Mat4 // joint matrices for skinned draws this frame
-	jointBuf    *render.StorageSets
-	clear       Color
-	viewW       float32
-	viewH       float32
-	pixelW      float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)
-	proj        lin.Mat4 // screen-space projection
-	spriteProj  lin.Mat4 // projection for sprite draws right now
-	cam2D       Camera2D
-	hasCam2D    bool
-	visible     lin.Rect // the 2D camera's view in world units, for culling sprites
-	layer       int32
-	sortKey     float32    // order within the layer for later sprite draws
-	clips       []lin.Rect // clip stack; the last entry applies
-	shader      *Shader    // 2D shader in force, nil for the default
-	blend       Blend
-	colorMatrix *ColorMatrix // recolouring in force, nil for none
-	lights      lights2D     // this frame's 2D lights
-	lightsDirty bool
-	xform       lin.Affine   // composed 2D transform in force
-	xforms      []lin.Affine // transform stack below it
-	skyCached   skyKey       // the sky whose harmonics are in skySH
-	skySH       [9]lin.Vec4
-	lines       lineStream // debug lines drawn over the 3D scene
+	stream       stream2D
+	draws        []meshDraw
+	order        []int32 // draws in draw order, as indices into draws
+	visOpaque    int     // draws at the front of the opaque group the camera sees
+	visBlended   int     // the same for the blended group
+	decals       []decal
+	camera       Camera
+	light        Light
+	hasCam       bool
+	points       []pointLight
+	uniforms     *render.UniformSets
+	inst         instanceStream
+	joints       []lin.Mat4 // joint matrices for skinned draws this frame
+	jointBuf     *render.StorageSets
+	clear        Color
+	viewW        float32
+	viewH        float32
+	pixelW       float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)
+	proj         lin.Mat4 // screen-space projection
+	spriteProj   lin.Mat4 // projection for sprite draws right now
+	cam2D        Camera2D
+	hasCam2D     bool
+	visible      lin.Rect // the 2D camera's view in world units, for culling sprites
+	layer        int32
+	sortKey      float32    // order within the layer for later sprite draws
+	clips        []lin.Rect // clip stack; the last entry applies
+	shader       *Shader    // 2D shader in force, nil for the default
+	blend        Blend
+	colorMatrix  *ColorMatrix // recolouring in force, nil for none
+	lights       lights2D     // this frame's 2D lights
+	lightsDirty  bool
+	shadows      bool         // some light this frame casts shadows
+	occluders    []lin.Vec2   // this frame's occluder polygons, run after run
+	occluderRuns []int32      // how many points each occluder has
+	shadowTex    *Texture     // the polar shadow maps, one row per light
+	shadowPix    []byte       // the strip's pixels, filled each frame
+	shadowDist   []float32    // one light's distances, reused across lights
+	xform        lin.Affine   // composed 2D transform in force
+	xforms       []lin.Affine // transform stack below it
+	skyCached    skyKey       // the sky whose harmonics are in skySH
+	skySH        [9]lin.Vec4
+	lines        lineStream // debug lines drawn over the 3D scene
 }
 
 func (q *drawQueue) reset() {
@@ -65,6 +71,9 @@ func (q *drawQueue) reset() {
 	q.colorMatrix = nil
 	q.lights = lights2D{Ambient: lin.V4(1, 1, 1, 0)}
 	q.lightsDirty = true
+	q.shadows = false
+	q.occluders = q.occluders[:0]
+	q.occluderRuns = q.occluderRuns[:0]
 	q.xform = lin.Identity2()
 	q.xforms = q.xforms[:0]
 }
@@ -73,6 +82,10 @@ func (q *drawQueue) destroy() {
 	q.stream.destroy()
 	q.inst.destroy()
 	q.lines.destroy()
+	if q.shadowTex != nil {
+		q.shadowTex.Destroy()
+		q.shadowTex = nil
+	}
 	if q.uniforms != nil {
 		q.uniforms.Destroy()
 		q.uniforms = nil
@@ -90,6 +103,13 @@ func (g *Graphics) newQueue(w, h float32) (*drawQueue, error) {
 		return nil, err
 	}
 	if q.jointBuf, err = g.r.Device.NewStorageSets(64*128, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
+		q.destroy()
+		return nil, err
+	}
+	// The shadow strip is made with the queue rather than on the first
+	// shadowed light, because a texture created in the middle of a frame
+	// waits for the device.
+	if q.shadowTex, err = g.newShadowTexture(); err != nil {
 		q.destroy()
 		return nil, err
 	}

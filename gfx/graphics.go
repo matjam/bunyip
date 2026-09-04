@@ -435,6 +435,16 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	if g.frame == nil {
 		return nil, fmt.Errorf("gfx: end without begin")
 	}
+	// The 2D shadow maps are built and uploaded before any pass is
+	// recorded, so every lit draw in the frame samples the same maps.
+	for _, sf := range g.subFrames {
+		if err := g.buildShadows2D(sf.queue); err != nil {
+			return nil, err
+		}
+	}
+	if err := g.buildShadows2D(g.main); err != nil {
+		return nil, err
+	}
 	fr := g.frame
 	g.frame = nil
 	g.cur = g.main
