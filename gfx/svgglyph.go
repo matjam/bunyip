@@ -46,16 +46,20 @@ func (f *Font) addSVG(face uint8, gid font.GID, data font.GlyphSVG) (glyph, bool
 		k: f.pxPerEm / ff.upem,
 	}
 	indexSVG(root, r.ids)
-	// A document may hold several glyphs, each in an element named for
-	// its glyph index; the rest of the document is then the others.
-	target := root
-	if el, ok := r.ids["glyph"+strconv.Itoa(int(gid))]; ok {
-		target = el
-	}
 	// The user space is font units with y down, so a viewBox maps onto
 	// the em square sitting on the baseline.
-	view := svgViewBox(root, ff.upem)
-	state := svgState{xform: view, fill: svgPaint{color: rgba{0, 0, 0, 1}, has: true}, opacity: 1}
+	state := svgState{
+		xform:   svgViewBox(root, ff.upem),
+		fill:    svgPaint{color: rgba{0, 0, 0, 1}, has: true},
+		opacity: 1,
+	}
+	// A document may hold several glyphs, each in an element named for
+	// its glyph index; the rest of the document is then the others, and
+	// what the element's ancestors say still applies to it.
+	target := root
+	if el, st, ok := svgGlyphElement(root, "glyph"+strconv.Itoa(int(gid)), state); ok {
+		target, state = el, st
+	}
 	b := r.bounds(target, state, 0)
 	if !b.valid() {
 		return glyph{}, false
@@ -75,6 +79,28 @@ func (f *Font) addSVG(face uint8, gid font.GID, data font.GlyphSVG) (glyph, bool
 	canvas := newColorCanvas(r.w, r.h)
 	r.draw(canvas, target, state, 0)
 	return f.addCanvas(canvas, ox, oy)
+}
+
+// svgGlyphElement finds the element that describes one glyph and the
+// state its ancestors give it, which is the state the walk starts from.
+// The element's own attributes are left for the walk to apply.
+func svgGlyphElement(el *svgElem, id string, st svgState) (*svgElem, svgState, bool) {
+	if el.attr["id"] == id {
+		return el, st, true
+	}
+	if t := el.attr["transform"]; t != "" {
+		st.xform = st.xform.mul(parseSVGTransform(t))
+	}
+	if o := svgProperty(el, "opacity"); o != "" {
+		st.opacity *= lin.Clamp(svgNumber(o, 1), 0, 1)
+	}
+	st.fill = svgFillOf(el, st)
+	for _, k := range el.kids {
+		if found, kst, ok := svgGlyphElement(k, id, st); ok {
+			return found, kst, true
+		}
+	}
+	return nil, st, false
 }
 
 // svgViewBox returns the transform from the document's user space to

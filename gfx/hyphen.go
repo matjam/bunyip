@@ -115,6 +115,10 @@ func readPatternFile(name string, depth int) (string, error) {
 		if !strings.HasSuffix(in, ".tex") {
 			in += ".tex"
 		}
+		// Only the shipped files are readable, whatever a file asks for.
+		if strings.ContainsAny(in, `/\`) || in == ".tex" {
+			return "", fmt.Errorf("gfx: hyphenation patterns %q input a file outside hyph/", name)
+		}
 		text, err := readPatternFile(in, depth+1)
 		if err != nil {
 			return "", err

@@ -86,6 +86,45 @@ func TestSVGGlyph(t *testing.T) {
 	}
 }
 
+// TestSVGGlyphInheritsAncestors checks that a glyph element deeper in
+// the document is drawn through the transform and the fill its ancestors
+// give it.
+func TestSVGGlyphInheritsAncestors(t *testing.T) {
+	g := newHeadless(t, 96, 96)
+	g.SetView(96, 96)
+	a := gidOf(t, g, goregular.TTF, 'A')
+	// The square is drawn at the origin and pushed right and down by the
+	// group above it, and takes the group's colour.
+	doc := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+		<g transform="translate(50 50)" fill="#0000ff">
+			<g id="glyph%d"><rect width="40" height="40"/></g>
+		</g>
+	</svg>`, a)
+	ttf := withTables(t, goregular.TTF, svgTable(a, doc))
+	f, err := g.NewFont(ttf, 40, FontOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Destroy()
+	img := frame2D(t, g, func() { g.DrawText(f, "A", 4, 4, White) })
+	red, _, blue, lit := counts(img)
+	if blue < 50 || red > 0 {
+		t.Errorf("%d blue and %d red pixels of %d lit; the group's fill should reach the glyph", blue, red, lit)
+	}
+	glyphs := f.Shape("A", TextOptions{})
+	if len(glyphs) != 1 || glyphs[0].Empty {
+		t.Fatalf("the SVG glyph did not shape: %+v", glyphs)
+	}
+	// Half the viewBox across and down: the em is forty view units, so
+	// the square starts twenty in and twenty down from the em's top.
+	if x := glyphs[0].Pos.X; x < 19 || x > 21 {
+		t.Errorf("the glyph starts at x %.1f, want about 20 from the group's translate", x)
+	}
+	if top := glyphs[0].Pos.Y - f.Ascent; top < -21 || top > -19 {
+		t.Errorf("the glyph's top is %.1f from the baseline, want about -20", top)
+	}
+}
+
 // TestSVGGlyphWithoutViewBox checks that a document with no viewBox is
 // drawn in font units, y down from the baseline.
 func TestSVGGlyphWithoutViewBox(t *testing.T) {
