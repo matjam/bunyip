@@ -15,11 +15,10 @@ take bytes, buses, embedded assets and one-call loaders, debug drawing,
 the fixed view, headless runs, the window controls, atlas formats with
 named frames, tweens over any value, engine plumbing hidden behind an
 internal hook package, and the naming and zero-value conventions stated
-in each package's comment.
-
-- The Linux clipboard: X11 selections need a request loop the platform
-  layer does not run yet, and Wayland needs `wl_data_device` with a pipe
-  to read an offer from. macOS and Windows have it.
+in each package's comment. The clipboard now works on every platform:
+macOS and Windows through the system clipboard, X11 by owning the
+CLIPBOARD selection and answering requests for it (INCR included), and
+Wayland through `wl_data_device` with a pipe.
 
 ## Platforms and window
 
@@ -29,12 +28,19 @@ in each package's comment.
 - Windows has been cross-compiled and vetted but never run on a real
   machine. The Linux window layer has: both the Wayland and X11 backends
   have opened windows, presented frames and delivered input on a Linux
-  desktop. Linux audio and gamepads remain unexercised.
-- What the Wayland layer does not do yet: the clipboard through
-  `wl_data_device`, text input through `zwp_text_input_v3`, fractional
-  scale through `wp_fractional_scale_v1` and `wp_viewporter` (the buffer
-  scale is an integer today), and the window icon through
-  `xdg-toplevel-icon-v1`. Without `zxdg_decoration_manager_v1` the window
+  desktop. Linux audio and gamepads remain unexercised, and so do the
+  clipboard, X11 detectable key repeat, Wayland fractional scale and the
+  Wayland window icon, which were written against the protocols and
+  compile but have not been driven by hand.
+- What the Wayland layer does not do yet: text input through
+  `zwp_text_input_v3`. Fractional scale is in, through
+  `wp_fractional_scale_v1` and `wp_viewporter`, with the integer buffer
+  scale as the fallback where a compositor lacks them, and the window
+  icon through `xdg-toplevel-icon-v1`, which is a no-op where a
+  compositor lacks it. Drag and drop is not handled, so a drag offer is
+  dropped rather than read; the clipboard side of `wl_data_device` is in.
+  Without
+  `zxdg_decoration_manager_v1` the window
   has no title bar, because drawing one client-side is not written.
   libwayland 1.20 or later is required, for `wl_proxy_marshal_flags`.
 - Window position, always-on-top and custom cursor images work on macOS
@@ -47,21 +53,15 @@ in each package's comment.
 - Multiple windows.
 - Windows IME, X input methods and Wayland `zwp_text_input_v3`; only
   macOS composes text natively.
-- X11 key repeat: X delivers a repeat as a release and press pair, and
-  the layer forwards both without marking the press as a repeat, so a
-  held key releases every repeat on X11. Detectable auto-repeat through
-  XKB would fix it; Wayland, Windows and macOS mark repeats.
 - App bundling for Windows and Linux (installers, AppImage); code
   signing.
 
 ## Game loop
 
-`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall, and
+`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall,
 `PauseUnfocused` stops updates and the mixer while another window has
-focus.
-
-- Pausing when the window is hidden or minimised but still focused; the
-  platform layers do not report visibility yet.
+focus, and `PauseHidden` does the same while the window cannot be seen;
+every platform layer reports visibility and `ctx.Visible` reads it.
 
 ## Input
 

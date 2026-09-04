@@ -68,6 +68,15 @@ type Config struct {
 	// another window; frames still draw. Off by default: a server, a
 	// music player or a game with real-time multiplayer keeps running.
 	PauseUnfocused bool
+	// PauseHidden stops updates and silences the mixer while the window
+	// cannot be seen, in the same way PauseUnfocused does for focus. A
+	// window is hidden while it is minimised, and while it is wholly
+	// covered by other windows on the platforms that report that. Off by
+	// default, and a headless run is always visible. With both settings
+	// on the game is paused while either is true, and the loop writes the
+	// mixer only when that changes, so a mixer the game paused itself
+	// stays paused.
+	PauseHidden bool
 
 	// DrawBudget is the number of draw calls (2D and 3D together) a
 	// frame should stay under; the debug overlay warns when a frame goes
@@ -195,6 +204,7 @@ type Context struct {
 	shot     string
 	win      windowControl
 	focused  bool
+	visible  bool
 	closeReq bool
 	cursor   Cursor
 }
@@ -306,6 +316,15 @@ func (c *Context) SetCursor(shape Cursor) {
 // Focused reports whether the window has keyboard focus.
 func (c *Context) Focused() bool { return c.focused }
 
+// Visible reports whether the window can be seen. It is false while the
+// window is minimised, and while it is wholly covered by other windows on
+// the platforms that report that; Windows reports only minimising, and a
+// Wayland compositor older than xdg_toplevel version six reports nothing,
+// so the window stays visible there. A headless run is always visible.
+// Config.PauseHidden stops updates and silences the mixer while it is
+// false.
+func (c *Context) Visible() bool { return c.visible }
+
 // CloseRequested reports that the user asked to close the window since
 // the last Update. With Config.HandleClose the loop keeps running and the
 // game decides: save, ask, then Quit. Without it the loop quits on its
@@ -313,10 +332,16 @@ func (c *Context) Focused() bool { return c.focused }
 func (c *Context) CloseRequested() bool { return c.closeReq }
 
 // Clipboard returns the system clipboard's text, empty when it holds
-// none. Linux under X11 has no clipboard yet and returns an error.
+// none. Under X11 the read waits about a second for whoever owns the
+// selection to answer and returns empty text if nobody does. A Wayland
+// compositor without wl_data_device_manager returns an error.
 func (c *Context) Clipboard() (string, error) { return c.app.Clipboard() }
 
-// SetClipboard puts text on the system clipboard.
+// SetClipboard puts text on the system clipboard. On Linux the text is
+// handed over when another program asks for it, so it stays on the
+// clipboard only while the game runs. Under Wayland it returns an error
+// until the window has had input, because the compositor changes the
+// selection only in answer to a key, a button or the pointer arriving.
 func (c *Context) SetClipboard(text string) error { return c.app.SetClipboard(text) }
 
 // SetTextInputRect tells the operating system's input method where text
