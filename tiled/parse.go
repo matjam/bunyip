@@ -60,7 +60,8 @@ func Parse(data []byte, resolve Resolver) (*Map, error) {
 	}
 	m := &Map{
 		Width: j.Width, Height: j.Height, TileWidth: j.TileWidth, TileHeight: j.TileHeight,
-		Orientation: j.Orientation, Infinite: j.Infinite, Properties: properties(j.Properties),
+		Orientation: j.Orientation, StaggerAxis: j.StaggerAxis, StaggerIndex: j.StaggerIndex,
+		HexSideLength: j.HexSideLength, Infinite: j.Infinite, Properties: properties(j.Properties),
 	}
 	if j.BackgroundColor != "" {
 		if c, ok := ParseColor(j.BackgroundColor); ok {
@@ -531,6 +532,9 @@ type jsonMap struct {
 	TileWidth       int            `json:"tilewidth"`
 	TileHeight      int            `json:"tileheight"`
 	Orientation     string         `json:"orientation"`
+	StaggerAxis     string         `json:"staggeraxis"`
+	StaggerIndex    string         `json:"staggerindex"`
+	HexSideLength   int            `json:"hexsidelength"`
 	BackgroundColor string         `json:"backgroundcolor"`
 	Infinite        bool           `json:"infinite"`
 	Layers          []jsonLayer    `json:"layers"`

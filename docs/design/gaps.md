@@ -82,7 +82,8 @@ Streaming texture writes, colour matrices, flips and per-draw
 filtering, gradients, dashed strokes, text on paths, indexed draws, the
 `particle` package, lit sprites, tilemap flips and animations,
 autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
-template expansion, Tiled terrain sets), the
+template expansion, Tiled terrain sets, and square, hexagonal and
+isometric layouts), the
 `tiled` importer in both of Tiled's file forms with every layer
 encoding it writes (CSV, base64 plain, zlib, gzip and zstd),
 TexturePacker and
@@ -95,8 +96,14 @@ camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
 
 - 2D shadows cast by occluders from the point lights; lit sprites take
   light from every direction today.
-- Autotiling on hexagonal and isometric neighbourhoods; the rules in
-  `grid/autotile` assume a square grid.
+- Hexagonal Wang sets match the six sides of a hexagon. A set that
+  paints its six vertices instead has nowhere to put them: the eight
+  direction slots hold the sides, and the mapper computes a corner
+  colour from the cells around it only on a square or isometric layout.
+- Tiled's "staggered" orientation, which is an isometric map on the
+  staggered grid a hexagonal map uses. `Map.Layout` gives it `Square`,
+  which matches the wrong cells; only orthogonal, isometric and
+  hexagonal maps have a layout that fits.
 - Post-processing on a 2D-only frame. Bloom, ambient occlusion,
   vignette, the LUT and FXAA all run in the composite pass, which
   `renderQueue` skips when the frame has no 3D draws, no background and

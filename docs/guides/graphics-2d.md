@@ -259,16 +259,17 @@ g.tilemap.Advance(ctx.Delta) // in Update
 To keep a map of plain terrain ids and let the tiles pick themselves,
 use the [autotile](../pkg/grid/autotile.html) package. A
 `Mapper` turns terrain ids into frame indices: `Apply` fills a whole
-tilemap and `Cell` patches the neighbourhood of one edited cell. Four
+tilemap and `Cell` patches the neighbourhood of one edited cell. Five
 rule kinds cover the usual tilesets: `Edge16` matches the four edge
-neighbours with 16 tiles (walls, pipes, fences), `Blob47` matches all
-eight neighbours with the 47 distinct blob tiles, `Corner16` is the
-dual grid where each tile sits on a corner between four cells, and
-`Wang` matches terrain colours on tile edges or corners for any number
-of terrains meeting with transitions. `ExpandBlob` composes the 47 blob
-tiles from a six-tile template, so an artist draws six tiles instead of
-47. Variants weight alternative frames per neighbourhood, chosen by a
-stable hash of the cell position.
+neighbours with 16 tiles (walls, pipes, fences), `Edge64` is its
+hexagonal counterpart matching the six sides of a hexagon with 64
+tiles, `Blob47` matches all eight neighbours with the 47 distinct blob
+tiles, `Corner16` is the dual grid where each tile sits on a corner
+between four cells, and `Wang` matches terrain colours on tile edges or
+corners for any number of terrains meeting with transitions.
+`ExpandBlob` composes the 47 blob tiles from a six-tile template, so an
+artist draws six tiles instead of 47. Variants weight alternative
+frames per neighbourhood, chosen by a stable hash of the cell position.
 
 ```go
 img, frames := autotile.ExpandBlob(template, 16)
@@ -279,12 +280,37 @@ grass.Apply(w, h, terrainAt, grassMap.Set)   // the whole map once
 grass.Cell(x, y, w, h, terrainAt, grassMap.Set) // after one edit
 ```
 
+`Mapper.Layout` is the shape of the grid, and the zero value is a
+square one. `HexRowsOdd`, `HexRowsEven`, `HexColsOdd` and
+`HexColsEven` are hexagons in staggered rows or columns, named the way
+the Tiled editor names its stagger axis and index; `HexAxial` is the
+same six directions in axial coordinates. A hexagonal layout has six
+neighbours and no diagonals, so it takes `Edge64` or `Wang` rules.
+`IsoDiamond` keeps eight neighbours but turns them a quarter turn, so
+the direction names are the tile's directions on screen and the cell
+north of `(x, y)` is `(x-1, y-1)`. `Layout.Neighbour` and `Layout.Dirs`
+are the same walk for a game's own code, such as moving a unit across a
+hex map.
+
+```go
+hex := &autotile.Mapper{Rules: autotile.Edge64(1, frames), Layout: autotile.HexRowsOdd}
+hex.Apply(w, h, terrainAt, setFrame)
+x, y = autotile.HexRowsOdd.Neighbour(x, y, autotile.DirNE)
+```
+
 Terrain sets painted in the Tiled editor's terrain tool come in through
 the tiled package: `Map.WangSet` finds a set by name and its `Rules`
-method converts it, with tile ids as frames. The
+method converts it, with tile ids as frames. On a hexagonal map, call
+`Map.Layout` for the layout, pass it to `WangSet.RulesFor` and give the
+same layout to the `Mapper`; the conversion moves each colour into the
+direction slot the layout uses, because Tiled stores a hexagon's six
+sides one slot back in the eight-slot wangid. An isometric map gets
+`Square`, since Tiled's own terrain tool matches an isometric map on
+the plain grid neighbours. The
 [autotile example](https://github.com/matjam/bunyip/tree/main/examples/autotile)
 paints grass, walls and water with the mouse over one shared terrain
-grid, one rule kind each.
+grid, one rule kind each, and draws a hexagonal edge set in the strip
+below them.
 
 ## Maps from the Tiled editor
 
