@@ -31,9 +31,10 @@ type CaptureOptions struct {
 // A Capture is not a Stream: to play what is recorded, feed the samples
 // to a Stream of the game's own, or to a Sound built from them.
 type Capture struct {
-	rate     int
-	channels int
-	dev      *audioout.CaptureDevice
+	rate      int
+	channels  int
+	dev       *audioout.CaptureDevice
+	closeOnce sync.Once
 
 	mu      sync.Mutex
 	ring    []float32
@@ -151,11 +152,14 @@ func (c *Capture) Dropped() int64 {
 }
 
 // Close stops the stream and releases the device. Samples already
-// buffered can still be read. Calling it twice does nothing.
+// buffered can still be read. Closing twice, or from two goroutines,
+// does the work once; the second call waits for the first.
 func (c *Capture) Close() {
-	if c.dev == nil {
-		return
-	}
-	c.dev.Close()
-	c.dev = nil
+	c.closeOnce.Do(func() {
+		if c.dev != nil {
+			// The device waits for its own reader, which takes the ring's
+			// lock, so this must not be holding it.
+			c.dev.Close()
+		}
+	})
 }
