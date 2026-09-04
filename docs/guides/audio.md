@@ -27,10 +27,13 @@ and a priority. The voice can be adjusted while it runs: `SetVolume`,
 `FadeTo`, `FadeOut`, `SetPitch`, `SetPaused`, `SetLowPass`,
 `SetPosition`, `SetOcclusion`, `SetMute`, `SetSolo`.
 
-Gains ramp across each block, so changes never click. `Voice.Position`
-and `Seek` read and move the playhead, `Sound.Duration` is its length,
-and `Voice.OnDone` runs a callback when the voice ends, for chaining
-clips.
+Gains ramp across each block, so changes never click. `Stop`, `StopAll`
+and a voice that loses its slot ramp to silence over about a
+millisecond, so cutting a sound off mid-cycle is inaudible; the voice
+leaves `Playing` at once and the mixer spends that millisecond fading
+what is left. `Voice.Position` and `Seek` read and move the playhead,
+`Sound.Duration` is its length, and `Voice.OnDone` runs a callback when
+the voice ends, for chaining clips.
 
 ```go
 pcm, err := audio.Decode(data) // WAV, Ogg Vorbis or MP3 bytes
