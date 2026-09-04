@@ -348,7 +348,8 @@ type meshDraw struct {
 	blended   bool    // mat.blended(), resolved once by prepareDraws for the sort
 	culled    bool    // outside the camera's view; drawn only into shadows
 	skinned   bool
-	jointBase int // first joint matrix in the queue's joint list
+	jointBase int   // first joint matrix in the queue's joint list
+	inst      int32 // this draw's row in the instance stream, set by prepareDraws
 }
 
 // meshInstance is the per-instance vertex stream: see pbr.vert.

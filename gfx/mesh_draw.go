@@ -780,6 +780,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	q.inst.reset()
 	for k := range all.len() {
 		d := all.at(k)
+		d.inst = int32(k) // the instance stream is built in sorted order
 		m := &d.mat
 		flags := boolFloat(m.NormalTexture != nil) + 2*boolFloat(m.Unlit) + 4*boolFloat(m.OcclusionUV2) + 8*boolFloat(m.EmissiveTexture == nil)
 		occlusion := float32(0)
@@ -875,11 +876,13 @@ func orOne(metallic float32, hasTexture bool) float32 {
 }
 
 // drawRuns records draws as instanced runs of identical mesh, material
-// and shader state. first is the index of draws[0] in the instance
-// stream. In the shadow pass (cascade set) the depth-only pipelines are
-// used; otherwise each draw's shader picks its lit pipeline. Skinned
-// draws are never merged, since each has its own joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32) error {
+// and shader state. Each draw carries its own row in the instance
+// stream, so a list filtered for one shadow map still reads the right
+// instances; only draws whose rows are consecutive merge into a run. In
+// the shadow pass (shadowMap set) the depth-only pipelines are used;
+// otherwise each draw's shader picks its lit pipeline. Skinned draws are
+// never merged, since each has its own joint matrices.
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, shadowMap *int32) error {
 	n := draws.len()
 	if n == 0 {
 		return nil // a sky-only frame has no instance buffer to bind
@@ -896,14 +899,14 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			runKey := meshKey(&d.mat, false)
 			for i+run < n {
 				e := draws.at(i + run)
-				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false) != runKey {
+				if e.skinned || e.inst != d.inst+int32(run) || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false) != runKey {
 					break
 				}
 				run++
 			}
 		}
 		key := meshKey(&d.mat, d.skinned)
-		if cascade != nil {
+		if shadowMap != nil {
 			key = pipeKey{shadow: true, skinned: d.skinned}
 		}
 		p, err := d.shader.pipeline(key)
@@ -915,9 +918,9 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			boundUniform = -2
 			vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
 			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
-			if cascade != nil {
-				rec.cascade = *cascade
-				vk.CmdPushConstants(cb, p.Layout, meshStages, 0, 4, unsafe.Pointer(&rec.cascade))
+			if shadowMap != nil {
+				rec.shadowMap = *shadowMap
+				vk.CmdPushConstants(cb, p.Layout, meshStages, 0, 4, unsafe.Pointer(&rec.shadowMap))
 			} else {
 				vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 2, 1, &g.meshes.shadowSet, 0, nil)
 			}
@@ -934,9 +937,9 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		}
 		vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
 		vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
-		vk.CmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, first+uint32(i))
+		vk.CmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, uint32(d.inst))
 		g.stats.Draws3D++
-		if cascade == nil {
+		if shadowMap == nil {
 			g.stats.Instances += run
 		}
 		i += run
@@ -976,7 +979,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 			render.SetViewportRect(cb, region)
 			render.SetScissorRect(cb, region)
 			pc := int32(index)
-			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc); err != nil {
+			if err := g.drawRuns(cb, fr, q, opaque, &pc); err != nil {
 				return err
 			}
 		}
@@ -1002,10 +1005,10 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
 		vk.CmdDraw(cb, 3, 1, 0, 0)
 	}
-	if err := g.drawRuns(cb, fr, q, seen, 0, nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seen, nil); err != nil {
 		return err
 	}
-	g.drawSolid(cb, fr, q, seen, 0, t.extent)
+	g.drawSolid(cb, fr, q, seen, t.extent)
 	if transmissive(seenBlended) {
 		// Glass reads what is behind it: snapshot the opaque scene, with
 		// blurred mips for rough glass, then carry on into the same images.
@@ -1013,7 +1016,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
-	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seenBlended, nil); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {
@@ -1029,7 +1032,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 // drawSolid draws the outline shells and x-ray tints of draws that ask
 // for them, after the opaque pass has marked the stencil. Skinned meshes
 // are skipped: the solid vertex program does not skin.
-func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, extent vk.VkExtent2D) {
+func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, extent vk.VkExtent2D) {
 	if draws.len() == 0 {
 		return
 	}
@@ -1067,7 +1070,7 @@ func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQue
 			vk.CmdPushConstants(cb, pass.pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.solid)), unsafe.Pointer(&rec.solid))
 			vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
 			vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
-			vk.CmdDrawIndexed(cb, d.mesh.IndexCount, 1, 0, 0, first+uint32(i))
+			vk.CmdDrawIndexed(cb, d.mesh.IndexCount, 1, 0, 0, uint32(d.inst))
 		}
 	}
 }

@@ -477,13 +477,13 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 // the heap, so a fresh local for each draw would allocate once per draw
 // run; these fields live as long as the Graphics and are filled in place.
 type recordScratch struct {
-	push    push2D             // the 2D push-constant block, and the sky's
-	solid   solidPush          // the outline and x-ray block
-	decal   decalPush          // the decal block
-	set     vk.VkDescriptorSet // the run's material set
-	dyn     uint32             // the run's dynamic uniform offset
-	cascade int32              // the shadow pass's cascade index
-	offset  vk.VkDeviceSize    // always zero: the vertex buffer bind offset
+	push      push2D             // the 2D push-constant block, and the sky's
+	solid     solidPush          // the outline and x-ray block
+	decal     decalPush          // the decal block
+	set       vk.VkDescriptorSet // the run's material set
+	dyn       uint32             // the run's dynamic uniform offset
+	shadowMap int32              // the shadow pass's map index: cascade, spot map or point face
+	offset    vk.VkDeviceSize    // always zero: the vertex buffer bind offset
 }
 
 // flush2D records the queue's 2D stream: one draw per run of equal state.
