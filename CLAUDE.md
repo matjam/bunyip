@@ -205,8 +205,20 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   `destroyed`) until the retire runs, so draws already queued still
   draw. `FrameStats.Waits` counts the stalls a frame caused; a running
   game reports zero.
-- Culling uses each mesh's bind-pose bounds and skips meshes whose
-  shader has a vertex hook.
+- Culling bounds a static mesh by its vertices, a skinned mesh by the
+  union of its per-joint boxes under the pose (computed at load in
+  `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
+  `Shader.VertexBounds`, whose zero means the draw is never culled.
+  `Mesh.SetBounds` overrides the box and survives `Update`.
+- The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
+  class, then depth for blended draws or dense shader, uniform, material
+  set and mesh ids for opaque ones, and the draw's index in the low
+  twenty bits so ties keep submission order. A frame with more of any of
+  those than a field holds falls back to `sortRecords`, which compares
+  the draw records.
+- `prepareDraws` runs before `writeUniforms`: the cascades need the
+  caster bounds it resolves, and the shadow pass culls each draw against
+  each cascade and spot light before recording it.
 - Immediate-mode identity comes from the label plus the enclosing
   containers plus call order; overlays (menus, modals, drag ghosts) are
   drawn deferred at `end`, and overlays may add overlays, so that list

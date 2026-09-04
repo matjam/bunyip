@@ -23,6 +23,7 @@ type Device struct {
 	alloc       allocator
 	anisotropy  float32 // max anisotropy the device allows, 1 when unsupported
 	arrayIndex  bool    // sampler and sampled-image arrays may be indexed dynamically
+	depthClamp  bool    // the device clamps depth instead of clipping, when asked
 	waits       uint64  // times the device or its queue was waited on
 }
 
@@ -71,6 +72,13 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	if g.features.ShaderSampledImageArrayDynamicIndexing != 0 {
 		features.Features.ShaderSampledImageArrayDynamicIndexing = vk.VK_TRUE
 		d.arrayIndex = true
+	}
+	// Depth clamping lets the shadow pipelines keep casters in front of a
+	// cascade's near plane. It is optional, so pipelines ask for it and
+	// NewPipeline drops the request where the device does not have it.
+	if g.features.DepthClamp != 0 {
+		features.Features.DepthClamp = vk.VK_TRUE
+		d.depthClamp = true
 	}
 	info := vk.VkDeviceCreateInfo{
 		SType:                   vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -131,6 +139,11 @@ func (d *Device) Destroy() {
 	vk.VkDestroyDevice(d.Handle, nil)
 	d.Handle = 0
 }
+
+// DepthClamp reports whether the device clamps depth for pipelines that
+// ask for it. Without it a pipeline clips at its near and far planes,
+// and the caller compensates.
+func (d *Device) DepthClamp() bool { return d.depthClamp }
 
 // Limits exposes the physical device limits.
 func (d *Device) Limits() *vk.VkPhysicalDeviceLimits { return &d.gpu.props.Limits }

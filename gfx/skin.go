@@ -40,6 +40,7 @@ func (g *Graphics) NewSkinnedMesh(verts []SkinVertex, indices []uint32) (*Mesh, 
 		return nil, err
 	}
 	m.skinned = true
+	m.setJointBounds(verts)
 	return m, nil
 }
 
@@ -63,7 +64,11 @@ func (m *Mesh) UpdateSkinned(verts []SkinVertex, indices []uint32) error {
 	}
 	m.retire()
 	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
-	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
+	m.IndexCount, m.verts, m.indices = fresh.IndexCount, fresh.verts, fresh.indices
+	if !m.boundsFixed {
+		m.Min, m.Max = fresh.Min, fresh.Max
+	}
+	m.setJointBounds(verts)
 	return nil
 }
 
@@ -106,5 +111,5 @@ func (g *Graphics) DrawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []l
 	q := g.cur
 	base := len(q.joints)
 	q.joints = append(q.joints, joints...)
-	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, jointBase: base, skinned: true})
+	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, jointBase: base, jointCount: len(joints), skinned: true})
 }

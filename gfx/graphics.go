@@ -385,6 +385,11 @@ type FrameStats struct {
 	Draws3D    int // mesh draw calls after instancing, all passes
 	Instances  int // mesh instances drawn in the main pass
 	Culled     int // mesh draws outside the camera's view, skipped in the main pass
+	// ShadowDraws counts the mesh instances recorded into the shadow maps,
+	// summed over the cascades and the shadowed spot lights. A caster is
+	// only recorded into the maps its bounds reach, so this falls as
+	// lights and casters spread out.
+	ShadowDraws int
 	// Culled2D counts sprites outside the 2D camera's view that were
 	// dropped before reaching the vertex stream.
 	Culled2D int

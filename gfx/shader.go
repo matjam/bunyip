@@ -114,6 +114,15 @@ func (g *Graphics) Transform() lin.Affine { return g.cur.xform }
 // adjusts a surface before the engine lights it. Uniforms and up to four
 // extra images ride along with every draw made while it is set.
 type Shader struct {
+	// VertexBounds is how far a mesh shader's vertex program moves a
+	// vertex, as a multiple of the mesh's bounding radius: 0.25 for a flag
+	// that ripples a quarter of its own size. Culling grows a draw's
+	// radius by 1 + VertexBounds. Zero means the program may put a vertex
+	// anywhere, so draws made with the shader are never culled; set it as
+	// soon as the displacement has a limit. It is read as each draw is
+	// prepared, so a game may change it between draws.
+	VertexBounds float32
+
 	g      *Graphics
 	frag   []byte
 	stages map[shaders.Stage][]byte // a mesh shader's vertex programs, when it hooks vertices

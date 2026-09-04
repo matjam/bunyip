@@ -320,7 +320,15 @@ reaching `ShadowDistance` world units from the camera (default 60) at
 resolution near the camera, so `ShadowDistance` is the setting to tune.
 Keep it as small as the game allows. Forty over a character scene is
 crisp; two hundred over a whole valley will alias. Cutout materials cast
-cutout shadows, so a leaf texture throws a leaf-shaped shadow.
+cutout shadows, so a leaf texture throws a leaf-shaped shadow. A caster
+far above the cascades, a bridge over a street or a cloud over a field,
+still casts into them: the shadow pipelines clamp depth rather than clip
+at the cascade's near plane.
+
+Each caster is recorded only into the cascades and spot maps its bounds
+reach, so a scene spread over a large map pays for the maps a mesh can
+land in rather than for all seven. `FrameStats.ShadowDraws` counts the
+instances that went into the shadow atlas this frame.
 
 `AddPointLight(pos, color, range)` shines in every direction from a
 point, fading to nothing at `range`, for torches, muzzle flashes and
@@ -444,11 +452,27 @@ sel := gfx.Material{BaseColor: gfx.RGB(90, 200, 120), Roughness: 0.5,
 
 Every mesh draw is tested against the camera's frustum and skipped when
 its bounds are outside; culled draws still cast shadows, which is why a
-tree behind the camera can still darken the road. Two caveats: culling
-uses each mesh's bind-pose bounds, so a wildly animated model may be
-culled while a limb is still visible, and meshes whose material has a
-vertex-moving shader are never culled, because the engine cannot know
-where their vertices went.
+tree behind the camera can still darken the road. A static mesh is
+bounded by the box its vertices fill. A skinned mesh keeps a box per
+joint over the vertices weighted to it, and each frame the pose's joint
+matrices move those boxes and the union bounds the draw, so a limb that
+swings clear of the bind pose is still drawn.
+
+Two cases need the game's help. A mesh whose drawn shape leaves its
+geometry takes `Mesh.SetBounds(min, max)` to say the box it stays
+inside, in mesh space; `Mesh.Bounds()` reads the bounds back, and
+`Update` leaves bounds given by hand alone. A material shader with a
+vertex program can put a vertex anywhere, so draws using it are never
+culled until `Shader.VertexBounds` says how far the program moves one,
+as a multiple of the mesh's bounding radius; culling then grows the
+radius by 1 + `VertexBounds`.
+
+```go
+// A flag whose shader ripples it by a quarter of its own size.
+g.flagShader.VertexBounds = 0.25
+// A billboard grass mesh the shader bends and scatters over its cell.
+grass.SetBounds(lin.V3(-2, 0, -2), lin.V3(2, 3, 2))
+```
 
 Engine culling still costs the work of building the draw, so a game with
 chunks, regions or a crowd should test them itself first.
@@ -570,16 +594,17 @@ gr.DebugText3D(scout.Position, "scout")
 
 `ctx.Stats` and `Graphics.Stats()` report the last frame as a
 `FrameStats`: `Draws3D` is mesh draw calls after instancing across all
-passes, `Instances` is mesh instances in the main pass, `Culled` is the
-draws skipped as out of view, `Draws2D` and `Vertices2D` cover the
-sprite stream, and `Waits` counts the times the frame stopped for the
-GPU to go idle, which a running game keeps at zero. The F3 overlay shows
-them and `Config.DrawBudget` warns when a frame goes over a number you
-set.
+passes, `Instances` is mesh instances in the main pass, `ShadowDraws` is
+the instances recorded into the shadow maps, `Culled` is the draws
+skipped as out of view, `Draws2D` and `Vertices2D` cover the sprite
+stream, and `Waits` counts the times the frame stopped for the GPU to
+go idle, which a running game keeps at zero. The F3 overlay shows them
+and `Config.DrawBudget` warns when a frame goes over a number you set.
 
 ```go
 s := gr.Stats()
-gr.Debugf(10, 10, "draws %d  instances %d  culled %d", s.Draws3D, s.Instances, s.Culled)
+gr.Debugf(10, 10, "draws %d  instances %d  shadow %d  culled %d",
+	s.Draws3D, s.Instances, s.ShadowDraws, s.Culled)
 ```
 
 Draw calls cost more than triangles. A high `Draws3D` next to a low

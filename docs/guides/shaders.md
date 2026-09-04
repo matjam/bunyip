@@ -135,6 +135,15 @@ vertex hook, `bunyip-shader` writes a bundle of all five programs
 file, and `NewMeshShader` reads either that or plain fragment SPIR-V.
 The rippling flag in the `shaders` example uses a vertex hook.
 
+Culling cannot see where the hook put a vertex, so draws made with such
+a shader are never culled until the shader says how far it moves one.
+Set `Shader.VertexBounds` to that distance as a multiple of the mesh's
+bounding radius, and culling grows the radius by 1 + `VertexBounds`:
+
+```go
+lava.VertexBounds = 0.2 // the hook lifts a vertex a fifth of the mesh
+```
+
 ## Blend modes and transforms
 
 Blending is separate from shaders and works with any of them:
