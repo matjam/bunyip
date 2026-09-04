@@ -6,6 +6,43 @@ import (
 	"testing"
 )
 
+// signatureArgs counts the arguments a wayland-scanner signature
+// describes: leading digits are the version the message arrived in and
+// "?" marks the argument that follows as nullable, so neither is one.
+func signatureArgs(sig string) int {
+	n := 0
+	for i, c := range sig {
+		switch {
+		case c >= '0' && c <= '9' && i == n:
+			continue // the since version, only ever at the front
+		case c == '?':
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// The types list is read in step with the signature, so a table whose
+// two disagree points at the wrong interface for an object argument, or
+// past the end of the list.
+func TestProtocolTablesMatchTheirSignatures(t *testing.T) {
+	for _, iface := range wlProtocols {
+		for _, group := range []struct {
+			kind string
+			msgs []protoMessage
+		}{{"request", iface.methods}, {"event", iface.events}} {
+			for i, m := range group.msgs {
+				want := signatureArgs(m.sig)
+				if len(m.types) != 0 && len(m.types) != want {
+					t.Errorf("%s %s %s (opcode %d): signature %q has %d arguments, types has %d",
+						iface.name, group.kind, m.name, i, m.sig, want, len(m.types))
+				}
+			}
+		}
+	}
+}
+
 func TestSquareIcon(t *testing.T) {
 	// A wide image is padded top and bottom and centred.
 	wide := image.NewNRGBA(image.Rect(0, 0, 8, 4))

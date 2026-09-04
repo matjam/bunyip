@@ -452,7 +452,7 @@ func (l *wllib) marshal(proxy unsafe.Pointer, opcode uint32, iface *wlInterface,
 	case 6:
 		return l.marshal6(proxy, opcode, ip, v, flags, args[0], args[1], args[2], args[3], args[4], args[5])
 	}
-	panic("platform: too many Wayland request arguments")
+	panic(fmt.Sprintf("platform: request %d has %d arguments, more than marshal sends", opcode, len(args)))
 }
 
 // send is marshal for a request that creates nothing.
@@ -1483,9 +1483,9 @@ func (a *wlApp) shmBuffer(img image.Image) unsafe.Pointer {
 	if pool == nil {
 		return nil
 	}
-	// create_buffer takes the new id, then the offset into the pool, the
-	// size, the stride and the format.
-	buf := l.marshal(pool, opShmPoolCreateBuf, a.iface["wl_buffer"], 0, 0, 0, 0,
+	// create_buffer takes the new id and the offset into the pool, both
+	// zero here, then the size, the stride and the format.
+	buf := l.marshal(pool, opShmPoolCreateBuf, a.iface["wl_buffer"], 0, 0, 0,
 		uintptr(int32(width)), uintptr(int32(height)), uintptr(int32(width*4)), uintptr(uint32(shmFormatARGB8888)))
 	// The pool can go as soon as the buffer exists, and the file has to
 	// reach the compositor before this process closes its descriptor.
