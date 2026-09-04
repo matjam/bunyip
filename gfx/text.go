@@ -487,14 +487,15 @@ func (g *Graphics) DrawTextBlock(f *Font, text string, x, y float32, opts TextOp
 	g.drawLines(f, text, x, y, opts, c)
 }
 
-// drawLines shapes, wraps, aligns and draws text.
+// drawLines shapes, wraps, aligns and draws text. Glyphs rasterised by
+// the layout are uploaded before the sprites are queued, so a glyph first
+// drawn this frame is in the atlas the frame samples.
 func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOptions, c Color) {
-	g.DrawGlyphs(f, f.blockGlyphs(text, opts), x, y, f.sizeScale(opts.Size), c)
+	glyphs := f.blockGlyphs(text, opts)
 	if f.dirty {
-		// New glyphs were rasterised this frame; the atlas uploads for the
-		// next one. Losing one frame of a rare glyph beats stalling.
 		_ = f.flush()
 	}
+	g.DrawGlyphs(f, glyphs, x, y, f.sizeScale(opts.Size), c)
 }
 
 // blockGlyphs returns a block's glyphs positioned relative to its origin

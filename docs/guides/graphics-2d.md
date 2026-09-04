@@ -339,7 +339,9 @@ drawing it and `Font.Layout` returns the wrapped lines, without the soft
 hyphens a hyphenator inserted. A font caches what it shapes, wraps,
 measures and lays out, keyed by the text and the options, so drawing or
 measuring the same string every frame costs a map lookup and the entries
-a frame uses stay resident however many one-off strings pass through.
+a frame uses stay resident however many one-off strings pass through. A
+glyph drawn for the first time is rasterised and uploaded during that
+frame, so new text shows up in the frame that asks for it.
 
 ```go
 g.font, err = asset.Font(ctx.Gfx, g.fs, "fonts/body.ttf", 18, gfx.FontOptions{

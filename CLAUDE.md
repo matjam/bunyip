@@ -132,8 +132,9 @@ Headless tests: `newHeadless(t, w, h)` in `gfx` and `newContext(t)` in
 `ui` give a `Graphics` on an offscreen surface; `renderMaterial` in
 `gfx/material_test.go` renders one frame and returns the image. UI tests
 must feed a mouse move and run one frame before a press, because hover
-is one frame behind. A glyph first drawn in a frame appears the next
-frame (the atlas uploads after drawing), so text tests draw two frames.
+is one frame behind. A glyph first drawn in a frame appears in that
+frame, because the atlas upload is recorded into the frame before the
+render pass, so text tests draw one frame.
 
 ## Rules
 
@@ -193,6 +194,13 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   linear light before uploading to an sRGB image (`linearPremultiply`);
   Go's `image.RGBA` premultiplies in sRGB space, which an sRGB sampler
   would decode too dark. `Data` textures upload as given.
+- The glyph atlas is one texture written in place. `Font.flush` uploads
+  the glyphs rasterised so far through `Texture.Write`, whose in-frame
+  path records the copy into the frame's command buffer before any
+  render pass, so a glyph first drawn in a frame appears in it. Text
+  drawing flushes before it queues its sprites. The atlas never grows,
+  so a font whose atlas is full drops later glyphs rather than replacing
+  the texture the frame's draws already point at.
 - Descriptor sets come from a chain of pools that grows on
   `VK_ERROR_OUT_OF_POOL_MEMORY`; the capacities in `newGraphics` and
   `post.go` are starting sizes, not limits.

@@ -114,15 +114,16 @@ camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
 ## Text
 
 Bitmap colour emoji, letter spacing, justification, text on a path,
-rich text with links and hyphenation are in.
+rich text with links and hyphenation are in. A glyph first drawn in a
+frame appears in that frame: the atlas upload is recorded into the frame
+before the render pass.
 
+- Rich text shapes each word on its own, so ligatures and kerning do not
+  cross a style change.
 - COLR and SVG colour glyphs; only bitmap strikes (sbix, CBDT) draw in
   colour, which covers Apple's and Google's emoji fonts.
 - Hyphenation patterns beyond American English; `ParseTeXPatterns`
   loads any TeX pattern file a game ships.
-- Rich text shapes each word on its own, so ligatures and kerning do not
-  cross a style change, and a glyph first drawn in a frame appears from
-  the next frame.
 
 ## 3D rendering
 
