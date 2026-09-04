@@ -133,6 +133,8 @@ type state2 struct {
 	colliders *ecs.Query2[gfx.Transform2, Collider2]
 	distance  *ecs.Query1[DistanceJoint2]
 	revolute  *ecs.Query1[RevoluteJoint2]
+	prismatic *ecs.Query1[PrismaticJoint2]
+	wheel     *ecs.Query1[WheelJoint2]
 	spring    *ecs.Query1[SpringJoint2]
 	fixed     *ecs.Query1[FixedJoint2]
 	entries   []entry2
@@ -149,12 +151,14 @@ type state2 struct {
 	events          []pending2
 	reported        pairSet
 	rest            []float32
-	joints          []jointSolver2
-	items           []jointItem2
-	distanceSolvers []distanceSolver2
-	revoluteSolvers []revoluteSolver2
-	springSolvers   []springSolver2
-	fixedSolvers    []fixedSolver2
+	joints           []jointSolver2
+	items            []jointItem2
+	distanceSolvers  []distanceSolver2
+	revoluteSolvers  []revoluteSolver2
+	prismaticSolvers []prismaticSolver2
+	wheelSolvers     []wheelSolver2
+	springSolvers    []springSolver2
+	fixedSolvers     []fixedSolver2
 }
 
 // pending2 is a collision event waiting for the solver to say how hard
@@ -172,6 +176,8 @@ func stateOf2(w *ecs.World) *state2 {
 			colliders: ecs.NewQuery2[gfx.Transform2, Collider2](w),
 			distance:  ecs.NewQuery1[DistanceJoint2](w),
 			revolute:  ecs.NewQuery1[RevoluteJoint2](w),
+			prismatic: ecs.NewQuery1[PrismaticJoint2](w),
+			wheel:     ecs.NewQuery1[WheelJoint2](w),
 			spring:    ecs.NewQuery1[SpringJoint2](w),
 			fixed:     ecs.NewQuery1[FixedJoint2](w),
 		})

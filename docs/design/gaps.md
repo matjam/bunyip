@@ -231,8 +231,9 @@ lists, and an accessibility tree are in.
 
 Capsules, convex hulls, triangle meshes, compounds, 2D capsules, edges
 and chains, overlap, shape-cast, nearest and raycast-all queries,
-distance, hinge, revolute, ball, spring and fixed joints with limits and
-motors, ragdolls, continuous collision for fast bodies (against static
+distance, hinge, revolute, ball, prismatic, wheel, spring and fixed
+joints with limits, motors and springs,
+ragdolls, continuous collision for fast bodies (against static
 geometry and between two moving bodies), sleeping, and character
 controllers are in; the physics-lab example draws colliders and
 contacts with the 3D debug lines.
@@ -242,8 +243,6 @@ contacts with the 3D debug lines.
   their convex parts afresh per query, several hundred allocations a
   step with a hundred fast bodies over a large static set, and scan
   every entry rather than the sorted sweep.
-- Prismatic (slider) joints and 2D wheel joints; a distance joint with a
-  spring covers most suspensions.
 - A stack whose boxes are turned relative to each other keeps creeping
   into place at the default solver quality, so it sleeps late or not at
   all; an aligned stack settles within a second or two.

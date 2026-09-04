@@ -43,8 +43,11 @@
 // connect: DistanceJoint2 and DistanceJoint3 (rods and ropes),
 // RevoluteJoint2 and HingeJoint3 (pins, with angle limits and a motor),
 // BallJoint3 (a shoulder or hip, with cone and twist limits),
-// SpringJoint2 and SpringJoint3 (damped springs) and FixedJoint2 and
-// FixedJoint3 (welds). They are solved with the contacts, in entity
+// PrismaticJoint2 and PrismaticJoint3 (sliders, with travel limits, a
+// motor and a spring), WheelJoint2 (a wheel on a sprung suspension with
+// a motor on its spin), SpringJoint2 and SpringJoint3 (damped springs)
+// and FixedJoint2 and FixedJoint3 (welds). They are solved with the
+// contacts, in entity
 // order. NewRagdoll3 spawns a humanoid of capsules on limited joints
 // from a RagdollSpec, and Ragdoll3.Pose places it from an animated
 // character's bones. A body with CCD set is swept against static

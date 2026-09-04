@@ -135,6 +135,7 @@ type state3 struct {
 	distance  *ecs.Query1[DistanceJoint3]
 	hinge     *ecs.Query1[HingeJoint3]
 	ball      *ecs.Query1[BallJoint3]
+	prismatic *ecs.Query1[PrismaticJoint3]
 	spring    *ecs.Query1[SpringJoint3]
 	fixed     *ecs.Query1[FixedJoint3]
 	entries   []entry3
@@ -151,13 +152,14 @@ type state3 struct {
 	events          []pending3
 	reported        pairSet
 	rest            []float32
-	joints          []jointSolver3
-	items           []jointItem3
-	distanceSolvers []distanceSolver3
-	hingeSolvers    []hingeSolver3
-	ballSolvers     []ballSolver3
-	springSolvers   []springSolver3
-	fixedSolvers    []fixedSolver3
+	joints           []jointSolver3
+	items            []jointItem3
+	distanceSolvers  []distanceSolver3
+	hingeSolvers     []hingeSolver3
+	ballSolvers      []ballSolver3
+	prismaticSolvers []prismaticSolver3
+	springSolvers    []springSolver3
+	fixedSolvers     []fixedSolver3
 }
 
 // pending3 is a collision event waiting for the solver to say how hard
@@ -176,6 +178,7 @@ func stateOf3(w *ecs.World) *state3 {
 			distance:  ecs.NewQuery1[DistanceJoint3](w),
 			hinge:     ecs.NewQuery1[HingeJoint3](w),
 			ball:      ecs.NewQuery1[BallJoint3](w),
+			prismatic: ecs.NewQuery1[PrismaticJoint3](w),
 			spring:    ecs.NewQuery1[SpringJoint3](w),
 			fixed:     ecs.NewQuery1[FixedJoint3](w),
 		})
