@@ -67,7 +67,7 @@ if in.MousePressed(input.MouseLeft) {
 if in.MouseDoubleClicked(input.MouseLeft) {
 	g.openAt(p.X, p.Y)
 }
-if _, dy := in.Scroll(); dy != 0 {
+if _, dy := in.Scroll(); dy != 0 { // in lines; a trackpad's smooth scrolling is scaled to lines
 	g.zoom *= 1 + dy*0.1
 }
 if in.KeyPressed(input.KeyC) {

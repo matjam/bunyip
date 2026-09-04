@@ -57,8 +57,10 @@ type Config struct {
 	// MaxCatchUp caps how much lost time the loop makes up with extra
 	// updates after a stall (a window drag, a long load), so a game does
 	// not spiral into ever more updates per frame; the rest is dropped.
-	// Zero means a quarter of a second. MaxSteps caps the updates in one
-	// frame the same way; zero means no cap beyond MaxCatchUp.
+	// Zero means a quarter of a second, and a value below FixedStep is
+	// raised to one step, since less would never run an update. MaxSteps
+	// caps the updates in one frame the same way; zero means no cap
+	// beyond MaxCatchUp.
 	MaxCatchUp time.Duration
 	MaxSteps   int
 	// PauseUnfocused stops updates and silences the mixer while the

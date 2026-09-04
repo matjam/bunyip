@@ -66,15 +66,20 @@ reads packed atlases with named frames, in TexturePacker JSON (hash or
 array) or Aseprite's JSON export; `AtlasData.Bind` ties the description
 to the uploaded texture, `Atlas.Region` looks a frame up by name and
 `Tag` returns an animation tag's frames in play order, with `Durations`
-for their per-frame times.
+for their per-frame times. `Atlas.Animation` wraps a tag as a
+`RegionAnimation` that plays with the timings the file gave each frame:
+`At(t)` returns the region to draw at a time from the start. With the
+asset package, `asset.Atlas` reads the JSON, loads the image it names
+from beside it and binds them in one call.
 
 ```go
 sheet := gfx.NewSheet(tex, 16, 16)
 icon := gfx.NewRegion(tex, lin.R(96, 0, 16, 16))
 
-data, err := gfx.ParseAtlas(jsonBytes)
-atlas := data.Bind(tex)
-run := atlas.Tag("run")                // []gfx.Region, in order
+atlas, err := asset.Atlas(ctx.Gfx, fs, "sprites/hero.json", gfx.TextureOptions{})
+run := atlas.Animation("run")          // frames and durations as authored
+frame, _ := run.At(ctx.Time)
+gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
 idle, ok := atlas.Region("hero_idle_0")
 ```
 
@@ -155,18 +160,42 @@ gr.Blended(gfx.BlendAdd, func() { gr.Draw(g.glow, muzzleFlash) })
 
 `SetCamera2D` makes later drawing world-space. A `Camera2D` has a
 position (the world point at the centre of the view), a `Zoom` where 2
-shows half as much, and a `Rotation`. For screen shake, add an offset to
-that position for a few frames. `ViewToWorld` maps the pointer back into
-the world, `WorldToView` goes the other way for a marker pinned to an
-entity, and `VisibleRect` returns the world rectangle on screen; cull
-against that. `ScreenSpace` returns to view coordinates for the HUD.
+shows half as much, and a `Rotation`. `Follow` moves it towards a target
+at a rate per second, the same at any frame rate; `Clamp` keeps the view
+inside the level's rectangle; `Shake` throws the view about for a moment
+and `Advance`, called once per update, runs the shake and lets it settle.
+`ViewToWorld` maps the pointer back into the world, `WorldToView` goes
+the other way for a marker pinned to an entity, and `VisibleRect`
+returns the world rectangle on screen. Sprites wholly outside that
+rectangle are dropped before they reach the vertex stream, and
+`FrameStats.Culled2D` counts them. `ScreenSpace` returns to view
+coordinates for the HUD.
+
+```go
+g.cam.Follow(g.player.Pos, 8, ctx.Delta) // in Update
+g.cam.Clamp(g.level.Bounds(), ctx.Width, ctx.Height)
+g.cam.Advance(ctx.Delta)
+if landed {
+	g.cam.Shake(6, 0.3)
+}
+```
 
 `SetLayer` orders drawing across calls. Sprites draw in ascending layer
-order and, within a layer, in submission order, so a game can write its
-draw code in any order and still get the right stacking. For parallax,
-put each background on its own layer and translate it by its share of
-the camera's offset. To sort sprites by their feet in a top-down game,
-sort your own actor slice by y before drawing.
+order and, within a layer, by sort key and then in submission order, so
+a game can write its draw code in any order and still get the right
+stacking. For parallax, put each background on its own layer and
+translate it by its share of the camera's offset. To sort sprites by
+their feet in a top-down game, set `SetSortKey` to each sprite's foot
+position before drawing it: a character standing lower on the screen
+then draws over one behind it, whatever order the draw calls came in.
+
+```go
+for _, a := range g.actors {
+	gr.SetSortKey(a.pos.Y + a.height)
+	gr.DrawRegion(a.region, gfx.Sprite{Pos: a.pos})
+}
+gr.SetSortKey(0)
+```
 
 ```go
 // Update: ease towards the player, then shake.
@@ -483,9 +512,11 @@ F3 toggles an overlay with the frame time, the update and draw times,
 the draw counts and any `ctx.Profile` scopes; `Config.Debug` shows it
 from the start. `Config.DrawBudget` sets the number of draw calls a
 frame should stay under, and the overlay warns when a frame goes over,
-so a batching regression shows up as soon as it appears. Sprites are not
-culled for you, only tilemaps and 3D meshes are, so in a large world
-test your own entities against the camera's visible rectangle first.
+so a batching regression shows up as soon as it appears. Sprites outside
+the 2D camera's view are dropped before they cost anything, as are
+tilemap cells and 3D meshes, but the game still walks its entity list to
+issue the draws; in a large world, test against the camera's visible
+rectangle first so that walk is short too.
 
 ```go
 view := g.cam.VisibleRect(ctx.Width, ctx.Height).Inset(-64) // margin for big sprites

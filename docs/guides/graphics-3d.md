@@ -83,9 +83,11 @@ func (g *game) Draw(ctx *bunyip.Context) error   { ctx.Gfx.SetCamera(g.fly.Camer
 `Project(p)` maps a world point into the 2D view and returns `ok` false
 when the point is behind the camera. `ScreenRay(x, y)` turns a point in
 the view (the units the mouse reports) into a world ray, and
-`Mesh.Intersect` or `Model.Intersect` report where it hits. For a scene
-backed by physics, `phys.Raycast3` casts against colliders instead, which
-is cheaper and gives you the entity.
+`Mesh.Intersect` or `Model.Intersect` report where it hits. Both are on
+`Graphics` for use while drawing and on `Camera` itself, taking the view
+size, for picking from `Update`: `g.cam.ScreenRay(x, y, ctx.Width,
+ctx.Height)`. For a scene backed by physics, `phys.Raycast3` casts
+against colliders instead, which is cheaper and gives you the entity.
 
 ```go
 ray := gr.ScreenRay(ctx.Input.Mouse())
@@ -197,8 +199,11 @@ when you do not know the file in advance. `Model.Parts` is the placed
 primitives, each a `ModelPart` with a `Mesh`, a `Material` and a `World`
 matrix, for drawing one part with its own material. `NodeCount`,
 `NodeName`, `NodeIndex` and `NodeParent` walk the node hierarchy by name,
-so you can find a node such as a gun muzzle and spawn an effect there.
-`Model.Destroy` frees the meshes and textures together.
+so you can find a node such as a gun muzzle and spawn an effect there;
+`Model.NodeMatrix` and `NodePosition` give a node's rest-pose place in
+model space for a model that is not animated, and `AnimPlayer.NodeMatrix`
+its current place for one that is. `Model.Destroy` frees the meshes and
+textures together.
 
 For skinning, `Model.Clips` lists the animation clips,
 `Model.NewAnimPlayer` makes an `AnimPlayer` holding one instance's pose,
@@ -334,7 +339,9 @@ gr.AddSpot(gfx.SpotLight{Position: towerTop, Direction: beam, Range: 60,
 Plan around the limits. A frame keeps its first `MaxLights` (32) point
 and spot lights and gives shadow maps to the first
 `MaxSpotShadows` (4) that ask; the rest shine without. Sort by distance
-to the camera and add the nearest first. Point lights never cast shadows.
+to the camera and add the nearest first; `FrameStats.LightsDropped`
+counts the lights a frame refused, so a scene can tell when it went
+over. Point lights never cast shadows.
 All the cascades and spot maps share one depth atlas, so shadows cost one
 texture binding however many lights cast them.
 

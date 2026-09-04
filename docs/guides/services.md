@@ -17,7 +17,8 @@ pack files and any `fs.FS` such as an `embed.FS`, in the order given, so
 a developer's copy overrides the packed or embedded one. `Open` takes
 paths; `OpenFS` takes `Dir`, `PackFile` and `FSSource` sources. One-call
 loaders turn a name into an engine object: `asset.Texture`,
-`asset.Font`, `asset.SDFFont`, `asset.Sound`, `asset.Music`,
+`asset.Atlas` (the JSON and the image it names, from the same
+directory), `asset.Font`, `asset.SDFFont`, `asset.Sound`, `asset.Music`,
 `asset.Model` (with the model's buffers and images resolved through the
 same files) and `asset.Tracker`. A `Loader` decodes on worker
 goroutines behind a progress counter, for loading screens, and a

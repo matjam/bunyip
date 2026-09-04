@@ -47,6 +47,10 @@ in each package's comment.
 - Multiple windows.
 - Windows IME, X input methods and Wayland `zwp_text_input_v3`; only
   macOS composes text natively.
+- X11 key repeat: X delivers a repeat as a release and press pair, and
+  the layer forwards both without marking the press as a repeat, so a
+  held key releases every repeat on X11. Detectable auto-repeat through
+  XKB would fix it; Wayland, Windows and macOS mark repeats.
 - App bundling for Windows and Linux (installers, AppImage); code
   signing.
 
@@ -80,8 +84,11 @@ filtering, gradients, dashed strokes, text on paths, indexed draws, the
 autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
 template expansion, Tiled terrain sets), the
 `tiled` importer in both of Tiled's file forms, TexturePacker and
-Aseprite atlases, tiled nine-slices, `Shader.Reload`, batch statistics
-and a draw budget warning are in.
+Aseprite atlases with `asset.Atlas` to load one and
+`Atlas.Animation` to play a tag at its own timings, sprite culling
+against the 2D camera, a sort key within a layer (`SetSortKey`),
+camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
+`Shader.Reload`, batch statistics and a draw budget warning are in.
 
 - 2D shadows cast by occluders from the point lights; lit sprites take
   light from every direction today.
@@ -92,22 +99,9 @@ and a draw budget warning are in.
   `renderQueue` skips when the frame has no 3D draws, no background and
   no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
   `RenderTexture` and blits it with its own sprite shader instead.
-- Culling of sprites. Tilemaps cull against `Camera2D.VisibleRect` and
-  meshes against the frustum, but every sprite queued goes into the
-  stream; a game off-screen-tests its own draws against `VisibleRect`.
-- A sort key per draw within a layer. The 2D stream sorts by layer
-  only and keeps submission order inside one, so y-sorting means the
-  game orders its own slice before drawing it.
-- An `asset.Atlas` loader. `asset` loads textures, fonts, sounds,
-  music, models and tracker modules in one call; an atlas is three
-  steps by hand (`gfx.ParseAtlas` on the JSON, load the image it names,
-  `AtlasData.Bind`).
-- Camera follow and screen shake on `Camera2D`, which carries position,
-  zoom and rotation and no motion of its own.
-- Atlas tags driving sprite animation. `Atlas.Tag` returns regions and
-  `Atlas.Durations` per-frame times, while `Animation`, `AnimState` and
-  `anim.Flipbook` play sheet frame indices at one frame rate, so
-  playing an Aseprite tag with its own timings is game code.
+- Sprite culling tests the circle around each sprite against the 2D
+  camera's view, so it is conservative for long thin sprites, and it is
+  skipped under a 2D transform stack.
 - GPU-instanced particles for very large counts; the system is CPU
   simulated and drawn through the sprite stream, which is fine for
   thousands.
@@ -142,17 +136,21 @@ nearest or repeating sampling for render textures are in.
   spot lights a frame cast shadows.
 - Occlusion culling, and impostors (billboards baked from a model).
 - Clustered lighting for hundreds of lights; a frame keeps its first
-  thirty-two. `AddPointLight` and `AddSpot` drop the rest in silence:
-  `MaxLights` is exported but `FrameStats` does not count what was
-  dropped, so a game cannot tell it went over.
-- A world matrix for a model's nodes. `Model` names and walks them
-  (`NodeIndex`, `NodeName`, `NodeParent`), but `NodeMatrix` is on
-  `AnimPlayer`, so a socket on a static model needs a player made for
+  thirty-two and `FrameStats.LightsDropped` counts the rest.
+- Per-light culling in the shadow pass: every opaque draw is rendered
+  into every cascade and every shadowed spot light's map, up to seven
+  times, whether or not it can fall inside that map.
+- The 3D draw sort compares whole draw records; at several thousand
+  draws it is around a millisecond a frame. A packed sort key would cut
   it.
-- `Project` and `ScreenRay` are on `Graphics` and read the current
-  queue's camera and view size, so they only answer while drawing.
-  `Camera` has no `Project` or `ScreenRay` of its own for picking from
-  `Update`.
+- A cascade's near plane sits one slice radius above the slice, so a
+  caster far above it (a bridge over cascade zero) casts no shadow into
+  that cascade; depth clamping on the shadow pipelines would fix it.
+- Mesh and texture uploads go through a one-shot command buffer that
+  waits for the queue, and every `Destroy` waits for the device, so a
+  `Mesh.Update` every frame (a morph target animation) leaves no
+  overlap between CPU and GPU. A per-slot retire ring, freed at the
+  frame's fence, is the shape of the fix.
 - Terrain splat maps and heightfield LOD as built-ins; a game does both
   with `HeightfieldMesh`, a mesh shader and `LOD` today.
 - Global illumination beyond one environment map: light probes, baked
@@ -196,6 +194,8 @@ slide) are in.
 
 - GPU morph targets. The CPU blend is fine for a few characters with a
   few thousand vertices each.
+- Sparse accessors in glTF, which Blender writes for morph targets, are
+  read as dense; a file that relies on them loads with zero deltas.
 - Sprite animation authoring from Aseprite or similar, beyond the atlas
   frame tags `ParseAtlas` reads.
 
@@ -208,6 +208,11 @@ per-channel mute and solo are in.
 - Hardware or platform mixing (spatialiser plugins, HRTF); the mixer is
   a Go loop.
 - Microphone input.
+- `Voice.Stop`, `StopAll` and voice stealing cut the signal at once
+  rather than fading it out over a millisecond, so a stopped voice can
+  click; pausing fades.
+- A reverb `RoomSize` above about 1.07 has comb feedback at or above
+  one and runs away to NaN, which the output clamp passes through.
 - The Windows and Linux audio layers are untested on hardware.
 
 ## User interface
@@ -233,6 +238,10 @@ controllers are in; the physics-lab example draws colliders and
 contacts with the 3D debug lines.
 
 - Soft bodies, cloth simulation and fluids.
+- Continuous collision, shape casts and the character controller build
+  their convex parts afresh per query, several hundred allocations a
+  step with a hundred fast bodies over a large static set, and scan
+  every entry rather than the sorted sweep.
 - Prismatic (slider) joints and 2D wheel joints; a distance joint with a
   spring covers most suspensions.
 - A stack of four boxes at the default solver quality jitters just above

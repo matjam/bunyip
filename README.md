@@ -23,7 +23,9 @@ window.
 **What it does**
 
 - 2D: sprites, sheets and tilemaps, autotiling with blob, edge, dual-grid
-  and Wang tilesets, Tiled maps and terrain sets, a camera, vector paths
+  and Wang tilesets, Tiled maps and terrain sets, a camera with follow,
+  clamp and shake that culls what it cannot see, sort keys within a
+  layer, atlases with tag animations, vector paths
   with gradients and dashes, particles, HarfBuzz-shaped text with colour
   emoji and rich markup, colour matrices, lit sprites, blend modes and
   game-written fragment shaders.
@@ -148,6 +150,8 @@ itself without a person watching the screen.
 |---|---|
 | `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites |
 | `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
+| `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
+| `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
 | `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay |
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |

@@ -185,6 +185,25 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
 - The physics sleep threshold is above the jitter of a default-quality
   box stack; tests that need sleeping raise `Substeps` and
   `Iterations`.
+- Input edges are fed into two sets at once: the per-update set that
+  `endUpdate` clears and the frame set that `endFrame` clears, which
+  Draw reads. Nothing copies one into the other, so a frame that runs
+  no update still reports each edge once.
+- `NewTexture` and `Texture.Write` premultiply translucent texels in
+  linear light before uploading to an sRGB image (`linearPremultiply`);
+  Go's `image.RGBA` premultiplies in sRGB space, which an sRGB sampler
+  would decode too dark. `Data` textures upload as given.
+- Descriptor sets come from a chain of pools that grows on
+  `VK_ERROR_OUT_OF_POOL_MEMORY`; the capacities in `newGraphics` and
+  `post.go` are starting sizes, not limits.
+- A headless renderer has no surface and no swapchain: `NewHeadlessSurface`
+  returns zero, `Swapchain.Handle` stays zero and `BeginFrame`/`EndFrame`
+  skip acquire and present. Do not add code that assumes a swapchain
+  image is presentable.
+- An ECS query walk snapshots every matched table's row count when it
+  begins (`matcher.begin`), so entities the callback moves into another
+  matched table are not visited twice. A walk must not start another
+  walk of the same query inside its callback.
 
 # Part two: using Bunyip in a game
 
