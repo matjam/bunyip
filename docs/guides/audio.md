@@ -163,6 +163,39 @@ torch := ctx.Audio.Play(g.fire, audio.PlayOptions{
 torch.SetPosition(lin.V3(6, 1, -8)) // when the source moves
 ```
 
+### Binaural rendering
+
+By default a positional voice is panned between the two channels by a
+constant-power law. `SetSpatial(audio.SpatialSettings{Binaural: true})`
+renders it through a head model instead, which is worth having when the
+player wears headphones. Each voice then gets:
+
+- an interaural time difference, from Woodworth's formula for the path
+  around a sphere, so the far ear hears it up to about 0.66 ms later;
+- an interaural level difference, the far ear down by up to 6 dB;
+- a head shadow, a one-pole low-pass on each ear whose cutoff falls from
+  22 kHz to 1.5 kHz as the source moves to the far side;
+- an elevation cue, a shelf at 4 kHz that lifts the high band for a
+  source above the listener and drops it for one below.
+
+This is a parametric head model, not a measured head-related transfer
+function: it has no ear shape, so it does not tell front from back, and
+it is the same head for every player. `HeadRadius` sets that head's size
+in metres; the default of 0.0875 is an average adult, and larger heads
+give a wider time difference. Everything is interpolated across each
+block, so moving sources and a moving listener glide. The zero
+`SpatialSettings` restore panning, and voices that are not positional
+are unaffected either way.
+
+```go
+// A settings screen's headphones switch.
+ctx.Audio.SetSpatial(audio.SpatialSettings{Binaural: g.headphones})
+```
+
+The cost is a delay line and three one-pole filters per positional
+voice, and the signal collapses to mono before the ears, so a stereo
+clip loses its own width when it is spatialised.
+
 ### Doppler
 
 To turn the Doppler effect on, call `SetDoppler(1)`. A positional sound

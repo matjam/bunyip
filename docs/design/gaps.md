@@ -205,8 +205,12 @@ Reverb zones and per-bus reverb, occlusion, mute and solo on voices and
 buses, Doppler, click-free pausing and stopping, and tracker seek,
 position and per-channel mute and solo are in.
 
-- Hardware or platform mixing (spatialiser plugins, HRTF); the mixer is
-  a Go loop.
+- Measured head-related transfer functions. The binaural mode is a
+  parametric head model, so it cannot tell front from back and is the
+  same head for every player; loading a SOFA file of measured responses
+  and convolving per ear would fix both.
+- Hardware or platform mixing (spatialiser plugins); the mixer is a Go
+  loop.
 - Microphone input.
 - The Windows and Linux audio layers are untested on hardware.
 

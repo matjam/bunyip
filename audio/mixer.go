@@ -3,7 +3,8 @@
 // mixer's rate. To play one, call Play, which returns a Voice that can
 // be adjusted or stopped while it runs. Music streams from a decoder
 // instead of being held in memory. Voices can be placed in the
-// listener's world (with distance, panning, Doppler and occlusion),
+// listener's world (with distance, panning or a binaural head model,
+// Doppler and occlusion),
 // filtered, sent to a reverb, faded, pitched, muted, soloed and
 // prioritised, and grouped on a Bus to be turned down, muted or paused
 // together. The mixer has one shared reverb, which a ReverbZone replaces
@@ -72,6 +73,7 @@ type Mixer struct {
 
 	doppler      float32 // Doppler factor, 0 off
 	speedOfSound float32
+	spatial      SpatialSettings // how positional voices reach the ears
 
 	buses                    map[string]*Bus
 	busList                  []*Bus // the same buses in creation order, to walk without the map
@@ -302,6 +304,9 @@ type voiceMix struct {
 	occ  *lowPass // occlusion's filter state, nil at 0
 	occc biquad
 
+	bin *binaural // head-model state, nil unless the voice is spatialised
+	ear earParams // the head model this block ramps to
+
 	curL, curR float32 // gains at the start of the block
 	tl, tr     float32 // gains to ramp to by the end of it
 
@@ -416,6 +421,11 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 			sn.more = false
 			return sn, true
 		}
+		if v.bin != nil && v.bin.started {
+			// Hold the head model still through the ramp, so the last
+			// millisecond does not jump out of the spatialiser.
+			sn.bin, sn.ear = v.bin, v.bin.cur
+		}
 		if v.stopLeft == 0 {
 			v.stopLeft = m.stopFrames
 		}
@@ -461,9 +471,24 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 		gain *= att
 		pan = p
 	}
-	pan = max(-1, min(1, pan))
-	sn.tl = gain * sqrt32((1-pan)/2)
-	sn.tr = gain * sqrt32((1+pan)/2)
+	switch {
+	case v.positional && m.spatial.Binaural:
+		// The head model replaces the pan law: it decides each ear's
+		// gain, and the mixer ramps to those the same way.
+		if v.bin == nil {
+			v.bin = newBinaural(m.rate)
+		}
+		sn.bin = v.bin
+		sn.ear = m.listener.headModel(v.position, m.spatial.headRadius(), m.rate)
+		sn.tl, sn.tr = gain*sn.ear.gainL, gain*sn.ear.gainR
+	default:
+		if v.bin != nil {
+			v.bin.started = false // back to panning; the model starts fresh
+		}
+		pan = max(-1, min(1, pan))
+		sn.tl = gain * sqrt32((1-pan)/2)
+		sn.tr = gain * sqrt32((1+pan)/2)
+	}
 	if !v.started {
 		sn.curL, sn.curR = sn.tl, sn.tr
 	}
@@ -566,6 +591,7 @@ type Voice struct {
 	position         lin.Vec3
 	velocity         lin.Vec3
 	minDist, maxDist float32
+	bin              *binaural // head-model state, nil until spatialised
 
 	// Gains ramp across each block so changes never click.
 	curL, curR float32
@@ -820,6 +846,10 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	}
 	if sn.occ != nil {
 		sn.occ.process(sn.occc, scratch[:n*2])
+	}
+	if sn.bin != nil {
+		sn.renderBinaural(scratch, out, n)
+		return
 	}
 	dl := (sn.tl - sn.curL) / float32(n)
 	dr := (sn.tr - sn.curR) / float32(n)

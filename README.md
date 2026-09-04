@@ -40,8 +40,8 @@ window.
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.
 - Audio: a mixer with streamed WAV, Ogg Vorbis and MP3, positional
-  voices with Doppler and occlusion, buses, reverb zones, and a tracker
-  player for MOD, S3M, XM and IT.
+  voices with panning or a binaural head model, Doppler and occlusion,
+  buses, reverb zones, and a tracker player for MOD, S3M, XM and IT.
 - Simulation: an archetype entity component system with saving, prefabs
   and cloning; 2D and 3D rigid bodies with joints, ragdolls, character
   controllers and queries; celestial mechanics for any star system.
