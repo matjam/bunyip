@@ -81,6 +81,11 @@ and `Config.MaxSteps` caps the updates in one frame; the rest of the
 time is dropped rather than simulated. `Config.PauseUnfocused` stops
 updates and silences the mixer while another window has focus.
 
+`ctx.SetTimeScale` changes how fast game time runs without changing the
+update rate: `ctx.SetTimeScale(0.25)` scales `ctx.Delta` to a quarter,
+so the simulation crawls and can be watched, and `0` freezes it.
+`ctx.Time` stays real time. The console's `timescale` command sets it.
+
 Turn-based games set `Config.TurnBased`. The loop then blocks in the
 operating system until input arrives and runs one `Update` and one
 `Draw` per batch of events, so the process uses no CPU between events.
@@ -130,6 +135,13 @@ defer ctx.Profile("simulate").End()
 The scope is a small value rather than a closure, so it allocates
 nothing and a section that runs many times a frame can be timed.
 Timing runs whether or not the overlay is shown.
+
+`Config.Console` turns on the in-game console: a command line on the
+backquote key and panels on F4 that show the frame timings, the GPU
+resources, a world's entities, the physics simulation, the mixer and the
+input devices, and that let a game expose its own commands and tunable
+variables. Draw it last, with `ctx.Console.Draw(ctx)`. The
+[console guide](console.html) covers it.
 
 `Config.DrawBudget` turns the draw-call count
 into a warning when a frame exceeds it. `Config.Pprof` serves Go's

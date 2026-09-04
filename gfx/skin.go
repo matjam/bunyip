@@ -41,6 +41,7 @@ func (g *Graphics) NewSkinnedMesh(verts []SkinVertex, indices []uint32) (*Mesh, 
 	}
 	m.skinned = true
 	m.setJointBounds(verts)
+	g.trackMesh(m, skinVertexSize)
 	return m, nil
 }
 
@@ -69,6 +70,7 @@ func (m *Mesh) UpdateSkinned(verts []SkinVertex, indices []uint32) error {
 		m.Min, m.Max = fresh.Min, fresh.Max
 	}
 	m.setJointBounds(verts)
+	m.g.trackMesh(m, skinVertexSize)
 	return nil
 }
 

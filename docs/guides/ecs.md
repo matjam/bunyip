@@ -31,6 +31,12 @@ Entity handles are generational. A handle to a despawned entity stays
 invalid even after its slot is reused, so a stale handle never reads
 another entity's data.
 
+Where the type is known only at run time, `w.Components(e)` lists the
+types an entity carries, `w.ComponentValues(e)` returns copies of them
+in the same order, and `w.SetComponent(e, v)` writes one back from an
+`any`. That is what an editor or the debug console's entity panel uses;
+game code that knows the type calls `ecs.Get` and `ecs.Add`.
+
 ## Queries
 
 A query names the components it reads and walks every entity that has
@@ -85,7 +91,10 @@ cmd.Apply(w)
 
 A system is a function `func(w *ecs.World, dt float64)`. Register them
 in the order they should run and call `w.Update(dt)` from the game's
-`Update`. `w.Stats()` reports each system's time for the debug overlay.
+`Update`. `w.Stats()` reports each system's time for the debug overlay,
+`w.SetSystemEnabled(name, false)` turns one off without unregistering
+it, so a debugger can pause part of the simulation, and `w.Updates()`
+counts the updates the world has run.
 
 Resources are singletons stored on the world by type, such as the
 score, the rules, the input for this frame or a random number

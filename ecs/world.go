@@ -1,6 +1,7 @@
 package ecs
 
 import (
+	"sort"
 	"time"
 
 	"github.com/matjam/bunyip/gfx"
@@ -28,6 +29,17 @@ func MustResource[T any](w *World) *T {
 	return p
 }
 
+// Resources lists the type names of the resources set on the world,
+// sorted, for a debug view that shows what a world holds.
+func (w *World) Resources() []string {
+	out := make([]string, 0, len(w.resources))
+	for t := range w.resources {
+		out = append(out, t.String())
+	}
+	sort.Strings(out)
+	return out
+}
+
 // System is a step of the simulation run by World.Update.
 type System func(w *World, dt float64)
 
@@ -45,13 +57,17 @@ type SystemStat struct {
 
 // Update runs every system in order with dt. Events emitted during the
 // previous Update (or between updates, in Draw) are cleared first, so
-// order systems with producers before consumers.
+// order systems with producers before consumers. A system turned off
+// with SetSystemEnabled is skipped and keeps its last timing.
 func (w *World) Update(dt float64) {
 	w.updates++
 	for _, q := range w.events {
 		q.clear()
 	}
 	for i, s := range w.systems {
+		if s.off {
+			continue
+		}
 		start := time.Now()
 		s.fn(w, dt)
 		w.stats[i].MS = float64(time.Since(start).Microseconds()) / 1000
@@ -60,6 +76,33 @@ func (w *World) Update(dt float64) {
 
 // Stats reports each system's time in the last Update.
 func (w *World) Stats() []SystemStat { return w.stats }
+
+// Updates counts the Update calls the world has run, so a debug view can
+// tell whether the simulation advanced between two frames.
+func (w *World) Updates() uint64 { return w.updates }
+
+// SetSystemEnabled turns a system on or off by the name it was
+// registered under, for a debugger that pauses part of the simulation. A
+// system that is off is skipped by Update and keeps its place in the
+// order; a name no system has is ignored. Systems start on.
+func (w *World) SetSystemEnabled(name string, on bool) {
+	for i := range w.systems {
+		if w.systems[i].name == name {
+			w.systems[i].off = !on
+		}
+	}
+}
+
+// SystemEnabled reports whether a system runs. A name no system has
+// reads as off.
+func (w *World) SystemEnabled(name string) bool {
+	for i := range w.systems {
+		if w.systems[i].name == name {
+			return !w.systems[i].off
+		}
+	}
+	return false
+}
 
 // eventQueue holds one type's events for the current Update.
 type eventQueue interface{ clear() }

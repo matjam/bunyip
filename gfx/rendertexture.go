@@ -72,6 +72,10 @@ func (g *Graphics) NewRenderTextureOptions(width, height int, opts RenderTexture
 		rt.Destroy()
 		return nil, err
 	}
+	// A render texture holds its colour image, a depth buffer and the
+	// scene targets behind it, which is about four times a plain colour
+	// image at the same size.
+	g.track(rt, Resource{Kind: ResourceRenderTexture, Width: width, Height: height, Bytes: width * height * 16})
 	return rt, nil
 }
 
@@ -90,6 +94,7 @@ func (rt *RenderTexture) SetView(width, height float32) { rt.queue.setView(width
 // once that frame has finished.
 func (rt *RenderTexture) Destroy() {
 	g := rt.g
+	g.forget(rt)
 	if rt.tex != nil {
 		// The texture frees both its descriptor sets and marks itself
 		// destroyed, so a pointer a game kept from Texture cannot draw

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/matjam/bunyip/audio"
+	"github.com/matjam/bunyip/console"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/internal/audioout"
@@ -137,7 +138,16 @@ func runOnce(cfg Config, game Game) error {
 	l := &loop{cfg: cfg, app: app, win: win, game: game, gfx: gd, input: in, audio: mix,
 		ctx: &Context{Gfx: gd.Game().(*gfx.Graphics), Input: in.Game().(*input.State), Log: cfg.Log,
 			Audio: mix.Game().(*audio.Mixer), Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1,
-			focused: true, visible: true}}
+			focused: true, visible: true, timeScale: 1, budget: cfg.DrawBudget}}
+	if cfg.Console {
+		// The console tees the log, so it is built before anything the
+		// game logs during Init.
+		con := console.New(console.Options{Key: cfg.ConsoleKey})
+		l.ctx.Console = con
+		l.ctx.Log = slog.New(con.Handler(cfg.Log.Handler()))
+		cfg.Log = l.ctx.Log
+		defer con.Destroy() // before the graphics context goes
+	}
 	l.overlay.on = cfg.Debug
 	l.overlay.budget = cfg.DrawBudget
 	if cfg.Icon != nil {
@@ -274,7 +284,7 @@ func (l *loop) run() error {
 		l.beginFrame(now)
 		l.ctx.Time = now.Sub(start).Seconds()
 		if l.cfg.TurnBased {
-			l.ctx.Delta = now.Sub(last).Seconds()
+			l.ctx.Delta = now.Sub(last).Seconds() * l.ctx.timeScale
 			last = now
 			if err := l.update(); err != nil {
 				return err
@@ -289,7 +299,9 @@ func (l *loop) run() error {
 			if accumulator > catchUp { // do not spiral after a stall
 				accumulator = catchUp
 			}
-			l.ctx.Delta = step.Seconds()
+			// The step is fixed; the time it covers is scaled, so slow
+			// motion runs the same number of updates over less game time.
+			l.ctx.Delta = step.Seconds() * l.ctx.timeScale
 			for steps := 0; accumulator >= step; steps++ {
 				if l.cfg.MaxSteps > 0 && steps >= l.cfg.MaxSteps {
 					accumulator = 0 // drop the rest of the lost time

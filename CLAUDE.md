@@ -18,7 +18,8 @@ sprites and 3D models on one screen. Vulkan through a generated binding
 with no cgo (`CGO_ENABLED=0` is a hard rule), native window, input and
 audio layers per platform written against the OS APIs (no SDL, no GLFW),
 an archetype entity component system, rigid-body physics, an
-immediate-mode interface, an audio mixer with a tracker player, and the
+immediate-mode interface, an in-game debug console, an audio mixer with
+a tracker player, and the
 services a game needs (assets, saves, translation, networking). macOS is
 the tested platform. The Linux window layer has run on real hardware,
 both Wayland and X11, and so have Linux audio output and capture; Linux
@@ -36,6 +37,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
 | `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, emoji, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
+| `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
 | `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries, the signed distance to a placed shape. |
 | `phys/soft/` | Cloth, volumetric soft bodies and 2D fluids as particles under extended position-based dynamics, stepped by `soft.System` on the same world and the same static colliders. |
@@ -50,7 +52,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface, audio output and microphone input. `*_darwin.go` is the reference; Windows and Linux mirror it. Linux has two window backends behind one `App` and `Window`: Wayland in `wayland_linux.go`, its hand-built protocol tables in `wayland_proto_linux.go` and its listener callbacks in `wayland_listen_linux.go`, and X11 in `x11_linux.go`. `app_linux.go` holds the shared structs, chooses the backend in `NewApp` and forwards every method to the live one. |
 | `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
 | `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless, and each has a walkthrough in `docs/examples/`. |
-| `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
+| `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services, the debug console), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
 | `docs/examples/` | One walkthrough per example, `<name>.md`, with front matter (`title`, `example`, `summary`) and a screenshot `<name>.png` beside it. The body quotes the whole program in source order, verbatim, with a section explaining each part. `cmd/bunyip-docs` renders these as the Example programs group; the examples are not rendered as packages. |
 
 ## Core concepts
@@ -269,6 +271,17 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   begins (`matcher.begin`), so entities the callback moves into another
   matched table are not visited twice. A walk must not start another
   walk of the same query inside its callback.
+- The console is built in `runOnce` before `Init`, because it tees the
+  log and the game logs during `Init`, but the game draws it: `Draw` is
+  the game's, and the console has to be last. It cannot import the root
+  package, so it declares `Frame` and the one-method `Host` that
+  `Context` implements. Every console method is safe on a nil receiver,
+  so `ctx.Console.Draw(ctx)` compiles and does nothing when
+  `Config.Console` is off.
+- The console's panels are laid out inside `ui.ScrollArea`, which has to
+  be told how tall its contents are, so each tab counts its rows
+  (`Console.rowsH`). A row added to a tab without adding to its count
+  scrolls short.
 
 # Part two: using Bunyip in a game
 
@@ -322,6 +335,7 @@ goroutine.
 | Meshes, materials, lights, shadows, sky, fog, post-processing | `gfx` (3D half), `gltf` for loading models |
 | Game-written shaders | `cmd/bunyip-shader`, the shaders guide |
 | Widgets, menus, text fields, themes | `ui` |
+| A debug console and panels over a running game | `console`, `bunyip.Config.Console` |
 | Entities, queries, systems, saves, prefabs, scene files | `ecs`, `asset.Scene` |
 | Rigid bodies, joints, ragdolls, character controllers, raycasts | `phys` |
 | Cloth, jelly and soft bodies, 2D fluids | `phys/soft` |

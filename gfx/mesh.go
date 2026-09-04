@@ -104,6 +104,7 @@ func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
 	if !m.boundsFixed {
 		m.Min, m.Max = fresh.Min, fresh.Max
 	}
+	m.g.trackMesh(m, vertexSize)
 	return nil
 }
 
@@ -144,7 +145,18 @@ func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
 	for i, v := range verts {
 		packed[i] = v.gpu()
 	}
-	return g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
+	m, err := g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
+	if err == nil {
+		g.trackMesh(m, vertexSize)
+	}
+	return m, err
+}
+
+// trackMesh records a mesh in the live resource list, with the size one
+// of its vertices takes on the GPU.
+func (g *Graphics) trackMesh(m *Mesh, stride int) {
+	g.track(m, Resource{Kind: ResourceMesh, Vertices: len(m.verts), Indices: len(m.indices),
+		Bytes: len(m.verts)*stride + len(m.indices)*4})
 }
 
 // newMesh uploads the GPU vertex bytes (plain or skinned layout) and keeps
@@ -205,6 +217,7 @@ func (m *Mesh) Destroy() {
 		return
 	}
 	m.destroyed = true
+	m.g.forget(m)
 	m.retire()
 }
 

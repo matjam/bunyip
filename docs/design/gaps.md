@@ -302,10 +302,16 @@ near enough to send.
 
 `bunyip.FlyCamera` is the debug camera, `Config.LogFile` writes the log
 and a panic's stack trace to a file for crash reports, and shader hot
-reload is `Shader.Reload` behind an `asset.Watcher`.
+reload is `Shader.Reload` behind an `asset.Watcher`. `Config.Console`
+turns on the in-game console: commands, variables, key bindings, the
+log, and panels for the frame timings and profile scopes, the live
+post-processing settings and GPU resources, a world's entities,
+components, resources and systems, the physics simulation, the mixer,
+the input devices and a game's own services.
 
-- An in-engine console, and a frame profiler with GPU timestamps (CPU
-  scopes exist).
+- A frame profiler with GPU timestamps. The console's engine panel
+  graphs the CPU side (update, draw, present) and shows the `Profile`
+  scopes, but nothing times the passes on the GPU.
 - An asset pipeline that converts textures to compressed GPU formats
   (BC, ASTC) and generates mip chains offline.
 - Material hot reload as a built-in; a game reloads a material's

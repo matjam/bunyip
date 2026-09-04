@@ -184,6 +184,7 @@ func (g *Graphics) newFont(ttf []byte, size float32, opts FontOptions, scale, px
 	if err := f.flush(); err != nil {
 		return nil, err
 	}
+	g.track(f, Resource{Kind: ResourceFont, Width: side, Height: side, Bytes: side * side * 4})
 	return f, nil
 }
 
@@ -427,6 +428,9 @@ func (f *Font) flush() error {
 		}
 		tex.sdf = f.sdf
 		f.atlas = tex
+		// The font's own entry in the resource list covers the atlas, so
+		// the atlas is not listed as a texture of its own as well.
+		f.g.forget(tex)
 	} else if r := f.dirtyRect.Intersect(f.pix.Bounds()); !r.Empty() {
 		if err := f.atlas.Write(r.Min.X, r.Min.Y, f.pix.SubImage(r)); err != nil {
 			return err
@@ -444,6 +448,7 @@ func (f *Font) Texture() *Texture { return f.atlas }
 
 // Destroy frees the atlas.
 func (f *Font) Destroy() {
+	f.g.forget(f)
 	if f.atlas != nil {
 		f.atlas.Destroy()
 		f.atlas = nil

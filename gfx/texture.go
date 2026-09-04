@@ -55,7 +55,18 @@ func (g *Graphics) NewTexture(src image.Image, opts TextureOptions) (*Texture, e
 		pix = append([]byte(nil), pix...)
 		linearPremultiply(pix)
 	}
-	return g.newTexture(b.Dx(), b.Dy(), pix, opts)
+	t, err := g.newTexture(b.Dx(), b.Dy(), pix, opts)
+	if err == nil {
+		g.trackTexture(t, opts)
+	}
+	return t, err
+}
+
+// trackTexture records a texture in the live resource list.
+func (g *Graphics) trackTexture(t *Texture, opts TextureOptions) {
+	mips := opts.Linear && !opts.NoMipmaps && t.Width > 1 && t.Height > 1
+	g.track(t, Resource{Kind: ResourceTexture, Width: t.Width, Height: t.Height,
+		Bytes: textureBytes(t.Width, t.Height, mips)})
 }
 
 // needsLinearPremultiply reports whether any texel is translucent, which
@@ -154,7 +165,11 @@ func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Tex
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("gfx: blank texture needs a positive size")
 	}
-	return g.newTexture(width, height, make([]byte, width*height*4), opts)
+	t, err := g.newTexture(width, height, make([]byte, width*height*4), opts)
+	if err == nil {
+		g.trackTexture(t, opts)
+	}
+	return t, err
 }
 
 // Write replaces the pixels under src placed at (x, y), clipped to the
@@ -214,6 +229,7 @@ func (t *Texture) Destroy() {
 	}
 	t.destroyed = true
 	g := t.g
+	g.forget(t)
 	// The cached material sets that name this texture leave the cache
 	// now, so no later frame can bind one; freeing them is deferred with
 	// everything else.

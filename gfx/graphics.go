@@ -53,6 +53,7 @@ type Graphics struct {
 	dbgFontFailed bool
 	rec           recordScratch // long-lived arguments for the recording commands
 	viewport      vk.VkRect2D   // the main output's pixel rectangle; zero means the whole window
+	res           resources     // the live resources a debug view lists
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
@@ -443,6 +444,10 @@ type FrameStats struct {
 	// nonzero count means something stalled the whole pipeline, such as a
 	// vertex stream outgrowing its buffer or a Texture.Read.
 	Waits int
+	// Lights counts the point and spot lights the frame kept, out of
+	// MaxLights. The directional light is not counted: every frame has
+	// one.
+	Lights int
 }
 
 // Stats returns the last finished frame's counts.

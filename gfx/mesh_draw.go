@@ -394,6 +394,7 @@ func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
 		return
 	}
 	g.cur.points = append(g.cur.points, pointLight{pos: pos, color: c, rng: rng})
+	g.stats.Lights++
 }
 
 // MaxLights is how many point and spot lights a frame keeps.
@@ -446,6 +447,7 @@ func (g *Graphics) AddSpot(s SpotLight) {
 		cosOuter: float32(math.Cos(float64(s.OuterAngle) / 2)),
 		outer:    s.OuterAngle, shadow: s.Shadows,
 	})
+	g.stats.Lights++
 }
 
 // spotShadows lists the lights that get shadow maps this frame, in map

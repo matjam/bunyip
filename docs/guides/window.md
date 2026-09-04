@@ -242,12 +242,14 @@ change of scale arrives as a resize event, the same as a change of size.
 3. Graphics, input and the mixer are built, and the audio device is
    opened unless `Config.NoAudio` or `Headless`.
 4. `Config.Icon` is applied and the view is placed in the window.
-5. `Init` runs, if the game has one, then the loop.
+5. With `Config.Console`, the console is built and the log is teed
+   through it, so records from `Init` onwards reach it.
+6. `Init` runs, if the game has one, then the loop.
 
 On the way out the game's `Shutdown` runs first, while the context is
 still live and GPU resources can still be destroyed, then the debug
-overlay, the audio device, the graphics context, the renderer, and last
-the window.
+overlay and console, the audio device, the graphics context, the
+renderer, and last the window.
 
 `Initer`, `Shutdowner` and `Recoverer` are all optional interfaces on the
 game. When the graphics driver reports a lost device, `Run` tears the
