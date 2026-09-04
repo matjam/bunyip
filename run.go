@@ -178,6 +178,10 @@ type loop struct {
 	viewport       lin.Rect
 	pixelsPerPoint float32
 
+	// pausedNow is the pause the loop last put on the mixer, so that it
+	// writes the mixer on a change and never otherwise.
+	pausedNow bool
+
 	// Timings gathered during the frame, published to ctx.Stats at its end.
 	frameStart          time.Time
 	updateTime, drawDur time.Duration
@@ -404,16 +408,19 @@ func (l *loop) paused() bool {
 	return (l.cfg.PauseUnfocused && !l.ctx.focused) || (l.cfg.PauseHidden && !l.ctx.visible)
 }
 
-// applyPause silences the mixer while the game is paused. One place
-// decides it, so a window that loses focus and is hidden at once does not
-// have the two settings undo each other. With neither setting on, the
-// mixer is the game's alone and the loop leaves it as it is.
+// applyPause silences the mixer when the pause state changes, and only
+// then. One place decides it, so a window that loses focus and is hidden
+// at once does not have the two settings undo each other, and an event
+// that changes nothing leaves the mixer alone: a game that paused its own
+// mixer keeps it paused across a focus change it did not ask to react to.
 func (l *loop) applyPause() {
-	if !l.cfg.PauseUnfocused && !l.cfg.PauseHidden {
+	paused := l.paused()
+	if paused == l.pausedNow {
 		return
 	}
+	l.pausedNow = paused
 	if l.ctx.Audio != nil {
-		l.ctx.Audio.SetPaused(l.paused())
+		l.ctx.Audio.SetPaused(paused)
 	}
 }
 

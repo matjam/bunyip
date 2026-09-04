@@ -72,7 +72,10 @@ type Config struct {
 	// cannot be seen, in the same way PauseUnfocused does for focus. A
 	// window is hidden while it is minimised, and while it is wholly
 	// covered by other windows on the platforms that report that. Off by
-	// default, and a headless run is always visible.
+	// default, and a headless run is always visible. With both settings
+	// on the game is paused while either is true, and the loop writes the
+	// mixer only when that changes, so a mixer the game paused itself
+	// stays paused.
 	PauseHidden bool
 
 	// DrawBudget is the number of draw calls (2D and 3D together) a

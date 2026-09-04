@@ -98,7 +98,9 @@ The loop turns window events into a few things a game reads.
   windows on the platforms that report that. `Config.PauseHidden` stops
   updates and silences the mixer while it is false, the same way
   `PauseUnfocused` does for focus; setting both pauses while either is
-  true. A headless run is always visible.
+  true. The loop touches the mixer only when that combined state
+  changes, so a game that paused its own mixer keeps it paused. A
+  headless run is always visible.
 - `ctx.CloseRequested` is true for one update after the player asks to
   close, but only with `Config.HandleClose`. Without it the loop quits on
   its own and the game never sees the request.
