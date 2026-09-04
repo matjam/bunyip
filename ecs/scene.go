@@ -66,7 +66,8 @@ type SceneEntity struct {
 	Parent int `json:"parent,omitempty"`
 	// Prefab names a prefab in the library Instantiate uses. The zero
 	// value builds the entity from Components alone; otherwise the
-	// prefab is spawned and Components override its own values.
+	// prefab is spawned and each entry of Components replaces the
+	// prefab's whole component of that type.
 	Prefab string `json:"prefab,omitempty"`
 	// Components holds each component encoded the way World.Save
 	// encodes it, keyed by the name Register gave its type. The zero
@@ -108,10 +109,10 @@ func (s *Scene) AddEntity(name string, comps ...any) (int, error) {
 }
 
 // AddPrefab appends an entity built from the library prefab called
-// prefab and returns its number. The component values override the
-// prefab's own components of the same types; the prefab's children
-// spawn as they are. Instantiate fails with a MissingPrefabError when
-// its library has no prefab of that name.
+// prefab and returns its number. Each override replaces the prefab's
+// whole component of that type rather than merging field by field, and
+// the prefab's children spawn as they are. Instantiate fails with a
+// MissingPrefabError when its library has no prefab of that name.
 func (s *Scene) AddPrefab(name, prefab string, overrides ...any) (int, error) {
 	return s.add(SceneEntity{Name: name, Prefab: prefab}, overrides)
 }

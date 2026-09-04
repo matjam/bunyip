@@ -1,0 +1,10 @@
+{
+  "components": {
+    "solar.body": {
+      "Name": "moon",
+      "Radius": 0.14,
+      "Color": {"R": 0.57758045, "G": 0.57758045, "B": 0.6444797, "A": 1}
+    },
+    "gfx.Transform": {}
+  }
+}

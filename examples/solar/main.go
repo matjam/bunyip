@@ -1,12 +1,16 @@
-// Command solar shows the entity component system driving a scene: a
-// sun with orbiting planets and moons as a parent-child hierarchy, an
-// asteroid belt of hundreds of entities drawn as one instanced call,
-// systems for orbits and spin, click-to-pick with a screen ray, a render
-// texture used as a top-down minimap, and profile scopes in the debug
-// overlay (F3).
+// Command solar shows the entity component system driving a scene: the
+// sun, its planets and their moons come from an embedded scene document
+// (system.json) instantiated into the world, with the moons as
+// references to a prefab (moon.json); an asteroid belt of hundreds of
+// entities is spawned in code and drawn as one instanced call; systems
+// run orbits and spin; clicking picks a body with a screen ray; a render
+// texture is used as a top-down minimap; and profile scopes show in the
+// debug overlay (F3).
 package main
 
 import (
+	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
@@ -15,6 +19,7 @@ import (
 	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/asset"
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
@@ -22,7 +27,16 @@ import (
 	"github.com/matjam/bunyip/rng"
 )
 
-// Components.
+// The scene document and the prefab it references ship inside the
+// binary. A game would read them from its asset directory instead; the
+// call is the same.
+//
+//go:embed system.json moon.json
+var files embed.FS
+
+// Components. The names they are registered under are what the scene
+// document holds, so a file stays valid when a type moves or is
+// renamed.
 type body struct {
 	Name     string
 	Radius   float32
@@ -37,6 +51,12 @@ type orbit struct {
 }
 
 type spin struct{ Speed float32 }
+
+func init() {
+	ecs.Register[body]("solar.body")
+	ecs.Register[orbit]("solar.orbit")
+	ecs.Register[spin]("solar.spin")
+}
 
 // asteroid marks belt members, which draw as cubes.
 type asteroid struct{}
@@ -77,35 +97,42 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	g.minimap.SetView(220, 220)
 
+	// The scene and the prefab it references come through the asset
+	// system, here over the embedded files.
+	fs, err := asset.OpenFS(asset.FSSource(files))
+	if err != nil {
+		return err
+	}
+	defer fs.Close()
+	scene, err := asset.Scene(fs, "system.json")
+	if err != nil {
+		return err
+	}
+	moon, err := asset.Prefab(fs, "moon.json")
+	if err != nil {
+		return err
+	}
+
 	w := ecs.NewWorld()
 	ecs.SetResource(w, clock{})
-	sun := w.SpawnWith(body{Name: "Sun", Radius: 1.4, Color: gfx.RGB(255, 200, 90), Emissive: 3}, spin{0.2}, gfx.Transform{})
-	planets := []struct {
-		name  string
-		r, d  float32
-		speed float32
-		col   gfx.Color
-		moons int
-	}{
-		{"Ember", 0.35, 3.2, 0.9, gfx.RGB(200, 120, 80), 0},
-		{"Verdis", 0.55, 5.4, 0.55, gfx.RGB(90, 170, 110), 1},
-		{"Halcyon", 0.8, 8.2, 0.32, gfx.RGB(120, 150, 230), 2},
-		{"Umber", 0.45, 11, 0.2, gfx.RGB(180, 140, 100), 1},
+	// Instantiate resolves the scene's "moon" references against this
+	// library and writes each entity's own components over the prefab's.
+	ecs.SetResource(w, ecs.PrefabLibrary{"moon": moon})
+	system, err := w.Instantiate(scene)
+	if err != nil {
+		return err
 	}
-	random := rng.New(11)
-	for _, p := range planets {
-		e := w.SpawnWith(body{Name: p.name, Radius: p.r, Color: p.col},
-			orbit{Radius: p.d, Speed: p.speed, Angle: random.Float() * 6.28}, spin{1}, gfx.Transform{})
-		ecs.SetParent(w, e, sun)
-		for m := range p.moons {
-			moon := w.SpawnWith(body{Name: p.name + " moon", Radius: 0.14, Color: gfx.RGB(200, 200, 210)},
-				orbit{Radius: p.r + 0.6 + 0.5*float32(m), Speed: 2 + float32(m), Angle: random.Float() * 6.28}, gfx.Transform{})
-			ecs.SetParent(w, moon, e) // moons follow their planet through the hierarchy
-		}
+	sun, ok := system.Entity("sun")
+	if !ok {
+		return errors.New("the scene names no sun")
 	}
-	// The belt: many small entities with the same mesh and material draw
-	// as one instanced call.
-	for range 400 {
+	// The belt is procedural, so it is spawned in code and parented to
+	// the entity the scene named. Many small entities with the same mesh
+	// and material draw as one instanced call.
+	count, _ := scene.Properties["belt"].(float64)
+	seed, _ := scene.Properties["beltSeed"].(float64)
+	random := rng.New(uint64(seed))
+	for range int(count) {
 		a := w.SpawnWith(body{Name: "asteroid", Radius: 0.05 + random.Float()*0.06, Color: gfx.RGB(150, 140, 130)}, asteroid{},
 			orbit{Radius: 13.5 + random.Float()*2.5, Speed: 0.1 + random.Float()*0.05, Angle: random.Float() * 6.28},
 			gfx.Transform{Position: lin.V3(0, random.Between(-0.4, 0.4), 0)})
@@ -209,9 +236,14 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 	gr.ScreenSpace()
 	gr.Draw(g.minimap.Texture(), gfx.Sprite{Pos: lin.V2(ctx.Width-232, 12), Size: lin.V2(220, 220), UV1: lin.V2(1, 1), Color: gfx.White})
+	// A scene's names arrive as ecs.Name components, so a moon spawned
+	// from the shared prefab still knows which moon it is.
 	name := "nothing"
 	if b, ok := ecs.Get[body](w, g.selected); ok {
 		name = b.Name
+	}
+	if n, ok := ecs.NameOf(w, g.selected); ok {
+		name = n
 	}
 	y := ctx.Height - 64
 	gr.FillRect(12, y, 560, 52, gfx.RGBA(0, 0, 0, 150))

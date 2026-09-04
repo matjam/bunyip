@@ -284,7 +284,9 @@ An entity may name a prefab instead of listing every component. The
 prefab comes from a `PrefabLibrary`, a map of names to prefabs, passed
 in `InstantiateOptions.Prefabs` or stored on the world as a resource.
 The entity's own components are written over the prefab's, so a document
-holds only what differs from the template.
+holds only the components that differ from the template. An override
+replaces a whole component rather than merging field by field, so the
+parts a template varies belong in components of their own.
 
 ```go
 lib := ecs.PrefabLibrary{"orc": orcPrefab, "hut": hutPrefab}
@@ -322,6 +324,12 @@ guard, _ := s.AddEntity("", gfx.At(2, 0, 0), Follows{Leader: ecs.SceneRef(chief)
 s.SetParent(chief, camp)
 s.SetParent(guard, camp)
 ```
+
+The solar example is the working reference: its sun, planets and moons
+live in `examples/solar/system.json`, the moons reference the prefab in
+`examples/solar/moon.json`, both are embedded with `go:embed` and read
+through `asset.Scene` and `asset.Prefab`, and the asteroid belt is
+spawned in code under the entity the scene named `sun`.
 
 There is no scene editor yet. The format and the API are what an editor
 would write and read.
