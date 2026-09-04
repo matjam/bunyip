@@ -31,24 +31,28 @@ type WangTile struct {
 // falls back to the closest tile. Where two terrains meet at a corner
 // or an edge, the higher colour wins, so higher colours overlap lower
 // ones. A cell whose own and surrounding colours are all zero gets -1.
+//
+// A hexagonal layout has six sides and no diagonals, so every type
+// matches those six positions, in the direction slots the layout uses.
 func Wang(t WangType, tiles []WangTile) *Rules {
 	return &Rules{kind: kindWang, wangType: t, wang: tiles}
 }
 
-// wangPositions is the set of positions each type matches.
+// wangPositions is the set of positions each type matches on a square
+// or isometric layout.
 var wangPositions = [3][]int{
 	WangCorners: {DirNE, DirSE, DirSW, DirNW},
 	WangEdges:   {DirN, DirE, DirS, DirW},
 	WangFull:    {DirN, DirNE, DirE, DirSE, DirS, DirSW, DirW, DirNW},
 }
 
-// cornerCells is, for each diagonal direction, the offsets of the four
-// cells that share the corner (the cell itself included).
-var cornerCells = [8][][2]int{
-	DirNE: {{0, 0}, {0, -1}, {1, -1}, {1, 0}},
-	DirSE: {{0, 0}, {0, 1}, {1, 1}, {1, 0}},
-	DirSW: {{0, 0}, {0, 1}, {-1, 1}, {-1, 0}},
-	DirNW: {{0, 0}, {0, -1}, {-1, -1}, {-1, 0}},
+// positions lists the positions the rules match under the mapper's
+// layout.
+func (m *Mapper) positions() []int {
+	if m.Layout.Hex() {
+		return m.Layout.dirs()
+	}
+	return wangPositions[m.Rules.wangType]
 }
 
 // wangFrame picks the tile for one cell: compute the wanted colour at
@@ -56,17 +60,19 @@ var cornerCells = [8][][2]int{
 // the best by weight.
 func (m *Mapper) wangFrame(x, y, w, h, t int, terrain func(x, y int) int) int {
 	var want [8]int
+	positions := m.positions()
 	empty := t == 0
-	for _, p := range wangPositions[m.Rules.wangType] {
-		if cells := cornerCells[p]; cells != nil {
+	for _, p := range positions {
+		if p%2 == 1 && !m.Layout.Hex() {
+			// A diagonal position is a corner, shared with the two cells
+			// beside it and the one across it.
 			c := 0
-			for _, o := range cells {
-				c = max(c, m.at(x+o[0], y+o[1], w, h, t, terrain))
+			for _, d := range [3]int{(p + 7) % 8, p, (p + 1) % 8} {
+				c = max(c, m.look(x, y, w, h, t, d, terrain))
 			}
-			want[p] = c
+			want[p] = max(c, t)
 		} else {
-			o := dirOffset[p]
-			want[p] = max(t, m.at(x+o[0], y+o[1], w, h, t, terrain))
+			want[p] = max(t, m.look(x, y, w, h, t, p, terrain))
 		}
 		if want[p] != 0 {
 			empty = false
@@ -79,7 +85,7 @@ func (m *Mapper) wangFrame(x, y, w, h, t int, terrain func(x, y int) int) int {
 	for i := range m.Rules.wang {
 		tile := &m.Rules.wang[i]
 		s := 0
-		for _, p := range wangPositions[m.Rules.wangType] {
+		for _, p := range positions {
 			if tile.Colors[p] == want[p] {
 				s++
 			}

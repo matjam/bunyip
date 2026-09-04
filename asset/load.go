@@ -66,6 +66,27 @@ func Atlas(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.
 	return d.Bind(tex), nil
 }
 
+// Aseprite reads an .aseprite or .ase file, composites each frame from
+// its visible layers, uploads the packed image and binds an atlas: one
+// call where a game would otherwise parse, pack, upload and bind by
+// hand. The atlas is on the result's Atlas field, its frames are named
+// by number and its tags play through Atlas.Animation; the result also
+// carries the file's layers, tags, slices and palette.
+func Aseprite(g *gfx.Graphics, fs *FS, name string, opts gfx.AsepriteOptions, texOpts gfx.TextureOptions) (*gfx.Aseprite, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	a, err := gfx.ParseAseprite(data, opts)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	if _, err := a.Upload(g, texOpts); err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	return a, nil
+}
+
 // Font reads a TTF or OTF file and prepares a bitmap atlas at size.
 func Font(g *gfx.Graphics, fs *FS, name string, size float32, opts gfx.FontOptions) (*gfx.Font, error) {
 	data, err := fs.Read(name)

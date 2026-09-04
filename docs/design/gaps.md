@@ -80,34 +80,40 @@ events are in.
 
 Streaming texture writes, colour matrices, flips and per-draw
 filtering, gradients, dashed strokes, text on paths, indexed draws, the
-`particle` package, lit sprites, tilemap flips and animations,
-autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
-template expansion, Tiled terrain sets), the
-`tiled` importer in both of Tiled's file forms, TexturePacker and
-Aseprite atlases with `asset.Atlas` to load one and
+`particle` package, lit sprites with shadows cast from occluder
+outlines, tilemap flips and animations, autotiling (blob, edge,
+dual-grid and Wang rules in `grid/autotile`, template expansion, Tiled
+terrain sets, and square, hexagonal and isometric layouts), the `tiled`
+importer in both of Tiled's file forms with every layer encoding it
+writes (CSV, base64 plain, zlib, gzip and zstd), TexturePacker and
+Aseprite JSON atlases with `asset.Atlas` to load one, Aseprite's own
+binary files through `ParseAseprite` and `asset.Aseprite`,
 `Atlas.Animation` to play a tag at its own timings, sprite culling
-against the 2D camera, a sort key within a layer (`SetSortKey`),
-camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
+against the 2D camera by the sprite's own corners and under the
+transform stack, a sort key within a layer (`SetSortKey`), camera
+follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
 
-- 2D shadows cast by occluders from the point lights; lit sprites take
-  light from every direction today.
-- Autotiling on hexagonal and isometric neighbourhoods; the rules in
-  `grid/autotile` assume a square grid.
+- 2D shadows are cast by the occluder outlines a frame adds, not by the
+  sprites themselves: nothing derives an occluder from a sprite's alpha,
+  and an occluder blocks a light whatever height the light is at.
+- Hexagonal Wang sets match the six sides of a hexagon. A set that
+  paints its six vertices instead has nowhere to put them: the eight
+  direction slots hold the sides, and the mapper computes a corner
+  colour from the cells around it only on a square or isometric layout.
+- Tiled's "staggered" orientation, which is an isometric map on the
+  staggered grid a hexagonal map uses. `Map.Layout` gives it `Square`,
+  which matches the wrong cells; only orthogonal, isometric and
+  hexagonal maps have a layout that fits.
 - Post-processing on a 2D-only frame. Bloom, ambient occlusion,
   vignette, the LUT and FXAA all run in the composite pass, which
   `renderQueue` skips when the frame has no 3D draws, no background and
   no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
   `RenderTexture` and blits it with its own sprite shader instead.
-- Sprite culling tests the circle around each sprite against the 2D
-  camera's view, so it is conservative for long thin sprites, and it is
-  skipped under a 2D transform stack.
 - GPU-instanced particles for very large counts; the system is CPU
   simulated and drawn through the sprite stream, which is fine for
   thousands.
 - A particle editor in the gallery.
-- Tiled's zstd-compressed layers, which would need a new dependency for
-  a pure-Go decoder; CSV, base64, zlib and gzip layers load.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.
 
@@ -191,8 +197,9 @@ slide) are in.
   few thousand vertices each.
 - Sparse accessors in glTF, which Blender writes for morph targets, are
   read as dense; a file that relies on them loads with zero deltas.
-- Sprite animation authoring from Aseprite or similar, beyond the atlas
-  frame tags `ParseAtlas` reads.
+- Aseprite tilemap layers and tilesets, which `ParseAseprite` skips, and
+  the blend modes past normal, which it draws as normal. Layers, groups,
+  cels, tags, slices, palettes and the three colour modes read.
 
 ## Audio
 
@@ -317,8 +324,8 @@ reload is `Shader.Reload` behind an `asset.Watcher`.
   drifted from the source, but nothing notices when a committed
   screenshot no longer shows what the example draws.
 - Longer fuzzing campaigns. Every parser (glTF, the sound decoders, the
-  tracker loaders, HDR, atlases, rich text, Tiled maps and tilesets in
-  both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
+  tracker loaders, HDR, atlases, Aseprite files, rich text, Tiled maps
+  and tilesets in both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
   package; the first runs found two third-party decoder panics, now
   turned into errors, and an unchecked accessor bound in the glTF
   reader.

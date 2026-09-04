@@ -1,5 +1,8 @@
 // Command sprites bounces a few hundred textured sprites around the window
-// with a coloured grid behind them. Escape quits; -seconds and -shot make it
+// with a coloured grid behind them. The panel in the bottom-right corner is
+// the 2D lighting: a brick floor drawn with DrawLit under a moving lamp and
+// a fixed blue light, with the crates registered as occluders so the lamp
+// throws shadows from them. Escape quits; -seconds and -shot make it
 // self-verifying.
 package main
 
@@ -30,8 +33,24 @@ type game struct {
 	fullscreen bool
 	capture    bool
 	tex        *gfx.Texture
+	floor      *gfx.Texture
+	floorNorm  *gfx.Texture
 	balls      []ball
 	shotTaken  bool
+}
+
+// The lit panel: a floor a few bricks across with two crates on it.
+const (
+	roomX, roomY = 600, 320
+	roomW, roomH = 340, 260
+	brick        = 64 // the floor texture's size, tiled over the room
+)
+
+// crates are the shadow casters, in view units.
+var crates = [][4]float32{
+	{roomX + 90, roomY + 70, 46, 46},
+	{roomX + 200, roomY + 150, 60, 34},
+	{roomX + 40, roomY + 180, 34, 50},
 }
 
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -43,6 +62,15 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	var err error
 	if g.tex, err = ctx.Gfx.NewTexture(discImage(48), gfx.TextureOptions{Linear: true}); err != nil {
+		return err
+	}
+	colour, normal := brickImages(brick)
+	if g.floor, err = ctx.Gfx.NewTexture(colour, gfx.TextureOptions{Linear: true, Repeat: true}); err != nil {
+		return err
+	}
+	// A normal map is not colour, so it uploads as data: the shader wants
+	// the bytes as they were painted.
+	if g.floorNorm, err = ctx.Gfx.NewTexture(normal, gfx.TextureOptions{Linear: true, Repeat: true, Data: true}); err != nil {
 		return err
 	}
 	rng := rand.New(rand.NewPCG(1, 2))
@@ -57,7 +85,11 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) { g.tex.Destroy() }
+func (g *game) Shutdown(ctx *bunyip.Context) {
+	g.tex.Destroy()
+	g.floor.Destroy()
+	g.floorNorm.Destroy()
+}
 
 func (g *game) Update(ctx *bunyip.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
@@ -111,7 +143,41 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			Color: b.tint, Rotation: b.spin * float32(ctx.Time),
 		})
 	}
+	g.drawLitRoom(ctx)
 	return nil
+}
+
+// drawLitRoom draws the lit panel: the lamp circles the room, the crates
+// block it, and the floor picks up the light through its normal map. The
+// lights and the occluders are set every frame, like the drawing itself.
+func (g *game) drawLitRoom(ctx *bunyip.Context) {
+	gr := ctx.Gfx
+	gr.SetLayer(10) // over the bouncing sprites
+	lamp := lin.V2(
+		roomX+roomW/2+90*float32(math.Cos(ctx.Time*0.7)),
+		roomY+roomH/2+55*float32(math.Sin(ctx.Time*0.9)),
+	)
+	gr.SetLights2D(gfx.RGB(26, 26, 34),
+		gfx.Light2D{Pos: lamp, Height: 26, Radius: 300, Color: gfx.RGB(255, 198, 130), Shadows: true, Softness: 5},
+		gfx.Light2D{Pos: lin.V2(roomX+24, roomY+24), Height: 40, Radius: 190, Color: gfx.RGB(90, 130, 255)},
+	)
+	for _, c := range crates {
+		gr.AddOccluder2D(
+			lin.V2(c[0], c[1]), lin.V2(c[0]+c[2], c[1]),
+			lin.V2(c[0]+c[2], c[1]+c[3]), lin.V2(c[0], c[1]+c[3]),
+		)
+	}
+	gr.FillRect(roomX-8, roomY-8, roomW+16, roomH+16, gfx.RGB(10, 10, 14))
+	gr.DrawLit(g.floor, g.floorNorm, gfx.Sprite{
+		Pos: lin.V2(roomX, roomY), Size: lin.V2(roomW, roomH),
+		UV1: lin.V2(roomW/brick, roomH/brick), // the floor tiles, so the UVs run past 1
+	})
+	for _, c := range crates {
+		gr.FillRect(c[0], c[1], c[2], c[3], gfx.RGB(96, 68, 44))
+		gr.StrokeRect(c[0], c[1], c[2], c[3], 2, gfx.RGB(48, 34, 22))
+	}
+	gr.FillCircle(lamp.X, lamp.Y, 4, gfx.RGB(255, 236, 190))
+	gr.SetLayer(0)
 }
 
 // discImage draws an anti-aliased disc with a highlight.
@@ -129,6 +195,53 @@ func discImage(size int) image.Image {
 		}
 	}
 	return img
+}
+
+// brickImages draws the floor: a colour texture of bricks with mortar
+// between them, and the matching tangent-space normal map, where the
+// mortar dips and the bricks are domed. Both tile, so the room repeats
+// them rather than stretching one across it.
+func brickImages(size int) (*image.RGBA, *image.RGBA) {
+	colour := image.NewRGBA(image.Rect(0, 0, size, size))
+	normal := image.NewRGBA(image.Rect(0, 0, size, size))
+	// height is the surface at a point: flat across a brick, dropping
+	// into the mortar around it.
+	height := func(x, y int) float64 {
+		bx := float64((x%size+size)%size) / float64(size) * 2 // two bricks across
+		by := float64((y%size+size)%size) / float64(size) * 4 // four courses down
+		row := math.Floor(by)
+		bx += 0.5 * math.Mod(row, 2) // every other course is offset half a brick
+		u := math.Abs(math.Mod(bx, 1)-0.5) * 2
+		v := math.Abs(math.Mod(by, 1)-0.5) * 2
+		edge := math.Max(u, v)
+		return 1 - smoothstep(0.7, 1, edge)
+	}
+	for y := range size {
+		for x := range size {
+			h := height(x, y)
+			// The normal comes from the slope, by central differences.
+			dx := height(x+1, y) - height(x-1, y)
+			dy := height(x, y+1) - height(x, y-1)
+			nx, ny, nz := -dx*2, -dy*2, 1.0
+			l := math.Sqrt(nx*nx + ny*ny + nz*nz)
+			normal.SetRGBA(x, y, color.RGBA{
+				R: uint8((nx/l*0.5 + 0.5) * 255), G: uint8((ny/l*0.5 + 0.5) * 255),
+				B: uint8((nz/l*0.5 + 0.5) * 255), A: 255,
+			})
+			shade := 0.55 + 0.45*h
+			tint := color.RGBA{R: uint8(190 * shade), G: uint8(150 * shade), B: uint8(130 * shade), A: 255}
+			if h < 0.5 {
+				tint = color.RGBA{R: uint8(120 * shade), G: uint8(116 * shade), B: uint8(110 * shade), A: 255}
+			}
+			colour.SetRGBA(x, y, tint)
+		}
+	}
+	return colour, normal
+}
+
+func smoothstep(a, b, x float64) float64 {
+	t := math.Min(math.Max((x-a)/(b-a), 0), 1)
+	return t * t * (3 - 2*t)
 }
 
 func main() {

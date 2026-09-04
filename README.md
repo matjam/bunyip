@@ -23,11 +23,14 @@ window.
 **What it does**
 
 - 2D: sprites, sheets and tilemaps, autotiling with blob, edge, dual-grid
-  and Wang tilesets, Tiled maps and terrain sets, a camera with follow,
+  and Wang tilesets on square, hexagonal and isometric grids, Tiled maps
+  and terrain sets, a camera with follow,
   clamp and shake that culls what it cannot see, sort keys within a
-  layer, atlases with tag animations, vector paths
+  layer, atlases with tag animations, Aseprite files read as they are
+  saved, vector paths
   with gradients and dashes, particles, HarfBuzz-shaped text with colour
-  emoji and rich markup, colour matrices, lit sprites, blend modes and
+  emoji and rich markup, colour matrices, lit sprites with shadows cast
+  from occluders, blend modes and
   game-written fragment shaders.
 - 3D: physically based materials with clearcoat, sheen, subsurface and
   glass; glTF models with skeletal animation, blend spaces, IK and morph
@@ -157,7 +160,7 @@ whole program and explains it section by section:
 
 | Command | Shows |
 |---|---|
-| `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites |
+| `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites, and a lit brick floor where a moving lamp throws shadows from three crates |
 | `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
@@ -180,7 +183,7 @@ whole program and explains it section by section:
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
 | `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |
 | `go run ./examples/tiled` | a map from the Tiled editor: layers, an external tileset, flipped and rotated tiles, an animated pond, object outlines |
-| `go run ./examples/autotile` | paint terrain that picks its own tiles: a 47-tile blob set composed from a six-tile template, an edge-matched wall set, a corner Wang water set with curving shores, weighted flower variants |
+| `go run ./examples/autotile` | paint terrain that picks its own tiles: a 47-tile blob set composed from a six-tile template, an edge-matched wall set, a corner Wang water set with curving shores, weighted flower variants, and a 64-tile hexagonal edge set on a staggered-row layout |
 | `go run ./examples/particles` | a campfire of fire and smoke, rain, sparks on click and confetti on Space from the particle package, with a tuning panel |
 | `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
 | `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |

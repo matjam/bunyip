@@ -2,7 +2,7 @@
 title: 2D graphics
 group: Graphics
 order: 1
-summary: sprites, atlases, the camera, layers and sorting, tilemaps, autotiling, text, vector paths, particles, lights and render textures for a 2D game
+summary: sprites, atlases and Aseprite files, the camera, layers and sorting, tilemaps, autotiling, text, vector paths, particles, lights and shadows, and render textures for a 2D game
 ---
 
 The [gfx](../pkg/gfx.html) package is one drawing context for a window.
@@ -81,6 +81,36 @@ run := atlas.Animation("run")          // frames and durations as authored
 frame, _ := run.At(ctx.Time)
 gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
 idle, ok := atlas.Region("hero_idle_0")
+```
+
+## Aseprite files
+
+`ParseAseprite` reads Aseprite's own `.aseprite` and `.ase` files, so a
+game ships the file the artist saved rather than an export. It
+composites each frame from the layers that are visible in the editor,
+packs the frames into one image and describes them as an `AtlasData`,
+with the file's tags as animations that play at the timings it recorded.
+RGBA, greyscale and indexed files all read, layer opacity and group
+visibility are honoured, and a layer in a blend mode other than normal
+is drawn as normal. `asset.Aseprite` reads, packs, uploads and binds in
+one call.
+
+Composited frames are named by number, `"0"` upwards. Set
+`AsepriteOptions.Layers` and each layer's own frames are packed beside
+them as `"<layer>/<number>"`, a layer inside a group carrying the
+group's name first, for a hat or a damage overlay drawn on its own.
+Slices come through as named rectangles, and the result also carries the
+layers, tags and palette.
+
+```go
+hero, err := asset.Aseprite(ctx.Gfx, fs, "sprites/hero.aseprite",
+	gfx.AsepriteOptions{Layers: true}, gfx.TextureOptions{})
+g.run = hero.Atlas.Animation("run")
+hitbox, _ := hero.Slice("hitbox")
+hat, _ := hero.Atlas.Region("gear/hat/2")
+
+frame, _ := g.run.At(ctx.Time)
+gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
 ```
 
 `DrawNineSlice` stretches a `NineSlice` over any rectangle while its
@@ -168,8 +198,11 @@ and `Advance`, called once per update, runs the shake and lets it settle.
 the other way for a marker pinned to an entity, and `VisibleRect`
 returns the world rectangle on screen. Sprites wholly outside that
 rectangle are dropped before they reach the vertex stream, and
-`FrameStats.Culled2D` counts them. `ScreenSpace` returns to view
-coordinates for the HUD.
+`FrameStats.Culled2D` counts them. The test is the sprite's own four
+corners against the view, so a long thin rotated sprite is culled as
+soon as its quad clears the view, and it holds under `Transformed` as
+well: a sprite the transform stack pushes off screen costs nothing.
+`ScreenSpace` returns to view coordinates for the HUD.
 
 ```go
 g.cam.Follow(g.player.Pos, 8, ctx.Delta) // in Update
@@ -256,16 +289,17 @@ g.tilemap.Advance(ctx.Delta) // in Update
 To keep a map of plain terrain ids and let the tiles pick themselves,
 use the [autotile](../pkg/grid/autotile.html) package. A
 `Mapper` turns terrain ids into frame indices: `Apply` fills a whole
-tilemap and `Cell` patches the neighbourhood of one edited cell. Four
+tilemap and `Cell` patches the neighbourhood of one edited cell. Five
 rule kinds cover the usual tilesets: `Edge16` matches the four edge
-neighbours with 16 tiles (walls, pipes, fences), `Blob47` matches all
-eight neighbours with the 47 distinct blob tiles, `Corner16` is the
-dual grid where each tile sits on a corner between four cells, and
-`Wang` matches terrain colours on tile edges or corners for any number
-of terrains meeting with transitions. `ExpandBlob` composes the 47 blob
-tiles from a six-tile template, so an artist draws six tiles instead of
-47. Variants weight alternative frames per neighbourhood, chosen by a
-stable hash of the cell position.
+neighbours with 16 tiles (walls, pipes, fences), `Edge64` is its
+hexagonal counterpart matching the six sides of a hexagon with 64
+tiles, `Blob47` matches all eight neighbours with the 47 distinct blob
+tiles, `Corner16` is the dual grid where each tile sits on a corner
+between four cells, and `Wang` matches terrain colours on tile edges or
+corners for any number of terrains meeting with transitions.
+`ExpandBlob` composes the 47 blob tiles from a six-tile template, so an
+artist draws six tiles instead of 47. Variants weight alternative
+frames per neighbourhood, chosen by a stable hash of the cell position.
 
 ```go
 img, frames := autotile.ExpandBlob(template, 16)
@@ -276,12 +310,37 @@ grass.Apply(w, h, terrainAt, grassMap.Set)   // the whole map once
 grass.Cell(x, y, w, h, terrainAt, grassMap.Set) // after one edit
 ```
 
+`Mapper.Layout` is the shape of the grid, and the zero value is a
+square one. `HexRowsOdd`, `HexRowsEven`, `HexColsOdd` and
+`HexColsEven` are hexagons in staggered rows or columns, named the way
+the Tiled editor names its stagger axis and index; `HexAxial` is the
+same six directions in axial coordinates. A hexagonal layout has six
+neighbours and no diagonals, so it takes `Edge64` or `Wang` rules.
+`IsoDiamond` keeps eight neighbours but turns them a quarter turn, so
+the direction names are the tile's directions on screen and the cell
+north of `(x, y)` is `(x-1, y-1)`. `Layout.Neighbour` and `Layout.Dirs`
+are the same walk for a game's own code, such as moving a unit across a
+hex map.
+
+```go
+hex := &autotile.Mapper{Rules: autotile.Edge64(1, frames), Layout: autotile.HexRowsOdd}
+hex.Apply(w, h, terrainAt, setFrame)
+x, y = autotile.HexRowsOdd.Neighbour(x, y, autotile.DirNE)
+```
+
 Terrain sets painted in the Tiled editor's terrain tool come in through
 the tiled package: `Map.WangSet` finds a set by name and its `Rules`
-method converts it, with tile ids as frames. The
+method converts it, with tile ids as frames. On a hexagonal map, call
+`Map.Layout` for the layout, pass it to `WangSet.RulesFor` and give the
+same layout to the `Mapper`; the conversion moves each colour into the
+direction slot the layout uses, because Tiled stores a hexagon's six
+sides one slot back in the eight-slot wangid. An isometric map gets
+`Square`, since Tiled's own terrain tool matches an isometric map on
+the plain grid neighbours. The
 [autotile example](https://github.com/matjam/bunyip/tree/main/examples/autotile)
 paints grass, walls and water with the mouse over one shared terrain
-grid, one rule kind each.
+grid, one rule kind each, and draws a hexagonal edge set in the strip
+below them.
 
 ## Maps from the Tiled editor
 
@@ -298,8 +357,9 @@ layer by name and `Destroy` releases the textures.
 Object layers are left to the game. They hold rectangles, ellipses,
 points, polygons and polylines with names, classes and typed custom
 properties; read them for spawn points, triggers and collision shapes.
-Tiled's flip and rotation bits survive the import. Zstd-compressed
-layers are not supported; CSV, base64, zlib and gzip are.
+Tiled's flip and rotation bits survive the import. Tile layer data
+decodes in every form Tiled writes: CSV, and base64 plain or compressed
+with zlib, gzip or zstd.
 
 ```go
 m, err := tiled.LoadFS(g.fs, "maps/level1.tmj")
@@ -445,19 +505,37 @@ g.fire.Draw(gr)          // Draw
 `SetLights2D` places an ambient colour and up to eight `Light2D` point
 lights above the sprite plane for the frame, and `DrawLit` draws a
 sprite lit by them through a tangent-space normal map uploaded with
-`TextureOptions{Data: true}`. Lit sprites take light from every
-direction. There are no 2D shadows cast by occluders, which is a known
-gap. For hard light shafts, draw your own occlusion, usually by
-rendering a light mask to a render texture and compositing it with
-`BlendMultiply`.
+`TextureOptions{Data: true}`.
+
+Set `Shadows` on a light and it is blocked by the occluders the frame
+adds with `AddOccluder2D`, which takes a closed polygon in the same
+units as sprite positions; two points make a single wall. `Softness` is
+the width of the shadow's soft edge in view units, 8 by default. Both
+the lights and the occluders are set every frame, and every lit sprite
+in the frame sees the same set, so it does not matter whether the
+occluders are added before or after the draws.
+
+Each shadowed light gets a polar shadow map built on the CPU: 512
+directions around the light, each holding the distance to the nearest
+occluder edge, uploaded as one small texture the lit shader reads. The
+cost is the occluder edges times the shadowed lights, so a few hundred
+edges are free; only edges within a light's radius are visited. Add the
+walls near the player, not the whole level.
 
 ```go
 gr.SetLights2D(gfx.RGB(30, 30, 45),
-	gfx.Light2D{Pos: g.player, Radius: 220, Color: gfx.RGB(255, 200, 120)},
+	gfx.Light2D{Pos: g.player, Radius: 220, Color: gfx.RGB(255, 200, 120), Shadows: true},
 	gfx.Light2D{Pos: brazier, Radius: 140, Height: 20, Color: gfx.RGB(255, 140, 60)},
 )
+for _, w := range g.walls { // a rectangle's four corners
+	gr.AddOccluder2D(w.TopLeft(), w.TopRight(), w.BottomRight(), w.BottomLeft())
+}
 gr.DrawLit(g.wallTex, g.wallNormal, gfx.Sprite{Pos: lin.V2(x, y), Size: lin.V2(64, 64)})
 ```
+
+The [sprites example](https://github.com/matjam/bunyip/tree/main/examples/sprites)
+draws a lit floor in the corner of the window with a lamp circling three
+crates that block it.
 
 ## Render textures
 

@@ -135,21 +135,39 @@ type Light2D struct {
 	Height float32 // zero means 40
 	Radius float32 // zero means 300
 	Color  Color   // zero means white
+	// Shadows makes the occluders added with AddOccluder2D block this
+	// light, so a wall between it and a sprite darkens the sprite. It
+	// costs one polar shadow map a frame, built on the CPU.
+	Shadows bool
+	// Softness is the width of the shadow's soft edge in view units at
+	// the shadowed point; zero means 8. It has no effect without
+	// Shadows.
+	Softness float32
 }
+
+// maxLights2D is how many point lights one frame's lit sprites can take.
+const maxLights2D = 8
 
 // lights2D is the lit shader's uniform block.
 type lights2D struct {
 	Ambient lin.Vec4
-	Pos     [8]lin.Vec4
-	Color   [8]lin.Vec4
+	Pos     [maxLights2D]lin.Vec4
+	Color   [maxLights2D]lin.Vec4
+	// Shadow is x one when the light casts shadows, y the light's row in
+	// the shadow strip, z the softness in view units, w how many
+	// directions a row holds.
+	Shadow [maxLights2D]lin.Vec4
 }
 
 // SetLights2D sets the ambient light and up to eight point lights that
 // DrawLit sprites in the current queue are lit by, for this frame.
+// Lights with Shadows are blocked by the frame's AddOccluder2D
+// occluders. Lights past the eighth are dropped.
 func (g *Graphics) SetLights2D(ambient Color, lights ...Light2D) {
 	q := g.cur
-	n := min(len(lights), 8)
+	n := min(len(lights), maxLights2D)
 	q.lights = lights2D{Ambient: lin.V4(ambient.R, ambient.G, ambient.B, float32(n))}
+	q.shadows = false
 	for i, l := range lights[:n] {
 		h, r, c := l.Height, l.Radius, l.Color
 		if h == 0 {
@@ -163,13 +181,24 @@ func (g *Graphics) SetLights2D(ambient Color, lights ...Light2D) {
 		}
 		q.lights.Pos[i] = lin.V4(l.Pos.X, l.Pos.Y, h, r)
 		q.lights.Color[i] = lin.V4(c.R, c.G, c.B, 1)
+		if l.Shadows {
+			soft := l.Softness
+			if soft == 0 {
+				soft = 8
+			}
+			// The row's own line of the strip, sampled at its centre.
+			q.lights.Shadow[i] = lin.V4(1, (float32(i)+0.5)/maxLights2D, soft, shadowAngles2D)
+			q.shadows = true
+		}
 	}
 	q.lightsDirty = true
 }
 
 // DrawLit draws a sprite lit by the SetLights2D lights through a
 // tangent-space normal map (a texture made with TextureOptions.Data),
-// so a flat sprite catches light from the side a torch is on.
+// so a flat sprite catches light from the side a torch is on. Lights
+// that cast shadows are blocked by the occluders AddOccluder2D added
+// this frame.
 func (g *Graphics) DrawLit(tex, normal *Texture, s Sprite) {
 	q := g.cur
 	if q.lightsDirty {
@@ -177,5 +206,6 @@ func (g *Graphics) DrawLit(tex, normal *Texture, s Sprite) {
 		q.lightsDirty = false
 	}
 	g.litShader.SetImage(0, normal)
+	g.litShader.SetImage(1, q.shadowTex)
 	g.Shaded(g.litShader, func() { g.Draw(tex, s) })
 }

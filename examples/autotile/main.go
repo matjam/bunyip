@@ -6,6 +6,10 @@
 // autotile.Mapper each. Paint with the left mouse button, erase with the
 // right; 1 selects the grass brush, 2 the wall brush and 3 the water
 // brush. Escape quits.
+//
+// The strip along the bottom is the same idea on a hexagonal layout: a
+// 64-tile edge set on hexagons in staggered rows, where each tile shows
+// a rim on the sides no neighbour continues.
 package main
 
 import (
@@ -14,12 +18,14 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 	"os"
 
 	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/grid/autotile"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/lin"
 	"github.com/matjam/bunyip/rng"
 )
 
@@ -27,6 +33,16 @@ const (
 	tile = 16
 	mapW = 40
 	mapH = 22
+	// The hexagonal strip below the square map: pointy-top hexagons in
+	// staggered rows, a tile wide, with rows three quarters of a tile
+	// apart and the odd rows shifted half a tile right.
+	hexW, hexH  = 20, 6
+	hexRow      = tile * 3 / 4
+	hexTop      = mapH * tile
+	hexStripH   = hexH*hexRow + tile/4
+	windowH     = mapH*tile + hexStripH
+	hexSideLen  = tile / 2 // the vertical sides of a pointy-top hexagon
+	hexTerrainW = hexW + 1 // one column of margin, so the shifted rows fit
 )
 
 const (
@@ -56,6 +72,10 @@ type game struct {
 	grassRul *autotile.Mapper
 	wallRul  *autotile.Mapper
 	waterRul *autotile.Mapper
+	hexTex   *gfx.Texture
+	hexSheet *gfx.Sheet
+	hexLand  []int // the hexagonal strip's terrain, hexTerrainW by hexH
+	hexFrame []int // its frames, one per cell
 	brush    int
 	shotDone bool
 }
@@ -130,8 +150,46 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	g.brush = grass
 	g.refresh()
+	return g.initHexes(ctx)
+}
+
+// hexLayout is the strip's grid: pointy-top hexagons in staggered rows
+// with the odd rows shifted right, which is what the Tiled editor calls
+// stagger axis Y with stagger index odd.
+const hexLayout = autotile.HexRowsOdd
+
+// initHexes builds the hexagonal strip: a 64-tile edge set, a patch of
+// terrain walked over the layout's own neighbours, and the frames for
+// it. Nothing here knows the hexagon offsets; the layout does.
+func (g *game) initHexes(ctx *bunyip.Context) error {
+	var err error
+	if g.hexTex, err = ctx.Gfx.NewTexture(makeHexes(), gfx.TextureOptions{}); err != nil {
+		return err
+	}
+	g.hexSheet = gfx.NewSheet(g.hexTex, tile, tile)
+	g.hexLand = make([]int, hexTerrainW*hexH)
+	r := rng.New(11)
+	for _, start := range [][2]int{{3, 2}, {9, 3}, {15, 2}, {19, 4}} {
+		x, y := start[0], start[1]
+		dirs := hexLayout.Dirs()
+		for range 40 {
+			if x >= 0 && y >= 0 && x < hexTerrainW && y < hexH {
+				g.hexLand[y*hexTerrainW+x] = 1
+			}
+			x, y = hexLayout.Neighbour(x, y, dirs[r.Intn(len(dirs))])
+		}
+	}
+	var frames [64]int
+	for i := range frames {
+		frames[i] = i // frame = mask: the set is complete
+	}
+	g.hexFrame = make([]int, hexTerrainW*hexH)
+	m := autotile.Mapper{Rules: autotile.Edge64(1, frames), Layout: hexLayout}
+	m.Apply(hexTerrainW, hexH, g.hexAt, func(x, y, f int) { g.hexFrame[y*hexTerrainW+x] = f })
 	return nil
 }
+
+func (g *game) hexAt(x, y int) int { return g.hexLand[y*hexTerrainW+x] }
 
 // refresh reapplies every rule set to the whole map.
 func (g *game) refresh() {
@@ -185,6 +243,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	if x >= 0 && y >= 0 && x < mapW && y < mapH {
 		gr.FillRect(float32(x*tile), float32(y*tile), tile, tile, gfx.RGBA(255, 255, 255, 60))
 	}
+	g.drawHexes(gr)
 	if g.shot != "" && !g.shotDone && (g.seconds == 0 || ctx.Time >= g.seconds/2) {
 		g.shotDone = true
 		ctx.Screenshot(g.shot)
@@ -192,10 +251,86 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	return nil
 }
 
+// drawHexes draws the hexagonal strip. Every second row is shifted half
+// a tile right and the rows overlap by a quarter of a tile, which is how
+// pointy-top hexagons in staggered rows meet.
+func (g *game) drawHexes(gr *gfx.Graphics) {
+	gr.FillRect(0, hexTop, mapW*tile, hexStripH, gfx.RGB(20, 24, 34))
+	for y := range hexH {
+		for x := range hexTerrainW {
+			f := g.hexFrame[y*hexTerrainW+x]
+			if f < 0 {
+				continue
+			}
+			px := float32(x * tile)
+			if y%2 == 1 {
+				px += tile / 2
+			}
+			gr.DrawFrame(g.hexSheet, f, gfx.Sprite{Pos: lin.V2(px, float32(hexTop+y*hexRow))})
+		}
+	}
+}
+
 func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.grassTex.Destroy()
 	g.wallTex.Destroy()
 	g.waterTex.Destroy()
+	g.hexTex.Destroy()
+}
+
+// makeHexes draws the 64 hexagon tiles: a pointy-top hexagon filled with
+// a checker, with a light rim along each side the mask says has no
+// neighbour of the same terrain. Bit i is the i-th direction the rows
+// layout uses, clockwise from north-east, which is the order the sides
+// are walked here.
+func makeHexes() *image.RGBA {
+	const cols = 8
+	img := image.NewRGBA(image.Rect(0, 0, cols*tile, 64/cols*tile))
+	body := color.RGBA{R: 96, G: 120, B: 168, A: 255}
+	shade := color.RGBA{R: 74, G: 96, B: 140, A: 255}
+	rim := color.RGBA{R: 206, G: 222, B: 244, A: 255}
+	// The hexagon's vertices, clockwise from the top, for a tile-wide
+	// pointy-top hexagon whose left and right sides are vertical.
+	const half, side = tile / 2, hexSideLen
+	verts := [6][2]float64{
+		{half, 0}, {tile, (tile - side) / 2}, {tile, (tile + side) / 2},
+		{half, tile}, {0, (tile + side) / 2}, {0, (tile - side) / 2},
+	}
+	for mask := range 64 {
+		ox, oy := mask%cols*tile, mask/cols*tile
+		for py := range tile {
+			for px := range tile {
+				fx, fy := float64(px)+0.5, float64(py)+0.5
+				inside, nearest, nearD := true, 0, math.Inf(1)
+				for i := range 6 {
+					a, b := verts[i], verts[(i+1)%6]
+					ex, ey := b[0]-a[0], b[1]-a[1]
+					// The vertices run clockwise on a y-down screen, so a
+					// point outside an edge is on its left.
+					d := ((fx-a[0])*ey - (fy-a[1])*ex) / math.Hypot(ex, ey)
+					if d > 0 {
+						inside = false
+						break
+					}
+					if -d < nearD {
+						nearD, nearest = -d, i
+					}
+				}
+				if !inside {
+					continue
+				}
+				c := body
+				if (px/3+py/3)%2 == 0 {
+					c = shade
+				}
+				if nearD < 2.2 && mask&(1<<nearest) == 0 {
+					c = rim
+				}
+				img.SetRGBA(ox+px, oy+py, c)
+			}
+		}
+	}
+	return img
 }
 
 // waterTiles lists the sixteen corner Wang tiles: frame m has water at
@@ -400,7 +535,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write the frame at -seconds/2 to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip autotile", Width: mapW * tile, Height: mapH * tile},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip autotile", Width: mapW * tile, Height: windowH},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "autotile:", err)
