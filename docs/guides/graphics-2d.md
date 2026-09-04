@@ -301,8 +301,9 @@ layer by name and `Destroy` releases the textures.
 Object layers are left to the game. They hold rectangles, ellipses,
 points, polygons and polylines with names, classes and typed custom
 properties; read them for spawn points, triggers and collision shapes.
-Tiled's flip and rotation bits survive the import. Zstd-compressed
-layers are not supported; CSV, base64, zlib and gzip are.
+Tiled's flip and rotation bits survive the import. Tile layer data
+decodes in every form Tiled writes: CSV, and base64 plain or compressed
+with zlib, gzip or zstd.
 
 ```go
 m, err := tiled.LoadFS(g.fs, "maps/level1.tmj")

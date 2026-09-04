@@ -12,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/matjam/bunyip/grid/autotile"
 	"github.com/matjam/bunyip/lin"
 )
@@ -33,6 +34,13 @@ func encode(t *testing.T, cells []uint32, compression string) string {
 		w.Close()
 	case "gzip":
 		w := gzip.NewWriter(&buf)
+		w.Write(raw)
+		w.Close()
+	case "zstd":
+		w, err := zstd.NewWriter(&buf)
+		if err != nil {
+			t.Fatalf("encode: zstd: %v", err)
+		}
 		w.Write(raw)
 		w.Close()
 	default:
@@ -323,15 +331,45 @@ func TestInfiniteChunks(t *testing.T) {
 	}
 }
 
+// Zstd layer data decodes in both of Tiled's file forms, whole layers
+// and the chunks of an infinite map alike.
+func TestZstdLayers(t *testing.T) {
+	cells := []uint32{1, 2, 3, 4, 5, 6}
+	src := fmt.Sprintf(`{"width": 3, "height": 2, "tilewidth": 8, "tileheight": 8,
+	  "layers": [{"name": "l", "type": "tilelayer", "width": 3, "height": 2,
+	  "encoding": "base64", "compression": "zstd", "data": "%s"}]}`, encode(t, cells, "zstd"))
+	m, err := Parse([]byte(src), nil)
+	if err != nil {
+		t.Fatalf("JSON zstd layer: %v", err)
+	}
+	if !slices.Equal(m.Layers[0].Data, cells) {
+		t.Errorf("JSON zstd layer: %v", m.Layers[0].Data)
+	}
+	src = fmt.Sprintf(`<map width="3" height="2" tilewidth="8" tileheight="8">
+	  <layer name="l" width="3" height="2"><data encoding="base64" compression="zstd">%s</data></layer></map>`,
+		encode(t, cells, "zstd"))
+	if m, err = Parse([]byte(src), nil); err != nil {
+		t.Fatalf("XML zstd layer: %v", err)
+	}
+	if !slices.Equal(m.Layers[0].Data, cells) {
+		t.Errorf("XML zstd layer: %v", m.Layers[0].Data)
+	}
+	// Truncated zstd data is an error, not a panic.
+	bad := fmt.Sprintf(`{"width": 1, "height": 1, "layers": [{"name": "l", "type": "tilelayer", "width": 1, "height": 1,
+	  "encoding": "base64", "compression": "zstd", "data": "%s"}]}`, base64.StdEncoding.EncodeToString([]byte{0x28, 0xb5, 0x2f, 0xfd}))
+	if _, err := Parse([]byte(bad), nil); err == nil {
+		t.Error("truncated zstd data parsed")
+	}
+}
+
 func TestErrors(t *testing.T) {
-	zstd := fmt.Sprintf(`{"width": 1, "height": 1, "layers": [{"name": "l", "type": "tilelayer", "width": 1, "height": 1,
-	  "encoding": "base64", "compression": "zstd", "data": "%s"}]}`, encode(t, []uint32{1}, ""))
 	cases := []struct {
 		name string
 		src  string
 		want error
 	}{
-		{"zstd", zstd, ErrUnsupported},
+		{"unknown compression", fmt.Sprintf(`{"width": 1, "height": 1, "layers": [{"name": "l", "type": "tilelayer",
+		  "width": 1, "height": 1, "encoding": "base64", "compression": "lzma", "data": "%s"}]}`, encode(t, []uint32{1}, "")), ErrUnsupported},
 		{"xml tileset as map", `<?xml version="1.0"?><tileset name="t"/>`, nil},
 		{"external without resolver", `{"tilesets": [{"firstgid": 1, "source": "x.tsj"}]}`, nil},
 		{"short data", `{"layers": [{"name": "l", "type": "tilelayer", "width": 2, "height": 2, "data": [1]}]}`, nil},

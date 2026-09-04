@@ -5,8 +5,8 @@
 // a map in one form may name an external tileset in the other. Parse and
 // Load need no GPU. Build turns a Map into gfx tilemaps for drawing.
 //
-// A Map has tile layers (CSV or base64 with zlib or gzip compression,
-// flipped and rotated tiles), object layers (rectangles, ellipses,
+// A Map has tile layers (CSV or base64 with zlib, gzip or zstd
+// compression, flipped and rotated tiles), object layers (rectangles, ellipses,
 // points, polygons and polylines with their names, types and custom
 // properties, for spawn points, triggers and collision shapes), image
 // layers and groups, and tilesets embedded or external with per-tile

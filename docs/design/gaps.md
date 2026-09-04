@@ -83,7 +83,9 @@ filtering, gradients, dashed strokes, text on paths, indexed draws, the
 `particle` package, lit sprites, tilemap flips and animations,
 autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
 template expansion, Tiled terrain sets), the
-`tiled` importer in both of Tiled's file forms, TexturePacker and
+`tiled` importer in both of Tiled's file forms with every layer
+encoding it writes (CSV, base64 plain, zlib, gzip and zstd),
+TexturePacker and
 Aseprite atlases with `asset.Atlas` to load one and
 `Atlas.Animation` to play a tag at its own timings, sprite culling
 against the 2D camera by the sprite's own corners, under the transform
@@ -104,8 +106,6 @@ camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
   simulated and drawn through the sprite stream, which is fine for
   thousands.
 - A particle editor in the gallery.
-- Tiled's zstd-compressed layers, which would need a new dependency for
-  a pure-Go decoder; CSV, base64, zlib and gzip layers load.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.
 

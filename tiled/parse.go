@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -24,7 +25,7 @@ import (
 type Resolver func(path string) ([]byte, error)
 
 // ErrUnsupported reports a map feature this package does not read, such
-// as zstd-compressed layer data.
+// as a layer encoding Tiled has added since.
 var ErrUnsupported = errors.New("tiled: unsupported")
 
 // Load reads a map in either form (.tmj or .json, .tmx), resolving
@@ -355,7 +356,7 @@ func decodeCells(raw json.RawMessage, encoding, compression string) ([]uint32, e
 }
 
 // decodeBase64Cells reads base64 text holding little-endian uint32
-// cells, optionally zlib or gzip compressed.
+// cells, optionally zlib, gzip or zstd compressed.
 func decodeBase64Cells(text, compression string) ([]uint32, error) {
 	buf, err := base64.StdEncoding.DecodeString(strings.TrimSpace(text))
 	if err != nil {
@@ -379,6 +380,11 @@ func decodeBase64Cells(text, compression string) ([]uint32, error) {
 		if buf, err = io.ReadAll(r); err != nil {
 			return nil, fmt.Errorf("data: gzip: %w", err)
 		}
+	case "zstd":
+		var err error
+		if buf, err = decodeZstd(buf); err != nil {
+			return nil, fmt.Errorf("data: zstd: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("%w: compression %q", ErrUnsupported, compression)
 	}
@@ -390,6 +396,22 @@ func decodeBase64Cells(text, compression string) ([]uint32, error) {
 		cells[i] = binary.LittleEndian.Uint32(buf[4*i:])
 	}
 	return cells, nil
+}
+
+// maxLayerBytes caps what one layer's compressed data may expand to,
+// which is sixteen million cells. It bounds a file that claims a far
+// larger layer than it has room for.
+const maxLayerBytes = 64 << 20
+
+// decodeZstd expands zstd-compressed layer data. Tiled writes it when
+// the map's tile layer format is "Base64 (zstd compressed)".
+func decodeZstd(buf []byte) ([]byte, error) {
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(maxLayerBytes))
+	if err != nil {
+		return nil, err
+	}
+	defer dec.Close()
+	return dec.DecodeAll(buf, nil)
 }
 
 func objects(js []jsonObject) []Object {
