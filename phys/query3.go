@@ -116,12 +116,6 @@ func appendConvexParts(dst []convexPart, s Shape3, pos lin.Vec3, rot mat3) []con
 	return dst
 }
 
-// convexParts is appendConvexParts into a fresh slice, for callers that
-// keep no buffer of their own.
-func convexParts(s Shape3, pos lin.Vec3, rot mat3) []convexPart {
-	return appendConvexParts(nil, s, pos, rot)
-}
-
 type convexPart struct {
 	conv   convex
 	hull   []lin.Vec3 // reused world points for a hull the convex cannot hold

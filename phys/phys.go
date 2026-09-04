@@ -51,8 +51,8 @@
 // motor and a spring), WheelJoint2 (a wheel on a sprung suspension with
 // a motor on its spin), SpringJoint2 and SpringJoint3 (damped springs)
 // and FixedJoint2 and FixedJoint3 (welds). They are solved with the
-// contacts, in entity
-// order. NewRagdoll3 spawns a humanoid of capsules on limited joints
+// contacts, in entity order.
+// NewRagdoll3 spawns a humanoid of capsules on limited joints
 // from a RagdollSpec, and Ragdoll3.Pose places it from an animated
 // character's bones. A body with CCD set is swept against static
 // geometry every substep so it cannot tunnel, and its bounding sphere is
