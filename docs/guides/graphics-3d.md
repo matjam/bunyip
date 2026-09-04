@@ -257,6 +257,13 @@ material. Gold is `{BaseColor: gfx.RGB(240, 200, 120), Metallic: 1,
 Roughness: 0.15}` and a glowing lamp is `{BaseColor: gfx.RGB(255, 180,
 60), Emissive: 3}`.
 
+Each map keeps the filtering and edge handling its `TextureOptions` gave
+it, whatever else the material binds: the engine's four samplers (linear
+or nearest, repeating or clamped) are shared by every material and the
+map only says which one to read it through. So a nearest-filtered sprite
+sheet as albedo and a linear, repeating detail map on the same mesh both
+sample the way they were made.
+
 Transparency has three modes, and they do different things.
 `AlphaCutoff` discards fragments below a threshold in both the lit and
 the shadow pass, giving hard edges and real shadows, which is what

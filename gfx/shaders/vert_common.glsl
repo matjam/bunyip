@@ -55,23 +55,46 @@ layout(location = 11) in vec4 iUVT0;    // texture transform a, b, c, d
 layout(location = 12) in vec4 iUVT1;    // texture transform e, f; z clearcoat, w clearcoat roughness
 layout(location = 13) in vec4 iSheen;   // sheen colour, w sheen roughness
 layout(location = 14) in vec4 iVolume;  // x transmission, y ior, z thickness, w attenuation distance
-layout(location = 15) in vec4 iAtten;   // attenuation colour
+layout(location = 15) in vec4 iAtten;   // attenuation colour, w = packed sampler indices
 
 // The material's textures and the shader's images are visible here too,
-// for displacement maps.
-layout(set = 0, binding = 0) uniform sampler2D albedoTex;
-layout(set = 0, binding = 1) uniform sampler2D metalRoughTex;
-layout(set = 0, binding = 2) uniform sampler2D normalTex;
-layout(set = 0, binding = 3) uniform sampler2D emissiveTex;
-layout(set = 0, binding = 4) uniform sampler2D occlusionTex;
-layout(set = 0, binding = 5) uniform sampler2D image0;
-layout(set = 0, binding = 6) uniform sampler2D image1;
-layout(set = 0, binding = 7) uniform sampler2D image2;
-layout(set = 0, binding = 8) uniform sampler2D image3;
-layout(set = 0, binding = 9) uniform samplerCube envMap;
-layout(set = 0, binding = 10) uniform sampler2D thicknessTex;
-layout(set = 0, binding = 11) uniform sampler2D sceneTex;
-layout(set = 0, binding = 12) uniform sampler2D transmissionTex;
+// for displacement maps. Set 0 keeps images and samplers apart, and the
+// names are macros pairing each image with the sampler its texture asked
+// for; see prelude_mesh.glsl.
+layout(set = 0, binding = 0) uniform texture2D tAlbedo;
+layout(set = 0, binding = 1) uniform texture2D tMetalRough;
+layout(set = 0, binding = 2) uniform texture2D tNormal;
+layout(set = 0, binding = 3) uniform texture2D tEmissive;
+layout(set = 0, binding = 4) uniform texture2D tOcclusion;
+layout(set = 0, binding = 5) uniform texture2D tImage0;
+layout(set = 0, binding = 6) uniform texture2D tImage1;
+layout(set = 0, binding = 7) uniform texture2D tImage2;
+layout(set = 0, binding = 8) uniform texture2D tImage3;
+layout(set = 0, binding = 9) uniform textureCube tEnv;
+layout(set = 0, binding = 10) uniform texture2D tThickness;
+layout(set = 0, binding = 11) uniform texture2D tScene;
+layout(set = 0, binding = 12) uniform texture2D tTransmission;
+layout(set = 0, binding = 13) uniform sampler samplers[4];
+
+const int LINEAR_CLAMP = 1;
+
+// texSampler is the sampler for one of the material set's texture slots,
+// two bits apiece in this instance's packed index.
+int texSampler(int slot) { return (int(iAtten.w) >> (2 * slot)) & 3; }
+
+#define albedoTex sampler2D(tAlbedo, samplers[texSampler(0)])
+#define metalRoughTex sampler2D(tMetalRough, samplers[texSampler(1)])
+#define normalTex sampler2D(tNormal, samplers[texSampler(2)])
+#define emissiveTex sampler2D(tEmissive, samplers[texSampler(3)])
+#define occlusionTex sampler2D(tOcclusion, samplers[texSampler(4)])
+#define image0 sampler2D(tImage0, samplers[texSampler(5)])
+#define image1 sampler2D(tImage1, samplers[texSampler(6)])
+#define image2 sampler2D(tImage2, samplers[texSampler(7)])
+#define image3 sampler2D(tImage3, samplers[texSampler(8)])
+#define thicknessTex sampler2D(tThickness, samplers[texSampler(9)])
+#define transmissionTex sampler2D(tTransmission, samplers[texSampler(10)])
+#define envMap samplerCube(tEnv, samplers[LINEAR_CLAMP])
+#define sceneTex sampler2D(tScene, samplers[LINEAR_CLAMP])
 
 #define UNIFORMS layout(set = 4, binding = 0)
 

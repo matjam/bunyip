@@ -377,10 +377,13 @@ type Fog struct {
 }
 
 type meshDraw struct {
-	mesh      *Mesh
-	mat       Material
-	model     lin.Mat4
-	set       vk.VkDescriptorSet
+	mesh  *Mesh
+	mat   Material
+	model lin.Mat4
+	set   vk.VkDescriptorSet
+	// samplers packs the sampler index of each of the material set's
+	// eleven texture slots, two bits apiece, for the instance stream.
+	samplers  float32
 	shader    *Shader // never nil once queued
 	uniform   int32   // arena offset of the shader's uniforms, -1 for none
 	depth     float32 // view-space distance for transparency sorting
@@ -400,7 +403,12 @@ type meshInstance struct {
 	uvT1      [4]float32 // texture transform e, f; clearcoat, clearcoat roughness
 	sheen     [4]float32 // sheen colour, sheen roughness
 	volume    [4]float32 // transmission, ior, thickness, attenuation distance
-	atten     [4]float32 // attenuation colour
+	// atten is the attenuation colour, with the material set's packed
+	// sampler indices in w: two bits per texture slot, in the order the
+	// set binds them. Every instance of a draw shares set 0, so the
+	// index a shader reads from here is the same across the draw, which
+	// is what indexing the sampler array needs.
+	atten [4]float32
 }
 
 const meshInstanceSize = 176

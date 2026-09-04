@@ -151,12 +151,12 @@ func BenchmarkMaterialSet_8000(b *testing.B) {
 	g := drawBenchHeadless(b, 64, 64)
 	scene := g.post.main.scene
 	mat := Material{Roughness: 0.5}
-	if _, err := g.materialSet(&mat, nil, scene); err != nil {
+	if _, _, err := g.materialSet(&mat, nil, scene); err != nil {
 		b.Fatalf("materialSet: %v", err)
 	}
 	for b.Loop() {
 		for range 8000 {
-			if _, err := g.materialSet(&mat, nil, scene); err != nil {
+			if _, _, err := g.materialSet(&mat, nil, scene); err != nil {
 				b.Fatalf("materialSet: %v", err)
 			}
 		}

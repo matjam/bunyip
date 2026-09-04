@@ -15,36 +15,36 @@ import (
 // Graphics is the drawing context for one window. The engine opens a
 // frame, the Draw* calls queue work, and the engine submits it.
 type Graphics struct {
-	r             *render.Renderer
-	descriptors   *render.DescriptorSets // five samplers: a texture and a shader's image0..3
-	uniforms      *render.DynamicUniforms
-	arena         *render.Arena // this frame's shader uniform blocks
-	imageSets     map[[5]*Texture]vk.VkDescriptorSet
-	nearest       vk.VkSampler
-	linear        vk.VkSampler
-	nearestRep    vk.VkSampler
-	linearRep     vk.VkSampler
-	spriteShader  *Shader                                 // the default 2D shader
-	sdfShader     *Shader                                 // distance-field text
-	matrixShader  *Shader                                 // sprites through a colour matrix
-	litShader     *Shader          // normal-mapped sprites under 2D lights
-	staging       *render.Staging  // this frame's upload arena, one per frame slot
-	waitBase      uint64           // the device's wait count when the frame began
-	stats         FrameStats       // counts for the frame being recorded
-	lastStats     FrameStats       // the last finished frame's counts
-	meshes        meshPass
-	post          postPass
-	white         *Texture
-	frame         *render.Frame
-	frameNo       uint64
-	time          float32
-	main          *drawQueue // the screen
-	cur           *drawQueue // where Draw* calls land
-	subFrames     []subFrame
+	r            *render.Renderer
+	descriptors  *render.DescriptorSets // five samplers: a texture and a shader's image0..3
+	uniforms     *render.DynamicUniforms
+	arena        *render.Arena // this frame's shader uniform blocks
+	imageSets    map[[5]*Texture]vk.VkDescriptorSet
+	nearest      vk.VkSampler
+	linear       vk.VkSampler
+	nearestRep   vk.VkSampler
+	linearRep    vk.VkSampler
+	spriteShader *Shader         // the default 2D shader
+	sdfShader    *Shader         // distance-field text
+	matrixShader *Shader         // sprites through a colour matrix
+	litShader    *Shader         // normal-mapped sprites under 2D lights
+	staging      *render.Staging // this frame's upload arena, one per frame slot
+	waitBase     uint64          // the device's wait count when the frame began
+	stats        FrameStats      // counts for the frame being recorded
+	lastStats    FrameStats      // the last finished frame's counts
+	meshes       meshPass
+	post         postPass
+	white        *Texture
+	frame        *render.Frame
+	frameNo      uint64
+	time         float32
+	main         *drawQueue // the screen
+	cur          *drawQueue // where Draw* calls land
+	subFrames    []subFrame
 	// retire holds what each frame slot destroyed or replaced, freed at
 	// that slot's next begin, once its fence has been waited on.
-	retire  [render.FramesInFlight][]func()
-	scratch []vertex2D
+	retire        [render.FramesInFlight][]func()
+	scratch       []vertex2D
 	pathSubs      []subpath        // flattened sub-paths, reused by FillPath and StrokePath
 	pathFill      filler           // likewise the scanline filler
 	pathStroke    stroker          // and the stroke expander
