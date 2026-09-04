@@ -213,6 +213,9 @@ for _, s := range g.sources {
 and all-pass network; voices feed it through their `Reverb` send, and the
 tail is mixed on top of the dry output. `ReverbSettings` has a room size,
 damping, stereo width and wet level, and its zero value is no reverb.
+Every field runs from 0 to 1; a larger room size is clamped, because
+above about 1.07 the comb feedback reaches one and the tail grows
+without end instead of dying away.
 
 ```go
 ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: 0.7, Damping: 0.4, Wet: 0.3})

@@ -208,8 +208,6 @@ position and per-channel mute and solo are in.
 - Hardware or platform mixing (spatialiser plugins, HRTF); the mixer is
   a Go loop.
 - Microphone input.
-- A reverb `RoomSize` above about 1.07 has comb feedback at or above
-  one and runs away to NaN, which the output clamp passes through.
 - The Windows and Linux audio layers are untested on hardware.
 
 ## User interface

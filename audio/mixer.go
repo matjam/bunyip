@@ -333,6 +333,14 @@ func (m *Mixer) mix(out []float32) {
 		b.r.process(b.buf, out)
 	}
 	for i, s := range out {
+		// A NaN or an infinity from a decoder, a game Stream or an effect
+		// would reach the device as a click or worse, so it is replaced by
+		// silence rather than clamped; min and max would pass a NaN
+		// through untouched.
+		if s != s || s > math.MaxFloat32 || s < -math.MaxFloat32 {
+			out[i] = 0
+			continue
+		}
 		out[i] = max(-1, min(1, s))
 	}
 	fns := m.apply()
