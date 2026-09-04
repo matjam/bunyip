@@ -121,6 +121,9 @@ const (
 	xdgToplevelStateFullscreen = 2
 	xdgToplevelStateResizing   = 3
 	xdgToplevelStateActivated  = 4
+	// Suspended arrived in xdg_toplevel version six. A compositor that
+	// offers less never sends it, so the window counts as visible.
+	xdgToplevelStateSuspended = 9
 
 	xdgDecorationModeClientSide = 1
 	xdgDecorationModeServerSide = 2

@@ -18,19 +18,29 @@ import (
 
 // xcb protocol constants.
 const (
-	xcbKeyPress        = 2
-	xcbKeyRelease      = 3
-	xcbButtonPress     = 4
-	xcbButtonRelease   = 5
-	xcbMotionNotify    = 6
-	xcbEnterNotify     = 7
-	xcbLeaveNotify     = 8
-	xcbFocusIn         = 9
-	xcbFocusOut        = 10
-	xcbDestroyNotify   = 17
-	xcbConfigureNotify = 22
-	xcbClientMessage   = 33
-	xcbMappingNotify   = 34
+	xcbKeyPress          = 2
+	xcbKeyRelease        = 3
+	xcbButtonPress       = 4
+	xcbButtonRelease     = 5
+	xcbMotionNotify      = 6
+	xcbEnterNotify       = 7
+	xcbLeaveNotify       = 8
+	xcbFocusIn           = 9
+	xcbFocusOut          = 10
+	xcbVisibilityNotify  = 15
+	xcbUnmapNotify       = 18
+	xcbMapNotify         = 19
+	xcbDestroyNotify     = 17
+	xcbConfigureNotify   = 22
+	xcbPropertyNotify    = 28
+	xcbSelectionClear    = 29
+	xcbSelectionRequest  = 30
+	xcbSelectionNotify   = 31
+	xcbClientMessage     = 33
+	xcbMappingNotify     = 34
+	xcbVisibilityObscure = 2 // VisibilityFullyObscured
+	xcbPropertyNewValue  = 0
+	xcbPropertyDelete    = 1
 
 	xcbEventMaskKeyPress      = 1
 	xcbEventMaskKeyRelease    = 2
@@ -40,10 +50,12 @@ const (
 	xcbEventMaskLeave         = 0x20
 	xcbEventMaskMotion        = 0x40
 	xcbEventMaskExposure      = 0x8000
+	xcbEventMaskVisibility    = 0x10000
 	xcbEventMaskStructure     = 0x20000
 	xcbEventMaskSubRedirect   = 0x100000
 	xcbEventMaskSubNotify     = 0x80000
 	xcbEventMaskFocus         = 0x200000
+	xcbEventMaskProperty      = 0x400000
 
 	xcbCWBackPixel            = 0x2
 	xcbCWEventMask            = 0x800
@@ -135,6 +147,53 @@ type xcbClientMessageEvent struct {
 	Data         [5]uint32
 }
 
+// xcbMapEvent is MapNotify and UnmapNotify, which name the window that
+// was mapped as well as the window the event was selected on.
+type xcbMapEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Event        uint32
+	Window       uint32
+	Flag         uint8 // override-redirect on a map, from-configure on an unmap
+	Pad1         [3]uint8
+}
+
+type xcbVisibilityEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Window       uint32
+	State        uint8
+	Pad1         [3]uint8
+}
+
+type xcbPropertyEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Window       uint32
+	Atom         uint32
+	Time         uint32
+	State        uint8
+	Pad1         [3]uint8
+}
+
+type xcbGetPropertyReply struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Format       uint8
+	Sequence     uint16
+	Length       uint32
+	Type         uint32
+	BytesAfter   uint32
+	ValueLen     uint32
+	Pad          [12]uint8
+}
+
 type xcbInternAtomReply struct {
 	_            structs.HostLayout
 	ResponseType uint8
@@ -189,6 +248,11 @@ type xlib struct {
 	internAtom         func(c unsafe.Pointer, onlyIfExists uint8, nameLen uint16, name *byte) xcbCookie
 	internAtomReply    func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbInternAtomReply
 	changeProperty     func(c unsafe.Pointer, mode uint8, w uint32, property, typ uint32, format uint8, dataLen uint32, data unsafe.Pointer) xcbCookie
+	deleteProperty     func(c unsafe.Pointer, w uint32, property uint32) xcbCookie
+	getProperty        func(c unsafe.Pointer, del uint8, w uint32, property, typ uint32, offset, length uint32) xcbCookie
+	getPropertyReply   func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbGetPropertyReply
+	getPropertyValue   func(reply *xcbGetPropertyReply) unsafe.Pointer
+	getPropertyValueLn func(reply *xcbGetPropertyReply) int32
 	sendEvent          func(c unsafe.Pointer, propagate uint8, dest uint32, mask uint32, event *byte) xcbCookie
 	grabPointer        func(c unsafe.Pointer, ownerEvents uint8, grabWindow uint32, eventMask uint16, pointerMode, keyboardMode uint8, confineTo, cursor, time uint32) xcbCookie
 	ungrabPointer      func(c unsafe.Pointer, time uint32) xcbCookie
@@ -242,6 +306,8 @@ func loadX11() (*xlib, error) {
 		"xcb_create_window": &x.createWindow, "xcb_destroy_window": &x.destroyWindow, "xcb_map_window": &x.mapWindow,
 		"xcb_flush": &x.flush, "xcb_poll_for_event": &x.pollForEvent, "xcb_wait_for_event": &x.waitForEvent,
 		"xcb_intern_atom": &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
+		"xcb_delete_property": &x.deleteProperty, "xcb_get_property": &x.getProperty, "xcb_get_property_reply": &x.getPropertyReply,
+		"xcb_get_property_value": &x.getPropertyValue, "xcb_get_property_value_length": &x.getPropertyValueLn,
 		"xcb_send_event": &x.sendEvent, "xcb_grab_pointer": &x.grabPointer, "xcb_ungrab_pointer": &x.ungrabPointer,
 		"xcb_warp_pointer": &x.warpPointer, "xcb_create_pixmap": &x.createPixmap, "xcb_free_pixmap": &x.freePixmap,
 		"xcb_create_cursor": &x.createCursor, "xcb_change_window_attributes": &x.changeWindowAttrs,
@@ -308,6 +374,7 @@ func (a *App) connectX11() error {
 	a.atomUTF8 = a.atom("UTF8_STRING")
 	a.atomNetWMState = a.atom("_NET_WM_STATE")
 	a.atomNetWMFullscreen = a.atom("_NET_WM_STATE_FULLSCREEN")
+	a.atomNetWMHidden = a.atom("_NET_WM_STATE_HIDDEN")
 	a.atomWake = a.atom("BUNYIP_WAKE")
 	a.setupXKB()
 	return nil
@@ -323,6 +390,44 @@ func (a *App) atom(name string) uint32 {
 	atom := reply.Atom
 	a.x.free(unsafe.Pointer(reply))
 	return atom
+}
+
+// xProperty is one reply to a property read.
+type xProperty struct {
+	Data       []byte
+	Type       uint32
+	Format     uint8
+	BytesAfter uint32
+}
+
+// atoms reads a property whose format is 32 as the atom list it is.
+func (p xProperty) atoms() []uint32 {
+	if p.Format != 32 || len(p.Data) < 4 {
+		return nil
+	}
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&p.Data[0])), len(p.Data)/4)
+}
+
+// property reads a window property. offset and length count four-byte
+// units, which is what the protocol counts; del deletes the property once
+// it has been read, which is how an INCR transfer asks for the next chunk.
+// A property that does not exist comes back with no data and type zero.
+func (a *App) property(win, prop, typ, offset, length uint32, del bool) xProperty {
+	x := a.x
+	var d uint8
+	if del {
+		d = 1
+	}
+	reply := x.getPropertyReply(a.conn, x.getProperty(a.conn, d, win, prop, typ, offset, length), nil)
+	if reply == nil {
+		return xProperty{}
+	}
+	defer x.free(unsafe.Pointer(reply))
+	out := xProperty{Type: reply.Type, Format: reply.Format, BytesAfter: reply.BytesAfter}
+	if n := int(x.getPropertyValueLn(reply)); n > 0 {
+		out.Data = append([]byte(nil), unsafe.Slice((*byte)(x.getPropertyValue(reply)), n)...)
+	}
+	return out
 }
 
 func (a *App) setupXKB() {
@@ -359,12 +464,19 @@ func (a *App) refreshKeymap() {
 func (a *App) newX11Window(cfg Config) (*Window, error) {
 	x := a.x
 	id := x.generateID(a.conn)
+	// Visibility and property changes are selected as well as input, so
+	// that a window that is minimised, unmapped or covered says so:
+	// UnmapNotify and MapNotify come from the structure mask,
+	// VisibilityNotify from the visibility mask, and _NET_WM_STATE_HIDDEN
+	// from the property mask.
 	values := [2]uint32{a.screen.BlackPixel, xcbEventMaskKeyPress | xcbEventMaskKeyRelease | xcbEventMaskButtonPress |
 		xcbEventMaskButtonRelease | xcbEventMaskEnter | xcbEventMaskLeave | xcbEventMaskMotion | xcbEventMaskExposure |
-		xcbEventMaskStructure | xcbEventMaskFocus}
+		xcbEventMaskVisibility | xcbEventMaskStructure | xcbEventMaskFocus | xcbEventMaskProperty}
 	x.createWindow(a.conn, xcbCopyFromParent, id, a.screen.Root, 0, 0, uint16(cfg.Width), uint16(cfg.Height), 0,
 		xcbWindowClassInputOutput, a.screen.RootVisual, xcbCWBackPixel|xcbCWEventMask, &values[0])
-	w := &Window{app: a, id: id, width: cfg.Width, height: cfg.Height}
+	// The window is mapped below, so it starts visible; only an unmap, a
+	// minimise or full obscuring changes that, and each sends an event.
+	w := &Window{app: a, id: id, width: cfg.Width, height: cfg.Height, mapped: true, visible: true}
 	a.windows[id] = w
 	a.wakeWin.CompareAndSwap(0, id)
 	title := []byte(cfg.Title)
@@ -563,6 +675,24 @@ func (a *App) handle(ge *xcbGenericEvent) {
 		case w != nil && ev.Type == a.atomWMProtocols && ev.Data[0] == a.atomWMDelete:
 			a.push(Event{Kind: EventClose, Window: w})
 		}
+	case xcbMapNotify, xcbUnmapNotify:
+		ev := (*xcbMapEvent)(unsafe.Pointer(ge))
+		if w := a.windows[ev.Window]; w != nil {
+			w.mapped = ge.ResponseType&^0x80 == xcbMapNotify
+			w.updateVisible()
+		}
+	case xcbVisibilityNotify:
+		ev := (*xcbVisibilityEvent)(unsafe.Pointer(ge))
+		if w := a.windows[ev.Window]; w != nil {
+			w.obscured = ev.State == xcbVisibilityObscure
+			w.updateVisible()
+		}
+	case xcbPropertyNotify:
+		ev := (*xcbPropertyEvent)(unsafe.Pointer(ge))
+		if w := a.windows[ev.Window]; w != nil && ev.Atom == a.atomNetWMState {
+			w.wmHidden = w.netWMHidden()
+			w.updateVisible()
+		}
 	case xcbDestroyNotify:
 		ev := (*xcbConfigureEvent)(unsafe.Pointer(ge)) // window field sits at the same offset
 		if w := a.windows[ev.Window]; w != nil {
@@ -573,6 +703,32 @@ func (a *App) handle(ge *xcbGenericEvent) {
 	case xcbMappingNotify:
 		a.refreshKeymap()
 	}
+}
+
+// netWMHidden reports whether _NET_WM_STATE on the window carries
+// _NET_WM_STATE_HIDDEN, which is how a window manager says the window is
+// minimised or shaded. A window manager that does not set the property
+// reports nothing, which reads as shown.
+func (w *Window) netWMHidden() bool {
+	a := w.app
+	for _, at := range a.property(w.id, a.atomNetWMState, xcbAtomAtom, 0, 64, false).atoms() {
+		if at == a.atomNetWMHidden {
+			return true
+		}
+	}
+	return false
+}
+
+// updateVisible reports a change in whether the window can be seen. It is
+// hidden when it is unmapped, minimised or wholly covered by other
+// windows, which is what lets a game stop drawing.
+func (w *Window) updateVisible() {
+	visible := w.mapped && !w.obscured && !w.wmHidden
+	if visible == w.visible {
+		return
+	}
+	w.visible = visible
+	w.app.push(Event{Kind: EventVisible, Window: w, Visible: visible})
 }
 
 // x11Wake sends a client message to the window so a blocked Poll returns

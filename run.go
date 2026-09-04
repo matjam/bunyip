@@ -132,7 +132,8 @@ func runOnce(cfg Config, game Game) error {
 	// The drivers stay in the loop; the game sees the public values.
 	l := &loop{cfg: cfg, app: app, win: win, game: game, gfx: gd, input: in, audio: mix,
 		ctx: &Context{Gfx: gd.Game().(*gfx.Graphics), Input: in.Game().(*input.State), Log: cfg.Log,
-			Audio: mix.Game().(*audio.Mixer), Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1, focused: true}}
+			Audio: mix.Game().(*audio.Mixer), Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1,
+			focused: true, visible: true}}
 	l.overlay.on = cfg.Debug
 	l.overlay.budget = cfg.DrawBudget
 	if cfg.Icon != nil {
@@ -274,8 +275,8 @@ func (l *loop) run() error {
 		} else {
 			accumulator += now.Sub(last)
 			last = now
-			if l.cfg.PauseUnfocused && !l.ctx.focused {
-				accumulator = 0 // the game stands still while another window has focus
+			if l.paused() {
+				accumulator = 0 // the game stands still while it is paused
 			}
 			if accumulator > catchUp { // do not spiral after a stall
 				accumulator = catchUp
@@ -395,6 +396,27 @@ func (l *loop) publishStats() {
 	s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances = gs.Draws2D, gs.Vertices2D, gs.Draws3D, gs.Instances
 }
 
+// paused reports whether the game stands still: Config.PauseUnfocused
+// with the focus elsewhere, or Config.PauseHidden with the window out of
+// sight. Both are off by default, so a loop that sets neither never
+// pauses.
+func (l *loop) paused() bool {
+	return (l.cfg.PauseUnfocused && !l.ctx.focused) || (l.cfg.PauseHidden && !l.ctx.visible)
+}
+
+// applyPause silences the mixer while the game is paused. One place
+// decides it, so a window that loses focus and is hidden at once does not
+// have the two settings undo each other. With neither setting on, the
+// mixer is the game's alone and the loop leaves it as it is.
+func (l *loop) applyPause() {
+	if !l.cfg.PauseUnfocused && !l.cfg.PauseHidden {
+		return
+	}
+	if l.ctx.Audio != nil {
+		l.ctx.Audio.SetPaused(l.paused())
+	}
+}
+
 func (l *loop) handleEvents(events []platform.Event) {
 	in := l.input
 	for _, e := range events {
@@ -409,12 +431,13 @@ func (l *loop) handleEvents(events []platform.Event) {
 			l.applySize()
 		case platform.EventFocus:
 			l.ctx.focused = e.Focused
-			if l.cfg.PauseUnfocused && l.ctx.Audio != nil {
-				l.ctx.Audio.SetPaused(!e.Focused)
-			}
+			l.applyPause()
 			if !e.Focused {
 				in.FeedFocusLost()
 			}
+		case platform.EventVisible:
+			l.ctx.visible = e.Visible
+			l.applyPause()
 		case platform.EventMouseEnter:
 			// The system resets the pointer's shape at the window's edge.
 			if l.ctx.cursor != CursorArrow {

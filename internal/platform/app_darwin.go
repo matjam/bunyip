@@ -110,6 +110,24 @@ func (a *App) registerDelegateClass() (objc.Class, error) {
 					a.push(Event{Kind: EventFocus, Window: w, Focused: false})
 				}
 			}},
+			{Cmd: objc.RegisterName("windowDidMiniaturize:"), Fn: func(_ objc.ID, _ objc.SEL, n objc.ID) {
+				if w := windowOf(n); w != nil {
+					w.miniaturized = true
+					w.updateVisible()
+				}
+			}},
+			{Cmd: objc.RegisterName("windowDidDeminiaturize:"), Fn: func(_ objc.ID, _ objc.SEL, n objc.ID) {
+				if w := windowOf(n); w != nil {
+					w.miniaturized = false
+					w.updateVisible()
+				}
+			}},
+			{Cmd: objc.RegisterName("windowDidChangeOcclusionState:"), Fn: func(_ objc.ID, _ objc.SEL, n objc.ID) {
+				if w := windowOf(n); w != nil {
+					w.occluded = objc.Send[uint64](w.nsWindow, selOcclusionState)&nsWindowOcclusionStateVisible == 0
+					w.updateVisible()
+				}
+			}},
 		})
 	if err != nil {
 		return 0, fmt.Errorf("platform: register window delegate: %w", err)

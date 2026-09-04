@@ -68,6 +68,12 @@ type Config struct {
 	// another window; frames still draw. Off by default: a server, a
 	// music player or a game with real-time multiplayer keeps running.
 	PauseUnfocused bool
+	// PauseHidden stops updates and silences the mixer while the window
+	// cannot be seen, in the same way PauseUnfocused does for focus. A
+	// window is hidden while it is minimised, and while it is wholly
+	// covered by other windows on the platforms that report that. Off by
+	// default, and a headless run is always visible.
+	PauseHidden bool
 
 	// DrawBudget is the number of draw calls (2D and 3D together) a
 	// frame should stay under; the debug overlay warns when a frame goes
@@ -195,6 +201,7 @@ type Context struct {
 	shot     string
 	win      windowControl
 	focused  bool
+	visible  bool
 	closeReq bool
 	cursor   Cursor
 }
@@ -305,6 +312,15 @@ func (c *Context) SetCursor(shape Cursor) {
 
 // Focused reports whether the window has keyboard focus.
 func (c *Context) Focused() bool { return c.focused }
+
+// Visible reports whether the window can be seen. It is false while the
+// window is minimised, and while it is wholly covered by other windows on
+// the platforms that report that; Windows reports only minimising, and a
+// Wayland compositor older than xdg_toplevel version six reports nothing,
+// so the window stays visible there. A headless run is always visible.
+// Config.PauseHidden stops updates and silences the mixer while it is
+// false.
+func (c *Context) Visible() bool { return c.visible }
 
 // CloseRequested reports that the user asked to close the window since
 // the last Update. With Config.HandleClose the loop keeps running and the

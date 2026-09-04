@@ -23,6 +23,7 @@ func (w *Window) Size() (int, int)                                     { return 
 func (w *Window) PixelSize() (int, int)                                { return 0, 0 }
 func (w *Window) Scale() float64                                       { return 1 }
 func (w *Window) Closed() bool                                         { return true }
+func (w *Window) Visible() bool                                        { return false }
 func (w *Window) Close()                                               {}
 func RequiredInstanceExtensions() []string                             { return nil }
 func (w *Window) CreateSurface(vk.VkInstance) (vk.VkSurfaceKHR, error) { return 0, ErrUnsupported }

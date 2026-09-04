@@ -29,7 +29,7 @@ methods change it afterwards.
 | `Title` (the first one), `Width`, `Height`, `Resizable` | `SetTitle`, `SetIcon`, `SetSizeLimits` |
 | `Icon` | `SetCursor`, `SetCursorVisible`, `SetCursorImage`, `SetCursorCaptured` |
 | `ViewWidth`, `ViewHeight`, `Scaling` | `SetFullscreen`, `Fullscreen` |
-| `Headless`, `NoVSync`, `HandleClose`, `PauseUnfocused` | `SetPosition`, `Position`, `SetAlwaysOnTop` |
+| `Headless`, `NoVSync`, `HandleClose`, `PauseUnfocused`, `PauseHidden` | `SetPosition`, `Position`, `SetAlwaysOnTop` |
 
 Two things are missing on purpose. There is no programmatic resize.
 Nothing in the API sets the window's size after it opens, so the player
@@ -93,6 +93,12 @@ The loop turns window events into a few things a game reads.
 - `ctx.Focused` reports keyboard focus. `Config.PauseUnfocused` stops
   updates and silences the mixer while another window has focus; frames
   still draw.
+- `ctx.Visible` reports whether the window can be seen. It is false while
+  the window is minimised, and while it is wholly covered by other
+  windows on the platforms that report that. `Config.PauseHidden` stops
+  updates and silences the mixer while it is false, the same way
+  `PauseUnfocused` does for focus; setting both pauses while either is
+  true. A headless run is always visible.
 - `ctx.CloseRequested` is true for one update after the player asks to
   close, but only with `Config.HandleClose`. Without it the loop quits on
   its own and the game never sees the request.
@@ -167,6 +173,7 @@ backend`.
 | `SetAlwaysOnTop` | yes | no-op | no-op | no-op |
 | `SetCursorImage` | yes | no-op | no-op | no-op |
 | `Clipboard`, `SetClipboard` | yes | yes | error | error |
+| `ctx.Visible` | miniaturised and occluded | minimised | suspended (xdg_toplevel 6) | unmapped, minimised and obscured |
 | DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | the output's integer scale | always 1 |
 
 Where a control is a no-op, the call returns and nothing happens.

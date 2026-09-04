@@ -230,6 +230,8 @@ type wlWindow struct {
 	fullscreen, pendFullscreen bool
 	maximized, pendMaximized   bool
 	activated, pendActivated   bool
+	pendSuspended              bool
+	visible                    bool // false only while the compositor suspends the window
 
 	resizable              bool
 	minW, minH, maxW, maxH int
@@ -957,7 +959,7 @@ func (a *wlApp) newWindow(out *Window, cfg Config) (*wlWindow, error) {
 		app: a, out: out,
 		width: cfg.Width, height: cfg.Height, defW: cfg.Width, defH: cfg.Height,
 		scale: 1, resizable: cfg.Resizable, onOutputs: map[unsafe.Pointer]bool{},
-		cursorScale: 1,
+		cursorScale: 1, visible: true,
 	}
 	w.surface = l.marshal(a.compositor, opCompositorCreateSurface, a.iface["wl_surface"], 0, 0)
 	if w.surface == nil {
@@ -1049,7 +1051,7 @@ func (w *wlWindow) applySizeLimits(minW, minH, maxW, maxH int) {
 // carries the serial to acknowledge.
 func (w *wlWindow) onToplevelConfigure(width, height int32, states *wlArray) {
 	w.pendW, w.pendH = int(width), int(height)
-	w.pendFullscreen, w.pendMaximized, w.pendActivated = false, false, false
+	w.pendFullscreen, w.pendMaximized, w.pendActivated, w.pendSuspended = false, false, false, false
 	for _, s := range states.u32s() {
 		switch s {
 		case xdgToplevelStateFullscreen:
@@ -1058,6 +1060,8 @@ func (w *wlWindow) onToplevelConfigure(width, height int32, states *wlArray) {
 			w.pendMaximized = true
 		case xdgToplevelStateActivated:
 			w.pendActivated = true
+		case xdgToplevelStateSuspended:
+			w.pendSuspended = true
 		}
 	}
 }
@@ -1085,6 +1089,7 @@ func (w *wlWindow) onSurfaceConfigure(serial uint32) {
 	w.width, w.height = width, height
 	w.fullscreen, w.maximized = w.pendFullscreen, w.pendMaximized
 	w.setFocused(w.pendActivated)
+	w.setVisible(!w.pendSuspended)
 	first := !w.configured
 	w.configured = true
 	if sizeChanged && !first {
@@ -1104,6 +1109,19 @@ func (w *wlWindow) setFocused(on bool) {
 		w.app.repeatKey = 0
 	}
 	w.app.push(Event{Kind: EventFocus, Window: w.out, Focused: on})
+}
+
+// setVisible reports a change in whether the window can be seen. The
+// compositor says so with the suspended state of xdg_toplevel version
+// six, which it sends when the window is minimised or wholly covered; a
+// compositor that offers an earlier version never sends it, so the window
+// stays visible.
+func (w *wlWindow) setVisible(on bool) {
+	if on == w.visible {
+		return
+	}
+	w.visible = on
+	w.app.push(Event{Kind: EventVisible, Window: w.out, Visible: on})
 }
 
 // pushResize reports the content and framebuffer size.

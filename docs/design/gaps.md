@@ -56,12 +56,10 @@ in each package's comment.
 
 ## Game loop
 
-`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall, and
+`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall,
 `PauseUnfocused` stops updates and the mixer while another window has
-focus.
-
-- Pausing when the window is hidden or minimised but still focused; the
-  platform layers do not report visibility yet.
+focus, and `PauseHidden` does the same while the window cannot be seen;
+every platform layer reports visibility and `ctx.Visible` reads it.
 
 ## Input
 

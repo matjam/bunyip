@@ -46,6 +46,7 @@ type App struct {
 	mods    Mods
 
 	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
+	atomNetWMHidden                                                                                      uint32
 
 	xkbCtx, xkbKeymap, xkbState unsafe.Pointer
 	xkbDevice                   int32
@@ -63,6 +64,10 @@ type Window struct {
 	closed    bool
 	captured  bool
 	fullscr   bool
+	mapped    bool
+	obscured  bool
+	wmHidden  bool // _NET_WM_STATE_HIDDEN: the window manager minimised it
+	visible   bool
 	cursor    uint32 // the invisible cursor while captured
 	inputRect textRect
 	mouseX    float64
@@ -156,6 +161,18 @@ func (w *Window) Scale() float64 {
 		return float64(w.wl.scale)
 	}
 	return 1
+}
+
+// Visible reports whether the window can be seen. It is false while the
+// window is minimised, unmapped or wholly covered by other windows. X11
+// reads MapNotify, VisibilityNotify and _NET_WM_STATE_HIDDEN; Wayland
+// reads the suspended state of xdg_toplevel version six, so a compositor
+// that offers an earlier version always reports true.
+func (w *Window) Visible() bool {
+	if w.wl != nil {
+		return w.wl.visible
+	}
+	return w.visible
 }
 
 // Closed reports whether the window was destroyed.

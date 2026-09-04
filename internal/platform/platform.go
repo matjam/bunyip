@@ -55,6 +55,7 @@ const (
 	EventMouseEnter           // the pointer entered the content area
 	EventMouseLeave           // the pointer left the content area
 	EventWake                 // App.Wake was called from another goroutine
+	EventVisible              // Visible says whether the window became visible or hidden
 )
 
 // CursorShape names a system cursor.
@@ -99,6 +100,7 @@ type Event struct {
 	DX, DY  float64
 	Precise bool
 	Focused bool
+	Visible bool
 	Width   int // content size in points
 	Height  int
 	PixelW  int // framebuffer size in pixels
@@ -111,6 +113,7 @@ var eventNames = [...]string{
 	EventKeyDown: "KeyDown", EventKeyUp: "KeyUp", EventChar: "Char", EventCompose: "Compose", EventMouseMove: "MouseMove",
 	EventMouseDown: "MouseDown", EventMouseUp: "MouseUp", EventScroll: "Scroll",
 	EventMouseEnter: "MouseEnter", EventMouseLeave: "MouseLeave", EventWake: "Wake",
+	EventVisible: "Visible",
 }
 
 func (k EventKind) String() string {
