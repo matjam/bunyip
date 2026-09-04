@@ -178,7 +178,8 @@ inside a component or resource, including inside slices, maps and
 pointers. A component that stores entities where reflection cannot
 reach them can implement `Remap(func(Entity) Entity)` and rewrite them
 itself. A reference to an entity the file does not hold becomes `None`.
-`gfx.Transform` and `gfx.Transform2` are registered by default.
+`gfx.Transform`, `gfx.Transform2` and `ecs.Name` are registered by
+default.
 
 Only exported fields are saved, as with any `encoding/json` value, and
 a type with its own `MarshalJSON` is written that way.
@@ -206,6 +207,132 @@ ecs.Add(w, e, Position{x, y}) // place it after
 can live in asset files beside the sprites they use. `PrefabOf` takes a
 prefab from a live entity and its descendants, which is how an editor
 would save what it built.
+
+## Scenes
+
+A scene is a JSON document of entities to spawn as a unit: a level, a
+room, an ambush, the contents of a shop. Where a prefab is one template
+stamped over and over, a scene is a whole arrangement, with its parent
+links, its cross-references and its own properties. `ParseScene` reads
+one, `asset.Scene` reads one through the asset system, `Encode` writes
+it, `World.Instantiate` spawns a copy, and `World.ExportScene` captures
+live entities back into a document, so a game can round-trip what it
+built.
+
+```json
+{
+  "version": 1,
+  "name": "west camp",
+  "properties": {"music": "wind.ogg", "wave": 2},
+  "entities": [
+    {"name": "camp", "components": {"gfx.Transform": {"Position": {"X": 40}}}},
+    {"name": "chief", "parent": 1, "prefab": "orc",
+     "components": {"Health": {"HP": 40}}},
+    {"parent": 1, "prefab": "orc",
+     "components": {"gfx.Transform": {"Position": {"X": 2}}, "Follows": {"Leader": 2}}}
+  ]
+}
+```
+
+The document is versioned; version 1 is the only one there is.
+`properties` is free-form and for the game's own use, decoded by
+`encoding/json`, so a number arrives as a `float64`.
+
+Entities are numbered from one in list order, and that number is the
+only way the document links entities together. `parent` holds it, and so
+does an `Entity` field inside a component, which is why zero means both
+"no parent" and `None`. In the example above the third entity follows
+the second. Building a scene in code, `SceneRef` turns a number into the
+value to store in such a field.
+
+`name` is a label, not a link. `SceneInstance.Entity` finds a spawned
+entity by it, and `Instantiate` puts it on the entity as a `Name`
+component so `ExportScene` can write it out again. Names are unique
+within a scene.
+
+Components use the same registered names and the same encoding as
+`World.Save`, so the two formats stay in step. A name this build has not
+registered fails `Instantiate` with an `UnregisteredError`, before
+anything is spawned, unless `InstantiateOptions{SkipUnknown: true}` is
+set.
+
+### Spawning and removing
+
+```go
+scene, err := asset.Scene(fs, "levels/camp.json")
+if err != nil { ... }
+
+camp, err := w.Instantiate(scene, ecs.InstantiateOptions{Offset: lin.V3(120, 0, 0)})
+if err != nil { ... }
+
+chief, ok := camp.Entity("chief")
+...
+camp.Despawn(w) // every entity this copy spawned, and their children
+```
+
+Each call spawns fresh entities, so several copies of one scene coexist
+and one copy's `Despawn` leaves the others alone. `Roots` are the
+entities the scene left unparented and `Spawned` is every entity the
+copy made, in scene order. `InstantiateOptions.Parent` hangs the roots
+under an entity you already have, and `Offset` moves each root by adding
+to its `gfx.Transform` or `gfx.Transform2` position; a root with neither
+component is not moved.
+
+### Prefab references
+
+An entity may name a prefab instead of listing every component. The
+prefab comes from a `PrefabLibrary`, a map of names to prefabs, passed
+in `InstantiateOptions.Prefabs` or stored on the world as a resource.
+The entity's own components are written over the prefab's, so a document
+holds only the components that differ from the template. An override
+replaces a whole component rather than merging field by field, so the
+parts a template varies belong in components of their own.
+
+```go
+lib := ecs.PrefabLibrary{"orc": orcPrefab, "hut": hutPrefab}
+ecs.SetResource(w, lib)
+```
+
+A reference the library cannot resolve is a `MissingPrefabError` naming
+the prefab. The prefab format has unnamed children, so overrides apply
+to the prefab's root; anything else an instance needs is an ordinary
+scene entity parented to it.
+
+### Exporting
+
+```go
+scene, err := w.ExportScene(camp.Roots...) // or no roots for the whole world
+data, err := scene.Encode()
+```
+
+`ExportScene` walks the given roots and their descendants, or every
+parentless entity when given none. Entity fields pointing inside the
+captured set become the right numbers, and references out of it become
+`None`. It writes components rather than prefab references, because a
+live entity does not remember which prefab made it, so a scene exported
+after instantiating one is flat but spawns the same thing. `Encode`
+writes indented JSON, which reads and merges well in version control.
+
+Building a scene in code takes the same shape:
+
+```go
+s := ecs.NewScene("west camp")
+s.SetProperty("wave", 2)
+camp, _ := s.AddEntity("camp", gfx.At(40, 0, 0))
+chief, _ := s.AddPrefab("chief", "orc", Health{HP: 40})
+guard, _ := s.AddEntity("", gfx.At(2, 0, 0), Follows{Leader: ecs.SceneRef(chief)})
+s.SetParent(chief, camp)
+s.SetParent(guard, camp)
+```
+
+The solar example is the working reference: its sun, planets and moons
+live in `examples/solar/system.json`, the moons reference the prefab in
+`examples/solar/moon.json`, both are embedded with `go:embed` and read
+through `asset.Scene` and `asset.Prefab`, and the asteroid belt is
+spawned in code under the entity the scene named `sun`.
+
+There is no scene editor yet. The format and the API are what an editor
+would write and read.
 
 ## Cloning
 

@@ -1,9 +1,11 @@
 // Command audio is the sound tour: positional voices orbiting the
-// listener with Doppler and occlusion on sliders, a shared reverb and a
-// low-pass filter on sliders, fades, pitch, voice priorities under a
-// small voice cap, a synthesised music stream, -music to stream an Ogg,
-// MP3 or WAV file from disk, and -zone to put a reverb zone at the
-// listener so the room changes as the orbiting sources pass through it.
+// listener with Doppler and occlusion on sliders, panning or the
+// binaural head model on a checkbox, a shared reverb and a low-pass
+// filter on sliders, fades, pitch, voice priorities under a small voice
+// cap, a synthesised music stream, -music to stream an Ogg, MP3 or WAV
+// file from disk, -zone to put a reverb zone at the listener so the room
+// changes as the orbiting sources pass through it, and -mic to record
+// from the microphone and draw a level meter.
 package main
 
 import (
@@ -35,6 +37,7 @@ type game struct {
 	shot      string
 	musicPath string
 	zone      bool
+	mic       bool
 
 	font    *gfx.Font
 	ui      *ui.Context
@@ -45,12 +48,18 @@ type game struct {
 	music   *audio.Music
 	stream  *audio.Voice
 
+	capture *audio.Capture
+	micBuf  []float32
+	micErr  string
+	micPeak float32
+
 	reverb    float32
 	room      float32
 	cutoff    float32
 	pitch     float32
 	occlusion float32
 	doppler   float32
+	binaural  bool
 	shotDone  bool
 }
 
@@ -104,10 +113,25 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	} else {
 		g.stream = m.PlayStream(&arpeggio{rate: m.Rate()}, audio.PlayOptions{Volume: 0.18, Reverb: 0.6, Priority: 20})
 	}
+	// -mic records from the default input. Nothing is played back; the
+	// samples are read every update so the ring does not fill, and the
+	// meter reads the level. A run without -mic never opens the device,
+	// and a headless run has none to open.
+	if g.mic {
+		g.capture, err = m.OpenCapture(audio.CaptureOptions{})
+		if err != nil {
+			g.micErr = err.Error()
+		} else {
+			g.micBuf = make([]float32, g.capture.Rate()/10)
+		}
+	}
 	return nil
 }
 
 func (g *game) Shutdown(ctx *bunyip.Context) {
+	if g.capture != nil {
+		g.capture.Close()
+	}
 	if g.music != nil {
 		g.music.Close()
 	}
@@ -144,6 +168,13 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		v := s.dist * s.speed
 		s.voice.SetVelocity(lin.V3(-v*float32(math.Sin(a)), v*float32(math.Cos(a)), 0))
 	}
+	if g.capture != nil {
+		// Drain what the device recorded since the last update, so the
+		// ring never fills, and hold the peak for a readable meter.
+		for g.capture.Read(g.micBuf) > 0 {
+		}
+		g.micPeak = max(g.capture.Level(), g.micPeak-float32(ctx.Delta))
+	}
 	return nil
 }
 
@@ -169,7 +200,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 480}, func() {
+		u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 560}, func() {
 			u.Label(fmt.Sprintf("%d voices playing (cap 12)", ctx.Audio.Playing()))
 			if u.Slider("Reverb wet", &g.reverb, 0, 1) || u.Slider("Room size", &g.room, 0, 1) {
 				ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: g.room, Wet: g.reverb})
@@ -184,6 +215,9 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			}
 			if u.Slider("Doppler factor", &g.doppler, 0, 3) {
 				ctx.Audio.SetDoppler(g.doppler)
+			}
+			if u.Checkbox("Binaural (headphones)", &g.binaural) {
+				ctx.Audio.SetSpatial(audio.SpatialSettings{Binaural: g.binaural})
 			}
 			u.Slider("Click pitch", &g.pitch, 0.5, 2)
 			u.Row(2, func() {
@@ -218,7 +252,17 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			} else {
 				u.Label("Music is a synthesised Stream; pass -music file.ogg to stream a file.")
 			}
-			u.Label("Orbiting sources pan and fade with distance from the listener.")
+			switch {
+			case g.capture != nil:
+				// A meter on a decibel scale, silence at -60 dB.
+				db := float32(0)
+				if g.micPeak > 0 {
+					db = max(0, (20*float32(math.Log10(float64(g.micPeak)))+60)/60)
+				}
+				u.Progress(fmt.Sprintf("Mic %.3f at %d Hz, %d dropped", g.capture.Level(), g.capture.Rate(), g.capture.Dropped()), db)
+			case g.micErr != "":
+				u.Label("Microphone: " + g.micErr)
+			}
 		})
 	})
 	return nil
@@ -253,9 +297,10 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	music := flag.String("music", "", "Ogg, MP3 or WAV file to stream")
 	zone := flag.Bool("zone", false, "put a reverb zone over the left half and move the listener with the mouse")
+	mic := flag.Bool("mic", false, "record from the default microphone and show a level meter")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip audio", Width: 900, Height: 600, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, musicPath: *music, zone: *zone})
+		&game{seconds: *seconds, shot: *shot, musicPath: *music, zone: *zone, mic: *mic})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "audio:", err)
 		os.Exit(1)

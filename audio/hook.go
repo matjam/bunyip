@@ -10,6 +10,12 @@ type driver struct{ m *Mixer }
 func (d driver) Mix(out []float32) { d.m.mix(out) }
 func (d driver) Game() any         { return d.m }
 
+func (d driver) SetDevice(open bool) {
+	d.m.mu.Lock()
+	d.m.noDevice = !open
+	d.m.mu.Unlock()
+}
+
 func init() {
 	hook.NewMixer = func(rate int) hook.Audio { return driver{NewMixer(rate)} }
 }

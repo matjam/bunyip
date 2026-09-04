@@ -27,6 +27,13 @@
 // components. A Prefab is a template of components (and child prefabs)
 // that spawns independent copies. Clone and CloneTree copy an entity
 // that already exists.
+//
+// A Scene is a JSON document of entities to spawn as a unit: a level, a
+// room, a squad. Instantiate spawns a copy and returns a SceneInstance
+// that finds its entities by name and despawns them again, so several
+// copies live side by side; ExportScene captures live entities back into
+// a document. A scene entity may reference a prefab from a
+// PrefabLibrary and override its components.
 package ecs
 
 import (

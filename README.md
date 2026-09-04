@@ -40,11 +40,13 @@ window.
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.
 - Audio: a mixer with streamed WAV, Ogg Vorbis and MP3, positional
-  voices with Doppler and occlusion, buses, reverb zones, and a tracker
-  player for MOD, S3M, XM and IT.
-- Simulation: an archetype entity component system with saving, prefabs
-  and cloning; 2D and 3D rigid bodies with joints, ragdolls, character
-  controllers and queries; celestial mechanics for any star system.
+  voices with panning or a binaural head model, Doppler and occlusion,
+  buses, reverb zones, microphone capture, and a tracker player for MOD,
+  S3M, XM and IT.
+- Simulation: an archetype entity component system with saving, prefabs,
+  cloning and a JSON scene format; 2D and 3D rigid bodies with joints,
+  ragdolls, character controllers and queries; celestial mechanics for
+  any star system.
 - Services: assets and pack files with background loading and hot
   reload, saves and settings, translation with plural rules, seeded
   random numbers, timers and cutscene sequences, tweens, grids with
@@ -57,9 +59,10 @@ window.
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
 (Wayland or X11, ALSA, joystick devices) layers sit behind the same
 `internal/platform` and `internal/audioout` interfaces. The Linux window
-layer has run on real hardware, both Wayland and X11; the Linux audio and
-gamepad layers and the whole Windows layer cross-compile and vet but have
-not. On Linux the window layer uses
+layer has run on real hardware, both Wayland and X11, and so have Linux
+audio output and capture; the Linux gamepad layer, macOS capture and the
+whole Windows layer cross-compile and vet but have not. On Linux the
+window layer uses
 Wayland where a compositor is running and falls back to X11 through xcb;
 `BUNYIP_X11=1` forces X11.
 
@@ -92,16 +95,16 @@ with it.
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
 | `particle` | CPU particle systems drawn through the sprite batch |
 | `tiled` | maps from the Tiled editor in JSON or XML form, built into drawable levels |
-| `audio` | mixer, voices, streams; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
+| `audio` | mixer, voices, streams, microphone capture; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
 | `audio/tracker` | MOD, S3M, XM and IT loader and player |
 | `input` | key codes, modifiers, mouse buttons, gamepads, per-update `State`, action maps |
 | `gltf` | glTF 2.0 loader (no GPU dependency) |
 | `lin` | vectors, matrices, quaternions |
-| `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs |
+| `ecs` | archetype-based entity component system: queries, systems, resources, events, hierarchy, saves, prefabs, scene documents |
 | `anim` | keyframe curves and clips for 2D sprites, 3D transforms and any component field; players with crossfades, flipbooks, skeletons with layers, events, root motion, IK and morph targets |
 | `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps and shape casts |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
-| `asset` | files from directories and pack files, async loading, hot reload |
+| `asset` | files from directories and pack files, one-call loaders, async loading, hot reload |
 | `save` | JSON saves and settings in the platform's data directory |
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
 | `timer`, `tween` | game-time timers and step sequences for cutscenes; eased value animation |
@@ -111,7 +114,7 @@ with it.
 | `internal/vk` | generated Vulkan binding plus hand-written loader |
 | `internal/render` | Vulkan backend: device, swapchain, frames in flight, pipelines, uploads, readback |
 | `internal/platform` | per-OS window, events, surface creation |
-| `internal/audioout` | per-OS audio output |
+| `internal/audioout` | per-OS audio output and microphone input |
 
 ## A game
 
@@ -159,8 +162,8 @@ whole program and explains it section by section:
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
 | `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay |
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
-| `go run ./examples/audio [-music file.ogg]` | positional voices, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream and streamed music files |
-| `go run ./examples/solar` | the ECS driving a scene: hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
+| `go run ./examples/audio [-music file.ogg] [-zone] [-mic]` | positional voices with panning or the binaural head model, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream, streamed music files and a microphone level meter |
+| `go run ./examples/solar` | the ECS driving a scene: a scene document and a prefab loaded from embedded files, hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
 | `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, a procedural sky with a slider that raises the altitude to orbit, image-based lighting from a panorama, every post-processing setting on a slider, glTF animation clips |
 | `go run ./examples/pathfinding` | A*, Dijkstra maps, field of view, flood fill and lines on a paintable grid; save and load through the save package |
 | `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic; `-reliable` sends chat over reliable UDP and shows the link's round trip and loss |

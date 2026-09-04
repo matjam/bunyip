@@ -121,7 +121,11 @@ func runOnce(cfg Config, game Game) error {
 	defer gd.Destroy()
 	in := hook.NewInput()
 	mix := hook.NewMixer(audioRate)
-	if !cfg.NoAudio && !cfg.Headless {
+	if cfg.NoAudio || cfg.Headless {
+		// No device at all was asked for, so the mixer refuses to record
+		// from one either.
+		mix.SetDevice(false)
+	} else {
 		dev, err := audioout.Open(audioRate, mix.Mix)
 		if err != nil {
 			cfg.Log.Warn("bunyip: audio output unavailable, continuing silent", "err", err)

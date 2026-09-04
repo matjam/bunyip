@@ -10,6 +10,7 @@ import (
 
 	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/audio/tracker"
+	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
 )
@@ -152,6 +153,36 @@ func parseModel(fs *FS, name string) (*gltf.Document, error) {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
 	return doc, nil
+}
+
+// Scene reads a scene document, ready for ecs.World.Instantiate. The
+// component types the scene names are checked when it is instantiated,
+// not here, so a scene loads before the game registers them.
+func Scene(fs *FS, name string) (*ecs.Scene, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	scene, err := ecs.ParseScene(data)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	return scene, nil
+}
+
+// Prefab reads a prefab document, for the ecs.PrefabLibrary a scene's
+// prefab references are resolved against. Every component type the file
+// names must be registered first.
+func Prefab(fs *FS, name string) (*ecs.Prefab, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	pf, err := ecs.ParsePrefab(data)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	return pf, nil
 }
 
 // Tracker reads and parses a MOD, S3M, XM or IT module.
