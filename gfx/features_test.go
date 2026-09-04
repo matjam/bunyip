@@ -57,11 +57,61 @@ func TestSpriteCulling(t *testing.T) {
 	if s := g.Stats(); s.Culled2D != 1 {
 		t.Errorf("culled %d sprites, want 1", s.Culled2D)
 	}
-	if !spriteVisible(Sprite{Pos: lin.V2(0, 0), Size: lin.V2(4, 4)}, lin.R(2, 2, 10, 10)) {
+	if !spriteVisible(Sprite{Pos: lin.V2(0, 0), Size: lin.V2(4, 4)}, lin.Identity2(), lin.R(2, 2, 10, 10)) {
 		t.Error("a sprite touching the view was culled")
 	}
-	if spriteVisible(Sprite{Pos: lin.V2(0, 0), Size: lin.V2(4, 4)}, lin.R(10, 10, 10, 10)) {
+	if spriteVisible(Sprite{Pos: lin.V2(0, 0), Size: lin.V2(4, 4)}, lin.Identity2(), lin.R(10, 10, 10, 10)) {
 		t.Error("a sprite clear of the view was kept")
+	}
+}
+
+// Culling tests the sprite's own quad, so a long thin rotated sprite is
+// kept only while that quad meets the view, and a sprite moved by the
+// transform stack is tested where it lands.
+func TestSpriteCullingQuad(t *testing.T) {
+	view := lin.R(0, 0, 100, 100)
+	// A 200 by 4 bar turned 45 degrees about its middle, centred beyond
+	// the bottom-right corner. It points back at the view and its end
+	// lands inside.
+	bar := Sprite{Pos: lin.V2(150, 150), Size: lin.V2(200, 4), Origin: lin.V2(0.5, 0.5), Rotation: math.Pi / 4}
+	if !spriteVisible(bar, lin.Identity2(), view) {
+		t.Error("a rotated bar reaching into the view was culled")
+	}
+	// The same bar turned the other way lies along the far diagonal,
+	// seventy units clear of the corner. The circle around it, which is
+	// what culling used to test, would keep it.
+	bar.Rotation = 3 * math.Pi / 4
+	if spriteVisible(bar, lin.Identity2(), view) {
+		t.Error("a rotated bar clear of the view was kept")
+	}
+	// The transform stack moves a sprite before it is tested.
+	s := Sprite{Pos: lin.V2(10, 10), Size: lin.V2(8, 8)}
+	if spriteVisible(s, lin.Translate2(500, 0), view) {
+		t.Error("a sprite translated out of the view was kept")
+	}
+	if !spriteVisible(s, lin.Translate2(500, 0), lin.R(500, 0, 100, 100)) {
+		t.Error("a sprite translated into the view was culled")
+	}
+	if s := (Sprite{Pos: lin.V2(50, 50)}); !spriteVisible(s, lin.Identity2(), view) {
+		t.Error("a sprite with no size inside the view was culled")
+	}
+}
+
+// Culling applies under the transform stack, which it used to skip.
+func TestSpriteCullingUnderTransform(t *testing.T) {
+	g := newHeadless(t, 32, 32)
+	render2D(t, g, Black, func() {
+		g.SetCamera2D(Camera2D{Position: lin.V2(16, 16)})
+		g.Transformed(lin.Translate2(1000, 0), func() {
+			g.FillRect(0, 0, 8, 8, White) // pushed out of the view
+		})
+		g.Transformed(lin.Translate2(8, 8), func() {
+			g.FillRect(0, 0, 8, 8, White) // still inside
+		})
+		g.ScreenSpace()
+	})
+	if s := g.Stats(); s.Culled2D != 1 {
+		t.Errorf("culled %d sprites under a transform, want 1", s.Culled2D)
 	}
 }
 

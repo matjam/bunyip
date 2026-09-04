@@ -251,7 +251,7 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.Color == (Color{}) {
 		s.Color = White
 	}
-	if q := g.cur; q.hasCam2D && q.xform.IsIdentity() && !spriteVisible(s, q.visible) {
+	if q := g.cur; q.hasCam2D && !spriteVisible(s, q.xform, q.visible) {
 		g.stats.Culled2D++
 		return
 	}
@@ -266,15 +266,55 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 }
 
 // spriteVisible reports whether any of a sprite can lie inside a
-// world-space view. It tests the circle around the sprite's position
-// that holds its corners at any rotation, so it is conservative and
-// costs no trigonometry.
-func spriteVisible(s Sprite, view lin.Rect) bool {
-	ox, oy := s.Origin.X*s.Size.X, s.Origin.Y*s.Size.Y
-	dx := max(abs32(ox), abs32(s.Size.X-ox))
-	dy := max(abs32(oy), abs32(s.Size.Y-oy))
-	r := float32(math.Hypot(float64(dx), float64(dy)))
-	return s.Pos.X+r >= view.X && s.Pos.X-r <= view.X+view.W && s.Pos.Y+r >= view.Y && s.Pos.Y-r <= view.Y+view.H
+// world-space view. It tests the sprite's four corners, mapped through
+// the 2D transform in force, against the view rectangle by separating
+// axes, so a long thin rotated sprite is culled as soon as its own quad
+// clears the view rather than when the circle around it does.
+func spriteVisible(s Sprite, xform lin.Affine, view lin.Rect) bool {
+	p := spriteCorners(s)
+	if !xform.IsIdentity() {
+		for i := range p {
+			p[i] = xform.Apply(p[i])
+		}
+	}
+	// The view's own axes first: they reject everything well clear of it.
+	lo, hi := p[0], p[0]
+	for _, c := range p[1:] {
+		lo = lin.V2(min(lo.X, c.X), min(lo.Y, c.Y))
+		hi = lin.V2(max(hi.X, c.X), max(hi.Y, c.Y))
+	}
+	if hi.X < view.X || lo.X > view.X+view.W || hi.Y < view.Y || lo.Y > view.Y+view.H {
+		return false
+	}
+	// Then the quad's two edge normals, which separate a rotated or
+	// sheared sprite that the axis-aligned test alone keeps.
+	corners := [4]lin.Vec2{
+		lin.V2(view.X, view.Y), lin.V2(view.X+view.W, view.Y),
+		lin.V2(view.X+view.W, view.Y+view.H), lin.V2(view.X, view.Y+view.H),
+	}
+	for _, e := range [2]lin.Vec2{p[1].Sub(p[0]), p[3].Sub(p[0])} {
+		axis := lin.V2(-e.Y, e.X)
+		if axis == (lin.Vec2{}) {
+			continue // a degenerate sprite has no such axis
+		}
+		qlo, qhi := projectPoints(axis, p[:])
+		vlo, vhi := projectPoints(axis, corners[:])
+		if qhi < vlo || qlo > vhi {
+			return false
+		}
+	}
+	return true
+}
+
+// projectPoints returns the range points cover along an axis.
+func projectPoints(axis lin.Vec2, points []lin.Vec2) (lo, hi float32) {
+	lo = axis.X*points[0].X + axis.Y*points[0].Y
+	hi = lo
+	for _, p := range points[1:] {
+		d := axis.X*p.X + axis.Y*p.Y
+		lo, hi = min(lo, d), max(hi, d)
+	}
+	return lo, hi
 }
 
 // DrawTriangles queues textured triangles: three vertices each, with

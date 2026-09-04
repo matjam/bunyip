@@ -168,8 +168,11 @@ and `Advance`, called once per update, runs the shake and lets it settle.
 the other way for a marker pinned to an entity, and `VisibleRect`
 returns the world rectangle on screen. Sprites wholly outside that
 rectangle are dropped before they reach the vertex stream, and
-`FrameStats.Culled2D` counts them. `ScreenSpace` returns to view
-coordinates for the HUD.
+`FrameStats.Culled2D` counts them. The test is the sprite's own four
+corners against the view, so a long thin rotated sprite is culled as
+soon as its quad clears the view, and it holds under `Transformed` as
+well: a sprite the transform stack pushes off screen costs nothing.
+`ScreenSpace` returns to view coordinates for the HUD.
 
 ```go
 g.cam.Follow(g.player.Pos, 8, ctx.Delta) // in Update

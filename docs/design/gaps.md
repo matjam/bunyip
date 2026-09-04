@@ -86,7 +86,8 @@ template expansion, Tiled terrain sets), the
 `tiled` importer in both of Tiled's file forms, TexturePacker and
 Aseprite atlases with `asset.Atlas` to load one and
 `Atlas.Animation` to play a tag at its own timings, sprite culling
-against the 2D camera, a sort key within a layer (`SetSortKey`),
+against the 2D camera by the sprite's own corners, under the transform
+stack as well, a sort key within a layer (`SetSortKey`),
 camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
 
@@ -99,9 +100,6 @@ camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
   `renderQueue` skips when the frame has no 3D draws, no background and
   no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
   `RenderTexture` and blits it with its own sprite shader instead.
-- Sprite culling tests the circle around each sprite against the 2D
-  camera's view, so it is conservative for long thin sprites, and it is
-  skipped under a 2D transform stack.
 - GPU-instanced particles for very large counts; the system is CPU
   simulated and drawn through the sprite stream, which is fine for
   thousands.
