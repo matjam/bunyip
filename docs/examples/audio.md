@@ -1,7 +1,7 @@
 ---
 title: Audio
 example: audio
-summary: positional voices orbiting a listener with Doppler and occlusion, reverb and low-pass on sliders, fades, pitch, voice stealing, and a synthesised music stream
+summary: positional voices orbiting a listener with Doppler, occlusion and a binaural head model, reverb and low-pass on sliders, fades, pitch, voice stealing, a synthesised music stream and microphone capture
 ---
 
 This program is a tour of the [audio](../pkg/audio.html) mixer. Three
@@ -10,7 +10,9 @@ fading with distance and shifting in pitch from their own velocity. A
 looping pad runs through a low-pass filter and a shared reverb, both on
 sliders. Buttons fade the pad, pause the music, play a click at a chosen
 pitch, and fire forty voices at once into a deliberately small voice cap
-so the mixer has to steal.
+so the mixer has to steal. A checkbox swaps the pan law for the binaural
+head model, and `-mic` records from the default microphone and draws a
+level meter.
 
 Music is a stream rather than a sound: with `-music` it decodes an Ogg,
 MP3 or WAV file from disk as it plays, and without one it plays an
@@ -31,23 +33,26 @@ go run ./examples/audio -seconds 3 -shot out.png
 ```
 
 The flags are `-seconds N` and `-shot file.png`, `-music file.ogg` to
-stream a file instead of the synthesised arpeggio, and `-zone` to put a
+stream a file instead of the synthesised arpeggio, `-zone` to put a
 reverb zone over the left half of the window and move the listener with
-the mouse.
+the mouse, and `-mic` to record from the microphone.
 
 ## Package and state
 
 `source` is one orbiting voice with the numbers that place it. The game
 also keeps the slider values, because a slider edits a Go value and the
-program then pushes it into the mixer.
+program then pushes it into the mixer, and the capture state, which is
+only used when `-mic` is given.
 
 ```go
 // Command audio is the sound tour: positional voices orbiting the
-// listener with Doppler and occlusion on sliders, a shared reverb and a
-// low-pass filter on sliders, fades, pitch, voice priorities under a
-// small voice cap, a synthesised music stream, -music to stream an Ogg,
-// MP3 or WAV file from disk, and -zone to put a reverb zone at the
-// listener so the room changes as the orbiting sources pass through it.
+// listener with Doppler and occlusion on sliders, panning or the
+// binaural head model on a checkbox, a shared reverb and a low-pass
+// filter on sliders, fades, pitch, voice priorities under a small voice
+// cap, a synthesised music stream, -music to stream an Ogg, MP3 or WAV
+// file from disk, -zone to put a reverb zone at the listener so the room
+// changes as the orbiting sources pass through it, and -mic to record
+// from the microphone and draw a level meter.
 package main
 
 import (
@@ -79,6 +84,7 @@ type game struct {
 	shot      string
 	musicPath string
 	zone      bool
+	mic       bool
 
 	font    *gfx.Font
 	ui      *ui.Context
@@ -89,12 +95,18 @@ type game struct {
 	music   *audio.Music
 	stream  *audio.Voice
 
+	capture *audio.Capture
+	micBuf  []float32
+	micErr  string
+	micPeak float32
+
 	reverb    float32
 	room      float32
 	cutoff    float32
 	pitch     float32
 	occlusion float32
 	doppler   float32
+	binaural  bool
 	shotDone  bool
 }
 ```
@@ -128,6 +140,12 @@ The music is either an `audio.Music` opened from a file with
 `m.OpenMusic`, or the `arpeggio` value at the bottom of this program.
 Both are played with `PlayStream`, which pulls samples as the device
 needs them instead of holding the whole sound in memory.
+
+`m.OpenCapture` opens the default input device and is the only part of
+this program that can fail for a reason outside it, so the error is kept
+and shown rather than returned: a machine with no microphone still runs
+the rest. The buffer is a tenth of a second at the capture rate, which
+is what the update drains into.
 
 ```go
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -180,17 +198,32 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	} else {
 		g.stream = m.PlayStream(&arpeggio{rate: m.Rate()}, audio.PlayOptions{Volume: 0.18, Reverb: 0.6, Priority: 20})
 	}
+	// -mic records from the default input. Nothing is played back; the
+	// samples are read every update so the ring does not fill, and the
+	// meter reads the level. A run without -mic never opens the device,
+	// and a headless run has none to open.
+	if g.mic {
+		g.capture, err = m.OpenCapture(audio.CaptureOptions{})
+		if err != nil {
+			g.micErr = err.Error()
+		} else {
+			g.micBuf = make([]float32, g.capture.Rate()/10)
+		}
+	}
 	return nil
 }
 ```
 
 ## Shutdown
 
-The music file is closed and the font destroyed. Voices belong to the
-mixer, which the engine shuts down.
+The capture and the music file are closed and the font destroyed. Voices
+belong to the mixer, which the engine shuts down.
 
 ```go
 func (g *game) Shutdown(ctx *bunyip.Context) {
+	if g.capture != nil {
+		g.capture.Close()
+	}
 	if g.music != nil {
 		g.music.Close()
 	}
@@ -198,7 +231,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 }
 ```
 
-## Update: moving the listener and the sources
+## Update: the listener, the sources and the microphone
 
 `SetListener2D` places the listener, which is what panning and distance
 are measured from. With `-zone`, `SetReverbZones` replaces the list of
@@ -211,6 +244,11 @@ Each source is placed on its circle from `ctx.Time` and its own speed.
 the derivative of the position, so a source moving towards the listener
 rises in pitch. Giving it a position without a velocity is legal and
 means no shift.
+
+The capture is drained every update. `Read` copies what the device has
+recorded into the buffer and returns how much, so looping until it
+returns zero keeps the ring from filling; nothing is played back here.
+`Level` is the recent peak, held with a decay so the meter is readable.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -242,6 +280,13 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		// The orbit's tangent, in pixels per second, drives Doppler.
 		v := s.dist * s.speed
 		s.voice.SetVelocity(lin.V3(-v*float32(math.Sin(a)), v*float32(math.Cos(a)), 0))
+	}
+	if g.capture != nil {
+		// Drain what the device recorded since the last update, so the
+		// ring never fills, and hold the peak for a readable meter.
+		for g.capture.Read(g.micBuf) > 0 {
+		}
+		g.micPeak = max(g.capture.Level(), g.micPeak-float32(ctx.Delta))
 	}
 	return nil
 }
@@ -286,15 +331,24 @@ two widgets out side by side.
 
 The calls show what a voice and the mixer each own. `SetLowPass`,
 `SetOcclusion` and `FadeTo` are on the voice, so they affect one
-playback; `SetReverb` and `SetDoppler` are on the mixer, so they affect
-everything. `Pitch` and `Pan` are set when a voice starts, in the play
-options. `ctx.Audio.Playing()` is the live voice count, which the burst
-button pushes against the cap.
+playback; `SetReverb`, `SetDoppler` and `SetSpatial` are on the mixer, so
+they affect everything. `Pitch` and `Pan` are set when a voice starts, in
+the play options. `ctx.Audio.Playing()` is the live voice count, which
+the burst button pushes against the cap.
+
+`SetSpatial(audio.SpatialSettings{Binaural: ...})` swaps the pan law for
+a head model with an interaural delay and a head shadow, which is worth
+turning on for headphones and wrong for speakers.
+
+The meter is drawn on a decibel scale rather than on the raw amplitude,
+because a linear meter spends most of its length on sounds nobody can
+hear. `Dropped` counts the frames the ring lost, which is what a game
+watches to know its drain loop is keeping up.
 
 ```go
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 480}, func() {
+		u.Panel("Audio", ui.Rect{X: 16, Y: 16, W: 300, H: 560}, func() {
 			u.Label(fmt.Sprintf("%d voices playing (cap 12)", ctx.Audio.Playing()))
 			if u.Slider("Reverb wet", &g.reverb, 0, 1) || u.Slider("Room size", &g.room, 0, 1) {
 				ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: g.room, Wet: g.reverb})
@@ -309,6 +363,9 @@ button pushes against the cap.
 			}
 			if u.Slider("Doppler factor", &g.doppler, 0, 3) {
 				ctx.Audio.SetDoppler(g.doppler)
+			}
+			if u.Checkbox("Binaural (headphones)", &g.binaural) {
+				ctx.Audio.SetSpatial(audio.SpatialSettings{Binaural: g.binaural})
 			}
 			u.Slider("Click pitch", &g.pitch, 0.5, 2)
 			u.Row(2, func() {
@@ -343,7 +400,17 @@ button pushes against the cap.
 			} else {
 				u.Label("Music is a synthesised Stream; pass -music file.ogg to stream a file.")
 			}
-			u.Label("Orbiting sources pan and fade with distance from the listener.")
+			switch {
+			case g.capture != nil:
+				// A meter on a decibel scale, silence at -60 dB.
+				db := float32(0)
+				if g.micPeak > 0 {
+					db = max(0, (20*float32(math.Log10(float64(g.micPeak)))+60)/60)
+				}
+				u.Progress(fmt.Sprintf("Mic %.3f at %d Hz, %d dropped", g.capture.Level(), g.capture.Rate(), g.capture.Dropped()), db)
+			case g.micErr != "":
+				u.Label("Microphone: " + g.micErr)
+			}
 		})
 	})
 	return nil
@@ -395,9 +462,10 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	music := flag.String("music", "", "Ogg, MP3 or WAV file to stream")
 	zone := flag.Bool("zone", false, "put a reverb zone over the left half and move the listener with the mouse")
+	mic := flag.Bool("mic", false, "record from the default microphone and show a level meter")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip audio", Width: 900, Height: 600, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, musicPath: *music, zone: *zone})
+		&game{seconds: *seconds, shot: *shot, musicPath: *music, zone: *zone, mic: *mic})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "audio:", err)
 		os.Exit(1)
@@ -417,3 +485,5 @@ func main() {
   hear the stream change without restarting anything.
 - Pass `-zone` and move the mouse across the boundary to hear the reverb
   zone blend over the fade width set in `Update`.
+- Pass `-mic` with headphones on, and play the captured buffer back
+  through a `Stream` in `Update` instead of discarding it.

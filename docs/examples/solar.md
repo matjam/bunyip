@@ -1,20 +1,23 @@
 ---
 title: Solar system
 example: solar
-summary: the entity component system driving a 3D scene, with a parent-child hierarchy, an instanced asteroid belt, picking and a render-texture minimap
+summary: the entity component system driving a 3D scene loaded from a scene document, with a prefab, a parent-child hierarchy, an instanced asteroid belt, picking and a render-texture minimap
 ---
 
 This example is the entity component system used as a scene graph. A sun
-with four planets and their moons is a parent-child hierarchy, so a moon
-follows its planet without any code saying so. Four hundred asteroids
-are separate entities that share one mesh and one material, and draw as
-a single instanced call. Two systems move everything, a click picks a
-body with a screen ray, the same scene is drawn a second time from above
-into a render texture for the minimap, and the work is bracketed by
-profile scopes that the F3 overlay reports.
+with its planets and their moons comes from a scene document
+(`system.json`) instantiated into the world, with the moons as references
+to a prefab (`moon.json`), so the shape of the system is data rather than
+code. The hierarchy does the rest: a moon follows its planet without
+anything saying so. Hundreds of asteroids are spawned in code, share one
+mesh and one material, and draw as a single instanced call. Two systems
+move everything, a click picks a body with a screen ray, the same scene
+is drawn a second time from above into a render texture for the minimap,
+and the work is bracketed by profile scopes that the F3 overlay reports.
 
 The packages are [ecs](../pkg/ecs.html) for the world, the components,
-the queries, the resources, the hierarchy and the systems, and
+the queries, the resources, the hierarchy, the scene format and the
+systems, [asset](../pkg/asset.html) for reading the documents, and
 [gfx](../pkg/gfx.html) for the meshes, the camera, the lights, the
 render texture and picking. The guides are
 [Entities and systems](../guides/ecs.html) and
@@ -38,13 +41,29 @@ is a circular path with an angle, `spin` is a rotation rate, and
 in a query. `clock` is a resource: the world has exactly one, so it is
 not attached to an entity.
 
+The three components a scene document names are registered from `init`
+with `ecs.Register[T](name)`. The name in the file is that string rather
+than the Go type's own, so a document stays valid when a type is renamed
+or moved. `system.json` and `moon.json` are embedded in the binary here;
+a game would read the same files from its asset directory, through the
+same call.
+
 `game` holds the meshes, the world, one cached query, the render texture
 and the selected entity. `ecs.Entity` is a generational handle, so
 keeping one across frames is safe: it does not dangle if the entity is
 despawned, the lookup simply fails.
 
 ```go
-// Components.
+// The scene document and the prefab it references ship inside the
+// binary. A game would read them from its asset directory instead; the
+// call is the same.
+//
+//go:embed system.json moon.json
+var files embed.FS
+
+// Components. The names they are registered under are what the scene
+// document holds, so a file stays valid when a type moves or is
+// renamed.
 type body struct {
 	Name     string
 	Radius   float32
@@ -59,6 +78,12 @@ type orbit struct {
 }
 
 type spin struct{ Speed float32 }
+
+func init() {
+	ecs.Register[body]("solar.body")
+	ecs.Register[orbit]("solar.orbit")
+	ecs.Register[spin]("solar.spin")
+}
 
 // asteroid marks belt members, which draw as cubes.
 type asteroid struct{}
@@ -82,30 +107,30 @@ type game struct {
 }
 ```
 
-## Init: the world, the hierarchy and the belt
+## Init: the scene, the prefab and the belt
 
 `NewRenderTexture(220, 220)` allocates an offscreen target and
 `SetView(220, 220)` gives it its own view size, so drawing into it uses
 those coordinates rather than the window's.
 
-`ecs.NewWorld` creates the world and `ecs.SetResource` installs the
-clock. `w.SpawnWith(...)` spawns an entity with a list of components,
-which is how an archetype is chosen: entities with the same set of
-component types share a table, and their components sit in dense typed
-columns.
+`asset.OpenFS(asset.FSSource(files))` opens the embedded files as an
+asset filesystem, `asset.Scene` reads and parses a scene document, and
+`asset.Prefab` reads one prefab.
 
-`gfx.Transform{}` is given to everything that is drawn. Its zero value
-is the identity: position at the origin, no rotation, unit scale.
+`ecs.NewWorld` creates the world and `ecs.SetResource` installs the clock
+and the `ecs.PrefabLibrary` the scene's references are resolved against.
+`w.Instantiate(scene)` spawns every entity the document describes, with
+its parents, and returns a handle whose `Entity(name)` finds one by the
+name the file gave it. A prefab reference spawns the prefab's components
+first and writes the scene entity's own over the top.
 
-`ecs.SetParent(w, child, parent)` builds the hierarchy. A planet is a
-child of the sun and a moon is a child of its planet, so a moon's
-`orbit` places it relative to its planet and `ecs.WorldMatrix` composes
-the chain when it is drawn.
-
-The belt is four hundred entities with the same components. Because they
-share a mesh and a material, the renderer merges them into one instanced
-draw, which is why the count in the corner of the terrain example
-matters: entities are cheap, draws are not.
+The belt is procedural, so it stays in code: a few hundred entities with
+the same components, parented to the entity the scene named `sun`.
+Because they share a mesh and a material, the renderer merges them into
+one instanced draw, which is the point worth remembering: entities are
+cheap, draws are not. The count and the seed come from the document's
+own `Properties`, which is where a scene keeps values that belong to no
+entity.
 
 ```go
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -126,35 +151,42 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	g.minimap.SetView(220, 220)
 
+	// The scene and the prefab it references come through the asset
+	// system, here over the embedded files.
+	fs, err := asset.OpenFS(asset.FSSource(files))
+	if err != nil {
+		return err
+	}
+	defer fs.Close()
+	scene, err := asset.Scene(fs, "system.json")
+	if err != nil {
+		return err
+	}
+	moon, err := asset.Prefab(fs, "moon.json")
+	if err != nil {
+		return err
+	}
+
 	w := ecs.NewWorld()
 	ecs.SetResource(w, clock{})
-	sun := w.SpawnWith(body{Name: "Sun", Radius: 1.4, Color: gfx.RGB(255, 200, 90), Emissive: 3}, spin{0.2}, gfx.Transform{})
-	planets := []struct {
-		name  string
-		r, d  float32
-		speed float32
-		col   gfx.Color
-		moons int
-	}{
-		{"Ember", 0.35, 3.2, 0.9, gfx.RGB(200, 120, 80), 0},
-		{"Verdis", 0.55, 5.4, 0.55, gfx.RGB(90, 170, 110), 1},
-		{"Halcyon", 0.8, 8.2, 0.32, gfx.RGB(120, 150, 230), 2},
-		{"Umber", 0.45, 11, 0.2, gfx.RGB(180, 140, 100), 1},
+	// Instantiate resolves the scene's "moon" references against this
+	// library and writes each entity's own components over the prefab's.
+	ecs.SetResource(w, ecs.PrefabLibrary{"moon": moon})
+	system, err := w.Instantiate(scene)
+	if err != nil {
+		return err
 	}
-	random := rng.New(11)
-	for _, p := range planets {
-		e := w.SpawnWith(body{Name: p.name, Radius: p.r, Color: p.col},
-			orbit{Radius: p.d, Speed: p.speed, Angle: random.Float() * 6.28}, spin{1}, gfx.Transform{})
-		ecs.SetParent(w, e, sun)
-		for m := range p.moons {
-			moon := w.SpawnWith(body{Name: p.name + " moon", Radius: 0.14, Color: gfx.RGB(200, 200, 210)},
-				orbit{Radius: p.r + 0.6 + 0.5*float32(m), Speed: 2 + float32(m), Angle: random.Float() * 6.28}, gfx.Transform{})
-			ecs.SetParent(w, moon, e) // moons follow their planet through the hierarchy
-		}
+	sun, ok := system.Entity("sun")
+	if !ok {
+		return errors.New("the scene names no sun")
 	}
-	// The belt: many small entities with the same mesh and material draw
-	// as one instanced call.
-	for range 400 {
+	// The belt is procedural, so it is spawned in code and parented to
+	// the entity the scene named. Many small entities with the same mesh
+	// and material draw as one instanced call.
+	count, _ := scene.Properties["belt"].(float64)
+	seed, _ := scene.Properties["beltSeed"].(float64)
+	random := rng.New(uint64(seed))
+	for range int(count) {
 		a := w.SpawnWith(body{Name: "asteroid", Radius: 0.05 + random.Float()*0.06, Color: gfx.RGB(150, 140, 130)}, asteroid{},
 			orbit{Radius: 13.5 + random.Float()*2.5, Speed: 0.1 + random.Float()*0.05, Angle: random.Float() * 6.28},
 			gfx.Transform{Position: lin.V3(0, random.Between(-0.4, 0.4), 0)})
@@ -331,14 +363,22 @@ body's material gets an emissive term, unless it already has one.
 ordinary sprite; `UV1: lin.V2(1, 1)` uses the whole image.
 `ecs.Get[body](w, g.selected)` returns the component and whether the
 entity still exists, which is the check a stored handle needs.
-`w.Count()` is the number of live entities.
+`ecs.NameOf` returns the name the scene document gave an entity, carried
+in the world as an `ecs.Name` component, which is what tells two moons
+spawned from one prefab apart. `w.Count()` is the number of live
+entities.
 
 ```go
 	gr.ScreenSpace()
 	gr.Draw(g.minimap.Texture(), gfx.Sprite{Pos: lin.V2(ctx.Width-232, 12), Size: lin.V2(220, 220), UV1: lin.V2(1, 1), Color: gfx.White})
+	// A scene's names arrive as ecs.Name components, so a moon spawned
+	// from the shared prefab still knows which moon it is.
 	name := "nothing"
 	if b, ok := ecs.Get[body](w, g.selected); ok {
 		name = b.Name
+	}
+	if n, ok := ecs.NameOf(w, g.selected); ok {
+		name = n
 	}
 	y := ctx.Height - 64
 	gr.FillRect(12, y, 560, 52, gfx.RGBA(0, 0, 0, 150))
@@ -366,16 +406,16 @@ func main() {
 
 ## What to try
 
-- Raise the belt in `Init` from 400 to 20000 entities and watch the
-  entity count, the frame time and the draw count; the belt stays one
+- Raise the belt in `system.json` from a few hundred to 20000 and watch
+  the entity count, the frame time and the draw count; the belt stays one
   draw.
+- Add a planet to `system.json`, with a moon that references the prefab,
+  and see it appear without a line of Go changing.
 - Add a `trail` component and a third system in `Init` that records past
   positions, then draw it in `Draw` with `DrawLine3D`.
 - Despawn the selected body on a keypress in `Update` with
   `w.Despawn`, and confirm its moons go with it or are left behind,
   depending on how the hierarchy handles it.
-- Give the minimap in `Draw` its own light and a different camera height
-  so it reads as a map rather than a small copy of the scene.
 - Replace the sphere test in the picking loop with a distance test
   against each body's screen position, and compare which one feels
   better to click.
