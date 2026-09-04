@@ -127,25 +127,19 @@ rich text with links and hyphenation are in.
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, frustum culling with a public `Frustum`, levels of detail,
-spot lights with shadows, thirty-two lights a frame, heightfield and
-primitive meshes, dynamic mesh updates, colour grading LUTs, and
-nearest or repeating sampling for render textures are in.
+ground fog, frustum culling with a public `Frustum`, bounds that follow
+a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
+meshes culling cannot bound on its own, levels of detail, spot lights
+with shadows, per-light culling in the shadow pass, thirty-two lights a
+frame, heightfield and primitive meshes, dynamic mesh updates, colour
+grading LUTs, and nearest or repeating sampling for render textures are
+in.
 
 - Point light shadows (cube maps); the directional light and up to four
   spot lights a frame cast shadows.
 - Occlusion culling, and impostors (billboards baked from a model).
 - Clustered lighting for hundreds of lights; a frame keeps its first
   thirty-two and `FrameStats.LightsDropped` counts the rest.
-- Per-light culling in the shadow pass: every opaque draw is rendered
-  into every cascade and every shadowed spot light's map, up to seven
-  times, whether or not it can fall inside that map.
-- The 3D draw sort compares whole draw records; at several thousand
-  draws it is around a millisecond a frame. A packed sort key would cut
-  it.
-- A cascade's near plane sits one slice radius above the slice, so a
-  caster far above it (a bridge over cascade zero) casts no shadow into
-  that cascade; depth clamping on the shadow pipelines would fix it.
 - Mesh and texture uploads go through a one-shot command buffer that
   waits for the queue, and every `Destroy` waits for the device, so a
   `Mesh.Update` every frame (a morph target animation) leaves no
@@ -162,10 +156,11 @@ nearest or repeating sampling for render textures are in.
 - Order-independent transparency; blended draws are sorted per mesh.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back.
-- Culling uses each mesh's bind-pose bounds (doubled for skinned meshes)
-  and skips meshes whose shader moves vertices. A shader that moves
-  vertices far, or an animation that leaves the bind-pose bounds by more
-  than double, can still be culled when it should not be.
+- Culling is per draw and by bounding sphere. There is no bounding
+  volume hierarchy or spatial index, so a frame still pays a frustum
+  test for every draw it queues, and a draw whose shape leaves its
+  geometry needs `Mesh.SetBounds` or `Shader.VertexBounds` to say where
+  it went.
 
 ## Materials and lighting
 

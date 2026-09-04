@@ -271,7 +271,10 @@ func (mp *meshPass) pipelineDesc(skinned bool) render.PipelineDesc {
 
 // shadowPipelineDesc is the depth-only shadow pass pipeline, without a
 // vertex program. The vertex prelude declares the whole instance stream,
-// so the layout matches the lit pass.
+// so the layout matches the lit pass. Depth is clamped rather than
+// clipped, so a caster above a cascade's near plane still casts into it;
+// where the device has no depth clamping the cascade moves its near
+// plane back instead.
 func (mp *meshPass) shadowPipelineDesc(skinned bool) render.PipelineDesc {
 	g := mp.defaultShader.g
 	bindings, attrs := meshVertexLayout()
@@ -283,7 +286,7 @@ func (mp *meshPass) shadowPipelineDesc(skinned bool) render.PipelineDesc {
 		NoColor: true, DepthFormat: g.r.DepthFormat,
 		Bindings: bindings, Attributes: attrs,
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
-		DepthBias: 1.5, DepthSlopeBias: 2.0,
+		DepthBias: 1.5, DepthSlopeBias: 2.0, DepthClamp: true,
 		PushConstantSize: 4, // cascade index
 		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout},
 	}
@@ -528,7 +531,11 @@ func (g *Graphics) forgetTexture(t *Texture) {
 
 // cascades fits one orthographic light frustum to each slice of the
 // camera frustum out to the shadow distance, returning the matrices and
-// the view-space depth where each cascade ends.
+// the view-space depth where each cascade ends. A cascade's near plane
+// sits two slice radii above the slice, which a caster higher than that
+// would fall in front of; the shadow pipelines clamp depth instead of
+// clipping there, and where the device cannot, the near plane moves back
+// to hold every caster the queue has (q.casterAlong).
 func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4, lin.Vec4) {
 	var mats [shadowCascades]lin.Mat4
 	var splits, radii lin.Vec4
@@ -586,8 +593,17 @@ func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4
 		c.X = float32(math.Floor(float64(c.X/texel))) * texel
 		c.Y = float32(math.Floor(float64(c.Y/texel))) * texel
 		centre = view.Inverse().MulPoint(c)
-		view = lin.LookAt(centre.Sub(dir.Mul(radius*2)), centre, lightUp)
-		mats[i] = lin.Ortho(-radius, radius, -radius, radius, 0.1, radius*4).Mul(view)
+		// Without depth clamping the volume has to reach every caster, so
+		// the eye moves back along the light until the nearest one is
+		// inside it. The x and y extents, and the snapping, do not change.
+		back := float32(0)
+		if !q.depthClamp && q.hasCasters {
+			// The eye sits 2 radii before the centre; a caster is at
+			// -casterAlong along the light from the origin at the furthest.
+			back = max(0, 0.1-(-q.casterAlong-centre.Dot(dir)+radius*2))
+		}
+		view = lin.LookAt(centre.Sub(dir.Mul(radius*2+back)), centre, lightUp)
+		mats[i] = lin.Ortho(-radius, radius, -radius, radius, 0.1, radius*4+back).Mul(view)
 		switch i {
 		case 0:
 			radii.X = radius
@@ -608,7 +624,9 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// writeUniforms fills the queue's frame block for the slot.
+// writeUniforms fills the queue's frame block for the slot. It runs
+// after prepareDraws, whose caster bounds the cascades need, and keeps
+// the cascade matrices for the shadow pass to cull against.
 func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	if !q.hasCam {
 		q.camera = Camera{Position: lin.V3(0, 0, 5)}
@@ -620,6 +638,7 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	}
 	sky := l.Sky.resolved(l)
 	mats, splits, radii := q.cascades(aspect)
+	q.cascadeMats = mats
 	u := frameUniforms{
 		viewProj:      q.camera.ViewProj(aspect),
 		view:          q.camera.viewMatrix(),
@@ -679,71 +698,6 @@ func boolFloat(b bool) float32 {
 	return 0
 }
 
-// sortDraws puts the queue's draws in the order they are recorded in:
-// opaque before blended, what the camera sees before what it does not,
-// blended draws back to front, and opaque draws grouped by the state a
-// run of instances must share. It leaves q.draws where they are and
-// orders a permutation instead, so the sort moves indices rather than
-// 360-byte records. Each draw's blended field must already be resolved.
-func (q *drawQueue) sortDraws() drawList {
-	n := len(q.draws)
-	if cap(q.order) < n {
-		q.order = make([]int32, n)
-	}
-	q.order = q.order[:n]
-	for i := range q.order {
-		q.order[i] = int32(i)
-	}
-	draws := q.draws
-	slices.SortStableFunc(q.order, func(x, y int32) int {
-		a, b := &draws[x], &draws[y]
-		switch {
-		case a.blended != b.blended:
-			if a.blended {
-				return 1
-			}
-			return -1
-		case a.culled != b.culled: // what the camera sees first
-			if a.culled {
-				return 1
-			}
-			return -1
-		case a.blended: // farthest first
-			if a.depth > b.depth {
-				return -1
-			}
-			if a.depth < b.depth {
-				return 1
-			}
-			return 0
-		case a.skinned != b.skinned:
-			if a.skinned {
-				return 1
-			}
-			return -1
-		case a.shader != b.shader:
-			if uintptr(unsafe.Pointer(a.shader)) < uintptr(unsafe.Pointer(b.shader)) {
-				return -1
-			}
-			return 1
-		case a.uniform != b.uniform:
-			return int(a.uniform - b.uniform)
-		case a.set != b.set:
-			if a.set < b.set {
-				return -1
-			}
-			return 1
-		case a.mesh != b.mesh:
-			if uintptr(unsafe.Pointer(a.mesh)) < uintptr(unsafe.Pointer(b.mesh)) {
-				return -1
-			}
-			return 1
-		}
-		return 0
-	})
-	return drawList{draws: draws, order: q.order}
-}
-
 // prepareDraws resolves material sets, culls draws outside the camera's
 // view, sorts opaque draws for instancing and blended draws back to
 // front, and uploads the instance stream. Culled draws sort to the end
@@ -758,21 +712,25 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		env = nil
 	}
 	culled := 0
+	q.depthClamp = g.r.Device.DepthClamp()
+	q.hasCasters, q.casterAlong = false, 0
+	lightDir := q.light.Direction.Norm()
 	for i := range q.draws {
 		d := &q.draws[i]
 		if d.set, err = g.materialSet(&d.mat, env, scene); err != nil {
 			return drawList{}, drawList{}, err
 		}
-		centre, radius := d.mesh.boundingSphere(d.model)
-		d.depth = -view.MulPoint(centre).Z
+		d.centre, d.radius, d.cullable = q.drawBounds(d)
+		d.depth = -view.MulPoint(d.centre).Z
 		d.blended = d.mat.blended()
-		if d.skinned {
-			radius *= 2 // the bind pose's bounds, loosely
-		}
-		// A shader that moves vertices may push them anywhere.
-		d.culled = len(d.shader.stages) == 0 && !frustum.ContainsSphere(centre, radius)
+		d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
 		if d.culled {
 			culled++
+		}
+		if !d.blended { // opaque draws are the shadow pass's casters
+			if along := -lightDir.Dot(d.centre) + d.radius; !q.hasCasters || along > q.casterAlong {
+				q.hasCasters, q.casterAlong = true, along
+			}
 		}
 	}
 	g.stats.Culled += culled
@@ -879,7 +837,7 @@ func orOne(metallic float32, hasTexture bool) float32 {
 // stream. In the shadow pass (cascade set) the depth-only pipelines are
 // used; otherwise each draw's shader picks its lit pipeline. Skinned
 // draws are never merged, since each has its own joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32) error {
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32, mask []bool) error {
 	n := draws.len()
 	if n == 0 {
 		return nil // a sky-only frame has no instance buffer to bind
@@ -890,12 +848,19 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 	var bound *render.Pipeline
 	boundUniform := int32(-2)
 	for i := 0; i < n; {
+		if mask != nil && !mask[i] { // this draw misses the shadow map
+			i++
+			continue
+		}
 		d := draws.at(i)
 		run := 1
 		if !d.skinned {
 			runKey := meshKey(&d.mat, false)
 			for i+run < n {
 				e := draws.at(i + run)
+				if mask != nil && !mask[i+run] {
+					break
+				}
 				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false) != runKey {
 					break
 				}
@@ -938,6 +903,8 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		g.stats.Draws3D++
 		if cascade == nil {
 			g.stats.Instances += run
+		} else {
+			g.stats.ShadowDraws += run
 		}
 		i += run
 	}
@@ -950,18 +917,20 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	mp := &g.meshes
 	cb := fr.CB
 	aspect := float32(t.extent.Width) / float32(t.extent.Height)
-	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
-		return err
-	}
+	// The draws are prepared first: the cascades' near planes need the
+	// caster bounds, and the shadow pass culls against every light.
 	opaque, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
 	if err != nil {
+		return err
+	}
+	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
 		return err
 	}
 	seen, seenBlended := opaque.slice(0, q.visOpaque), blended.slice(0, q.visBlended)
 	// Every shadow map is a region of one atlas: the cascades, then the
 	// spot maps, each drawn with its own viewport. The vertex program
 	// picks the projection by index, spot lights past the cascades.
-	spotLights, _ := q.spotShadows()
+	spotLights, spotMats := q.spotShadows()
 	if q.light.Shadows || len(spotLights) > 0 {
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadowAtlas, ClearDepth: 1})
 		var maps []int
@@ -976,7 +945,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 			render.SetViewportRect(cb, region)
 			render.SetScissorRect(cb, region)
 			pc := int32(index)
-			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc); err != nil {
+			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc, q.shadowMask(opaque, index, spotMats)); err != nil {
 				return err
 			}
 		}
@@ -1002,7 +971,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
 		vk.CmdDraw(cb, 3, 1, 0, 0)
 	}
-	if err := g.drawRuns(cb, fr, q, seen, 0, nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seen, 0, nil, nil); err != nil {
 		return err
 	}
 	g.drawSolid(cb, fr, q, seen, 0, t.extent)
@@ -1013,7 +982,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
-	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil, nil); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {

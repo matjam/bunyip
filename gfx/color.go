@@ -31,7 +31,9 @@
 // crossfades, layers and masks, events, root motion, morph targets and
 // node overrides for IK. DrawMesh, DrawModel and DrawSkinned queue draws that are
 // instanced when they share a mesh and material, culled against the
-// camera's Frustum, sorted for blending and lit by SetLight's
+// camera's Frustum (a skinned mesh by the boxes of its joints under the
+// pose, and a mesh whose shape leaves its geometry by Mesh.SetBounds or
+// Shader.VertexBounds), sorted for blending and lit by SetLight's
 // directional light with cascaded shadows, AddPointLight and
 // AddSpotLight, the procedural Sky or an Environment map, and Fog.
 // DrawLOD picks a mesh by distance. DrawBillboard and DrawText3D put

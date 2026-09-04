@@ -144,6 +144,78 @@ func BenchmarkMeshSort_8000(b *testing.B) {
 // sink keeps the sort's result live so it is not optimised away.
 var sink drawList
 
+// BenchmarkMeshKeys_8000 is the packing half of the ordering: one key
+// per draw, with a dense id for each shader, uniform block, material set
+// and mesh.
+func BenchmarkMeshKeys_8000(b *testing.B) {
+	src := benchDraws(8000)
+	var q drawQueue
+	q.draws = make([]meshDraw, len(src))
+	copy(q.draws, src)
+	for b.Loop() {
+		q.buildKeys()
+	}
+}
+
+// BenchmarkMeshSortRecords_8000 measures the fallback that compares the
+// draw records themselves, which a frame with more shaders, materials or
+// meshes than the packed key holds falls back to.
+func BenchmarkMeshSortRecords_8000(b *testing.B) {
+	src := benchDraws(8000)
+	var q drawQueue
+	q.draws = make([]meshDraw, len(src))
+	q.order = make([]int32, len(src))
+	for b.Loop() {
+		copy(q.draws, src)
+		sink = q.sortRecords()
+	}
+}
+
+// BenchmarkPrepareDraws_5000 measures a whole frame's draw preparation:
+// material sets, bounds and culling, the ordering, and the instance
+// stream upload, for five thousand draws over sixteen meshes, four
+// shaders and four materials.
+func BenchmarkPrepareDraws_5000(b *testing.B) {
+	g := drawBenchHeadless(b, 64, 64)
+	scene := g.post.main.scene
+	one := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	one.SetRGBA(0, 0, color.RGBA{255, 255, 255, 255})
+	var texes [4]*Texture
+	for i := range texes {
+		tex, err := g.NewTexture(one, TextureOptions{})
+		if err != nil {
+			b.Fatalf("texture: %v", err)
+		}
+		defer tex.Destroy()
+		texes[i] = tex
+	}
+	cv, ci := CubeMesh()
+	cube, err := g.NewMesh(cv, ci)
+	if err != nil {
+		b.Fatalf("mesh: %v", err)
+	}
+	defer cube.Destroy()
+	src := benchDraws(5000)
+	for i := range src {
+		d := &src[i]
+		d.mesh = cube
+		d.shader = g.meshes.defaultShader
+		d.skinned = false // the default shader's skinned pipeline needs joints
+		d.mat.Texture = texes[(i/16)%len(texes)]
+		d.model = lin.Translate(lin.V3(float32(i%50)-25, float32(i/50%50)-25, -float32(i%37)))
+	}
+	q := g.main
+	q.camera = Camera{Position: lin.V3(0, 0, 20), Target: lin.V3(0, 0, 0)}
+	q.hasCam = true
+	q.draws = make([]meshDraw, len(src))
+	for b.Loop() {
+		copy(q.draws, src)
+		if _, _, err := g.prepareDraws(q, 0, scene, 1); err != nil {
+			b.Fatalf("prepareDraws: %v", err)
+		}
+	}
+}
+
 // BenchmarkMaterialSet_8000 resolves the descriptor set for a frame's
 // worth of draws sharing one material, which is what prepareDraws does
 // before it sorts.

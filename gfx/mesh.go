@@ -52,13 +52,18 @@ func (v Vertex) gpu() gpuVertex {
 // glTF Model. Meshes that change, such as voxel chunks and procedural
 // terrain, take new geometry through Update.
 type Mesh struct {
-	IndexCount uint32
-	Min, Max   lin.Vec3 // axis-aligned bounds in mesh space
-	vbuf, ibuf *render.Buffer
-	verts      []Vertex // kept for picking
-	indices    []uint32
-	skinned    bool
-	g          *Graphics
+	IndexCount  uint32
+	Min, Max    lin.Vec3 // axis-aligned bounds in mesh space
+	vbuf, ibuf  *render.Buffer
+	verts       []Vertex // kept for picking
+	indices     []uint32
+	skinned     bool
+	boundsFixed bool // Min and Max came from SetBounds, not from the vertices
+	// jointMin and jointMax are one box per joint of a skinned mesh, over
+	// the vertices weighted to it, so a pose's bounds are their union
+	// under its joint matrices.
+	jointMin, jointMax []lin.Vec3
+	g                  *Graphics
 }
 
 // Vertices returns the mesh's vertices as uploaded, for picking and
@@ -94,7 +99,10 @@ func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
 	}
 	m.g.retireBuffers(m.vbuf, m.ibuf)
 	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
-	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
+	m.IndexCount, m.verts, m.indices = fresh.IndexCount, fresh.verts, fresh.indices
+	if !m.boundsFixed {
+		m.Min, m.Max = fresh.Min, fresh.Max
+	}
 	return nil
 }
 
@@ -338,17 +346,24 @@ type Fog struct {
 }
 
 type meshDraw struct {
-	mesh      *Mesh
-	mat       Material
-	model     lin.Mat4
-	set       vk.VkDescriptorSet
-	shader    *Shader // never nil once queued
-	uniform   int32   // arena offset of the shader's uniforms, -1 for none
-	depth     float32 // view-space distance for transparency sorting
-	blended   bool    // mat.blended(), resolved once by prepareDraws for the sort
-	culled    bool    // outside the camera's view; drawn only into shadows
-	skinned   bool
-	jointBase int // first joint matrix in the queue's joint list
+	mesh       *Mesh
+	mat        Material
+	model      lin.Mat4
+	set        vk.VkDescriptorSet
+	shader     *Shader // never nil once queued
+	uniform    int32   // arena offset of the shader's uniforms, -1 for none
+	depth      float32 // view-space distance for transparency sorting
+	blended    bool    // mat.blended(), resolved once by prepareDraws for the sort
+	culled     bool    // outside the camera's view; drawn only into shadows
+	skinned    bool
+	jointBase  int // first joint matrix in the queue's joint list
+	jointCount int // how many joint matrices the draw's pose uses
+	// centre and radius are the draw's world bounding sphere, resolved by
+	// prepareDraws; cullable is false for a shader that may move a vertex
+	// anywhere. The shadow pass tests the sphere against each light.
+	centre   lin.Vec3
+	radius   float32
+	cullable bool
 }
 
 // meshInstance is the per-instance vertex stream: see pbr.vert.
