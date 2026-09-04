@@ -37,7 +37,10 @@
 // (with OverlapCircle2, OverlapBox2, OverlapSphere3 and OverlapBox3)
 // return everything a placed shape touches; ShapeCast2 and ShapeCast3
 // sweep a shape and return the first thing in its way; Nearest2 and
-// Nearest3 find the closest collider to a point.
+// Nearest3 find the closest collider to a point. SignedDistance2 and
+// SignedDistance3 measure a point against one placed shape without
+// touching the world, for code that pushes points out of solids, such
+// as the soft bodies in phys/soft.
 //
 // Joints are components on their own entities that name the bodies they
 // connect: DistanceJoint2 and DistanceJoint3 (rods and ropes),
