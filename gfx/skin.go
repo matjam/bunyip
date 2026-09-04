@@ -40,6 +40,7 @@ func (g *Graphics) NewSkinnedMesh(verts []SkinVertex, indices []uint32) (*Mesh, 
 		return nil, err
 	}
 	m.skinned = true
+	g.trackMesh(m, skinVertexSize)
 	return m, nil
 }
 
@@ -64,6 +65,7 @@ func (m *Mesh) UpdateSkinned(verts []SkinVertex, indices []uint32) error {
 	m.g.retireBuffers(m.vbuf, m.ibuf)
 	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
 	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
+	m.g.trackMesh(m, skinVertexSize)
 	return nil
 }
 

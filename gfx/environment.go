@@ -164,6 +164,8 @@ func (g *Graphics) newEnvironment(src *radianceMap, opts EnvironmentOptions) (*E
 		env.cube.Destroy()
 		return nil, err
 	}
+	// Six faces of half-float RGBA, plus a third again for the mip chain.
+	g.track(env, Resource{Kind: ResourceEnvironment, Width: size, Height: size, Bytes: 6 * size * size * 8 * 4 / 3})
 	return env, nil
 }
 
@@ -294,6 +296,7 @@ func (env *Environment) Destroy() {
 		return
 	}
 	_ = env.g.r.Device.WaitIdle()
+	env.g.forget(env)
 	env.g.forgetEnvironment(env)
 	env.g.descriptors.Free(env.set)
 	env.cube.Destroy()

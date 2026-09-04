@@ -171,6 +171,7 @@ type World struct {
 type system struct {
 	name string
 	fn   func(w *World, dt float64)
+	off  bool // turned off with SetSystemEnabled; Update skips it
 }
 
 // NewWorld makes an empty world.
@@ -514,6 +515,18 @@ func (w *World) ComponentValues(e Entity) []any {
 		out[i] = c.getAny(int(m.row))
 	}
 	return out
+}
+
+// SetComponent attaches a component given as a value, replacing the one
+// the entity carries of that type. It is what an editor or a debug panel
+// writes an edited component back through, where the type is known only
+// at run time; game code that knows the type calls Add. The value must
+// not be a pointer, and nothing happens if the entity is gone.
+func (w *World) SetComponent(e Entity, v any) {
+	if !w.Alive(e) {
+		return
+	}
+	w.setComponents(e, []any{v})
 }
 
 // setComponents attaches several components given as any values with
