@@ -76,6 +76,7 @@ type App struct {
 	clipOwned bool
 	clipChunk int
 	incr      []incrSend
+	incrMask  incrMask
 
 	xkbCtx, xkbKeymap, xkbState unsafe.Pointer
 	xkbDevice                   int32

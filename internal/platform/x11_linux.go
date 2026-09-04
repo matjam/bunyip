@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"structs"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -316,7 +317,6 @@ type xlib struct {
 	mapWindow          func(c unsafe.Pointer, w uint32) xcbCookie
 	flush              func(c unsafe.Pointer) int32
 	pollForEvent       func(c unsafe.Pointer) *xcbGenericEvent
-	pollForQueuedEvent func(c unsafe.Pointer) *xcbGenericEvent
 	waitForEvent       func(c unsafe.Pointer) *xcbGenericEvent
 	internAtom         func(c unsafe.Pointer, onlyIfExists uint8, nameLen uint16, name *byte) xcbCookie
 	internAtomReply    func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbInternAtomReply
@@ -393,8 +393,7 @@ func loadX11() (*xlib, error) {
 		"xcb_get_setup": &x.getSetup, "xcb_setup_roots_iterator": &x.setupRootsIterator, "xcb_screen_next": &x.screenNext, "xcb_generate_id": &x.generateID,
 		"xcb_create_window": &x.createWindow, "xcb_destroy_window": &x.destroyWindow, "xcb_map_window": &x.mapWindow,
 		"xcb_flush": &x.flush, "xcb_poll_for_event": &x.pollForEvent, "xcb_wait_for_event": &x.waitForEvent,
-		"xcb_poll_for_queued_event": &x.pollForQueuedEvent,
-		"xcb_intern_atom":           &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
+		"xcb_intern_atom": &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
 		"xcb_delete_property": &x.deleteProperty, "xcb_get_property": &x.getProperty, "xcb_get_property_reply": &x.getPropertyReply,
 		"xcb_get_property_value": &x.getPropertyValue, "xcb_get_property_value_length": &x.getPropertyValueLn,
 		"xcb_set_selection_owner": &x.setSelectionOwner, "xcb_get_selection_owner": &x.getSelectionOwner,
@@ -674,6 +673,7 @@ func (a *App) x11Poll(wait bool) []Event {
 		}
 		a.dispatch(ev)
 	}
+	a.sweepIncr(time.Now())
 	return a.pending
 }
 
@@ -759,8 +759,11 @@ func (a *App) handle(ge *xcbGenericEvent) {
 				// Without detectable auto-repeat the server sends a repeat
 				// as this release followed by an identical press. Look at
 				// the next event: a match is one repeat, and anything else
-				// is handed back to the poll loop.
-				next := x.pollForQueuedEvent(a.conn)
+				// is handed back to the poll loop. The look reads the
+				// socket rather than only the queue, because the press is
+				// often still in the kernel's buffer when the release is
+				// handled, and a queue-only look would miss it.
+				next := x.pollForEvent(a.conn)
 				if repeatPress(ev, next) {
 					x.free(unsafe.Pointer(next))
 					a.pushKeyDown(w, ev, true)
@@ -913,6 +916,9 @@ func (a *App) handle(ge *xcbGenericEvent) {
 			delete(a.windows, ev.Window)
 			a.wakeWin.CompareAndSwap(ev.Window, 0)
 		}
+		// A requestor that exits in the middle of a transfer will never
+		// ask for the rest of it.
+		a.forgetRequestor(ev.Window)
 	case xcbMappingNotify:
 		a.refreshKeymap()
 	}
@@ -976,6 +982,63 @@ type incrSend struct {
 	target    uint32
 	data      []byte
 	sent      int
+	touched   time.Time // when the requestor last took a chunk
+}
+
+// incrIdle is how long a transfer waits for the requestor to ask for the
+// next chunk before it is abandoned. A client that exits mid-transfer,
+// or never deletes the property, would otherwise hold a copy of the
+// clipboard for as long as the game runs.
+const incrIdle = 5 * time.Second
+
+// putIncr replaces the transfer for the same requestor and property, or
+// appends a new one. Two requests for one property cannot run at once,
+// because the property is the whole channel, so the later request is the
+// one that counts.
+func putIncr(transfers []incrSend, t incrSend) []incrSend {
+	for i := range transfers {
+		if transfers[i].requestor == t.requestor && transfers[i].property == t.property {
+			transfers[i] = t
+			return transfers
+		}
+	}
+	return append(transfers, t)
+}
+
+// dropStaleIncr splits transfers into those still live at now and those
+// whose requestor has said nothing for timeout.
+func dropStaleIncr(transfers []incrSend, now time.Time, timeout time.Duration) (kept, stale []incrSend) {
+	for _, t := range transfers {
+		if now.Sub(t.touched) > timeout {
+			stale = append(stale, t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, stale
+}
+
+// incrMask counts the transfers that need property changes selected on
+// each requestor's window. Two transfers to one window would otherwise
+// have the first one's end stop the second one's events.
+type incrMask map[uint32]int
+
+// add records one more transfer and reports whether the mask has to be
+// selected now.
+func (m incrMask) add(win uint32) bool {
+	m[win]++
+	return m[win] == 1
+}
+
+// remove records one fewer and reports whether the mask can be cleared.
+func (m incrMask) remove(win uint32) bool {
+	n := m[win] - 1
+	if n <= 0 {
+		delete(m, win)
+		return true
+	}
+	m[win] = n
+	return false
 }
 
 // clipChunk is the largest property one request can write, from the
@@ -1031,18 +1094,41 @@ func (a *App) clipboardX11() (string, error) {
 	if owner == 0 {
 		return "", nil
 	}
-	x.deleteProperty(a.conn, win, a.atomSelection)
-	x.convertSelection(a.conn, win, a.atomClipboard, a.atomUTF8, a.atomSelection, xcbCurrentTime)
-	x.flush(a.conn)
 	// Events that arrive while the owner is answering are queued for the
 	// next Poll; dropping them would lose a key press or a resize.
 	a.deferQueue = true
 	defer func() { a.deferQueue = false }()
-	prop := a.waitSelection(win, time.Now().Add(clipboardWait))
-	if prop == 0 {
-		return "", nil // the owner refused, or said nothing in time
+	// UTF8_STRING first. An owner old enough to offer only STRING refuses
+	// it by naming no property, and STRING is the fallback every owner
+	// has.
+	for _, target := range [2]uint32{a.atomUTF8, xcbAtomString} {
+		x.deleteProperty(a.conn, win, a.atomSelection)
+		x.convertSelection(a.conn, win, a.atomClipboard, target, a.atomSelection, xcbCurrentTime)
+		x.flush(a.conn)
+		prop := a.waitSelection(win, time.Now().Add(clipboardWait))
+		if prop == 0 {
+			continue // the owner refused this target, or said nothing in time
+		}
+		text, typ := a.readSelection(win, prop)
+		return decodeSelection(text, typ == xcbAtomString), nil
 	}
-	return a.readSelection(win, prop), nil
+	return "", nil
+}
+
+// decodeSelection turns the bytes an owner wrote into a string. A
+// UTF8_STRING is already UTF-8. A STRING is Latin-1 by the protocol, but
+// most toolkits write UTF-8 into it anyway, so bytes that are valid UTF-8
+// are taken as they are and only the rest are widened from Latin-1, which
+// is what keeps both kinds of owner readable.
+func decodeSelection(data []byte, latin1 bool) string {
+	if !latin1 || utf8.Valid(data) {
+		return string(data)
+	}
+	runes := make([]rune, len(data))
+	for i, b := range data {
+		runes[i] = rune(b)
+	}
+	return string(runes)
 }
 
 // waitSelection waits for the SelectionNotify that answers a convert
@@ -1110,9 +1196,10 @@ func (a *App) waitReadable(deadline time.Time) bool {
 	return true
 }
 
-// readSelection reads the text the owner wrote, following an INCR
-// transfer where the text was too large for one property.
-func (a *App) readSelection(win, prop uint32) string {
+// readSelection reads the bytes the owner wrote and the type it gave
+// them, following an INCR transfer where the text was too large for one
+// property.
+func (a *App) readSelection(win, prop uint32) ([]byte, uint32) {
 	x := a.x
 	// Read nothing at first, only the type, so that an INCR transfer is
 	// not started by a read that throws the property away.
@@ -1122,18 +1209,21 @@ func (a *App) readSelection(win, prop uint32) string {
 		x.deleteProperty(a.conn, win, prop)
 		x.flush(a.conn)
 		var out []byte
+		typ := uint32(0)
 		for {
 			if !a.waitProperty(win, prop, time.Now().Add(clipboardWait)) {
-				return string(out)
+				return out, typ
 			}
 			chunk := a.propertyAll(win, prop, true)
 			if len(chunk.Data) == 0 {
-				return string(out) // the empty chunk ends the transfer
+				return out, typ // the empty chunk ends the transfer
 			}
+			typ = chunk.Type
 			out = append(out, chunk.Data...)
 		}
 	}
-	return string(a.propertyAll(win, prop, true).Data)
+	all := a.propertyAll(win, prop, true)
+	return all.Data, all.Type
 }
 
 // propertyAll reads a property whole, following its offset until nothing
@@ -1198,12 +1288,69 @@ func (a *App) answerSelectionRequest(req *xcbSelectionRequestEvent) {
 // requestor's window are selected until the transfer ends.
 func (a *App) startIncr(req *xcbSelectionRequestEvent, prop uint32, data []byte) {
 	x := a.x
-	mask := [1]uint32{xcbEventMaskProperty}
-	x.changeWindowAttrs(a.conn, req.Requestor, xcbCWEventMask, &mask[0])
+	if a.incrMask == nil {
+		a.incrMask = incrMask{}
+	}
+	if a.incrMask.add(req.Requestor) {
+		// Property changes are selected once per window, however many
+		// transfers it has, and the destroy notify tells us to give up on
+		// a requestor that exits in the middle of one.
+		mask := [1]uint32{xcbEventMaskProperty | xcbEventMaskStructure}
+		x.changeWindowAttrs(a.conn, req.Requestor, xcbCWEventMask, &mask[0])
+	}
 	total := [1]uint32{uint32(len(data))}
 	x.changeProperty(a.conn, xcbPropModeReplace, req.Requestor, prop, a.atomIncr, 32, 1, unsafe.Pointer(&total[0]))
-	a.incr = append(a.incr, incrSend{requestor: req.Requestor, property: prop, target: req.Target, data: data})
+	before := len(a.incr)
+	a.incr = putIncr(a.incr, incrSend{requestor: req.Requestor, property: prop, target: req.Target,
+		data: data, touched: time.Now()})
+	if len(a.incr) == before {
+		// The new transfer replaced one for the same property, so the
+		// count this window holds has not gone up after all.
+		a.incrMask.remove(req.Requestor)
+	}
 	a.sendSelectionNotify(req, prop)
+}
+
+// endIncr forgets one transfer and stops watching its requestor when it
+// was the last.
+func (a *App) endIncr(i int) {
+	win := a.incr[i].requestor
+	a.incr = append(a.incr[:i], a.incr[i+1:]...)
+	if a.incrMask.remove(win) {
+		var none [1]uint32
+		a.x.changeWindowAttrs(a.conn, win, xcbCWEventMask, &none[0])
+	}
+}
+
+// sweepIncr abandons transfers whose requestor has stopped asking. It
+// runs once per poll, which is often enough for a timeout counted in
+// seconds.
+func (a *App) sweepIncr(now time.Time) {
+	if len(a.incr) == 0 {
+		return
+	}
+	kept, stale := dropStaleIncr(a.incr, now, incrIdle)
+	if len(stale) == 0 {
+		return
+	}
+	a.incr = kept
+	for _, t := range stale {
+		if a.incrMask.remove(t.requestor) {
+			var none [1]uint32
+			a.x.changeWindowAttrs(a.conn, t.requestor, xcbCWEventMask, &none[0])
+		}
+	}
+	a.x.flush(a.conn)
+}
+
+// forgetRequestor drops every transfer to a window that has gone away.
+func (a *App) forgetRequestor(win uint32) {
+	for i := len(a.incr) - 1; i >= 0; i-- {
+		if a.incr[i].requestor == win {
+			a.incr = append(a.incr[:i], a.incr[i+1:]...)
+			a.incrMask.remove(win) // the window is gone; nothing to unselect
+		}
+	}
 }
 
 // sendIncrChunk writes the next chunk of a transfer in progress. An empty
@@ -1220,10 +1367,9 @@ func (a *App) sendIncrChunk(win, prop uint32) {
 		x.changeProperty(a.conn, xcbPropModeReplace, win, prop, t.target, 8, uint32(n), bytesPointer(part))
 		x.flush(a.conn)
 		t.sent += n
+		t.touched = time.Now()
 		if n == 0 {
-			var none [1]uint32
-			x.changeWindowAttrs(a.conn, win, xcbCWEventMask, &none[0])
-			a.incr = append(a.incr[:i], a.incr[i+1:]...)
+			a.endIncr(i) // the empty chunk ended it
 		}
 		return
 	}

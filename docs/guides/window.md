@@ -185,9 +185,11 @@ so `SetClipboard` makes the game the owner and the text is available only
 while the game runs; a clipboard manager is what keeps it afterwards.
 `Clipboard` asks the current owner and waits about a second for the
 answer, returning empty text when nobody owns the selection or nobody
-replies. Text longer than one X request is transferred in chunks through
-INCR, in both directions. Both calls need an open window, because a
-selection belongs to one.
+replies. It asks for `UTF8_STRING` first and falls back to `STRING` for
+an owner too old to offer the first, decoding that as Latin-1 only when
+its bytes are not valid UTF-8. Text longer than one X request is
+transferred in chunks through INCR, in both directions. Both calls need
+an open window, because a selection belongs to one.
 
 Wayland works the same way underneath, through `wl_data_device`. The
 compositor tells the window what types the selection holds and the text
