@@ -58,6 +58,7 @@ func (c *Context) ScrollArea(label string, r Rect, contentHeight float32, conten
 	}
 	st.offset = max(0, min(st.offset, maxScroll))
 	c.g.PushClip(inner)
+	c.pushClip(inner)
 	c.frameRects = append(c.frameRects, r)
 	p := &panel{id: id, rect: Rect{X: inner.X, Y: inner.Y - st.offset, W: inner.W, H: contentHeight}, cursor: inner.Y - st.offset}
 	c.panels = append(c.panels, p)
@@ -67,6 +68,7 @@ func (c *Context) ScrollArea(label string, r Rect, contentHeight float32, conten
 	contents()
 	c.scrollID = outer
 	c.clipDepth--
+	c.popClip()
 	c.panels = c.panels[:len(c.panels)-1]
 	c.g.PopClip()
 	// Where the row moved this frame, the correction lands next frame.

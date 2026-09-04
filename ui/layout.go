@@ -307,7 +307,7 @@ func (c *Context) Modal(title string, r Rect, open *bool, body func()) {
 		return
 	}
 	id := c.id("modal:" + title)
-	c.modal = id
+	c.modal, c.nextModal = id, id
 	c.deferred = append(c.deferred, func() {
 		vw, vh := c.g.View()
 		c.fill(Rect{X: 0, Y: 0, W: vw, H: vh}, gfx.Color{A: 0.45})

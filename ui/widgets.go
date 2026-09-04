@@ -10,7 +10,7 @@ func (c *Context) Label(text string) {
 	_, h := c.Theme.Font.Measure(text, opts)
 	r := c.next(h)
 	c.g.DrawTextBlock(c.Theme.Font, text, r.X, r.Y+(r.H-h)/2, opts, c.Theme.Text)
-	c.lastRect = r
+	c.lastRect, c.lastID = r, 0
 	c.note("label", text, "", false)
 }
 
@@ -107,7 +107,7 @@ func (c *Context) Slider(label string, value *float32, lo, hi float32) bool {
 // Progress draws a bar filled to t in [0,1].
 func (c *Context) Progress(label string, t float32) {
 	r := c.next(c.Theme.RowHeight)
-	c.lastRect = r
+	c.lastRect, c.lastID = r, 0
 	c.note("progress", label, c.formatPercent(t*100), false)
 	sk := c.skin()
 	c.box(sk.Track, r, c.Theme.Track, gfx.Color{})

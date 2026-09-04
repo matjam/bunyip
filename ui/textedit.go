@@ -24,6 +24,21 @@ type editState struct {
 	scroll        float32 // horizontal scroll of a single-line field
 	blink         int
 	lastText      string
+	// The last wrap of a text area, kept while the text and width stand.
+	wrapText  string
+	wrapWidth float32
+	wrapLines [][2]int
+}
+
+// wrapped returns the line breaks of text at width, reusing the last
+// result when nothing changed; a text area asks several times a frame.
+func (st *editState) wrapped(f *gfx.Font, text string, width float32) [][2]int {
+	if st.wrapLines != nil && text == st.wrapText && width == st.wrapWidth {
+		return st.wrapLines
+	}
+	st.wrapLines = wrapRunes(f, text, width)
+	st.wrapText, st.wrapWidth = text, width
+	return st.wrapLines
 }
 
 type editSnapshot struct {
@@ -278,29 +293,35 @@ func wrapRunes(f *gfx.Font, text string, width float32) [][2]int {
 		for end < len(runes) && runes[end] != '\n' {
 			end++
 		}
-		// Greedy fill within the paragraph.
+		// Greedy fill within the paragraph: the longest prefix that fits,
+		// found by binary search over its length so a line costs a
+		// handful of measurements rather than one per word, backed up to
+		// the last space when the break would split a word.
 		lineStart := start
 		for {
 			fit := end
 			if width > 0 {
-				for fit > lineStart {
-					w, _ := f.Measure(string(runes[lineStart:fit]), gfx.TextOptions{})
-					if w <= width {
-						break
+				lo, hi := lineStart, end
+				for lo < hi {
+					mid := (lo + hi + 1) / 2
+					if w, _ := f.Measure(string(runes[lineStart:mid]), gfx.TextOptions{}); w <= width {
+						lo = mid
+					} else {
+						hi = mid - 1
 					}
-					// Back up to the previous space, or one rune if none.
-					k := fit - 1
+				}
+				fit = lo
+				if fit < end {
+					k := fit
 					for k > lineStart && runes[k] != ' ' {
 						k--
 					}
-					if k == lineStart {
-						fit--
-					} else {
+					if k > lineStart {
 						fit = k
 					}
 				}
 				if fit == lineStart && fit < end {
-					fit = lineStart + 1
+					fit = lineStart + 1 // a word wider than the box breaks inside itself
 				}
 			}
 			out = append(out, [2]int{lineStart, fit})
@@ -372,6 +393,9 @@ func (c *Context) TextField(label string, value *string) bool {
 			st.caret = i // dragging extends the selection
 		}
 	}
+	if c.focus == id {
+		c.focusSeen, c.focusRect = true, r
+	}
 	changed := false
 	if c.focus == id {
 		changed = c.edit(id, value, false, nil)
@@ -442,7 +466,7 @@ func (c *Context) TextArea(label string, value *string, height float32) bool {
 	st := c.editFor(id)
 	inner := Rect{X: r.X + c.Theme.Padding, Y: r.Y + c.Theme.Padding, W: r.W - 2*c.Theme.Padding, H: r.H - 2*c.Theme.Padding}
 	lineH := c.Theme.Font.LineHeight
-	lines := func(s string) [][2]int { return wrapRunes(c.Theme.Font, s, inner.W) }
+	lines := func(s string) [][2]int { return st.wrapped(c.Theme.Font, s, inner.W) }
 	runes := []rune(*value)
 	ls := lines(*value)
 	// Which line and x the pointer is over.
@@ -458,6 +482,9 @@ func (c *Context) TextArea(label string, value *string, height float32) bool {
 		} else {
 			st.caret = i
 		}
+	}
+	if c.focus == id {
+		c.focusSeen, c.focusRect = true, r
 	}
 	changed := false
 	if c.focus == id {

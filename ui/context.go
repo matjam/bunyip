@@ -51,6 +51,11 @@ type Context struct {
 	hoverID     widgetID
 	hoverFrames int
 	clipDepth   int
+	clips       []Rect   // clip stack of the containers being built; the last applies to hit tests
+	nextModal   widgetID // the modal that ran this frame, which owns input from the next frame's first widget
+	focusSeen   bool     // the focused text field was submitted this frame
+	focusRect   Rect     // where it was
+	pressTaken  bool     // a widget took this frame's press without having been hot
 
 	// Keyboard and gamepad navigation: focusables are collected each
 	// frame in submission order; navFocus is the highlighted one. A
@@ -179,10 +184,14 @@ func (c *Context) begin(in *input.State) {
 	c.frameRects = c.frameRects[:0]
 	c.deferred = c.deferred[:0]
 	if c.pressed {
-		c.focus = 0 // clicking anywhere else drops keyboard focus
+		// Keyboard focus is dropped at the end of the frame if the press
+		// landed outside the focused field, so a drag inside it selects.
 		c.pressSource = 0
 		c.pressX, c.pressY = c.mouseX, c.mouseY
 	}
+	c.pressTaken = false
+	c.focusSeen = false
+	c.clips = c.clips[:0]
 	if in.KeyPressed(input.KeyEscape) && (c.drag != nil || c.reorder != nil) {
 		c.drag, c.reorder = nil, nil // cancelled: nothing is dropped
 		c.pressSource = 0
@@ -194,7 +203,9 @@ func (c *Context) begin(in *input.State) {
 	c.noFocus, c.noRing = false, false
 	c.bounds = c.bounds[:0]
 	c.dropHover = false
-	c.modal = 0
+	// A modal that ran last frame owns input from this frame's first
+	// widget, whatever order the body submits them in.
+	c.modal, c.nextModal = c.nextModal, 0
 	c.nodes = c.nodes[:0]
 	// Rich text used this frame moves into the current map; whatever
 	// stayed behind in the older one goes.
@@ -212,10 +223,37 @@ func (c *Context) end() {
 	if c.released {
 		c.active = 0
 		c.drag = nil
+		c.reorder = nil
 		c.pressSource = 0
+	}
+	// Keyboard focus ends when its field is gone, or when the press
+	// landed somewhere else.
+	if c.focus != 0 && (!c.focusSeen || c.pressed && !c.focusRect.Contains(lin.V2(c.pressX, c.pressY))) {
+		c.focus = 0
 	}
 	c.activate = false
 	c.lastNodes = append(c.lastNodes[:0], c.nodes...)
+}
+
+// pushClip and popClip track the clip a container draws its contents
+// under, so hit testing ignores what is scrolled out of view.
+func (c *Context) pushClip(r Rect) {
+	if n := len(c.clips); n > 0 {
+		r = r.Intersect(c.clips[n-1])
+	}
+	c.clips = append(c.clips, r)
+}
+
+func (c *Context) popClip() {
+	if n := len(c.clips); n > 0 {
+		c.clips = c.clips[:n-1]
+	}
+}
+
+// visible reports whether a point is inside the current clip.
+func (c *Context) visible(p lin.Vec2) bool {
+	n := len(c.clips)
+	return n == 0 || c.clips[n-1].Contains(p)
 }
 
 // WantsMouse reports whether the pointer is over a panel or a drag is in
@@ -271,7 +309,8 @@ func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
 			clicked = true
 		}
 	}
-	over := r.Contains(lin.V2(c.mouseX, c.mouseY))
+	mouse := lin.V2(c.mouseX, c.mouseY)
+	over := r.Contains(mouse) && c.visible(mouse)
 	if c.open != 0 && c.open != id && c.group.id != c.open {
 		over = false // an open dropdown list owns the pointer
 	}
@@ -282,8 +321,12 @@ func (c *Context) interact(id widgetID, r Rect) (hover, held, clicked bool) {
 		c.nextHot = id
 	}
 	hover = c.hot == id && over
-	if hover && c.pressed {
+	// A press goes to the hot widget, or, when nothing was hot (the
+	// pointer arrived and pressed within one frame, as a tap does), to
+	// the first widget under it.
+	if c.pressed && over && (c.hot == id || c.hot == 0 && !c.pressTaken) {
 		c.active = id
+		c.pressTaken = true
 	}
 	held = c.active == id && c.down
 	if c.active == id && c.released && over {
