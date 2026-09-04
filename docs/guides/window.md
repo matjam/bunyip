@@ -174,7 +174,7 @@ backend`.
 | `SetCursorImage` | yes | no-op | no-op | no-op |
 | `Clipboard`, `SetClipboard` | yes | yes | yes | yes |
 | `ctx.Visible` | miniaturised and occluded | minimised | suspended (xdg_toplevel 6) | unmapped, minimised and obscured |
-| DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | the output's integer scale | always 1 |
+| DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | the compositor's fractional scale, or the output's integer scale | always 1 |
 
 Where a control is a no-op, the call returns and nothing happens.
 `Position` returns (0, 0) where it is not implemented.
@@ -209,9 +209,15 @@ from `Config.Title`. `SetCursorCaptured` uses
 compositor has them, and where it does not the pointer is only hidden
 and the deltas come from absolute motion, so it can leave the window.
 
-Scale under Wayland is an integer buffer scale. The layer follows
+Scale under Wayland is fractional where the compositor offers
+`wp_fractional_scale_v1` and `wp_viewporter`. The compositor sends the
+scale it prefers in 120ths, the buffer is sized to the logical size times
+that scale, and `wp_viewport.set_destination` maps the buffer back onto
+the logical size, so text rasterises at the display's real density
+instead of at a whole multiple. Without those protocols the layer falls
+back to an integer buffer scale, from
 `wl_surface.preferred_buffer_scale` where the compositor sends it and
-falls back to the largest scale among the outputs the surface is on. A
+otherwise from the largest scale among the outputs the surface is on. A
 change of scale arrives as a resize event, the same as a change of size.
 
 ## Lifecycle

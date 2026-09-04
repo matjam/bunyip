@@ -30,9 +30,10 @@ Wayland through `wl_data_device` with a pipe.
   have opened windows, presented frames and delivered input on a Linux
   desktop. Linux audio and gamepads remain unexercised.
 - What the Wayland layer does not do yet: text input through
-  `zwp_text_input_v3`, fractional scale through `wp_fractional_scale_v1`
-  and `wp_viewporter` (the buffer scale is an integer today), and the
-  window icon through `xdg-toplevel-icon-v1`. Drag and drop is not
+  `zwp_text_input_v3`, and the window icon through
+  `xdg-toplevel-icon-v1`. Fractional scale is in, through
+  `wp_fractional_scale_v1` and `wp_viewporter`, and the integer buffer
+  scale is the fallback where a compositor lacks them. Drag and drop is not
   handled either, so a drag offer is dropped rather than read; the
   clipboard side of `wl_data_device` is in. Without
   `zxdg_decoration_manager_v1` the window

@@ -51,6 +51,7 @@ var (
 	cbToplevelConfigure, cbToplevelClose                uintptr
 	cbToplevelConfigureBounds, cbToplevelWMCapabilities uintptr
 	cbDecorationConfigure                               uintptr
+	cbFractionalScale                                   uintptr
 	cbRelativeMotion                                    uintptr
 	cbLockedPointerLocked, cbLockedPointerUnlocked      uintptr
 )
@@ -342,6 +343,17 @@ func wlInitCallbacks() {
 		}
 		if w := a.owner[proxy]; w != nil {
 			w.serverDecors = mode == xdgDecorationModeServerSide
+		}
+	})
+
+	// wp_fractional_scale_v1.
+	cbFractionalScale = purego.NewCallback(func(data, proxy unsafe.Pointer, scale uint32) {
+		a := wlCurrent
+		if a == nil {
+			return
+		}
+		if w := a.owner[proxy]; w != nil {
+			w.onFractionalScale(scale)
 		}
 	})
 

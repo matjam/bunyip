@@ -172,6 +172,8 @@ type wlApp struct {
 	ptrConstraints unsafe.Pointer
 	dataMgr        unsafe.Pointer
 	dataMgrVer     uint32
+	fracScaleMgr   unsafe.Pointer
+	viewporter     unsafe.Pointer
 
 	// The clipboard. dataDevice is the seat's; clipSource is the source
 	// this process offered and clipText what it offers, so a read of our
@@ -239,9 +241,17 @@ type wlWindow struct {
 	pendW, pendH  int // the size the last xdg_toplevel.configure asked for
 	defW, defH    int // the size Config asked for, used when the compositor leaves it to us
 
-	scale          int // buffer scale in force
+	scale          int // integer buffer scale in force
 	preferredScale int // wl_surface.preferred_buffer_scale, or zero
 	onOutputs      map[unsafe.Pointer]bool
+
+	// Fractional scale. fracScale is wp_fractional_scale_v1's preferred
+	// scale in 120ths, or zero where the compositor does not offer the
+	// protocol; the viewport is what maps the buffer back onto the
+	// window's logical size.
+	fracScale int
+	fracObj   unsafe.Pointer
+	viewport  unsafe.Pointer
 
 	configured bool
 	closed     bool
@@ -644,6 +654,10 @@ func (a *wlApp) onGlobal(name uint32, ifaceName string, version uint32) {
 	case "zxdg_decoration_manager_v1":
 		iface := a.iface["zxdg_decoration_manager_v1"]
 		a.decorManager = a.bind(name, iface, 1)
+	case "wp_fractional_scale_manager_v1":
+		a.fracScaleMgr = a.bind(name, a.iface["wp_fractional_scale_manager_v1"], 1)
+	case "wp_viewporter":
+		a.viewporter = a.bind(name, a.iface["wp_viewporter"], 1)
 	case "zwp_relative_pointer_manager_v1":
 		a.relPointerMgr = a.bind(name, a.iface["zwp_relative_pointer_manager_v1"], 1)
 	case "zwp_pointer_constraints_v1":
@@ -1014,6 +1028,14 @@ func (a *wlApp) newWindow(out *Window, cfg Config) (*wlWindow, error) {
 	a.listen(w.surface, a.iface["wl_surface"], []uintptr{
 		cbSurfaceEnter, cbSurfaceLeave, cbSurfacePreferredScale, cbSurfacePreferredTransform,
 	})
+	// A fractional scale is only useful with a viewport to map the buffer
+	// back onto the window's logical size, so both or neither.
+	if a.fracScaleMgr != nil && a.viewporter != nil {
+		w.viewport = l.marshal(a.viewporter, opViewporterGetViewport, a.iface["wp_viewport"], 0, 0, uintptr(w.surface))
+		w.fracObj = l.marshal(a.fracScaleMgr, opFractionalScaleMgrGet, a.iface["wp_fractional_scale_v1"], 0, 0, uintptr(w.surface))
+		a.owner[w.fracObj] = w
+		a.listen(w.fracObj, a.iface["wp_fractional_scale_v1"], []uintptr{cbFractionalScale})
+	}
 	w.xdgSurface = l.marshal(a.wmBase, opXdgWMBaseGetXdgSurface, a.iface["xdg_surface"], 0, 0, uintptr(w.surface))
 	a.owner[w.xdgSurface] = w
 	a.listen(w.xdgSurface, a.iface["xdg_surface"], []uintptr{cbXdgSurfaceConfigure})
@@ -1051,8 +1073,7 @@ func (a *wlApp) newWindow(out *Window, cfg Config) (*wlWindow, error) {
 		w.destroy()
 		return nil, fmt.Errorf("platform: the compositor never configured the window")
 	}
-	a.push(Event{Kind: EventResize, Window: out, Width: w.width, Height: w.height,
-		PixelW: w.width * w.scale, PixelH: w.height * w.scale, Scale: float64(w.scale)})
+	w.pushResize()
 	return w, nil
 }
 
@@ -1131,6 +1152,7 @@ func (w *wlWindow) onSurfaceConfigure(serial uint32) {
 	}
 	sizeChanged := width != w.width || height != w.height
 	w.width, w.height = width, height
+	w.applyViewport()
 	w.fullscreen, w.maximized = w.pendFullscreen, w.pendMaximized
 	w.setFocused(w.pendActivated)
 	w.setVisible(!w.pendSuspended)
@@ -1170,14 +1192,83 @@ func (w *wlWindow) setVisible(on bool) {
 
 // pushResize reports the content and framebuffer size.
 func (w *wlWindow) pushResize() {
+	pw, ph := w.pixelSize()
 	w.app.push(Event{Kind: EventResize, Window: w.out, Width: w.width, Height: w.height,
-		PixelW: w.width * w.scale, PixelH: w.height * w.scale, Scale: float64(w.scale)})
+		PixelW: pw, PixelH: ph, Scale: w.scaleFactor()})
+}
+
+// pixelSize is the buffer size in pixels: the window's logical size times
+// the fractional scale where the compositor sends one, and times the
+// integer buffer scale otherwise.
+func (w *wlWindow) pixelSize() (int, int) {
+	if w.fracScale > 0 {
+		return scale120(w.width, w.fracScale), scale120(w.height, w.fracScale)
+	}
+	return w.width * w.scale, w.height * w.scale
+}
+
+// scaleFactor is pixels per point, fractional where the compositor sends
+// a fractional scale.
+func (w *wlWindow) scaleFactor() float64 {
+	if w.fracScale > 0 {
+		return float64(w.fracScale) / 120
+	}
+	return float64(w.scale)
+}
+
+// scale120 multiplies a length by a scale counted in 120ths, rounding to
+// the nearest pixel, which is what the fractional scale protocol asks
+// for.
+func scale120(n, scale int) int { return (n*scale + 60) / 120 }
+
+// pointerScale is the buffer scale the cursor is drawn at. A fractional
+// scale rounds up, because a cursor buffer's scale is a whole number and
+// too large is sharper than too small.
+func (w *wlWindow) pointerScale() int {
+	if w.fracScale > 0 {
+		return max((w.fracScale+119)/120, 1)
+	}
+	return w.scale
+}
+
+// onFractionalScale takes the scale the compositor prefers, in 120ths.
+// The buffer is sized by it and the viewport maps the buffer back onto
+// the window's logical size, so the integer buffer scale goes to one.
+func (w *wlWindow) onFractionalScale(scale uint32) {
+	if scale == 0 || int(scale) == w.fracScale {
+		return
+	}
+	w.fracScale = int(scale)
+	if w.scale != 1 {
+		w.scale = 1
+		if w.app.compositorVer >= 3 {
+			w.app.l.send(w.surface, opSurfaceSetBufferScale, 1)
+		}
+	}
+	w.applyViewport()
+	w.applyCursor()
+	if w.configured {
+		w.pushResize()
+	}
+}
+
+// applyViewport tells the compositor that the buffer covers the window's
+// logical size however many pixels it holds, which is what lets the
+// buffer be a fractional multiple of that size.
+func (w *wlWindow) applyViewport() {
+	if w.viewport == nil || w.fracScale == 0 {
+		return
+	}
+	w.app.l.send(w.viewport, opViewportSetDestination, uintptr(int32(w.width)), uintptr(int32(w.height)))
 }
 
 // refreshScale recomputes the buffer scale from the outputs the surface is
 // on, or from wl_surface.preferred_buffer_scale where the compositor sends
 // it, and tells the compositor what the buffer scale now is.
 func (w *wlWindow) refreshScale() {
+	if w.fracScale > 0 {
+		return // the viewport carries the scale and the buffer scale stays one
+	}
 	scale := w.preferredScale
 	if scale == 0 {
 		scale = 1
@@ -1217,6 +1308,8 @@ func (w *wlWindow) destroy() {
 		proxy  unsafe.Pointer
 		opcode uint32
 	}{
+		{w.fracObj, opFractionalScaleDestroy},
+		{w.viewport, opViewportDestroy},
 		{w.decoration, opXdgDecorationDestroy},
 		{w.xdgToplevel, opXdgToplevelDestroy},
 		{w.xdgSurface, opXdgSurfaceDestroy},
@@ -1252,6 +1345,7 @@ func (w *wlWindow) destroy() {
 	if a.repeatWindow == w {
 		a.repeatWindow, a.repeatKey = nil, 0
 	}
+	w.fracObj, w.viewport = nil, nil
 	w.decoration, w.xdgToplevel, w.xdgSurface, w.surface = nil, nil, nil, nil
 	w.closed = true
 	l.flush(a.display)
@@ -1314,7 +1408,8 @@ func (w *wlWindow) applyCursor() {
 		l.send(a.pointer, opPointerSetCursor, uintptr(a.enterSerial), 0, 0, 0)
 		return
 	}
-	theme := a.loadCursorTheme(w.scale)
+	scale := w.pointerScale()
+	theme := a.loadCursorTheme(scale)
 	if theme == nil {
 		return
 	}
@@ -1338,15 +1433,15 @@ func (w *wlWindow) applyCursor() {
 	if w.cursorSurface == nil {
 		w.cursorSurface = l.marshal(a.compositor, opCompositorCreateSurface, a.iface["wl_surface"], 0, 0)
 	}
-	if a.compositorVer >= 3 && w.cursorScale != w.scale {
-		l.send(w.cursorSurface, opSurfaceSetBufferScale, uintptr(int32(w.scale)))
-		w.cursorScale = w.scale
+	if a.compositorVer >= 3 && w.cursorScale != scale {
+		l.send(w.cursorSurface, opSurfaceSetBufferScale, uintptr(int32(scale)))
+		w.cursorScale = scale
 	}
 	l.send(w.cursorSurface, opSurfaceAttach, uintptr(buf), 0, 0)
 	l.send(w.cursorSurface, opSurfaceDamage, 0, 0, uintptr(int32(img.Width)), uintptr(int32(img.Height)))
 	l.send(w.cursorSurface, opSurfaceCommit)
 	l.send(a.pointer, opPointerSetCursor, uintptr(a.enterSerial), uintptr(w.cursorSurface),
-		uintptr(int32(img.HotspotX)/int32(w.scale)), uintptr(int32(img.HotspotY)/int32(w.scale)))
+		uintptr(int32(img.HotspotX)/int32(scale)), uintptr(int32(img.HotspotY)/int32(scale)))
 }
 
 // setCaptured locks the pointer to the window and switches motion to

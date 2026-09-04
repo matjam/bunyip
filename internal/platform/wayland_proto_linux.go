@@ -9,8 +9,9 @@ import (
 // and built into C interface tables at run time. libwayland-client exports
 // wl_registry_interface, wl_compositor_interface and the rest of the core
 // protocol as symbols, so those are read from the library instead; xdg-shell,
-// xdg-decoration, relative-pointer and pointer-constraints live in
-// wayland-protocols, which ships only XML, so their tables are built here.
+// xdg-decoration, relative-pointer, pointer-constraints, fractional-scale
+// and viewporter live in wayland-protocols, which ships only XML, so their
+// tables are built here.
 //
 // Every signature string is what wayland-scanner emits for the same message:
 // a leading decimal "since" version when the message is not in version one,
@@ -105,6 +106,16 @@ const (
 	opRelativePointerManagerDestroy = 0
 	opRelativePointerManagerGetPtr  = 1
 	opRelativePointerDestroy        = 0
+
+	opFractionalScaleMgrDestroy = 0
+	opFractionalScaleMgrGet     = 1
+	opFractionalScaleDestroy    = 0
+
+	opViewporterDestroy      = 0
+	opViewporterGetViewport  = 1
+	opViewportDestroy        = 0
+	opViewportSetSource      = 1
+	opViewportSetDestination = 2
 
 	opPointerConstraintsDestroy     = 0
 	opPointerConstraintsLockPointer = 1
@@ -238,6 +249,7 @@ const (
 	evOutputScale           = 3
 	evOutputName            = 4
 	evOutputDescription     = 5
+	evFractionalScalePref   = 0
 	evXdgWMBasePing         = 0
 	evXdgSurfaceConfigure   = 0
 	evXdgToplevelConfigure  = 0
@@ -350,6 +362,37 @@ var wlProtocols = []protoInterface{
 		},
 		events: []protoMessage{
 			{name: "configure", sig: "u", types: []string{""}},
+		},
+	},
+	{
+		name: "wp_fractional_scale_manager_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "get_fractional_scale", sig: "no", types: []string{"wp_fractional_scale_v1", "wl_surface"}},
+		},
+	},
+	{
+		name: "wp_fractional_scale_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+		},
+		events: []protoMessage{
+			{name: "preferred_scale", sig: "u", types: []string{""}},
+		},
+	},
+	{
+		name: "wp_viewporter", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "get_viewport", sig: "no", types: []string{"wp_viewport", "wl_surface"}},
+		},
+	},
+	{
+		name: "wp_viewport", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "set_source", sig: "ffff", types: []string{"", "", "", ""}},
+			{name: "set_destination", sig: "ii", types: []string{"", ""}},
 		},
 	},
 	{

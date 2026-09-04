@@ -195,18 +195,20 @@ func (w *Window) Size() (int, int) {
 }
 
 // PixelSize is the framebuffer size. X11 reports no scale, so it matches
-// Size there; Wayland multiplies by the buffer scale.
+// Size there; Wayland multiplies by the fractional scale where the
+// compositor sends one and by the integer buffer scale otherwise.
 func (w *Window) PixelSize() (int, int) {
 	if w.wl != nil {
-		return w.wl.width * w.wl.scale, w.wl.height * w.wl.scale
+		return w.wl.pixelSize()
 	}
 	return w.width, w.height
 }
 
-// Scale is pixels per point.
+// Scale is pixels per point. It is fractional under a compositor that
+// offers wp_fractional_scale_v1 and a whole number everywhere else.
 func (w *Window) Scale() float64 {
 	if w.wl != nil {
-		return float64(w.wl.scale)
+		return w.wl.scaleFactor()
 	}
 	return 1
 }
