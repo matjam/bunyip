@@ -77,7 +77,9 @@ func inspectGPU(h vk.VkPhysicalDevice, surface vk.VkSurfaceKHR) (*gpu, error) {
 	if g.extensions, err = deviceExtensions(h); err != nil {
 		return nil, err
 	}
-	if !slices.Contains(g.extensions, vk.VK_KHR_SWAPCHAIN_EXTENSION_NAME) {
+	// A headless device draws into plain images and never presents, so
+	// it does not need the swapchain extension.
+	if surface != 0 && !slices.Contains(g.extensions, vk.VK_KHR_SWAPCHAIN_EXTENSION_NAME) {
 		return nil, nil
 	}
 	return g, nil

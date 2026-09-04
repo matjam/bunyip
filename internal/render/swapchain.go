@@ -189,10 +189,10 @@ func (s *Swapchain) chooseFormat() (vk.VkFormat, vk.VkColorSpaceKHR, error) {
 			}
 		}
 	}
-	if count == 0 {
-		return 0, 0, fmt.Errorf("render: surface offers no formats")
-	}
-	return formats[0].Format, formats[0].ColorSpace, nil
+	// Every pass encodes to sRGB through the attachment and the readback
+	// expects four bytes a pixel, so another format would draw wrong
+	// rather than differently.
+	return 0, 0, fmt.Errorf("render: surface offers no 8-bit sRGB format among %d", count)
 }
 
 func (s *Swapchain) chooseImmediate() vk.VkPresentModeKHR {

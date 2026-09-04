@@ -657,8 +657,10 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		u.sh = env.sh
 		u.env = lin.V4(env.scale, float32(env.mips), 1, 0)
 	} else {
-		if sky != q.skyCached {
-			q.skyCached, q.skySH = sky, sky.sh()
+		// The harmonics depend on the sky's colours alone, so a sun that
+		// follows an animated light does not reproject them every frame.
+		if key := sky.key(); key != q.skyCached {
+			q.skyCached, q.skySH = key, sky.sh()
 		}
 		u.sh = q.skySH
 		u.env = lin.V4(1, 0, 2, 0)

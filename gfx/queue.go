@@ -40,7 +40,7 @@ type drawQueue struct {
 	lightsDirty bool
 	xform       lin.Affine   // composed 2D transform in force
 	xforms      []lin.Affine // transform stack below it
-	skyCached   Sky          // the sky whose harmonics are in skySH
+	skyCached   skyKey       // the sky whose harmonics are in skySH
 	skySH       [9]lin.Vec4
 	lines       lineStream // debug lines drawn over the 3D scene
 }

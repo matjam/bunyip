@@ -17,13 +17,12 @@ import (
 // Light; without one the light's procedural Sky does the same job from
 // parameters alone.
 type Environment struct {
-	cube   *render.Image
-	set    vk.VkDescriptorSet // for the sky pass
-	sh     [9]lin.Vec4        // irradiance as spherical harmonics, scaled for direct use
-	mips   int
-	scale  float32
-	g      *Graphics
-	radius float32
+	cube  *render.Image
+	set   vk.VkDescriptorSet // for the sky pass
+	sh    [9]lin.Vec4        // irradiance as spherical harmonics, scaled for direct use
+	mips  int
+	scale float32
+	g     *Graphics
 }
 
 // EnvironmentOptions tunes an environment.

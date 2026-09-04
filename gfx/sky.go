@@ -27,6 +27,18 @@ type Sky struct {
 	Stars   float32 // brightness of a starfield showing through thin air; zero means none
 }
 
+// skyKey is the part of a Sky its irradiance harmonics depend on: the
+// sun disc and the stars are drawn, not projected.
+type skyKey struct {
+	up                      lin.Vec3
+	zenith, horizon, ground Color
+	vacuum                  float32
+}
+
+func (s Sky) key() skyKey {
+	return skyKey{up: s.Up, zenith: s.Zenith, horizon: s.Horizon, ground: s.Ground, vacuum: s.Vacuum}
+}
+
 // resolved fills in the defaults from the light.
 func (s Sky) resolved(l Light) Sky {
 	if s.Up == (lin.Vec3{}) {
