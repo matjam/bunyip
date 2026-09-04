@@ -13,7 +13,6 @@ import (
 // than by a starting guess.
 type DescriptorSets struct {
 	Layout   vk.VkDescriptorSetLayout
-	Bindings int
 	binds    []DescriptorBinding
 	pools    []vk.VkDescriptorPool
 	capacity uint32
@@ -79,7 +78,7 @@ func (d *Device) newSamplerDescriptors(bindings int, capacity uint32, immutable 
 // zero in order, and a first pool for capacity sets; more pools follow
 // as needed. Update writes the bindings that are not immutable samplers.
 func (d *Device) NewDescriptors(bindings []DescriptorBinding, capacity uint32) (*DescriptorSets, error) {
-	ds := &DescriptorSets{dev: d, Bindings: len(bindings), binds: bindings,
+	ds := &DescriptorSets{dev: d, binds: bindings,
 		capacity: max(capacity, 1), owner: map[vk.VkDescriptorSet]vk.VkDescriptorPool{}}
 	layoutBindings := make([]vk.VkDescriptorSetLayoutBinding, len(bindings))
 	for i, b := range bindings {
@@ -130,7 +129,10 @@ func (ds *DescriptorSets) addPool() error {
 	return nil
 }
 
-// SamplerBinding pairs an image view with the sampler to read it through.
+// SamplerBinding is one entry of a set: an image view, and the sampler
+// to read it through when the binding is a combined image sampler. A
+// sampled-image binding takes the view alone and ignores the sampler,
+// since its shader pairs the image with one of a set's shared samplers.
 type SamplerBinding struct {
 	View    vk.VkImageView
 	Sampler vk.VkSampler
