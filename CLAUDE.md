@@ -200,6 +200,12 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   returns zero, `Swapchain.Handle` stays zero and `BeginFrame`/`EndFrame`
   skip acquire and present. Do not add code that assumes a swapchain
   image is presentable.
+- Reading the clipboard on X11 waits for another client to answer, for
+  up to a second, inside the game's `Update`. Events that arrive during
+  the wait are handled as usual but pushed onto `App.queued` rather than
+  the slice `Poll` already returned, and the next `Poll` puts them back;
+  anything that pushes an event on Linux has to go through `App.push`
+  for that to hold.
 - An ECS query walk snapshots every matched table's row count when it
   begins (`matcher.begin`), so entities the callback moves into another
   matched table are not visited twice. A walk must not start another
