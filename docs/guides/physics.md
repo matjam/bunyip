@@ -248,14 +248,15 @@ go to sleep. A sleeping body is neither integrated nor paired with other
 sleeping bodies. A contact or an impulse wakes it. `Body.Asleep` reports
 the state and `Wake` ends it early. Sleeping is off by default. A body
 counts as at rest while it moves slower than `Settings.SleepThreshold`,
-in units and radians per second. A stack of boxes at the default solver
-quality jitters slightly and may never settle below the threshold;
-raise `Substeps` and `Iterations` for stacks that should sleep, or
-raise the threshold a little.
+in units and radians per second. A stack of boxes settles below the
+threshold at the default solver quality, within a second or two of
+landing. A stack whose boxes are turned relative to each other keeps
+creeping into place for longer, and raising `Substeps` and `Iterations`
+settles it sooner.
 
 ```go
 ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0),
-	Substeps: 8, Iterations: 16, SleepTime: 0.5})
+	SleepTime: 0.5})
 
 // How much of the world has settled, for a debug readout.
 resting := 0
@@ -299,7 +300,11 @@ integrate gravity and forces. A sweep over bounding boxes finds
 candidate pairs. The shapes generate contact points. A sequential
 impulse solver iterates over the contacts and joints, applying normal
 impulses with restitution, friction impulses clamped by the normal
-impulse, and a small positional correction. Positions then integrate.
+impulse, and a small positional correction. Positions then integrate,
+and a relax pass solves the contacts once more with the positional
+correction dropped, which takes the separating speed that correction
+added back out of the velocities. Restitution is kept out of that
+correction, so bounces survive the relax pass.
 
 `Settings.Substeps` (default 4) trades speed for stability under fast
 motion and tall stacks; `Iterations` (default 8) stiffens contacts and

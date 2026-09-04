@@ -182,9 +182,12 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   containers plus call order; overlays (menus, modals, drag ghosts) are
   drawn deferred at `end`, and overlays may add overlays, so that list
   is iterated by index.
-- The physics sleep threshold is above the jitter of a default-quality
-  box stack; tests that need sleeping raise `Substeps` and
-  `Iterations`.
+- Each physics substep ends with a relax pass over the contacts that
+  solves them again with the position-correction bias dropped. The bias
+  leaves the bodies separating at about the sleep threshold, so without
+  the pass a stack never rests. Restitution is held in its own field
+  (`solverContact.restBias`) and stays in the relax pass, so bounces
+  survive it.
 - Input edges are fed into two sets at once: the per-update set that
   `endUpdate` clears and the frame set that `endFrame` clears, which
   Draw reads. Nothing copies one into the other, so a frame that runs

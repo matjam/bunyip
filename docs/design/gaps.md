@@ -244,9 +244,9 @@ contacts with the 3D debug lines.
   every entry rather than the sorted sweep.
 - Prismatic (slider) joints and 2D wheel joints; a distance joint with a
   spring covers most suspensions.
-- A stack of four boxes at the default solver quality jitters just above
-  the sleep threshold; raise `Substeps` and `Iterations` for stacks that
-  should sleep.
+- A stack whose boxes are turned relative to each other keeps creeping
+  into place at the default solver quality, so it sleeps late or not at
+  all; an aligned stack settles within a second or two.
 
 ## Entities, data and scripting
 

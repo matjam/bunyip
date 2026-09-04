@@ -368,7 +368,7 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 			j.solve()
 		}
 		for i := range s.arbiters {
-			s.arbiters[i].solve()
+			s.arbiters[i].solve(true)
 		}
 	}
 	for _, p := range s.events {
@@ -412,6 +412,15 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 			}
 		}
 	})
+	// Relax: the positions have taken the correction the bias asked for,
+	// so take the speed it added back out. Without this a resting stack
+	// keeps the separating speed the bias gave it and never rests below
+	// the sleep threshold.
+	for range relaxIterations {
+		for i := range s.arbiters {
+			s.arbiters[i].solve(false)
+		}
+	}
 	s.sleep(settings, h)
 }
 
@@ -605,13 +614,17 @@ func (s *state3) nextArbiter() *arbiter3 {
 }
 
 type solverContact3 struct {
-	rA, rB       lin.Vec3
-	normal       lin.Vec3
-	t1, t2       lin.Vec3
-	massNormal   float32
-	massT1       float32
-	massT2       float32
+	rA, rB     lin.Vec3
+	normal     lin.Vec3
+	t1, t2     lin.Vec3
+	massNormal float32
+	massT1     float32
+	massT2     float32
+	// bias is the separating speed the position correction asks for and
+	// restBias the speed restitution asks for. They are kept apart
+	// because the relax pass drops the first and keeps the second.
 	bias         float32
+	restBias     float32
 	pn, pt1, pt2 float32
 }
 
@@ -666,7 +679,7 @@ func initArbiter3(arb *arbiter3, a, b *entry3, contacts []contact3, h float32) {
 		sc.bias = baumgarte / h * max(c.depth-slop, 0)
 		dv := vb.Add(wb.Cross(sc.rB)).Sub(va).Sub(wa.Cross(sc.rA))
 		if vn := dv.Dot(c.normal); vn < -restitutionThreshold {
-			sc.bias += -restitution * vn
+			sc.restBias = -restitution * vn
 		}
 		arb.contacts = append(arb.contacts, sc)
 	}
@@ -694,12 +707,20 @@ func (arb *arbiter3) relativeVelocity(c *solverContact3) lin.Vec3 {
 	return v
 }
 
-func (arb *arbiter3) solve() {
+// solve applies one pass of normal and friction impulses. With useBias
+// the normal impulse also drives the position correction; the relax pass
+// after the positions have moved calls it without, which takes the speed
+// that correction added back out.
+func (arb *arbiter3) solve(useBias bool) {
 	for i := range arb.contacts {
 		c := &arb.contacts[i]
+		bias := c.restBias
+		if useBias {
+			bias += c.bias
+		}
 		dv := arb.relativeVelocity(c)
 		vn := dv.Dot(c.normal)
-		dpn := c.massNormal * (-vn + c.bias)
+		dpn := c.massNormal * (-vn + bias)
 		pn0 := c.pn
 		c.pn = max(pn0+dpn, 0)
 		arb.applyImpulse(c, c.normal.Mul(c.pn-pn0))

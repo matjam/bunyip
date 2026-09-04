@@ -356,7 +356,7 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			j.solve()
 		}
 		for i := range s.arbiters {
-			s.arbiters[i].solve()
+			s.arbiters[i].solve(true)
 		}
 	}
 	for _, p := range s.events {
@@ -398,6 +398,15 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			t.Rotation += b.AngVel * h
 		}
 	})
+	// Relax: the positions have taken the correction the bias asked for,
+	// so take the speed it added back out. Without this a resting stack
+	// keeps the separating speed the bias gave it and never rests below
+	// the sleep threshold.
+	for range relaxIterations {
+		for i := range s.arbiters {
+			s.arbiters[i].solve(false)
+		}
+	}
 	s.sleep(settings, h)
 }
 
@@ -540,8 +549,12 @@ type solverContact2 struct {
 	tangent     lin.Vec2
 	massNormal  float32
 	massTangent float32
-	bias        float32
-	pn, pt      float32
+	// bias is the separating speed the position correction asks for and
+	// restBias the speed restitution asks for. They are kept apart
+	// because the relax pass drops the first and keeps the second.
+	bias     float32
+	restBias float32
+	pn, pt   float32
 }
 
 // bodyVel2 reads a body's velocity and inverse mass, or zeros for a
@@ -588,23 +601,31 @@ func initArbiter2(arb *arbiter2, a, b *entry2, contacts []contact2, h float32) {
 		// Restitution from the approach speed before the solve.
 		dv := vb.Add(crossSV(wb, sc.rB)).Sub(va).Sub(crossSV(wa, sc.rA))
 		if vn := dv.Dot(c.normal); vn < -restitutionThreshold {
-			sc.bias += -restitution * vn
+			sc.restBias = -restitution * vn
 		}
 		arb.contacts = append(arb.contacts, sc)
 	}
 }
 
-func (arb *arbiter2) solve() {
+// solve applies one pass of normal and friction impulses. With useBias
+// the normal impulse also drives the position correction; the relax pass
+// after the positions have moved calls it without, which takes the speed
+// that correction added back out.
+func (arb *arbiter2) solve(useBias bool) {
 	a, b := arb.ba, arb.bb
 	_, _, ima, iia := bodyVel2(a)
 	_, _, imb, iib := bodyVel2(b)
 	for i := range arb.contacts {
 		c := &arb.contacts[i]
+		bias := c.restBias
+		if useBias {
+			bias += c.bias
+		}
 		va, wa, _, _ := bodyVel2(a)
 		vb, wb, _, _ := bodyVel2(b)
 		dv := vb.Add(crossSV(wb, c.rB)).Sub(va).Sub(crossSV(wa, c.rA))
 		vn := dv.Dot(c.normal)
-		dpn := c.massNormal * (-vn + c.bias)
+		dpn := c.massNormal * (-vn + bias)
 		pn0 := c.pn
 		c.pn = max(pn0+dpn, 0)
 		dpn = c.pn - pn0

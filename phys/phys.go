@@ -74,6 +74,9 @@ const (
 	baumgarte = 0.2   // fraction of the remaining penetration corrected per step
 	// Bounces slower than this are absorbed, so resting contacts settle.
 	restitutionThreshold = 1.0
+	// Passes over the contacts after the positions have moved that take
+	// the speed the position correction added back out.
+	relaxIterations = 2
 )
 
 // Layers restrict which colliders meet: two colliders collide when each
