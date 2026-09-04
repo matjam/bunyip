@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"unsafe"
@@ -19,10 +20,39 @@ const (
 	maxSpotShadows = 4    // spot lights with shadow maps in one frame
 	spotShadowSize = 1024 // pixels across a spot light's shadow map
 	// shadowAtlasSize is one depth image holding the three cascades and
-	// the spot maps, so the shadows cost one sampler binding: Metal allows
-	// sixteen samplers a stage and the material set uses thirteen.
+	// the spot maps, so every shadow costs one binding rather than one
+	// each.
 	shadowAtlasSize = 4096
+	// matImages is how many sampled images the material set holds:
+	// five material textures, four shader images, the environment cube,
+	// the thickness map, the scene copy for transmission and the
+	// transmission map. Keeping this and the shadow atlas together at or
+	// under thirty-one leaves the mesh pipelines inside the texture
+	// limit MoltenVK reports on Intel Macs; Apple silicon allows 128.
+	matImages = 13
+	// matSamplerBinding is where the material set's shared sampler array
+	// sits, after the images.
+	matSamplerBinding = matImages
+	// matSamplers is how many samplers that array holds: linear repeat,
+	// linear clamp, nearest repeat, nearest clamp, in that order. They
+	// are immutable in the layout, so no set ever writes them, and Metal
+	// sees five samplers a stage counting the shadow atlas's, well under
+	// its limit of sixteen.
+	matSamplers = 4
 )
+
+// samplerIndex is where a texture's filtering and edge handling sit in
+// the material set's sampler array: bit 1 is nearest, bit 0 is clamp.
+func samplerIndex(linear, repeat bool) uint32 {
+	i := uint32(0)
+	if !linear {
+		i |= 2
+	}
+	if !repeat {
+		i |= 1
+	}
+	return i
+}
 
 // shadowRegion is where a shadow map lives in the atlas: cascades in
 // three quadrants, the spot maps sharing the fourth.
@@ -43,21 +73,25 @@ type meshPass struct {
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
-	materials     *render.DescriptorSets // five material textures, a shader's image0..3, the environment cube
-	matSets       map[materialKey]vk.VkDescriptorSet
-	lastMatKey    materialKey // the key materialSet last resolved, to skip hashing matSets
-	lastMatSet    vk.VkDescriptorSet
-	lastMatOK     bool
-	flatNormal    *Texture
-	black         *Texture
-	blackCube     *render.Image    // stands in for the environment when none is set
-	skyPipe       *render.Pipeline // an image environment as the background
-	skyParamPipe  *render.Pipeline // the procedural sky as the background
-	outlinePipe   *render.Pipeline // solid shell where the stencil is clear
-	xrayPipe      *render.Pipeline // solid tint where depth says hidden
-	decalPipe     *render.Pipeline // set up by the post pass, which owns the depth sampler layout
-	decalMesh     *Mesh            // a unit cube
-	quad          *Mesh            // the billboard quad, made on first use
+	// materials is set 0: thirteen sampled images (five material
+	// textures, a shader's image0..3, the environment cube, the
+	// thickness map, the scene copy, the transmission map) and the
+	// shared sampler array, which is immutable in the layout.
+	materials    *render.DescriptorSets
+	matSets      map[materialKey]vk.VkDescriptorSet
+	lastMatKey   materialKey // the key materialSet last resolved, to skip hashing matSets
+	lastMatSet   vk.VkDescriptorSet
+	lastMatOK    bool
+	flatNormal   *Texture
+	black        *Texture
+	blackCube    *render.Image    // stands in for the environment when none is set
+	skyPipe      *render.Pipeline // an image environment as the background
+	skyParamPipe *render.Pipeline // the procedural sky as the background
+	outlinePipe  *render.Pipeline // solid shell where the stencil is clear
+	xrayPipe     *render.Pipeline // solid tint where depth says hidden
+	decalPipe    *render.Pipeline // set up by the post pass, which owns the depth sampler layout
+	decalMesh    *Mesh            // a unit cube
+	quad         *Mesh            // the billboard quad, made on first use
 }
 
 // decal is a texture projected onto the scene inside a box.
@@ -145,7 +179,9 @@ type frameUniforms struct {
 }
 
 // materialKey identifies a material descriptor set: its textures, the
-// shader's images and the frame's environment map.
+// shader's images and the frame's environment map. The order of tex is
+// the order the set binds them and the order the packed sampler indices
+// are read in.
 type materialKey struct {
 	tex   [11]*Texture // five material textures, four shader images, the thickness and transmission maps
 	env   *Environment
@@ -165,7 +201,28 @@ func (g *Graphics) initMeshPass() error {
 	if mp.jointLayout, err = dev.NewStorageSets(64, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
 		return err
 	}
-	if mp.materials, err = dev.NewSamplerDescriptors(13, 1024); err != nil {
+	// Set 0 keeps its images and its samplers apart: thirteen sampled
+	// images, then one array of four samplers baked into the layout that
+	// a shader indexes per texture slot. Sampling an array of samplers by
+	// a dynamically uniform index needs this feature, which every desktop
+	// driver and MoltenVK report.
+	if !dev.ArrayIndexing() {
+		return fmt.Errorf("gfx: this GPU does not support shaderSampledImageArrayDynamicIndexing, which mesh materials need")
+	}
+	matBindings := make([]render.DescriptorBinding, matSamplerBinding+1)
+	for i := range matImages {
+		matBindings[i] = render.DescriptorBinding{
+			Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			// A shader's vertex hook may read the same images, for
+			// displacement maps.
+			Stages: meshStages,
+		}
+	}
+	matBindings[matSamplerBinding] = render.DescriptorBinding{
+		Type: vk.VK_DESCRIPTOR_TYPE_SAMPLER, Count: matSamplers, Stages: meshStages,
+		Immutable: []vk.VkSampler{g.linearRep, g.linear, g.nearestRep, g.nearest},
+	}
+	if mp.materials, err = dev.NewDescriptors(matBindings, 1024); err != nil {
 		return err
 	}
 	var blackFace [6][]byte
@@ -232,7 +289,7 @@ func (g *Graphics) initMeshPass() error {
 		return err
 	}
 	atlasDepth := mp.shadowAtlas.Depth
-	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
+	if err := g.setup(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
 		return err
 	}
 	if mp.shadowSet, err = mp.shadowDesc.AllocateMany([]render.SamplerBinding{{View: atlasDepth.View, Sampler: mp.shadowSamp}}); err != nil {
@@ -425,10 +482,12 @@ func (g *Graphics) queueMesh(d meshDraw) {
 }
 
 // materialSet returns the descriptor set for a material's textures, its
-// shader's images, the environment map in use and the output's scene copy.
-// A frame's draws are usually grouped by material, so the last key and
-// set are remembered and compared before the map is hashed.
-func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, error) {
+// shader's images, the environment map in use and the output's scene
+// copy, together with the sampler index of each texture slot packed two
+// bits apiece, which the instance stream carries to the shader. A
+// frame's draws are usually grouped by material, so the last key and set
+// are remembered and compared before the map is hashed.
+func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, float32, error) {
 	mp := &g.meshes
 	key := materialKey{env: env, scene: scene}
 	key.tex = [11]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
@@ -443,63 +502,96 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 	}
 	key.tex[9] = orTex(mat.ThicknessTexture, thin)
 	key.tex[10] = orTex(mat.TransmissionTexture, g.white)
-	if mp.lastMatOK && key == mp.lastMatKey {
-		return mp.lastMatSet, nil
+	// Each slot's sampler index rides with the draw rather than in the
+	// set, so the four samplers are shared by every material. A texture
+	// destroyed earlier this frame still has its image until the frame
+	// retires it, so the draw keeps its pixels; the set it needs is not
+	// cached, since a later frame must not find it.
+	var bits uint32
+	cache := true
+	for i, t := range key.tex {
+		if t == nil {
+			t = g.white
+		}
+		bits |= samplerIndex(!t.nearest, t.repeat) << (2 * i)
+		if t.destroyed {
+			cache = false
+		}
 	}
-	if set, ok := mp.matSets[key]; ok {
-		mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
-		return set, nil
+	samplers := float32(bits)
+	if cache {
+		if mp.lastMatOK && key == mp.lastMatKey {
+			return mp.lastMatSet, samplers, nil
+		}
+		if set, ok := mp.matSets[key]; ok {
+			mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
+			return set, samplers, nil
+		}
 	}
 	// Bindings 0..8 are the material and image textures, 9 the environment
-	// cube, 10 the thickness map, 11 the scene copy, 12 the transmission map.
-	bindings := make([]render.SamplerBinding, 13)
+	// cube, 10 the thickness map, 11 the scene copy, 12 the transmission
+	// map. They are sampled images; binding 13 holds the samplers.
+	bindings := make([]render.SamplerBinding, matImages)
 	for i, t := range key.tex[:9] {
 		if t == nil {
 			t = g.white
 		}
-		bindings[i] = render.SamplerBinding{View: t.img.View, Sampler: g.sampler(!t.nearest, t.repeat)}
+		bindings[i] = render.SamplerBinding{View: t.img.View}
 	}
 	cube := mp.blackCube
 	if env != nil {
 		cube = env.cube
 	}
-	bindings[9] = render.SamplerBinding{View: cube.View, Sampler: g.linear}
-	thick := key.tex[9]
-	bindings[10] = render.SamplerBinding{View: thick.img.View, Sampler: g.sampler(!thick.nearest, thick.repeat)}
-	bindings[11] = render.SamplerBinding{View: scene.View, Sampler: g.linear}
-	trans := key.tex[10]
-	bindings[12] = render.SamplerBinding{View: trans.img.View, Sampler: g.sampler(!trans.nearest, trans.repeat)}
+	bindings[9] = render.SamplerBinding{View: cube.View}
+	bindings[10] = render.SamplerBinding{View: key.tex[9].img.View}
+	bindings[11] = render.SamplerBinding{View: scene.View}
+	bindings[12] = render.SamplerBinding{View: key.tex[10].img.View}
 	set, err := mp.materials.AllocateMany(bindings)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
+	}
+	if !cache {
+		g.deferDestroy(func() { mp.materials.Free(set) })
+		return set, samplers, nil
 	}
 	mp.matSets[key] = set
 	mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
-	return set, nil
+	return set, samplers, nil
 }
 
 // forgetEnvironment drops cached material sets that reference a destroyed
 // environment.
 func (g *Graphics) forgetEnvironment(env *Environment) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if key.env == env {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
-		}
-	}
+	g.forgetMaterialSets(func(key materialKey) bool { return key.env == env })
 }
 
 // forgetScene drops cached material sets that reference an output's
 // destroyed scene copy.
 func (g *Graphics) forgetScene(scene *render.Image) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if key.scene == scene {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
+	g.forgetMaterialSets(func(key materialKey) bool { return key.scene == scene })
+}
+
+// forgetMaterialSets drops every cached material set matching a
+// predicate. The sets themselves are freed once the frame that may still
+// bind them has finished.
+func (g *Graphics) forgetMaterialSets(match func(materialKey) bool) {
+	mp := &g.meshes
+	mp.lastMatOK = false
+	var freed []vk.VkDescriptorSet
+	for key, set := range mp.matSets {
+		if match(key) {
+			freed = append(freed, set)
+			delete(mp.matSets, key)
 		}
 	}
+	if len(freed) == 0 {
+		return
+	}
+	g.deferDestroy(func() {
+		for _, set := range freed {
+			mp.materials.Free(set)
+		}
+	})
 }
 
 func orTex(t, fallback *Texture) *Texture {
@@ -511,19 +603,22 @@ func orTex(t, fallback *Texture) *Texture {
 
 // forgetTexture drops cached descriptor sets that reference a destroyed texture.
 func (g *Graphics) forgetTexture(t *Texture) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if slices.Contains(key.tex[:], t) {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
-		}
-	}
+	g.forgetMaterialSets(func(key materialKey) bool { return slices.Contains(key.tex[:], t) })
+	var freed []vk.VkDescriptorSet
 	for key, set := range g.imageSets {
 		if slices.Contains(key[:], t) {
-			g.descriptors.Free(set)
+			freed = append(freed, set)
 			delete(g.imageSets, key)
 		}
 	}
+	if len(freed) == 0 {
+		return
+	}
+	g.deferDestroy(func() {
+		for _, set := range freed {
+			g.descriptors.Free(set)
+		}
+	})
 }
 
 // cascades fits one orthographic light frustum to each slice of the
@@ -760,7 +855,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	culled := 0
 	for i := range q.draws {
 		d := &q.draws[i]
-		if d.set, err = g.materialSet(&d.mat, env, scene); err != nil {
+		if d.set, d.samplers, err = g.materialSet(&d.mat, env, scene); err != nil {
 			return drawList{}, drawList{}, err
 		}
 		centre, radius := d.mesh.boundingSphere(d.model)
@@ -820,10 +915,10 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			uvT1:      [4]float32{uv.E, uv.F, m.Clearcoat, ccRough},
 			sheen:     [4]float32{m.Sheen.R, m.Sheen.G, m.Sheen.B, sheenRough},
 			volume:    [4]float32{m.Transmission, ior, m.Thickness, m.AttenuationDistance},
-			atten:     [4]float32{atten.R, atten.G, atten.B, 0},
+			atten:     [4]float32{atten.R, atten.G, atten.B, d.samplers},
 		})
 	}
-	if err := q.inst.upload(g.r.Device, slot); err != nil {
+	if err := q.inst.upload(g, slot); err != nil {
 		return drawList{}, drawList{}, err
 	}
 	if len(q.joints) > 0 {

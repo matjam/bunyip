@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
+	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
 )
@@ -221,8 +222,9 @@ func TestDrawToTwiceAccumulates(t *testing.T) {
 	}
 }
 
-// Destroying a texture inside a frame keeps it alive until the frame has
-// been submitted.
+// Destroying a texture inside a frame keeps it alive until that frame
+// slot comes round again, which is when the retire ring frees it: the
+// frame that queued the sprite still draws it, and no wait is needed.
 func TestDestroyInsideFrameDefers(t *testing.T) {
 	g := newHeadless(t, 8, 8)
 	src := image.NewRGBA(image.Rect(0, 0, 1, 1))
@@ -241,8 +243,15 @@ func TestDestroyInsideFrameDefers(t *testing.T) {
 	if c := img.RGBAAt(4, 4); c.R < 200 {
 		t.Errorf("sprite of a texture destroyed mid-frame not drawn: %v", c)
 	}
+	if tex.img == nil {
+		t.Error("texture freed before its frame slot came round")
+	}
+	// One frame per slot, and the slot that retired it is free again.
+	for range render.FramesInFlight {
+		render2D(t, g, Black, func() {})
+	}
 	if tex.img != nil {
-		t.Error("texture not freed after the frame")
+		t.Error("texture not freed once its frame slot came round")
 	}
 }
 

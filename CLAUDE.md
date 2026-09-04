@@ -70,13 +70,29 @@ runs the shadow atlas pass, the HDR pass (sky, opaque, blended,
 debug lines), decals, then the post pass composites. Colours are linear
 and non-premultiplied in the API, premultiplied in the 2D stream.
 
-**Descriptor sets for meshes.** Set 0 is the material (thirteen samplers:
-five material textures, four shader images, the environment cube, the
-thickness map, the scene copy for transmission, the transmission map).
-Set 1 is the per-frame `Frame` uniform block. Set 2 is the shadow atlas.
-Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal
-allows sixteen samplers per stage, which is why every shadow map is
-stored in one atlas image and why a new material texture is not free.
+**Descriptor sets for meshes.** Set 0 is the material: thirteen
+`SAMPLED_IMAGE` bindings (five material textures, four shader images,
+the environment cube, the thickness map, the scene copy for
+transmission, the transmission map) at bindings 0 to 12, then one array
+of four `SAMPLER` bindings at binding 13, immutable in the layout:
+linear repeat, linear clamp, nearest repeat, nearest clamp, in that
+order (`samplerIndex` in `gfx/mesh_draw.go`). A texture's own filtering
+and edge handling pick its sampler, and `materialSet` packs one index
+per texture slot, two bits each, into the instance stream's `atten.w`;
+the shader reads it back with `texSampler(slot)` and the GLSL preludes
+`#define` the old names (`albedoTex`, `image0`) as
+`sampler2D(image, samplers[...])` pairs, so game shaders are unchanged.
+Every instance of a draw shares set 0, so the index is the same across
+the draw, which is what `shaderSampledImageArrayDynamicIndexing` needs;
+`Device.ArrayIndexing` reports it and `initMeshPass` refuses a device
+without it. Set 1 is the per-frame `Frame` uniform block. Set 2 is the
+shadow atlas, the one comparison sampler. Set 3 is joint matrices. Set 4
+is a game shader's uniform block. Metal allows sixteen samplers a stage,
+which the four plus the shadow atlas's stay well under, and 31 sampled
+images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
+which is the budget the thirteen images and the atlas spend from: a new
+material texture costs an image and no sampler. The shadow maps still
+share one atlas image so the shadow pass costs one binding.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
 in six GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
@@ -175,8 +191,20 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   output storage; copy in and out (see `gfx/text.go`).
 - The render-target colour images need `TRANSFER_DST` because
   `ClearColorForSampling` clears them before their first pass.
-- `Mesh.Update` and texture replacement retire the old GPU objects until
-  the frame that may use them has been submitted (`Graphics.retire*`).
+- Uploads inside a frame (`NewMesh`, `Mesh.Update`, `UpdateSkinned`,
+  `NewTexture`, `Texture.Write`, `NewEnvironment`) copy through the
+  per-slot staging arena (`render.Staging`, taken with
+  `Graphics.stage`) into the frame's command buffer before any pass,
+  with the barriers that let a draw recorded later in the frame read
+  the data. Outside a frame they keep the `OneShot` path. Everything
+  destroyed or replaced inside a frame goes on that slot's retire list
+  through `Graphics.deferDestroy` and is freed at the slot's next
+  `begin`, when its fence has been waited on; outside a frame
+  `deferDestroy` waits the device and frees at once. A `Texture` or
+  `Mesh` destroyed inside a frame keeps its image or buffers (and sets
+  `destroyed`) until the retire runs, so draws already queued still
+  draw. `FrameStats.Waits` counts the stalls a frame caused; a running
+  game reports zero.
 - Culling uses each mesh's bind-pose bounds and skips meshes whose
   shader has a vertex hook.
 - Immediate-mode identity comes from the label plus the enclosing

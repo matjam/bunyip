@@ -146,11 +146,11 @@ nearest or repeating sampling for render textures are in.
 - A cascade's near plane sits one slice radius above the slice, so a
   caster far above it (a bridge over cascade zero) casts no shadow into
   that cascade; depth clamping on the shadow pipelines would fix it.
-- Mesh and texture uploads go through a one-shot command buffer that
-  waits for the queue, and every `Destroy` waits for the device, so a
-  `Mesh.Update` every frame (a morph target animation) leaves no
-  overlap between CPU and GPU. A per-slot retire ring, freed at the
-  frame's fence, is the shape of the fix.
+- The shader uniform arena and the joint storage buffer still wait for
+  the device when they grow, because growing rewrites descriptor sets a
+  frame in flight may have bound. Both double, so it happens a handful
+  of times at most, and `FrameStats.Waits` counts it; new descriptor
+  sets retired with the old buffers would remove it.
 - Terrain splat maps and heightfield LOD as built-ins; a game does both
   with `HeightfieldMesh`, a mesh shader and `LOD` today.
 - Global illumination beyond one environment map: light probes, baked

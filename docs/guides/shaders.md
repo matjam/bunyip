@@ -104,6 +104,17 @@ lava.SetUniforms(struct{ Heat float32 }{1})
 ctx.Gfx.DrawMesh(slab, gfx.Material{Shader: lava}, model)
 ```
 
+A mesh shader can sample the material's own maps as well as its images:
+`albedoTex`, `metalRoughTex`, `normalTex`, `emissiveTex`,
+`occlusionTex`, `thicknessTex`, `transmissionTex`, the environment
+`envMap` and the opaque scene copy `sceneTex`, alongside `image0` to
+`image3`. Each name is a texture paired with the sampler its
+`TextureOptions` asked for, so `texture(image0, uv)` filters and tiles
+the way the texture was made, and the engine's shared samplers cost no
+room in the material set. Pass a name to `texture`, `textureLod` or
+`textureQueryLevels` as it stands; it is not a variable, so do not
+assign one to a `sampler2D` of your own.
+
 ## Moving vertices
 
 A mesh shader may also define a vertex hook, which runs before the

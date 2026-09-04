@@ -256,7 +256,7 @@ const shadowVertPostlude = `
 layout(push_constant) uniform PC { int cascade; } pc;
 
 layout(location = 0) out vec2 vUV;
-layout(location = 1) flat out vec2 vCutout; // x base alpha, y cutoff
+layout(location = 1) flat out vec3 vCutout; // x base alpha, y cutoff, z albedo sampler
 
 void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
@@ -265,7 +265,7 @@ void main() {
     mat4 lightProj = pc.cascade < 3 ? frame.lightViewProj[pc.cascade] : frame.spotViewProj[pc.cascade - 3];
     gl_Position = lightProj * m * vec4(v.position, 1.0);
     vUV = uvTransform(v.uv);
-    vCutout = vec2(iBaseColor.a * v.color.a, iExtra.y);
+    vCutout = vec3(iBaseColor.a * v.color.a, iExtra.y, float(texSampler(0)));
 }
 `
 

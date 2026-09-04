@@ -101,17 +101,44 @@ func (d *Device) NewImageMips(extent vk.VkExtent2D, format vk.VkFormat, usage vk
 	return img, nil
 }
 
-// NewTextureImage uploads RGBA pixels (row-major, 4 bytes per pixel) into a
-// sampled image, generates a full mip chain when mipmaps is set, and leaves
-// it in shader-read-only layout.
-func (d *Device) NewTextureImage(extent vk.VkExtent2D, format vk.VkFormat, pixels []byte, mipmaps bool) (*Image, error) {
+// NewSampledImage creates an empty image for a texture, with a full mip
+// chain when mipmaps is set. Its contents are undefined until
+// RecordImageUpload fills them.
+func (d *Device) NewSampledImage(extent vk.VkExtent2D, format vk.VkFormat, mipmaps bool) (*Image, error) {
 	mips := uint32(1)
 	// Transfer source so the texture can be read back or blitted later.
 	usage := vk.VkImageUsageFlags(vk.VK_IMAGE_USAGE_SAMPLED_BIT | vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
 	if mipmaps {
 		mips = MipLevels(extent)
 	}
-	img, err := d.NewImageMips(extent, format, usage, vk.VK_IMAGE_ASPECT_COLOR_BIT, mips)
+	return d.NewImageMips(extent, format, usage, vk.VK_IMAGE_ASPECT_COLOR_BIT, mips)
+}
+
+// RecordImageUpload records the first fill of a sampled image from a
+// staging buffer at offset: the whole of level 0, then the mip chain,
+// leaving every level in shader-read-only layout. The image must still
+// be in undefined layout, which is how NewSampledImage leaves it.
+func RecordImageUpload(cb vk.VkCommandBuffer, img *Image, staging *Buffer, offset vk.VkDeviceSize) {
+	mips := max(img.Mips, 1)
+	imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
+		vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+		vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
+	region := vk.VkBufferImageCopy{
+		BufferOffset:     offset,
+		ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+		ImageExtent:      vk.VkExtent3D{Width: img.Extent.Width, Height: img.Extent.Height, Depth: 1},
+	}
+	vk.VkCmdCopyBufferToImage(cb, staging.Handle, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region)
+	generateMips(cb, img)
+}
+
+// NewTextureImage uploads RGBA pixels (row-major, 4 bytes per pixel) into a
+// sampled image, generates a full mip chain when mipmaps is set, and leaves
+// it in shader-read-only layout. It waits for the queue, so it is for
+// setup; inside a frame use NewSampledImage and RecordImageUpload.
+func (d *Device) NewTextureImage(extent vk.VkExtent2D, format vk.VkFormat, pixels []byte, mipmaps bool) (*Image, error) {
+	img, err := d.NewSampledImage(extent, format, mipmaps)
 	if err != nil {
 		return nil, err
 	}
@@ -126,19 +153,7 @@ func (d *Device) NewTextureImage(extent vk.VkExtent2D, format vk.VkFormat, pixel
 		img.Destroy()
 		return nil, err
 	}
-	err = d.OneShot(func(cb vk.VkCommandBuffer) {
-		imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
-			vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
-		region := vk.VkBufferImageCopy{
-			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
-			ImageExtent:      vk.VkExtent3D{Width: extent.Width, Height: extent.Height, Depth: 1},
-		}
-		vk.VkCmdCopyBufferToImage(cb, staging.Handle, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region)
-		generateMips(cb, img)
-	})
-	if err != nil {
+	if err := d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageUpload(cb, img, staging, 0) }); err != nil {
 		img.Destroy()
 		return nil, err
 	}
@@ -161,34 +176,22 @@ func (d *Device) WriteImage(img *Image, x, y, w, h int, pixels []byte) error {
 	if err := staging.Write(0, pixels[:w*h*4]); err != nil {
 		return err
 	}
-	return d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageWrite(cb, img, x, y, w, h, staging) })
+	return d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageWrite(cb, img, x, y, w, h, staging, 0) })
 }
 
-// NewStaging makes a host-visible buffer holding pixels, for
-// RecordImageWrite inside a frame; destroy it once that frame is done.
-func (d *Device) NewStaging(pixels []byte) (*Buffer, error) {
-	staging, err := d.NewBuffer(vk.VkDeviceSize(len(pixels)), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-	if err != nil {
-		return nil, err
-	}
-	if err := staging.Write(0, pixels); err != nil {
-		staging.Destroy()
-		return nil, err
-	}
-	return staging, nil
-}
-
-// RecordImageWrite records a copy of a staging buffer into a rectangle
-// of a sampled image, with the barriers that order it after earlier
-// reads on the queue and before later ones, and rebuilds the mip chain.
-func RecordImageWrite(cb vk.VkCommandBuffer, img *Image, x, y, w, h int, staging *Buffer) {
+// RecordImageWrite records a copy of a staging buffer, from offset, into
+// a rectangle of a sampled image, with the barriers that order it after
+// earlier reads on the queue and before later ones, and rebuilds the mip
+// chain. The image must be in shader-read-only layout, which is where
+// RecordImageUpload leaves it.
+func RecordImageWrite(cb vk.VkCommandBuffer, img *Image, x, y, w, h int, staging *Buffer, offset vk.VkDeviceSize) {
 	mips := max(img.Mips, 1)
 	imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, 0, mips,
 		vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
 		vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_WRITE_BIT)
 	region := vk.VkBufferImageCopy{
+		BufferOffset:     offset,
 		ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
 		ImageOffset:      vk.VkOffset3D{X: int32(x), Y: int32(y)},
 		ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},

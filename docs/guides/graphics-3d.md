@@ -257,6 +257,13 @@ material. Gold is `{BaseColor: gfx.RGB(240, 200, 120), Metallic: 1,
 Roughness: 0.15}` and a glowing lamp is `{BaseColor: gfx.RGB(255, 180,
 60), Emissive: 3}`.
 
+Each map keeps the filtering and edge handling its `TextureOptions` gave
+it, whatever else the material binds: the engine's four samplers (linear
+or nearest, repeating or clamped) are shared by every material and the
+map only says which one to read it through. So a nearest-filtered sprite
+sheet as albedo and a linear, repeating detail map on the same mesh both
+sample the way they were made.
+
 Transparency has three modes, and they do different things.
 `AlphaCutoff` discards fragments below a threshold in both the lit and
 the shadow pass, giving hard edges and real shadows, which is what
@@ -564,9 +571,11 @@ gr.DebugText3D(scout.Position, "scout")
 `ctx.Stats` and `Graphics.Stats()` report the last frame as a
 `FrameStats`: `Draws3D` is mesh draw calls after instancing across all
 passes, `Instances` is mesh instances in the main pass, `Culled` is the
-draws skipped as out of view, and `Draws2D` and `Vertices2D` cover the
-sprite stream. The F3 overlay shows them and `Config.DrawBudget` warns
-when a frame goes over a number you set.
+draws skipped as out of view, `Draws2D` and `Vertices2D` cover the
+sprite stream, and `Waits` counts the times the frame stopped for the
+GPU to go idle, which a running game keeps at zero. The F3 overlay shows
+them and `Config.DrawBudget` warns when a frame goes over a number you
+set.
 
 ```go
 s := gr.Stats()
@@ -594,3 +603,10 @@ where order does not matter.
 Meshes, models, textures, environments, render textures, shaders and
 fonts all hold GPU memory and all have `Destroy`. Call it from `Init`,
 `Update`, `Draw` or `Shutdown` on the same goroutine, never from another.
+Destroying inside a frame costs no wait: the object goes on that frame
+slot's retire list and is freed a couple of frames later, once the GPU
+has finished with it, so what was already queued still draws. Uploads
+inside a frame are the same shape: `NewMesh`, `Mesh.Update`,
+`NewTexture`, `Texture.Write` and `NewEnvironment` copy through a
+staging arena into the frame's own command buffer, and what a frame
+uploads is what that frame draws.

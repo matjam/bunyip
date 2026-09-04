@@ -50,7 +50,7 @@ func (m *Mesh) UpdateSkinned(verts []SkinVertex, indices []uint32) error {
 	if !m.skinned {
 		return fmt.Errorf("gfx: UpdateSkinned on a mesh that is not skinned")
 	}
-	if m.vbuf == nil {
+	if m.vbuf == nil || m.destroyed {
 		return fmt.Errorf("gfx: update of a destroyed mesh")
 	}
 	if len(verts) == 0 {
@@ -61,7 +61,7 @@ func (m *Mesh) UpdateSkinned(verts []SkinVertex, indices []uint32) error {
 	if err != nil {
 		return err
 	}
-	m.g.retireBuffers(m.vbuf, m.ibuf)
+	m.retire()
 	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
 	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
 	return nil
