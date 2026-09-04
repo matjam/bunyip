@@ -244,9 +244,19 @@ render pass, so text tests draw one frame.
   containers plus call order; overlays (menus, modals, drag ghosts) are
   drawn deferred at `end`, and overlays may add overlays, so that list
   is iterated by index.
-- The physics sleep threshold is above the jitter of a default-quality
-  box stack; tests that need sleeping raise `Substeps` and
-  `Iterations`.
+- A placed convex in `phys` (`convex` in `gjk.go`) holds its core
+  vertices in a fixed array, so placing a shape allocates nothing. Take
+  its address only where the pointer cannot escape, or the whole value
+  lands on the heap; `convexPair` and `meshContacts` keep theirs in the
+  scratch for that reason. `phys/cache3.go` keeps each collider's placed
+  parts between queries, keyed by the collider's placement and bounds, so
+  a shape edited in place without moving goes stale.
+- Each physics substep ends with a relax pass over the contacts that
+  solves them again with the position-correction bias dropped. The bias
+  leaves the bodies separating at about the sleep threshold, so without
+  the pass a stack never rests. Restitution is held in its own field
+  (`solverContact.restBias`) and stays in the relax pass, so bounces
+  survive it.
 - Input edges are fed into two sets at once: the per-update set that
   `endUpdate` clears and the frame set that `endFrame` clears, which
   Draw reads. Nothing copies one into the other, so a frame that runs

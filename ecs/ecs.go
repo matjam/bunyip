@@ -470,9 +470,12 @@ func Has[T any](w *World, e Entity) bool {
 	return ok
 }
 
+// typeOf is T's reflect.Type. It goes through a nil pointer rather than
+// a value of T, because putting a value in an interface copies it onto
+// the heap, and a large resource looked up every frame would allocate
+// its own size each time.
 func typeOf[T any]() reflect.Type {
-	var z T
-	return reflect.TypeOf(z)
+	return reflect.TypeOf((*T)(nil)).Elem()
 }
 
 // upgrade replaces reflect-backed columns for T with typed ones so

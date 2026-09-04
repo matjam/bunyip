@@ -133,13 +133,24 @@ solids needs. They understand `Sphere`, `Box3`, `Capsule` and compounds
 of those in 3D, and `Circle`, `Box2`, `Polygon2` and `Capsule2` in 2D,
 and report false for the rest.
 
-A game that casts the same ray every frame can avoid the result slice by
-calling `RaycastAll2Into` or `RaycastAll3Into`, which append to a slice
-the caller keeps and hands back truncated with `[:0]`:
+A game that queries every frame can avoid the result slice by calling
+`RaycastAll2Into`, `RaycastAll3Into`, `OverlapShape2Into` or
+`OverlapShape3Into`, which append to a slice the caller keeps and hands
+back truncated with `[:0]`. Every query then allocates nothing once the
+slice has grown to fit:
 
 ```go
 g.hits = phys.RaycastAll3Into(g.hits[:0], w, ray, 0)
+g.near = phys.OverlapShape3Into(g.near[:0], w, blast, pos, lin.Quat{}, 0)
 ```
+
+Casts and sweeps take their candidates from the broadphase's sorted axis
+rather than looking at every collider, order them along the sweep so the
+nearest is found first, and keep each collider's placed shape between
+queries. A cast across a level therefore costs what is near its path, not
+what the level contains. A collider's placed shape is rebuilt when it
+moves, turns or changes size; a shape whose points are edited in place
+without any of those changing must be assigned to the collider again.
 
 ```go
 // The body under the pointer.
@@ -163,14 +174,18 @@ _, grounded := phys.ShapeCast2(w, phys.Circle{Radius: 12}, pos, 0, lin.V2(0, 4),
 
 A joint is a component on its own entity that constrains two bodies. To
 constrain one body to a point in the world instead, leave the other
-side as `ecs.None`. `DistanceJoint2` and `DistanceJoint3` hold two
-bodies a fixed distance apart, or within a range when given `Min` and
-`Max`. `RevoluteJoint2` and `HingeJoint3` allow rotation about one
-axis. `BallJoint3` allows rotation about any axis through a point.
-`SpringJoint2` and `SpringJoint3` pull towards a rest length with
-stiffness and damping. `FixedJoint2` and `FixedJoint3` remove all
-relative motion. Joints are solved in the same iterations as the
+side as `ecs.None`. Joints are solved in the same iterations as the
 contacts, so a chain of hinges holds together.
+
+| Joint | What it allows | Limits and drives |
+|---|---|---|
+| `DistanceJoint2`, `DistanceJoint3` | a fixed distance, or a range with `Min` and `Max` | none |
+| `RevoluteJoint2`, `HingeJoint3` | rotation about one axis | `MinAngle`, `MaxAngle`, `MotorSpeed` with `MaxMotorTorque` |
+| `BallJoint3` | rotation about any axis through a point | `ConeAngle`, `TwistAngle` |
+| `PrismaticJoint2`, `PrismaticJoint3` | sliding along one axis | `Min`, `Max`, `MotorSpeed` with `MaxMotorForce`, `Stiffness` with `Damping` |
+| `WheelJoint2` | sliding along one axis and free spin | `Min`, `Max`, `MotorSpeed` with `MaxMotorTorque`, `Frequency` with `DampingRatio` |
+| `SpringJoint2`, `SpringJoint3` | a damped pull toward a rest length | none |
+| `FixedJoint2`, `FixedJoint3` | nothing; a weld | none |
 
 ```go
 // 2D: a crate on a rope from a fixed point, and a wheel sprung to a cart.
@@ -202,6 +217,35 @@ frame (by default, the direction the limb pointed on the first step).
 `ConeAngle` limits how far the limb swings from that centre and
 `TwistAngle` limits how far it turns about itself. `Angles(w)` reads
 both.
+
+`PrismaticJoint2` and `PrismaticJoint3` are sliders: a lift, a piston, a
+drawer, a sliding door. `Axis` is the slide direction in A's frame and a
+zero axis means local X. The translation is how far B's anchor sits from
+A's along that axis, so it is zero when the anchors meet, and
+`Translation(w)` reads it. `Min` and `Max` stop the travel, `MotorSpeed`
+with `MaxMotorForce` drives it, and `Stiffness` with `Damping` adds a
+spring that pulls the translation back toward zero.
+
+`WheelJoint2` is a wheel on a suspension. A is the chassis and B the
+wheel, which spins freely and slides along `Axis` in the chassis frame;
+a zero axis means local Y. `AnchorA` is where the wheel sits when the
+suspension is at rest. The spring is given as `Frequency` in hertz and
+`DampingRatio`, where 1 is critically damped, so the response is the
+same whatever the chassis weighs; zero frequency leaves the axis free.
+`MotorSpeed` with `MaxMotorTorque` drives the wheel's spin, which is
+how a car pulls itself along. `Min` and `Max` stop the suspension
+travel.
+
+```go
+// A lift that runs up a rail between two floors.
+w.SpawnWith(phys.PrismaticJoint3{A: ecs.None, B: platform, AnchorA: lin.V3(0, 0, 0),
+	Axis: lin.V3(0, 1, 0), Min: 0, Max: 4, MotorSpeed: 1.5, MaxMotorForce: 4000})
+
+// A driven wheel under the front of a car.
+w.SpawnWith(phys.WheelJoint2{A: chassis, B: wheel, AnchorA: lin.V2(-0.8, -0.65),
+	Axis: lin.V2(0, 1), Frequency: 4, DampingRatio: 0.7,
+	MotorSpeed: -20, MaxMotorTorque: 20})
+```
 
 ## Ragdolls
 
@@ -256,14 +300,15 @@ go to sleep. A sleeping body is neither integrated nor paired with other
 sleeping bodies. A contact or an impulse wakes it. `Body.Asleep` reports
 the state and `Wake` ends it early. Sleeping is off by default. A body
 counts as at rest while it moves slower than `Settings.SleepThreshold`,
-in units and radians per second. A stack of boxes at the default solver
-quality jitters slightly and may never settle below the threshold;
-raise `Substeps` and `Iterations` for stacks that should sleep, or
-raise the threshold a little.
+in units and radians per second. A stack of boxes settles below the
+threshold at the default solver quality, within a second or two of
+landing. A stack whose boxes are turned relative to each other keeps
+creeping into place for longer, and raising `Substeps` and `Iterations`
+settles it sooner.
 
 ```go
 ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0),
-	Substeps: 8, Iterations: 16, SleepTime: 0.5})
+	SleepTime: 0.5})
 
 // How much of the world has settled, for a debug readout.
 resting := 0
@@ -307,7 +352,11 @@ integrate gravity and forces. A sweep over bounding boxes finds
 candidate pairs. The shapes generate contact points. A sequential
 impulse solver iterates over the contacts and joints, applying normal
 impulses with restitution, friction impulses clamped by the normal
-impulse, and a small positional correction. Positions then integrate.
+impulse, and a small positional correction. Positions then integrate,
+and a relax pass solves the contacts once more with the positional
+correction dropped, which takes the separating speed that correction
+added back out of the velocities. Restitution is kept out of that
+correction, so bounces survive the relax pass.
 
 `Settings.Substeps` (default 4) trades speed for stability under fast
 motion and tall stacks; `Iterations` (default 8) stiffens contacts and

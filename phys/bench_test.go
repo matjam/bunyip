@@ -68,6 +68,131 @@ func statics3(n int) *ecs.World {
 	return w
 }
 
+// ccd3 flies n small fast bodies with CCD through a field of static
+// boxes, so the cost is the sweep each of them runs every substep.
+func ccd3(n int) *ecs.World {
+	w := ecs.NewWorld()
+	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.AddSystem("phys", System3)
+	r := benchRand(4242)
+	for range 2000 {
+		w.SpawnWith(gfx.At((r.next()-0.5)*200, (r.next()-0.5)*40, (r.next()-0.5)*200),
+			Collider3{Shape: Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
+	}
+	for range n {
+		body := Dynamic3(0.05)
+		body.CCD = true
+		body.Vel = lin.V3((r.next()-0.5)*300, (r.next()-0.5)*40, (r.next()-0.5)*300)
+		w.SpawnWith(gfx.At((r.next()-0.5)*100, (r.next()-0.5)*20, (r.next()-0.5)*100), body,
+			Collider3{Shape: Sphere{Radius: 0.05}})
+	}
+	w.Update(step)
+	return w
+}
+
+// stairs3 is a floor with a flight of steps for the character benchmark.
+func stairs3(w *ecs.World) {
+	w.SpawnWith(gfx.At(0, -0.5, 0), Collider3{Shape: Box3{Half: lin.V3(60, 0.5, 60)}})
+	for i := range 16 {
+		y := 0.15 * float32(i)
+		w.SpawnWith(gfx.At(4+float32(i)*0.5, y, 0),
+			Collider3{Shape: Box3{Half: lin.V3(0.25, y+0.15, 3)}})
+	}
+	// Enough scenery around the character that a query which scans every
+	// collider pays for it.
+	r := benchRand(31337)
+	for range 2000 {
+		w.SpawnWith(gfx.At((r.next()-0.5)*200, (r.next()-0.5)*40, (r.next()-0.5)*200),
+			Collider3{Shape: Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
+	}
+}
+
+func BenchmarkCCD3_100Fast(b *testing.B) {
+	w := ccd3(100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		w.Update(step)
+	}
+}
+
+func BenchmarkShapeCast3_4000(b *testing.B) {
+	w := statics3(4000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		ShapeCast3(w, Sphere{Radius: 0.4}, lin.V3(-300, 0, 0), lin.Quat{}, lin.V3(600, 0, 0), 0)
+	}
+}
+
+func BenchmarkCharacter3Move(b *testing.B) {
+	w := ecs.NewWorld()
+	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.AddSystem("phys", System3)
+	stairs3(w)
+	e := w.SpawnWith(gfx.At(0, 1, 0))
+	w.Update(step)
+	c := CharacterController3{Radius: 0.35, HalfHeight: 0.45, StepHeight: 0.35}
+	tr, _ := ecs.Get[gfx.Transform](w, e)
+	c.Move(w, e, lin.V3(2, -6, 0), step) // warm the caches
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		// The same move from the same pose every time, so the benchmark
+		// measures a steady state rather than a walk across the level.
+		tr.Position = lin.V3(3.5, 1, 0)
+		c.Move(w, e, lin.V3(2, -6, 0), step)
+	}
+}
+
+func BenchmarkShapeCast2_4000(b *testing.B) {
+	w := statics2(4000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		ShapeCast2(w, Circle{Radius: 0.4}, lin.V2(-300, 0), 0, lin.V2(600, 0), 0)
+	}
+}
+
+func BenchmarkCharacter2Move(b *testing.B) {
+	w := ecs.NewWorld()
+	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.AddSystem("phys", System2)
+	w.SpawnWith(gfx.At2(0, -0.5), Collider2{Shape: Box2{HalfW: 60, HalfH: 0.5}})
+	r := benchRand(31337)
+	for range 2000 {
+		w.SpawnWith(gfx.At2((r.next()-0.5)*400, (r.next()-0.5)*40),
+			Collider2{Shape: Box2{HalfW: 0.5, HalfH: 0.5}})
+	}
+	e := w.SpawnWith(gfx.At2(0, 1))
+	w.Update(step)
+	c := CharacterController2{Radius: 0.35, HalfHeight: 0.45, StepHeight: 0.35}
+	tr, _ := ecs.Get[gfx.Transform2](w, e)
+	c.Move(w, e, lin.V2(2, -6), step) // warm the caches
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		// The same move from the same pose every time, so the benchmark
+		// measures a steady state rather than a walk across the level.
+		tr.Position = lin.V2(3.5, 1)
+		c.Move(w, e, lin.V2(2, -6), step)
+	}
+}
+
+// statics2 scatters n static boxes for the 2D query benchmarks.
+func statics2(n int) *ecs.World {
+	w := ecs.NewWorld()
+	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.AddSystem("phys", System2)
+	r := benchRand(999)
+	for range n {
+		w.SpawnWith(gfx.At2((r.next()-0.5)*400, (r.next()-0.5)*10),
+			Collider2{Shape: Box2{HalfW: 0.5, HalfH: 0.5}})
+	}
+	w.Update(step)
+	return w
+}
+
 func BenchmarkStep3D_4000Dynamic(b *testing.B) {
 	w := falling3(4000)
 	b.ReportAllocs()

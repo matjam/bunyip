@@ -147,6 +147,57 @@ func twistAngle(qa, qb lin.Quat, axisB lin.Vec3, rel lin.Quat) float32 {
 	return 2 * float32(math.Atan2(float64(lin.V3(d.X, d.Y, d.Z).Dot(v)), float64(d.W)))
 }
 
+// PrismaticJoint3 is a slider: two bodies may only move along one axis
+// relative to each other, and keep the rotation they had on the first
+// step. Axis is the slide direction in A's frame and a zero axis means
+// local X. AnchorA and AnchorB are in each body's frame; a side set to
+// ecs.None fixes that anchor and the axis in the world.
+//
+// The translation is how far B's anchor sits from A's along the axis, so
+// it is zero when the anchors meet. Min and Max limit it; both zero
+// means unlimited. A motor drives the translation at MotorSpeed units
+// per second with up to MaxMotorForce; zero force means no motor. A
+// spring pulls the translation back toward zero with Stiffness as the
+// force per unit of travel and Damping as the force per unit of speed;
+// zero stiffness means no spring.
+type PrismaticJoint3 struct {
+	A, B             ecs.Entity
+	AnchorA, AnchorB lin.Vec3
+	Axis             lin.Vec3
+	Min, Max         float32
+	MotorSpeed       float32
+	MaxMotorForce    float32
+	Stiffness        float32
+	Damping          float32
+
+	rel      lin.Quat // B's rotation in A's frame on the first step
+	measured bool
+}
+
+// Translation is how far B's anchor has slid from A's along the axis, in
+// world units.
+func (j *PrismaticJoint3) Translation(w *ecs.World) float32 {
+	a, _ := sideOf3(w, j.A)
+	b, _ := sideOf3(w, j.B)
+	pA, _ := a.anchor(j.AnchorA)
+	pB, _ := b.anchor(j.AnchorB)
+	return a.rot.mulVec(slideAxis3(j.Axis)).Norm().Dot(pB.Sub(pA))
+}
+
+func (j *PrismaticJoint3) measure(qa, qb lin.Quat) {
+	if !j.measured {
+		j.rel, j.measured = conj(qa).Mul(qb), true
+	}
+}
+
+// slideAxis3 applies the local X default.
+func slideAxis3(axis lin.Vec3) lin.Vec3 {
+	if axis == (lin.Vec3{}) {
+		return lin.V3(1, 0, 0)
+	}
+	return axis
+}
+
 // SpringJoint3 pulls two anchors toward a rest length with a damped
 // spring force. RestLength zero measures it on the first step; zero
 // Stiffness means 10 and Damping is the velocity coefficient.
@@ -277,6 +328,7 @@ const (
 	jointDistance3 = iota
 	jointHinge3
 	jointBall3
+	jointPrismatic3
 	jointSpring3
 	jointFixed3
 )
@@ -290,6 +342,7 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.distanceSolvers = s.distanceSolvers[:0]
 	s.hingeSolvers = s.hingeSolvers[:0]
 	s.ballSolvers = s.ballSolvers[:0]
+	s.prismaticSolvers = s.prismaticSolvers[:0]
 	s.springSolvers = s.springSolvers[:0]
 	s.fixedSolvers = s.fixedSolvers[:0]
 	s.distance.Each(func(e ecs.Entity, j *DistanceJoint3) {
@@ -317,6 +370,15 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointBall3, int32(len(s.ballSolvers))})
 			s.ballSolvers = append(s.ballSolvers, ballSolver3{j: j, a: a, b: b})
+		}
+	})
+	s.prismatic.Each(func(e ecs.Entity, j *PrismaticJoint3) {
+		a, oka := sideOf3(w, j.A)
+		b, okb := sideOf3(w, j.B)
+		wakeAcross3(&a, &b)
+		if oka && okb && (a.b != nil || b.b != nil) {
+			s.items = append(s.items, jointItem3{e.ID(), jointPrismatic3, int32(len(s.prismaticSolvers))})
+			s.prismaticSolvers = append(s.prismaticSolvers, prismaticSolver3{j: j, a: a, b: b})
 		}
 	})
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint3) {
@@ -347,6 +409,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 			s.joints = append(s.joints, &s.hingeSolvers[it.at])
 		case jointBall3:
 			s.joints = append(s.joints, &s.ballSolvers[it.at])
+		case jointPrismatic3:
+			s.joints = append(s.joints, &s.prismaticSolvers[it.at])
 		case jointSpring3:
 			s.joints = append(s.joints, &s.springSolvers[it.at])
 		default:
@@ -520,6 +584,192 @@ func (m *motor3) solve(a, b *jointSide3) {
 	b.angularImpulse(p, 1)
 }
 
+// angularLock3 holds two bodies at the relative rotation rel, which is
+// every rotation a weld or a slider forbids.
+type angularLock3 struct {
+	kinv mat3
+	bias lin.Vec3
+	ok   bool
+}
+
+func (l *angularLock3) prepare(a, b *jointSide3, rel lin.Quat, h float32) {
+	qa, qb := quatOf(a.t), quatOf(b.t)
+	// The rotation taking B's target orientation to its actual one.
+	err := qb.Mul(conj(qa.Mul(rel)))
+	if err.W < 0 {
+		err = lin.Quat{X: -err.X, Y: -err.Y, Z: -err.Z, W: -err.W}
+	}
+	l.kinv, l.ok = a.invI.add(b.invI).inverse()
+	l.bias = lin.V3(err.X, err.Y, err.Z).Mul(2 * jointBaumgarte / h)
+}
+
+func (l *angularLock3) solve(a, b *jointSide3) {
+	if !l.ok {
+		return
+	}
+	wrel := b.angVel().Sub(a.angVel())
+	p := l.kinv.mulVec(wrel.Add(l.bias)).Neg()
+	a.angularImpulse(p, -1)
+	b.angularImpulse(p, 1)
+}
+
+// axialLimit3 is a one-sided constraint on the speed along a world axis,
+// with the lever arm from each body to the axis. With sign +1 the
+// impulse may only push the translation up, with -1 only down.
+type axialLimit3 struct {
+	mass    float32
+	bias    float32
+	impulse float32
+	sign    float32
+	active  bool
+}
+
+// prepare sets the limit up with position error c (positive past an
+// upper limit, negative past a lower one) and the effective mass along
+// the axis.
+func (l *axialLimit3) prepare(mass, c, sign, h float32) {
+	l.active = mass > 0
+	if !l.active {
+		return
+	}
+	l.mass, l.bias, l.sign, l.impulse = mass, jointBaumgarte/h*c, sign, 0
+}
+
+func (l *axialLimit3) solve(a, b *jointSide3, axis, rA, rB lin.Vec3) {
+	if !l.active {
+		return
+	}
+	cdot := axis.Dot(b.vel(rB).Sub(a.vel(rA)))
+	old := l.impulse
+	l.impulse -= l.mass * (cdot + l.bias)
+	if l.sign > 0 {
+		l.impulse = max(l.impulse, 0)
+	} else if l.sign < 0 {
+		l.impulse = min(l.impulse, 0)
+	}
+	p := axis.Mul(l.impulse - old)
+	a.impulse(p, rA, -1)
+	b.impulse(p, rB, 1)
+}
+
+// axialMotor3 drives the speed along a world axis toward a target with a
+// bounded accumulated impulse.
+type axialMotor3 struct {
+	mass       float32
+	speed      float32
+	maxImpulse float32
+	impulse    float32
+	active     bool
+}
+
+func (m *axialMotor3) prepare(mass, speed, maxImpulse float32) {
+	m.active = maxImpulse > 0 && mass > 0
+	if !m.active {
+		return
+	}
+	m.mass, m.speed, m.maxImpulse, m.impulse = mass, speed, maxImpulse, 0
+}
+
+func (m *axialMotor3) solve(a, b *jointSide3, axis, rA, rB lin.Vec3) {
+	if !m.active {
+		return
+	}
+	cdot := axis.Dot(b.vel(rB).Sub(a.vel(rA)))
+	old := m.impulse
+	m.impulse = lin.Clamp(old+m.mass*(m.speed-cdot), -m.maxImpulse, m.maxImpulse)
+	p := axis.Mul(m.impulse - old)
+	a.impulse(p, rA, -1)
+	b.impulse(p, rB, 1)
+}
+
+// prismaticSolver3 locks the relative rotation, holds the two directions
+// across the axis with a coupled two by two system, and leaves the axis
+// to the motor, the limits and the spring.
+type prismaticSolver3 struct {
+	j    *PrismaticJoint3
+	a, b jointSide3
+	// The lever arms: A's runs from its centre to B's anchor so the axis
+	// is carried by A, B's to its own anchor.
+	dA, rB       lin.Vec3
+	axis, u1, u2 lin.Vec3
+	kinv         [4]float32
+	bias         [2]float32
+	ok           bool
+	ang          angularLock3
+	motor        axialMotor3
+	lower, upper axialLimit3
+}
+
+func (s *prismaticSolver3) sides() (ecs.Entity, ecs.Entity) { return s.j.A, s.j.B }
+
+func (s *prismaticSolver3) prepare(h float32) {
+	j := s.j
+	pA, rA := s.a.anchor(j.AnchorA)
+	pB, rB := s.b.anchor(j.AnchorB)
+	d := pB.Sub(pA)
+	s.dA, s.rB = d.Add(rA), rB
+	s.axis = s.a.rot.mulVec(slideAxis3(j.Axis)).Norm()
+	s.u1 = perpendicular(s.axis)
+	s.u2 = s.axis.Cross(s.u1)
+	j.measure(quatOf(s.a.t), quatOf(s.b.t))
+	s.ang.prepare(&s.a, &s.b, j.rel, h)
+	// The two directions across the axis, coupled through the inertias.
+	m := s.a.invMass + s.b.invMass
+	a1, b1 := s.dA.Cross(s.u1), s.rB.Cross(s.u1)
+	a2, b2 := s.dA.Cross(s.u2), s.rB.Cross(s.u2)
+	ia, ib := s.a.invI, s.b.invI
+	k := [4]float32{
+		m + a1.Dot(ia.mulVec(a1)) + b1.Dot(ib.mulVec(b1)), a1.Dot(ia.mulVec(a2)) + b1.Dot(ib.mulVec(b2)),
+		a2.Dot(ia.mulVec(a1)) + b2.Dot(ib.mulVec(b1)), m + a2.Dot(ia.mulVec(a2)) + b2.Dot(ib.mulVec(b2)),
+	}
+	det := k[0]*k[3] - k[1]*k[2]
+	s.ok = abs32(det) > 1e-12
+	if s.ok {
+		s.kinv = [4]float32{k[3] / det, -k[1] / det, -k[2] / det, k[0] / det}
+	}
+	s.bias = [2]float32{jointBaumgarte / h * s.u1.Dot(d), jointBaumgarte / h * s.u2.Dot(d)}
+	// The motor, the limits and the spring act along the axis.
+	aa, ba := s.dA.Cross(s.axis), s.rB.Cross(s.axis)
+	var axialMass float32
+	if ka := m + aa.Dot(ia.mulVec(aa)) + ba.Dot(ib.mulVec(ba)); ka > 0 {
+		axialMass = 1 / ka
+	}
+	translation := s.axis.Dot(d)
+	s.motor.prepare(axialMass, j.MotorSpeed, j.MaxMotorForce*h)
+	s.lower.active, s.upper.active = false, false
+	if j.Min != 0 || j.Max != 0 {
+		if translation <= j.Min {
+			s.lower.prepare(axialMass, translation-j.Min, 1, h)
+		}
+		if translation >= j.Max {
+			s.upper.prepare(axialMass, translation-j.Max, -1, h)
+		}
+	}
+	if j.Stiffness > 0 {
+		v := s.axis.Dot(s.b.vel(s.rB).Sub(s.a.vel(s.dA)))
+		p := s.axis.Mul((-j.Stiffness*translation - j.Damping*v) * h)
+		s.a.impulse(p, s.dA, -1)
+		s.b.impulse(p, s.rB, 1)
+	}
+}
+
+func (s *prismaticSolver3) solve() {
+	s.motor.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	s.lower.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	s.upper.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	s.ang.solve(&s.a, &s.b)
+	if !s.ok {
+		return
+	}
+	rel := s.b.vel(s.rB).Sub(s.a.vel(s.dA))
+	c0, c1 := s.u1.Dot(rel)+s.bias[0], s.u2.Dot(rel)+s.bias[1]
+	l0 := -(s.kinv[0]*c0 + s.kinv[1]*c1)
+	l1 := -(s.kinv[2]*c0 + s.kinv[3]*c1)
+	p := s.u1.Mul(l0).Add(s.u2.Mul(l1))
+	s.a.impulse(p, s.dA, -1)
+	s.b.impulse(p, s.rB, 1)
+}
+
 type hingeSolver3 struct {
 	j            *HingeJoint3
 	a, b         jointSide3
@@ -631,9 +881,7 @@ type fixedSolver3 struct {
 	j     *FixedJoint3
 	a, b  jointSide3
 	point pointSolver3
-	kinv  mat3
-	bias  lin.Vec3
-	ok    bool
+	ang   angularLock3
 }
 
 func (s *fixedSolver3) sides() (ecs.Entity, ecs.Entity) { return s.j.A, s.j.B }
@@ -649,28 +897,14 @@ func conj(q lin.Quat) lin.Quat { return lin.Quat{X: -q.X, Y: -q.Y, Z: -q.Z, W: q
 
 func (s *fixedSolver3) prepare(h float32) {
 	s.point.prepare(&s.a, &s.b, s.j.AnchorA, s.j.AnchorB, h)
-	qa, qb := quatOf(s.a.t), quatOf(s.b.t)
 	if !s.j.measured {
-		s.j.rel, s.j.measured = conj(qa).Mul(qb), true
+		s.j.rel, s.j.measured = conj(quatOf(s.a.t)).Mul(quatOf(s.b.t)), true
 	}
-	// The rotation taking B's target orientation to its actual one.
-	target := qa.Mul(s.j.rel)
-	err := qb.Mul(conj(target))
-	if err.W < 0 {
-		err = lin.Quat{X: -err.X, Y: -err.Y, Z: -err.Z, W: -err.W}
-	}
-	e := lin.V3(err.X, err.Y, err.Z).Mul(2)
-	s.kinv, s.ok = s.a.invI.add(s.b.invI).inverse()
-	s.bias = e.Mul(jointBaumgarte / h)
+	s.ang.prepare(&s.a, &s.b, s.j.rel, h)
 }
 
 func (s *fixedSolver3) solve() {
-	if s.ok {
-		wrel := s.b.angVel().Sub(s.a.angVel())
-		l := s.kinv.mulVec(wrel.Add(s.bias)).Neg()
-		s.a.angularImpulse(l, -1)
-		s.b.angularImpulse(l, 1)
-	}
+	s.ang.solve(&s.a, &s.b)
 	s.point.solve(&s.a, &s.b)
 }
 

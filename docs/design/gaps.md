@@ -253,13 +253,15 @@ lists, and an accessibility tree are in.
 
 Capsules, convex hulls, triangle meshes, compounds, 2D capsules, edges
 and chains, overlap, shape-cast, nearest and raycast-all queries,
-distance, hinge, revolute, ball, spring and fixed joints with limits and
-motors, ragdolls, continuous collision for fast bodies (against static
+distance, hinge, revolute, ball, prismatic, wheel, spring and fixed
+joints with limits, motors and springs,
+ragdolls, continuous collision for fast bodies (against static
 geometry and between two moving bodies), sleeping, and character
 controllers are in; the physics-lab example draws colliders and
 contacts with the 3D debug lines. Cloth, volumetric soft bodies and 2D
 fluids are in `phys/soft`, on the same colliders, with the softbody
-example.
+example. Casts, sweeps and character moves take their candidates from
+the sorted sweep and allocate nothing once their buffers have grown.
 
 - Soft bodies do not push rigid bodies back: a cloth or a jelly reads
   the static and kinematic colliders and never writes an impulse to a
@@ -276,15 +278,9 @@ example.
   capsules, circles, polygons and compounds of those. Convex hulls,
   triangle meshes, edges and chains have no signed distance, so soft
   bodies pass through them.
-- Continuous collision, shape casts and the character controller build
-  their convex parts afresh per query, several hundred allocations a
-  step with a hundred fast bodies over a large static set, and scan
-  every entry rather than the sorted sweep.
-- Prismatic (slider) joints and 2D wheel joints; a distance joint with a
-  spring covers most suspensions.
-- A stack of four boxes at the default solver quality jitters just above
-  the sleep threshold; raise `Substeps` and `Iterations` for stacks that
-  should sleep.
+- A stack whose boxes are turned relative to each other keeps creeping
+  into place at the default solver quality, so it sleeps late or not at
+  all; an aligned stack settles within a second or two.
 
 ## Entities, data and scripting
 
