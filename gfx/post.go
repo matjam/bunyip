@@ -37,6 +37,22 @@ type PostSettings struct {
 	// materials stay on it either way, because they read the scene behind
 	// them and so must draw in order.
 	OrderIndependent bool
+	// Reflections is the strength of screen-space reflections, 0 (off, the
+	// default) to 1. A smooth surface mirrors what the screen already
+	// shows: a polished floor under a bright object, a wet road under a
+	// sign. Where a ray leaves the screen or hits nothing the surface
+	// keeps its environment or probe reflection.
+	Reflections float32
+	// ReflectionRoughness is the roughness a surface stops reflecting the
+	// screen at, fading out over the half of the range below it; zero
+	// means 0.35.
+	ReflectionRoughness float32
+	// ReflectionDistance is how far a reflection ray travels in world
+	// units; zero means 30.
+	ReflectionDistance float32
+	// ReflectionSteps is how many samples a reflection ray takes along the
+	// way; zero means 32. More is sharper and slower.
+	ReflectionSteps int
 	// LUT grades the final colours through a lookup table: a strip of n
 	// slices of n by n, n by n squared pixels wide, as NeutralLUT lays it
 	// out and image editors export it after grading a screenshot. Load it
@@ -92,6 +108,7 @@ type postPass struct {
 	ssao      *render.Pipeline
 	aoBlur    *render.Pipeline
 	oit       *render.Pipeline // resolves the order-independent transparency targets
+	reflect   *render.Pipeline // screen-space reflections, see ssr.go
 	singles   *render.DescriptorSets
 	pairs     *render.DescriptorSets // accumulation and revealage together
 	triples   *render.DescriptorSets
@@ -127,6 +144,10 @@ type sceneTargets struct {
 	aoASet    vk.VkDescriptorSet
 	finalSet  vk.VkDescriptorSet // scene, bloom, ao
 	noBloom   vk.VkDescriptorSet // scene, black, ao
+	// reflectSet is the screen-space reflection pass's input: the copy of
+	// the opaque scene, the scene depth, and the copy again in the third
+	// slot the triple layout wants.
+	reflectSet vk.VkDescriptorSet
 }
 
 type postPush struct {
@@ -303,6 +324,11 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 	}); err != nil {
 		return fail(err)
 	}
+	if t.reflectSet, err = p.triples.AllocateMany([]render.SamplerBinding{
+		{View: t.scene.View, Sampler: g.linear}, {View: t.hdr.Depth.View, Sampler: g.nearest}, {View: t.scene.View, Sampler: g.linear},
+	}); err != nil {
+		return fail(err)
+	}
 	return t, nil
 }
 
@@ -347,7 +373,7 @@ func (t *sceneTargets) destroy(g *Graphics) {
 	if t.oitSet != 0 {
 		p.pairs.Free(t.oitSet)
 	}
-	for _, set := range []vk.VkDescriptorSet{t.finalSet, t.noBloom} {
+	for _, set := range []vk.VkDescriptorSet{t.finalSet, t.noBloom, t.reflectSet} {
 		if set != 0 {
 			p.triples.Free(set)
 		}
@@ -451,7 +477,7 @@ func (p *postPass) destroy(g *Graphics) {
 	if p.main != nil {
 		p.main.destroy(g)
 	}
-	for _, pipe := range []*render.Pipeline{p.composite, p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur, p.oit} {
+	for _, pipe := range []*render.Pipeline{p.composite, p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur, p.oit, p.reflect} {
 		if pipe != nil {
 			pipe.Destroy()
 		}

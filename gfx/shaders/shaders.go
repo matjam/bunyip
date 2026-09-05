@@ -45,6 +45,7 @@ var (
 //go:generate glslangValidator -V -o blur.frag.spv blur.frag
 //go:generate glslangValidator -V -o fxaa.frag.spv fxaa.frag
 //go:generate glslangValidator -V -o ssao.frag.spv ssao.frag
+//go:generate glslangValidator -V -o ssr.frag.spv ssr.frag
 //go:generate glslangValidator -V -o aoblur.frag.spv aoblur.frag
 //go:generate glslangValidator -V -o oit.frag.spv oit.frag
 //go:generate glslangValidator -V -o sky.frag.spv sky.frag
@@ -99,6 +100,8 @@ var (
 	FXAAFrag []byte
 	//go:embed ssao.frag.spv
 	SSAOFrag []byte
+	//go:embed ssr.frag.spv
+	SSRFrag []byte
 	//go:embed aoblur.frag.spv
 	AOBlurFrag []byte
 	//go:embed oit.frag.spv
@@ -215,7 +218,11 @@ OUTPUT}
 // separate programs rather than one with a branch: a program that writes
 // an attachment its pass does not have is a validation warning on every
 // draw.
-const meshOutput = `    outColor = lit;
+const meshOutput = `    // An opaque draw's alpha is never read as coverage, so the frame
+    // carries the screen-space reflection weight there instead and the
+    // reflection pass reads it back from the scene copy.
+    if (vGI.y > 0.5 && frame.reflect.x > 0.0) lit.a = reflectWeight(s);
+    outColor = lit;
 `
 
 const meshOITOutput = `    // The colour goes into the accumulation attachment scaled by the
@@ -267,6 +274,7 @@ layout(location = 10) flat out vec4 vUVT1;
 layout(location = 11) flat out vec4 vSheen;
 layout(location = 12) flat out vec4 vVolume;
 layout(location = 13) flat out vec4 vAtten;
+layout(location = 14) flat out vec4 vGI;
 
 void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
@@ -288,6 +296,7 @@ void main() {
     vSheen = iSheen;
     vVolume = iVolume;
     vAtten = iAtten;
+    vGI = iGI;
 }
 `
 

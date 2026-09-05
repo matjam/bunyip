@@ -31,6 +31,16 @@ layout(set = 0, binding = 0) uniform Frame {
     vec4 fogRange;
     mat4 spotViewProj[4];
     vec4 spotInfo[32];
+    // The global illumination block, which this shader does not read but
+    // must declare to reach what follows it.
+    vec4 probePos[8];
+    vec4 probeMin[8];
+    vec4 probeMax[8];
+    vec4 probeParams[8];
+    vec4 gridOrigin;
+    vec4 gridSpacing;
+    vec4 gridCounts;
+    vec4 reflect;
     vec4 atmos;        // x planet radius, y air height, z rayleigh, w mie falloff height
     vec4 betaR;        // rgb rayleigh scattering per unit at the ground, w = sun intensity
     vec4 betaM;        // x mie scattering, y forward lobe, z camera altitude, w = 1 with an atmosphere

@@ -16,8 +16,10 @@ var tabNames = []string{"Engine", "Graphics", "Entities", "Physics", "Audio", "I
 // graphSamples is how many frames the engine panel's timing graph keeps.
 const graphSamples = 240
 
-// sample is one frame's timing for the graph.
-type sample struct{ frame, update, draw, present float32 }
+// sample is one frame's timing for the graph. gpu is what the GPU spent
+// on a frame a frame or two back, since the timestamps are read without
+// waiting; it is zero where the device has no timestamp queries.
+type sample struct{ frame, update, draw, present, gpu float32 }
 
 // panelState is everything the debug window remembers between frames.
 type panelState struct {
@@ -28,8 +30,9 @@ type panelState struct {
 
 	// The engine tab's rolling frame timings, newest last.
 	samples  []sample
-	peak     float32 // the highest frame time in the samples, for the scale
+	peak     float32 // the highest frame or GPU time in the samples, for the scale
 	maxSteps int     // the most updates the loop ran in one frame
+	hasGPU   bool    // some sample carries a GPU time, so the graph draws its line
 
 	// The graphics tab keeps no state: it edits the live settings.
 
@@ -118,14 +121,19 @@ func (c *Console) sampleFrame(s Stats) {
 		update:  float32(s.UpdateMS),
 		draw:    float32(s.DrawMS),
 		present: float32(s.PresentMS),
+		gpu:     float32(s.GPUFrameMS),
 	})
 	if n := len(p.samples) - graphSamples; n > 0 {
 		p.samples = append(p.samples[:0], p.samples[n:]...)
 	}
 	p.maxSteps = max(p.maxSteps, s.Updates)
 	p.peak = 0
+	p.hasGPU = false
 	for _, sm := range p.samples {
-		p.peak = max(p.peak, sm.frame)
+		// The GPU line is scaled with the rest, so a frame the GPU takes
+		// longer over than the CPU still fits.
+		p.peak = max(p.peak, sm.frame, sm.gpu)
+		p.hasGPU = p.hasGPU || sm.gpu > 0
 	}
 }
 
@@ -142,6 +150,9 @@ func (c *Console) drawEngine(f Frame, area ui.Rect) {
 		gs = f.Gfx.Stats()
 	}
 	rows := 10 + len(s.Scopes)
+	if len(s.GPU) > 0 {
+		rows += 2 + len(s.GPU)
+	}
 	u.ScrollArea("engine", body, c.rowsH(rows), func() {
 		u.Label(fmt.Sprintf("%.0f fps   %.2f ms/frame   frame %d", s.FPS, s.FrameMS, f.FrameCount))
 		u.Label(fmt.Sprintf("update %.2f ms x%d   draw %.2f ms   present %.2f ms", s.UpdateMS, s.Updates, s.DrawMS, s.PresentMS))
@@ -162,6 +173,13 @@ func (c *Console) drawEngine(f Frame, area ui.Rect) {
 			}
 		} else {
 			u.Label(fmt.Sprintf("%d draw calls, no budget set (Config.DrawBudget)", total))
+		}
+		if len(s.GPU) > 0 {
+			u.Separator()
+			u.Label(fmt.Sprintf("GPU %.2f ms a frame, by pass", s.GPUFrameMS))
+			for _, sp := range s.GPU {
+				u.Label(fmt.Sprintf("  %s   %.2f ms", sp.Name, sp.MS))
+			}
 		}
 		if len(s.Scopes) > 0 {
 			u.Separator()
@@ -204,8 +222,18 @@ func (c *Console) drawGraph(f Frame, r ui.Rect) {
 		bar(s.present, gfx.RGB(230, 190, 110))
 		rest := s.frame - s.update - s.draw - s.present
 		bar(rest, gfx.RGB(90, 90, 110))
+		if s.gpu > 0 {
+			// The GPU time runs beside the stack rather than inside it:
+			// the GPU works while the CPU records the next frame, so the
+			// two do not add up to the frame.
+			h := r.H * s.gpu / scale
+			g.FillRect(x, max(r.Y+r.H-min(h, r.H), r.Y), max(w-1, 1), 2, gfx.RGB(235, 120, 210))
+		}
 	}
 	label := fmt.Sprintf("%.1f ms peak   update  draw  present  idle", p.peak)
+	if p.hasGPU {
+		label += "  gpu"
+	}
 	g.DrawText(th.Font, label, r.X+4, r.Y+2, th.TextDim)
 }
 
@@ -244,7 +272,8 @@ func (c *Console) drawGraphics(f Frame, area ui.Rect) {
 		}
 		u.Separator()
 		gs := g.Stats()
-		u.Label(fmt.Sprintf("lights this frame %d of %d, %d dropped", gs.Lights, gfx.MaxLights, gs.LightsDropped))
+		u.Label(fmt.Sprintf("lights this frame %d of %d, %d dropped; %d reflection probes dropped",
+			gs.Lights, gfx.MaxLights, gs.LightsDropped, gs.ProbesDropped))
 		var bytes int
 		counts := map[gfx.ResourceKind]int{}
 		items := make([]string, 0, len(res))
