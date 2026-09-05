@@ -272,7 +272,8 @@ func (c *Console) drawGraphics(f Frame, area ui.Rect) {
 		}
 		u.Separator()
 		gs := g.Stats()
-		u.Label(fmt.Sprintf("lights this frame %d of %d, %d dropped", gs.Lights, gfx.MaxLights, gs.LightsDropped))
+		u.Label(fmt.Sprintf("lights this frame %d of %d, %d dropped; %d reflection probes dropped",
+			gs.Lights, gfx.MaxLights, gs.LightsDropped, gs.ProbesDropped))
 		var bytes int
 		counts := map[gfx.ResourceKind]int{}
 		items := make([]string, 0, len(res))

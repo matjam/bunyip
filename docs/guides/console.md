@@ -173,10 +173,14 @@ time by pass, the profile scopes `Context.Profile` recorded, the 2D and
 ### GPU pass times
 
 The engine times each pass on the GPU with timestamp queries: the shadow
-atlas, the opaque scene, the blended scene, the decals, bloom, ambient
-occlusion, the composite, the anti-aliasing resolve and the 2D stream. A
-pass that runs for a render texture as well as for the screen is summed
-into one figure. The panel lists them under the graph, the F3 overlay
+atlas, the opaque scene, the screen-space reflections, the blended
+scene, the decals, bloom, ambient occlusion, the composite, the
+anti-aliasing resolve and the 2D stream. A pass that runs for a render
+texture as well as for the screen is summed into one figure, and a pass
+a frame does not run is left out, so the list says what that frame
+actually cost. Work outside the frame, such as a `BakeProbe` call, is
+not timed: it records on its own command buffers and blocks until it is
+done, so the wall clock already tells you what it cost. The panel lists them under the graph, the F3 overlay
 shows the frame's total as `gpu`, and a game reads both from
 `ctx.Stats.GPUFrameMS` and `ctx.Stats.GPU` (`gfx.FrameStats.GPUFrameMS`
 and `GPU` under it) without the console.

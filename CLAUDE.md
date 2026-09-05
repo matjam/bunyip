@@ -35,7 +35,7 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
@@ -89,9 +89,15 @@ the shader reads it back with `texSampler(slot)` and the GLSL preludes
 Every instance of a draw shares set 0, so the index is the same across
 the draw, which is what `shaderSampledImageArrayDynamicIndexing` needs;
 `Device.ArrayIndexing` reports it and `initMeshPass` refuses a device
-without it. Set 1 is the per-frame `Frame` uniform block. Set 2 is the
-shadow atlas, the one comparison sampler. Set 3 is joint matrices. Set 4
-is a game shader's uniform block. Metal allows sixteen samplers a stage,
+without it. A draw inside a reflection probe's volume binds that probe's
+cube map at binding 9 instead of the light's environment, so probes cost
+no image: `materialSet` is keyed on the environment already. Set 1 is the
+per-frame `Frame` uniform block at binding 0 and the light probe grid's
+harmonics as a storage buffer at binding 1
+(`Device.NewUniformStorageSets`); the queue's own sets are bound and the
+mesh pass's layout is what the pipelines are built against, so both are
+made the same way. Set 2 is the shadow atlas, the one comparison sampler.
+Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal allows sixteen samplers a stage,
 which the four plus the shadow atlas's stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
 which is the budget the thirteen images and the atlas spend from: a new
@@ -99,11 +105,13 @@ material texture costs an image and no sampler. The shadow maps still
 share one atlas image so the shadow pass costs one binding.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
-in six GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
-`skyparam.frag`, `outline.vert`, `decal.vert`, `decal.frag`. Changing a
-field before the end means changing all of them and regenerating every
-shader; appending at the end only needs the files that read the new
-field.
+in seven GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
+`skyparam.frag`, `outline.vert`, `decal.vert`, `decal.frag`, `ssr.frag`.
+Changing a field before the end means changing all of them and
+regenerating every shader; appending at the end only needs the files that
+read the new field. The global illumination fields (the probe volumes,
+the grid's shape, the reflection settings) are the tail, read by
+`prelude_mesh.glsl` and `ssr.frag`.
 
 **Shaders are compiled offline.** `glslangValidator` must be on the
 path. `go generate ./gfx/shaders/` rebuilds the engine's SPIR-V and
@@ -233,6 +241,23 @@ render pass, so text tests draw one frame.
   `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
   `Shader.VertexBounds`, whose zero means the draw is never culled.
   `Mesh.SetBounds` overrides the box and survives `Update`.
+- The instance stream is twelve `vec4`s at locations 5 to 16, so a
+  skinned mesh's joints and weights sit at 17 and 18 (`vert_skin.glsl`
+  and `skinVertexLayout`). The twelfth carries the draw's reflection
+  probe index plus one and whether the draw is opaque.
+- An opaque draw writes its screen-space reflection weight into the HDR
+  alpha channel, which nothing else reads, and the reflection pass reads
+  it back from the scene copy. A blended draw keeps its real alpha, which
+  is what the opaque flag in the instance stream is for. The pass runs
+  between the opaque and the blended draws, in its own pass without the
+  depth attachment so it can sample the depth image.
+- `BakeProbe` and `BakeLightProbes` render the scene through
+  `renderScene` on their own one-shot command buffers, so they refuse to
+  run inside `Draw`. They build a `baker`, which queues the game's scene
+  once and re-renders it per face, and read the HDR image back with
+  `Device.ReadImageRaw`; the prefilter and the harmonics are the same CPU
+  code an image environment uses, over a cube sampler instead of an
+  equirectangular one.
 - The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
   class, then depth for blended draws or dense shader, uniform, material
   set and mesh ids for opaque ones, and the draw's index in the low
@@ -335,7 +360,10 @@ render pass, so text tests draw one frame.
   spans with the same name are summed, so a pass run for a render
   texture and for the screen reads as one. A device with a zero
   timestamp period or no valid timestamp bits gets a nil `*Timestamps`
-  on which every method does nothing.
+  on which every method does nothing. `Begin` and `End` also do nothing
+  on a command buffer that did not call `Reset`, so `renderScene` on a
+  one-shot buffer (a `BakeProbe` face) writes into no query it never
+  reset and spends none of the open frame's.
 
 # Part two: using Bunyip in a game
 
@@ -388,6 +416,7 @@ goroutine.
 | Compressed textures and their offline mip chains | `cmd/bunyip-tex`, `gfx/ktx2`, `gfx.NewCompressedTexture` |
 | Autotiling: terrain that picks its own tiles | `grid/autotile`, `tiled.WangSet` for sets from the Tiled editor |
 | Meshes, materials, lights, shadows, sky, fog, post-processing | `gfx` (3D half), `gltf` for loading models |
+| Reflection probes, baked light probe grids, screen-space reflections | `gfx.ReflectionProbe`, `gfx.LightProbeGrid`, `gfx.PostSettings.Reflections` |
 | Game-written shaders | `cmd/bunyip-shader`, the shaders guide |
 | Widgets, menus, text fields, themes | `ui` |
 | A debug console and panels over a running game | `console`, `bunyip.Config.Console` |
@@ -413,7 +442,8 @@ goroutine.
 - Everything drawn in `Draw` is queued; order within a layer is call
   order. Use `SetLayer` to order across calls.
 - GPU resources (`Texture`, `Font`, `Mesh`, `Model`, `Shader`,
-  `RenderTexture`, `Environment`) have `Destroy`; call it in `Shutdown`.
+  `RenderTexture`, `Environment`, `ReflectionProbe`) have `Destroy`; call
+  it in `Shutdown`.
 - The interface is rebuilt every frame inside `ui.Begin`; values are
   passed by pointer, and widgets return whether something happened.
 - Physics, animation and orbits are ECS systems: give entities the

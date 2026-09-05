@@ -130,11 +130,14 @@ and reports the error, so a half-written save does not take the game
 down with it, and the next write is tried again. `Watcher` is the layer
 under all this for a game that would rather reload by hand.
 
-Models are not reloaded. Swapping a glTF file's contents gives back
-different meshes, a different skeleton and different animation clips,
-and every `gfx.AnimPlayer`, mesh pointer and node index the game holds
-refers to the old ones; a game that wants it loads the model again and
-rebinds what pointed at it.
+Models and environments are not reloaded. Swapping a glTF file's
+contents gives back different meshes, a different skeleton and different
+animation clips, and every `gfx.AnimPlayer`, mesh pointer and node index
+the game holds refers to the old ones. A `gfx.Environment` is a
+panorama prefiltered into a cube map, and a `gfx.ReflectionProbe` bakes
+and owns one of its own, so replacing the image behind one means
+rebuilding every level of that cube. A game that wants either loads it
+again and rebinds what pointed at the old one.
 
 ### The texture pipeline
 

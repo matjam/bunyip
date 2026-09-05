@@ -38,8 +38,9 @@ type Timestamps struct {
 	msPerTick float64 // milliseconds one counter tick covers
 
 	slots [FramesInFlight]slotSpans
-	cur   int   // the slot being recorded
-	open  []int // the spans Begin opened and End has not closed, innermost last
+	cur   int                // the slot being recorded
+	cb    vk.VkCommandBuffer // the buffer that reset that slot, and so the only one that may write
+	open  []int              // the spans Begin opened and End has not closed, innermost last
 
 	results []uint64 // the readback buffer, reused every frame
 	last    []Span   // the newest results
@@ -109,7 +110,7 @@ func (t *Timestamps) Reset(cb vk.VkCommandBuffer, slot int) {
 	if t == nil {
 		return
 	}
-	t.cur = slot
+	t.cur, t.cb = slot, cb
 	t.open = t.open[:0]
 	s := &t.slots[slot]
 	if s.pending {
@@ -124,8 +125,14 @@ func (t *Timestamps) Reset(cb vk.VkCommandBuffer, slot int) {
 // Begin starts timing a section named name. Pairs nest, so a pass may
 // time the parts inside it. A frame that has used all its queries
 // records nothing and the matching End does nothing.
+//
+// A command buffer that has not called Reset records nothing either, so
+// work recorded outside the frame ring, such as a probe bake on a
+// one-shot buffer, neither writes into queries it never reset nor
+// consumes the open frame's. A one-shot buffer's handle cannot equal a
+// frame's, because a frame's is allocated for the life of the device.
 func (t *Timestamps) Begin(cb vk.VkCommandBuffer, name string) {
-	if t == nil {
+	if t == nil || cb != t.cb {
 		return
 	}
 	s := &t.slots[t.cur]
@@ -143,9 +150,9 @@ func (t *Timestamps) Begin(cb vk.VkCommandBuffer, name string) {
 }
 
 // End closes the innermost open section. Calling it without a matching
-// Begin does nothing.
+// Begin, or on a buffer that has not called Reset, does nothing.
 func (t *Timestamps) End(cb vk.VkCommandBuffer) {
-	if t == nil || len(t.open) == 0 {
+	if t == nil || cb != t.cb || len(t.open) == 0 {
 		return
 	}
 	i := t.open[len(t.open)-1]

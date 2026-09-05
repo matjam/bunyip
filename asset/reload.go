@@ -40,11 +40,14 @@ import (
 // embedded file system is loaded once and never watched, so a shipped
 // game pays for the polling goroutine and nothing else. Close stops it.
 //
-// Models are not reloaded. Swapping a glTF file's contents would give
-// back different meshes, a different skeleton and different animation
-// clips, which every AnimPlayer, mesh pointer and node index the game
-// holds refers to; a game that wants that reloads the model itself and
-// rebinds what pointed at it.
+// Models and environments are not reloaded. Swapping a glTF file's
+// contents would give back different meshes, a different skeleton and
+// different animation clips, which every AnimPlayer, mesh pointer and
+// node index the game holds refers to. A gfx.Environment is built by
+// prefiltering a panorama into a cube map, and a reflection probe bakes
+// and owns one of its own, so replacing the image behind one would mean
+// rebuilding every level of that cube while the game runs. A game that
+// wants either loads it again and rebinds what pointed at the old one.
 type Reloader struct {
 	g       *gfx.Graphics
 	fs      *FS

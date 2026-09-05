@@ -34,8 +34,9 @@ type Stats struct {
 
 	// GPUFrameMS is how long the GPU spent on a recent frame, from its
 	// first pass to the end of its last. GPU breaks that down by pass:
-	// the shadow atlas, the opaque and blended scene, the decals, bloom,
-	// ambient occlusion, the composite and the 2D stream. Both come from
+	// the shadow atlas, the opaque and blended scene, the reflections, the
+	// decals, bloom, ambient occlusion, the composite and the 2D stream.
+	// Both come from
 	// timestamp queries read back a frame or two later, so they lag the
 	// frame on screen, and both are zero and empty on a device without
 	// timestamp queries.

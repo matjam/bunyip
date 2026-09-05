@@ -253,6 +253,9 @@ func newGraphics(r *render.Renderer) (*Graphics, error) {
 	if err := g.initPost(); err != nil {
 		return nil, err
 	}
+	if err := g.initReflections(); err != nil {
+		return nil, err
+	}
 	if err := g.initLines(); err != nil {
 		return nil, err
 	}
@@ -464,12 +467,15 @@ type FrameStats struct {
 	// MaxLights. The directional light is not counted: every frame has
 	// one.
 	Lights int
+	// ProbesDropped counts reflection probes added past MaxProbes, which
+	// a frame keeps none of.
+	ProbesDropped int
 	// GPU is how long the GPU spent in each pass, in the order the passes
 	// were recorded: the shadow atlas, the opaque and blended scene, the
-	// decals, bloom, ambient occlusion, the composite, the anti-alias
-	// resolve and the 2D stream. A pass that runs for a render texture as
-	// well as the screen is summed into one entry. It is empty on a
-	// device without timestamp queries, which some MoltenVK
+	// reflections, the decals, bloom, ambient occlusion, the composite,
+	// the anti-alias resolve and the 2D stream. A pass that runs for a
+	// render texture as well as the screen is summed into one entry. It is
+	// empty on a device without timestamp queries, which some MoltenVK
 	// configurations are. The figures come from queries read back without
 	// waiting, so they describe a frame two frames back, and the slice is
 	// reused every frame; copy it to keep it.
