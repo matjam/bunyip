@@ -1,11 +1,60 @@
 package gfx
 
 import (
+	"fmt"
 	"image"
 	"testing"
 
 	"github.com/matjam/bunyip/lin"
 )
+
+// TestSphereUploadPathsRendered covers the same geometry through setup
+// uploads and uploads recorded inside a frame, at both sides of 64 KiB
+// of vertex data. Unlit draws separate missing geometry from lighting.
+func TestSphereUploadPathsRendered(t *testing.T) {
+	for _, rings := range []int{16, 32} {
+		for _, inFrame := range []bool{false, true} {
+			for _, unlit := range []bool{false, true} {
+				t.Run(fmt.Sprintf("rings=%d/in_frame=%t/unlit=%t", rings, inFrame, unlit), func(t *testing.T) {
+					g := newHeadless(t, 96, 96)
+					verts, indices := SphereMesh(rings, rings*2)
+					var sphere *Mesh
+					create := func() {
+						var err error
+						sphere, err = g.NewMesh(verts, indices)
+						if err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(sphere.Destroy)
+					}
+					if !inFrame {
+						create()
+					}
+					for frame := range 2 {
+						img := renderMaterial(t, g, func() {
+							if sphere == nil {
+								create()
+							}
+							g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: Color{3, 3, 3, 1}, Ambient: Color{0.05, 0.05, 0.05, 1}})
+							g.DrawMesh(sphere, Material{BaseColor: RGB(180, 140, 60), Roughness: 0.8, Unlit: unlit}, lin.Scale(lin.V3(1.3, 1.3, 1.3)))
+						})
+						covered := 0
+						for y := range 96 {
+							for x := range 96 {
+								if bright(img, x, y) {
+									covered++
+								}
+							}
+						}
+						if covered < 1000 || !bright(img, 48, 48) {
+							t.Errorf("frame %d: sphere covers %d pixels, centre %v, culled %d; vertices %d (%d bytes), indices %d; want a visible sphere", frame, covered, img.RGBAAt(48, 48), g.stats.Culled, len(verts), len(verts)*vertexSize, len(indices))
+						}
+					}
+				})
+			}
+		}
+	}
+}
 
 // litSphere draws one sphere under a bright light straight down the view
 // and returns the frame, for the tests that compare a material against

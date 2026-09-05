@@ -1,7 +1,12 @@
 package gfx
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"image"
+	"image/png"
+	"math"
 	"testing"
 
 	"github.com/matjam/bunyip/gltf"
@@ -106,8 +111,10 @@ func TestMorphDrawSnapshotsRendered(t *testing.T) {
 					players[i] = shared.NewAnimPlayer()
 					players[i].SetMorphWeights(0, w)
 				}
+				var snapshots []*Mesh
 				render := func(sharedModel bool) *image.RGBA {
 					return frames(t, g, func() {
+						snapshots = snapshots[:0]
 						g.SetCamera(Camera{Position: lin.V3(0, 3, 5), Target: lin.V3(0, 0.2, 0)})
 						g.SetLight(Light{Direction: lin.V3(-0.4, -1, -0.3), Color: Color{2, 2, 2, 1}})
 						for i, w := range tc.weights {
@@ -128,16 +135,115 @@ func TestMorphDrawSnapshotsRendered(t *testing.T) {
 							} else {
 								g.DrawModel(models[i], at.Matrix())
 							}
+							snapshots = append(snapshots, g.cur.draws[len(g.cur.draws)-1].mesh)
 						}
 					})
 				}
 				want, got := render(false), render(true)
 				if diff := imageDiff(want, got); diff != 0 {
 					t.Errorf("shared morph instances differ from independent models in %d pixels", diff)
+					morphImageDiagnostic(t, "independent", want)
+					morphImageDiagnostic(t, "shared", got)
+					for i, mesh := range snapshots {
+						morphBufferDiagnostic(t, i, mesh)
+					}
 				}
 			})
 		}
 	}
+}
+
+// Isolate frame-local geometry uploads from shared-model snapshots: each
+// model has one pose and one draw. Uploading that pose while a frame is
+// open must produce the same image as uploading it during setup.
+func TestMorphUploadContext(t *testing.T) {
+	for _, skinned := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "skinned"}[skinned], func(t *testing.T) {
+			g := newHeadless(t, 96, 96)
+			g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
+			load := func() *Model {
+				m, err := g.LoadModel(morphSnapshotDoc(skinned))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(m.Destroy)
+				return m
+			}
+			before, during := load(), load()
+			weights := make([]float32, 9)
+			for i := range weights {
+				weights[i] = 0.75
+			}
+			if err := before.SetMorphWeights(0, weights); err != nil {
+				t.Fatal(err)
+			}
+			render := func(m *Model, update bool) *image.RGBA {
+				return renderMaterial(t, g, func() {
+					g.SetCamera(Camera{Position: lin.V3(0, 3, 5), Target: lin.V3(0, 0.2, 0)})
+					g.SetLight(Light{Direction: lin.V3(-0.4, -1, -0.3), Color: Color{2, 2, 2, 1}})
+					if update {
+						if err := m.SetMorphWeights(0, weights); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if skinned {
+						p := m.NewAnimPlayer()
+						p.SetMorphWeights(0, weights)
+						g.DrawModelAnimated(m, Transform{}, p)
+					} else {
+						g.DrawModel(m, lin.Identity())
+					}
+				})
+			}
+			want, got := render(before, false), render(during, true)
+			if diff := imageDiff(want, got); diff != 0 {
+				t.Errorf("frame upload differs from setup upload in %d pixels", diff)
+				morphImageDiagnostic(t, "setup", want)
+				morphImageDiagnostic(t, "frame", got)
+				morphBufferDiagnostic(t, 0, before.morphs[0].mesh)
+				morphBufferDiagnostic(t, 1, during.morphs[0].mesh)
+			}
+		})
+	}
+}
+
+// Small failure images in the log let CI-only driver differences be
+// inspected without leaving files in the checkout or changing assertions.
+func morphImageDiagnostic(t *testing.T, label string, img *image.RGBA) {
+	t.Helper()
+	var data bytes.Buffer
+	if err := png.Encode(&data, img); err != nil {
+		t.Logf("%s PNG: %v", label, err)
+		return
+	}
+	t.Logf("%s PNG base64: %s", label, base64.StdEncoding.EncodeToString(data.Bytes()))
+}
+
+func morphBufferDiagnostic(t *testing.T, draw int, m *Mesh) {
+	t.Helper()
+	// Unified-memory devices may expose a mapped view. Bytes returns nil
+	// for every buffer without host-visible mapped memory. The screenshot
+	// has already waited for the frame before this diagnostic reads it.
+	data := m.vbuf.Bytes()
+	if data == nil {
+		t.Logf("draw %d vertex buffer has no host mapping", draw)
+		return
+	}
+	stride := vertexSize
+	if m.skinned {
+		stride = skinVertexSize
+	}
+	mismatches := 0
+	for i, v := range m.verts {
+		for component, want := range []float32{v.Pos.X, v.Pos.Y, v.Pos.Z, v.Normal.X, v.Normal.Y, v.Normal.Z} {
+			offset := i*stride + component*4
+			got := math.Float32frombits(binary.LittleEndian.Uint32(data[offset : offset+4]))
+			if got != want {
+				mismatches++
+			}
+		}
+	}
+	t.Logf("draw %d GPU vertex position/normal mismatches: %d of %d", draw, mismatches, len(m.verts)*6)
 }
 
 func TestMorphDrawSnapshotsAllocateNothingOnGPU(t *testing.T) {
