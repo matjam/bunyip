@@ -217,7 +217,7 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 		SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		ImageView:   r.depth.AttachView,
 		ImageLayout: depthLayout(r.DepthFormat),
-		LoadOp: vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+		LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
 		// Nothing reads this depth image after the pass, so discarding it
 		// would be the natural choice. It is stored instead because a
 		// clear-and-discard depth attachment in a pass that records no

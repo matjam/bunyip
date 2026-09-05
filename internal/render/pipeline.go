@@ -28,10 +28,10 @@ type PipelineDesc struct {
 	// Samples is the sample count of the attachments the pipeline renders
 	// into; zero or one is no multisampling. It must match the target's,
 	// so a pass that changes sample count needs its own pipelines.
-	Samples          vk.VkSampleCountFlagBits
-	NoColor          bool    // depth-only pass (shadow maps)
-	DepthBias        float32 // constant depth bias, for shadow passes
-	DepthSlopeBias   float32
+	Samples        vk.VkSampleCountFlagBits
+	NoColor        bool    // depth-only pass (shadow maps)
+	DepthBias      float32 // constant depth bias, for shadow passes
+	DepthSlopeBias float32
 	// DepthClamp clamps a fragment's depth to the viewport's range instead
 	// of clipping the primitive at the near and far planes, so a shadow
 	// caster in front of the near plane still writes depth. It needs the

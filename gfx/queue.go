@@ -9,34 +9,34 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	stream       stream2D
-	draws        []meshDraw
-	order        []int32  // draws in draw order, as indices into draws
-	keys         []uint64 // each draw's packed sort key, the sort's working set
-	shaderIDs    idTable  // dense ids for the sort key
-	uniformIDs   idTable
-	setIDs       idTable
-	meshIDs      idTable
-	shadowVis    []bool // draws that reach the shadow map being recorded
-	cascadeMats  [shadowCascades]lin.Mat4
-	depthClamp   bool    // the shadow pipelines clamp depth rather than clip
-	hasCasters   bool    // casterAlong holds a value
-	casterAlong  float32 // how far the furthest caster is against the light
-	visOpaque    int     // draws at the front of the opaque group the camera sees
-	visBlended   int     // the same for the blended group
-	decals       []decal
-	camera       Camera
-	light        Light
-	hasCam       bool
-	points       []pointLight
-	clusters     clusterGrid // this frame's lights, sorted into the view's clusters
-	spotSlots    []int32     // each light's spot shadow map, or -1
-	pointSlots   []int32     // each light's cube shadow map slot, or -1
-	uniforms     *render.UniformSets
-	inst         instanceStream
-	joints       []lin.Mat4 // joint matrices for skinned draws this frame
-	jointBuf     *render.StorageSets
-	clear        Color
+	stream      stream2D
+	draws       []meshDraw
+	order       []int32  // draws in draw order, as indices into draws
+	keys        []uint64 // each draw's packed sort key, the sort's working set
+	shaderIDs   idTable  // dense ids for the sort key
+	uniformIDs  idTable
+	setIDs      idTable
+	meshIDs     idTable
+	shadowVis   []bool // draws that reach the shadow map being recorded
+	cascadeMats [shadowCascades]lin.Mat4
+	depthClamp  bool    // the shadow pipelines clamp depth rather than clip
+	hasCasters  bool    // casterAlong holds a value
+	casterAlong float32 // how far the furthest caster is against the light
+	visOpaque   int     // draws at the front of the opaque group the camera sees
+	visBlended  int     // the same for the blended group
+	decals      []decal
+	camera      Camera
+	light       Light
+	hasCam      bool
+	points      []pointLight
+	clusters    clusterGrid // this frame's lights, sorted into the view's clusters
+	spotSlots   []int32     // each light's spot shadow map, or -1
+	pointSlots  []int32     // each light's cube shadow map slot, or -1
+	uniforms    *render.UniformSets
+	inst        instanceStream
+	joints      []lin.Mat4 // joint matrices for skinned draws this frame
+	jointBuf    *render.StorageSets
+	clear       Color
 	// out is the attachment set of the pass this queue's composite and 2D
 	// stream land in: the zero value for the screen, a render texture's
 	// own colour format, depth and sample count otherwise.

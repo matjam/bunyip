@@ -45,17 +45,17 @@ type Graphics struct {
 	subFrames    []subFrame
 	// retire holds what each frame slot destroyed or replaced, freed at
 	// that slot's next begin, once its fence has been waited on.
-	retire        [render.FramesInFlight][]func()
-	scratch       []vertex2D
-	pathSubs      []subpath        // flattened sub-paths, reused by FillPath and StrokePath
-	pathFill      filler           // likewise the scanline filler
-	pathStroke    stroker          // and the stroke expander
-	linePipe      *pipeCache // debug lines over the 3D scene, per sample count
+	retire     [render.FramesInFlight][]func()
+	scratch    []vertex2D
+	pathSubs   []subpath  // flattened sub-paths, reused by FillPath and StrokePath
+	pathFill   filler     // likewise the scanline filler
+	pathStroke stroker    // and the stroke expander
+	linePipe   *pipeCache // debug lines over the 3D scene, per sample count
 	// sceneOut is the attachment set of the HDR pass being recorded: the
 	// pipelines drawn into it are built per sample count, and one queue
 	// is recorded at a time.
-	sceneOut outKey
-	dbgFont       *Font            // the built-in font, made on first use
+	sceneOut      outKey
+	dbgFont       *Font // the built-in font, made on first use
 	dbgFontFailed bool
 	rec           recordScratch // long-lived arguments for the recording commands
 	viewport      vk.VkRect2D   // the main output's pixel rectangle; zero means the whole window

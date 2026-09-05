@@ -101,14 +101,14 @@ type meshPass struct {
 	// textures, a shader's image0..3, the environment cube, the
 	// thickness map, the scene copy, the transmission map) and the
 	// shared sampler array, which is immutable in the layout.
-	materials    *render.DescriptorSets
-	matSets      map[materialKey]vk.VkDescriptorSet
-	lastMatKey   materialKey // the key materialSet last resolved, to skip hashing matSets
-	lastMatSet   vk.VkDescriptorSet
-	lastMatOK    bool
-	flatNormal   *Texture
-	black        *Texture
-	blackCube    *render.Image // stands in for the environment when none is set
+	materials  *render.DescriptorSets
+	matSets    map[materialKey]vk.VkDescriptorSet
+	lastMatKey materialKey // the key materialSet last resolved, to skip hashing matSets
+	lastMatSet vk.VkDescriptorSet
+	lastMatOK  bool
+	flatNormal *Texture
+	black      *Texture
+	blackCube  *render.Image // stands in for the environment when none is set
 	// These four draw into the scene's HDR pass, so each is built once
 	// per sample count the post settings ask for.
 	skyPipe      *pipeCache // an image environment as the background
