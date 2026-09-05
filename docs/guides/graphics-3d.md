@@ -770,11 +770,13 @@ p.Aberration, p.Distortion, p.Grain = 0.6, 0.15, 0.03
 gr.SetPost(p)
 ```
 
-At 1280 by 720 on an RTX 4090, over a frame that costs 28 microseconds
-with none of them on: FXAA 7, bloom 12, ambient occlusion 25, motion blur
-18, god rays 16, temporal anti-aliasing 31, depth of field 37, and the
-lens effects together 4. `BenchmarkPost` in the `gfx` package measures
-them.
+At 1280 by 720 on an RTX 4090, over a frame that costs 37 microseconds
+with none of them on: the lens effects together 2, bloom 12, god rays
+15, FXAA 15, motion blur 20, ambient occlusion 23, temporal
+anti-aliasing 33 and depth of field 38. `BenchmarkPost` in the `gfx`
+package measures them; the numbers are best of five and the scene is two
+dozen instanced cubes, so they are the passes' own cost rather than a
+game's.
 
 ## Render textures
 
