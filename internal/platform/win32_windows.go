@@ -25,7 +25,11 @@ const (
 
 	wmDestroy       = 0x0002
 	wmSize          = 0x0005
+	wmShowWindow    = 0x0018
 	wmClose         = 0x0010
+	sizeRestored    = 0
+	sizeMinimized   = 1
+	sizeMaximized   = 2
 	wmSetFocus      = 0x0007
 	wmKillFocus     = 0x0008
 	wmKeyDown       = 0x0100
@@ -252,6 +256,9 @@ type Window struct {
 	mouseX    float64
 	mouseY    float64
 
+	minimized              bool
+	shown                  bool
+	visible                bool
 	minW, minH, maxW, maxH int // content size limits in points; zero is none
 	cursorHidden           bool
 	shape                  CursorShape
@@ -274,7 +281,9 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	if hwnd == 0 {
 		return nil, fmt.Errorf("platform: CreateWindowEx: %w", err)
 	}
-	w := &Window{app: a, hwnd: hwnd, style: style, scale: 1}
+	// ShowWindow below puts the window on screen, so it starts visible;
+	// WM_SIZE and WM_SHOWWINDOW report a change from there.
+	w := &Window{app: a, hwnd: hwnd, style: style, scale: 1, shown: true, visible: true}
 	a.windows[hwnd] = w
 	a.wakeWnd.CompareAndSwap(0, hwnd)
 	// Relative mouse motion arrives as raw input even while captured.
@@ -422,7 +431,20 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 		delete(a.windows, hwnd)
 		a.wakeWnd.CompareAndSwap(hwnd, 0)
 		return 0
+	case wmShowWindow:
+		w.shown = wparam != 0
+		w.updateVisible()
+		return 0
 	case wmSize, wmDPIChanged:
+		if message == wmSize {
+			w.minimized = wparam == sizeMinimized
+			w.updateVisible()
+			if w.minimized {
+				// A minimised window has a zero client rectangle, which no
+				// swapchain can be sized to.
+				return 0
+			}
+		}
 		if message == wmDPIChanged {
 			// lParam points at the suggested new window rectangle (system
 			// memory, so reinterpret the variable rather than the value).
@@ -549,6 +571,24 @@ func (w *Window) PixelSize() (int, int) {
 
 // Scale is pixels per point.
 func (w *Window) Scale() float64 { return w.scale }
+
+// updateVisible reports a change in whether the window can be seen. It is
+// hidden while it is minimised or while WM_SHOWWINDOW has taken it off
+// screen, which is what lets a game stop drawing. Windows has no message
+// for a window that is merely covered, so a fully occluded window still
+// counts as visible.
+func (w *Window) updateVisible() {
+	visible := w.shown && !w.minimized
+	if visible == w.visible {
+		return
+	}
+	w.visible = visible
+	w.app.push(Event{Kind: EventVisible, Window: w, Visible: visible})
+}
+
+// Visible reports whether the window can be seen: false while it is
+// minimised or hidden.
+func (w *Window) Visible() bool { return w.visible }
 
 // Closed reports whether the window has been destroyed.
 func (w *Window) Closed() bool { return w.closed }

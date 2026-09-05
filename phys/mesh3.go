@@ -187,10 +187,12 @@ func localBounds(lo, hi, pos lin.Vec3, rot mat3) (lin.Vec3, lin.Vec3) {
 // meshContacts collides a placed shape with the mesh's triangles; normals
 // point from the shape into the mesh.
 func meshContacts(sc *scratch3, out []contact3, m MeshShape, mpos lin.Vec3, mrot mat3, s Shape3, spos lin.Vec3, srot mat3) []contact3 {
-	a, ok := placeConvex(s, spos, srot)
+	var ok bool
+	sc.convA, sc.hullA, ok = placeConvex(sc.hullA, s, spos, srot)
 	if !ok {
 		return out
 	}
+	a := &sc.convA
 	slo, shi := s.bounds(spos, srot)
 	lo, hi := localBounds(slo, shi, mpos, mrot)
 	m.treeOf().query(lo, hi, func(ti int) {
@@ -204,9 +206,9 @@ func meshContacts(sc *scratch3, out []contact3, m MeshShape, mpos lin.Vec3, mrot
 		if tn.Dot(a.center.Sub(p)) < 0 {
 			tn = tn.Neg()
 		}
-		tri := triangleConvex(p, q, r)
+		sc.convB = triangleConvex(p, q, r)
 		into := tn.Neg()
-		out = pairContacts(sc, out, &a, &tri, &into, p)
+		out = pairContacts(sc, out, a, &sc.convB, &into, p)
 	})
 	return out
 }

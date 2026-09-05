@@ -69,6 +69,90 @@ func entityRot2(w *ecs.World, e ecs.Entity) float32 {
 	return 0
 }
 
+// PrismaticJoint2 is a slider: two bodies may only move along one axis
+// relative to each other, and keep the angle they had on the first step.
+// Axis is the slide direction in A's frame and a zero axis means local
+// X. AnchorA and AnchorB are in each body's frame; a side set to
+// ecs.None fixes that anchor and the axis in the world.
+//
+// The translation is how far B's anchor sits from A's along the axis, so
+// it is zero when the anchors meet. Min and Max limit it; both zero
+// means unlimited. A motor drives the translation at MotorSpeed units
+// per second with up to MaxMotorForce; zero force means no motor. A
+// spring pulls the translation back toward zero with Stiffness as the
+// force per unit of travel and Damping as the force per unit of speed;
+// zero stiffness means no spring.
+type PrismaticJoint2 struct {
+	A, B             ecs.Entity
+	AnchorA, AnchorB lin.Vec2
+	Axis             lin.Vec2
+	Min, Max         float32
+	MotorSpeed       float32
+	MaxMotorForce    float32
+	Stiffness        float32
+	Damping          float32
+
+	rel      float32 // B's rotation less A's on the first step
+	measured bool
+}
+
+// Translation is how far B's anchor has slid from A's along the axis, in
+// world units.
+func (j *PrismaticJoint2) Translation(w *ecs.World) float32 {
+	return slideTranslation2(w, j.A, j.B, j.AnchorA, j.AnchorB, j.Axis, lin.V2(1, 0))
+}
+
+// WheelJoint2 is a wheel on a suspension: B may spin freely and slide
+// along one axis of A, and is held on that line in every other
+// direction. A is the chassis and B the wheel. Axis is the suspension
+// direction in A's frame and a zero axis means local Y. AnchorA and
+// AnchorB are in each body's frame, so AnchorA is where the wheel sits
+// when the suspension is at rest; a side set to ecs.None fixes that
+// anchor and the axis in the world.
+//
+// The spring along the axis is tuned by Frequency in hertz and
+// DampingRatio, where 1 is critically damped; zero frequency means no
+// spring and zero DampingRatio means 0.7. Min and Max limit the travel
+// along the axis; both zero means unlimited. A motor drives B's spin at
+// MotorSpeed radians per second with up to MaxMotorTorque; zero torque
+// means no motor.
+type WheelJoint2 struct {
+	A, B             ecs.Entity
+	AnchorA, AnchorB lin.Vec2
+	Axis             lin.Vec2
+	Frequency        float32
+	DampingRatio     float32
+	Min, Max         float32
+	MotorSpeed       float32
+	MaxMotorTorque   float32
+}
+
+// Translation is how far the suspension has moved from its rest
+// position, in world units. It is negative while the spring is
+// compressed toward A.
+func (j *WheelJoint2) Translation(w *ecs.World) float32 {
+	return slideTranslation2(w, j.A, j.B, j.AnchorA, j.AnchorB, j.Axis, lin.V2(0, 1))
+}
+
+// slideTranslation2 measures the gap between two anchors along an axis
+// carried by A.
+func slideTranslation2(w *ecs.World, ea, eb ecs.Entity, anchorA, anchorB, axis, def lin.Vec2) float32 {
+	a, _ := sideOf2(w, ea)
+	b, _ := sideOf2(w, eb)
+	pA, _ := a.anchor(anchorA)
+	pB, _ := b.anchor(anchorB)
+	c, s := cosSin(a.rot)
+	return rotate2(unitAxis2(axis, def), c, s).Dot(pB.Sub(pA))
+}
+
+// unitAxis2 normalises an axis, falling back to def for a zero one.
+func unitAxis2(axis, def lin.Vec2) lin.Vec2 {
+	if n := axis.Norm(); n != (lin.Vec2{}) {
+		return n
+	}
+	return def
+}
+
 // SpringJoint2 pulls two anchors toward a rest length with a damped
 // spring force. RestLength zero measures it on the first step; zero
 // Stiffness means 10 and Damping is the velocity coefficient.
@@ -193,6 +277,8 @@ type jointItem2 struct {
 const (
 	jointDistance2 = iota
 	jointRevolute2
+	jointPrismatic2
+	jointWheel2
 	jointSpring2
 	jointFixed2
 )
@@ -205,6 +291,8 @@ func gatherJoints2(w *ecs.World, s *state2) []jointSolver2 {
 	s.items = s.items[:0]
 	s.distanceSolvers = s.distanceSolvers[:0]
 	s.revoluteSolvers = s.revoluteSolvers[:0]
+	s.prismaticSolvers = s.prismaticSolvers[:0]
+	s.wheelSolvers = s.wheelSolvers[:0]
 	s.springSolvers = s.springSolvers[:0]
 	s.fixedSolvers = s.fixedSolvers[:0]
 	sides := func(ea, eb ecs.Entity) (jointSide2, jointSide2, bool) {
@@ -223,6 +311,18 @@ func gatherJoints2(w *ecs.World, s *state2) []jointSolver2 {
 		if a, b, ok := sides(j.A, j.B); ok {
 			s.items = append(s.items, jointItem2{e.ID(), jointRevolute2, int32(len(s.revoluteSolvers))})
 			s.revoluteSolvers = append(s.revoluteSolvers, revoluteSolver2{j: j, a: a, b: b})
+		}
+	})
+	s.prismatic.Each(func(e ecs.Entity, j *PrismaticJoint2) {
+		if a, b, ok := sides(j.A, j.B); ok {
+			s.items = append(s.items, jointItem2{e.ID(), jointPrismatic2, int32(len(s.prismaticSolvers))})
+			s.prismaticSolvers = append(s.prismaticSolvers, prismaticSolver2{j: j, a: a, b: b})
+		}
+	})
+	s.wheel.Each(func(e ecs.Entity, j *WheelJoint2) {
+		if a, b, ok := sides(j.A, j.B); ok {
+			s.items = append(s.items, jointItem2{e.ID(), jointWheel2, int32(len(s.wheelSolvers))})
+			s.wheelSolvers = append(s.wheelSolvers, wheelSolver2{j: j, a: a, b: b})
 		}
 	})
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint2) {
@@ -245,6 +345,10 @@ func gatherJoints2(w *ecs.World, s *state2) []jointSolver2 {
 			s.joints = append(s.joints, &s.distanceSolvers[it.at])
 		case jointRevolute2:
 			s.joints = append(s.joints, &s.revoluteSolvers[it.at])
+		case jointPrismatic2:
+			s.joints = append(s.joints, &s.prismaticSolvers[it.at])
+		case jointWheel2:
+			s.joints = append(s.joints, &s.wheelSolvers[it.at])
 		case jointSpring2:
 			s.joints = append(s.joints, &s.springSolvers[it.at])
 		default:
@@ -420,6 +524,277 @@ func (m *motor2) solve(a, b *jointSide2) {
 	m.impulse = lin.Clamp(old+m.mass*(m.speed-cdot), -m.maxImpulse, m.maxImpulse)
 	a.angularImpulse(m.impulse-old, -1)
 	b.angularImpulse(m.impulse-old, 1)
+}
+
+// axialLimit2 is a one-sided constraint on the speed along a world axis,
+// with the lever arm from each body to the axis. With sign +1 the
+// impulse may only push the translation up, with -1 only down.
+type axialLimit2 struct {
+	mass    float32
+	bias    float32
+	impulse float32
+	sign    float32
+	active  bool
+}
+
+// prepare sets the limit up with position error c (positive past an
+// upper limit, negative past a lower one) and the effective mass along
+// the axis.
+func (l *axialLimit2) prepare(mass, c, sign, h float32) {
+	l.active = mass > 0
+	if !l.active {
+		return
+	}
+	l.mass, l.bias, l.sign, l.impulse = mass, jointBaumgarte/h*c, sign, 0
+}
+
+func (l *axialLimit2) solve(a, b *jointSide2, axis, rA, rB lin.Vec2) {
+	if !l.active {
+		return
+	}
+	cdot := axis.Dot(b.vel(rB).Sub(a.vel(rA)))
+	old := l.impulse
+	l.impulse -= l.mass * (cdot + l.bias)
+	if l.sign > 0 {
+		l.impulse = max(l.impulse, 0)
+	} else if l.sign < 0 {
+		l.impulse = min(l.impulse, 0)
+	}
+	p := axis.Mul(l.impulse - old)
+	a.impulse(p, rA, -1)
+	b.impulse(p, rB, 1)
+}
+
+// axialMotor2 drives the speed along a world axis toward a target with a
+// bounded accumulated impulse.
+type axialMotor2 struct {
+	mass       float32
+	speed      float32
+	maxImpulse float32
+	impulse    float32
+	active     bool
+}
+
+func (m *axialMotor2) prepare(mass, speed, maxImpulse float32) {
+	m.active = maxImpulse > 0 && mass > 0
+	if !m.active {
+		return
+	}
+	m.mass, m.speed, m.maxImpulse, m.impulse = mass, speed, maxImpulse, 0
+}
+
+func (m *axialMotor2) solve(a, b *jointSide2, axis, rA, rB lin.Vec2) {
+	if !m.active {
+		return
+	}
+	cdot := axis.Dot(b.vel(rB).Sub(a.vel(rA)))
+	old := m.impulse
+	m.impulse = lin.Clamp(old+m.mass*(m.speed-cdot), -m.maxImpulse, m.maxImpulse)
+	p := axis.Mul(m.impulse - old)
+	a.impulse(p, rA, -1)
+	b.impulse(p, rB, 1)
+}
+
+// axialSpring2 pulls the translation along a world axis back toward zero
+// as a soft constraint tuned by frequency and damping ratio, so the
+// response is the same whatever the masses are.
+type axialSpring2 struct {
+	mass    float32
+	bias    float32
+	gamma   float32
+	impulse float32
+	active  bool
+}
+
+// prepare takes the inverse effective mass along the axis and the
+// current translation c.
+func (s *axialSpring2) prepare(invMass, c, frequency, ratio, h float32) {
+	s.active = false
+	if frequency <= 0 || invMass <= 0 {
+		return
+	}
+	if ratio <= 0 {
+		ratio = 0.7
+	}
+	omega := 2 * float32(math.Pi) * frequency
+	m := 1 / invMass
+	k := m * omega * omega
+	d := 2 * m * ratio * omega
+	s.gamma = h * (d + h*k)
+	if s.gamma > 0 {
+		s.gamma = 1 / s.gamma
+	}
+	s.bias = c * h * k * s.gamma
+	if total := invMass + s.gamma; total > 0 {
+		s.mass, s.impulse, s.active = 1/total, 0, true
+	}
+}
+
+func (s *axialSpring2) solve(a, b *jointSide2, axis, rA, rB lin.Vec2) {
+	if !s.active {
+		return
+	}
+	cdot := axis.Dot(b.vel(rB).Sub(a.vel(rA)))
+	l := -s.mass * (cdot + s.bias + s.gamma*s.impulse)
+	s.impulse += l
+	p := axis.Mul(l)
+	a.impulse(p, rA, -1)
+	b.impulse(p, rB, 1)
+}
+
+// prismaticSolver2 holds the perpendicular offset and the relative angle
+// at zero with a coupled two by two system, and leaves the axis to the
+// motor, the limits and the spring.
+type prismaticSolver2 struct {
+	j    *PrismaticJoint2
+	a, b jointSide2
+	// The lever arms: A's runs from its centre to B's anchor so the axis
+	// is carried by A, B's to its own anchor.
+	dA, rB       lin.Vec2
+	axis, perp   lin.Vec2
+	kinv         [4]float32
+	bias         [2]float32
+	ok           bool
+	motor        axialMotor2
+	lower, upper axialLimit2
+}
+
+func (s *prismaticSolver2) sides() (ecs.Entity, ecs.Entity) { return s.j.A, s.j.B }
+
+func (s *prismaticSolver2) prepare(h float32) {
+	j := s.j
+	pA, rA := s.a.anchor(j.AnchorA)
+	pB, rB := s.b.anchor(j.AnchorB)
+	d := pB.Sub(pA)
+	c, sn := cosSin(s.a.rot)
+	s.axis = rotate2(unitAxis2(j.Axis, lin.V2(1, 0)), c, sn)
+	s.perp = lin.V2(-s.axis.Y, s.axis.X)
+	s.dA, s.rB = d.Add(rA), rB
+	if !j.measured {
+		j.rel, j.measured = s.b.rot-s.a.rot, true
+	}
+	mA, mB, iA, iB := s.a.invMass, s.b.invMass, s.a.invI, s.b.invI
+	s1, s2 := cross2(s.dA, s.perp), cross2(s.rB, s.perp)
+	k11 := mA + mB + iA*s1*s1 + iB*s2*s2
+	k12 := iA*s1 + iB*s2
+	k22 := iA + iB
+	if k22 == 0 {
+		// Two bodies that cannot turn still need a solvable system.
+		k22 = 1
+	}
+	det := k11*k22 - k12*k12
+	s.ok = abs32(det) > 1e-12
+	if s.ok {
+		s.kinv = [4]float32{k22 / det, -k12 / det, -k12 / det, k11 / det}
+	}
+	angle := wrapAngle(s.b.rot - s.a.rot - j.rel)
+	s.bias = [2]float32{jointBaumgarte / h * s.perp.Dot(d), jointBaumgarte / h * angle}
+	// The motor, the limits and the spring act along the axis.
+	a1, a2 := cross2(s.dA, s.axis), cross2(s.rB, s.axis)
+	var axialMass float32
+	if k := mA + mB + iA*a1*a1 + iB*a2*a2; k > 0 {
+		axialMass = 1 / k
+	}
+	translation := s.axis.Dot(d)
+	s.motor.prepare(axialMass, j.MotorSpeed, j.MaxMotorForce*h)
+	s.lower.active, s.upper.active = false, false
+	if j.Min != 0 || j.Max != 0 {
+		if translation <= j.Min {
+			s.lower.prepare(axialMass, translation-j.Min, 1, h)
+		}
+		if translation >= j.Max {
+			s.upper.prepare(axialMass, translation-j.Max, -1, h)
+		}
+	}
+	if j.Stiffness > 0 {
+		v := s.axis.Dot(s.b.vel(s.rB).Sub(s.a.vel(s.dA)))
+		p := s.axis.Mul((-j.Stiffness*translation - j.Damping*v) * h)
+		s.a.impulse(p, s.dA, -1)
+		s.b.impulse(p, s.rB, 1)
+	}
+}
+
+func (s *prismaticSolver2) solve() {
+	s.motor.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	s.lower.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	s.upper.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	if !s.ok {
+		return
+	}
+	c0 := s.perp.Dot(s.b.vel(s.rB).Sub(s.a.vel(s.dA))) + s.bias[0]
+	c1 := s.b.angVel() - s.a.angVel() + s.bias[1]
+	l0 := -(s.kinv[0]*c0 + s.kinv[1]*c1)
+	l1 := -(s.kinv[2]*c0 + s.kinv[3]*c1)
+	p := s.perp.Mul(l0)
+	s.a.impulse(p, s.dA, -1)
+	s.b.impulse(p, s.rB, 1)
+	s.a.angularImpulse(l1, -1)
+	s.b.angularImpulse(l1, 1)
+}
+
+// wheelSolver2 holds the wheel on the suspension line, leaves its spin
+// free and gives the axis to the spring, the limits and the spin motor.
+type wheelSolver2 struct {
+	j            *WheelJoint2
+	a, b         jointSide2
+	dA, rB       lin.Vec2
+	axis, perp   lin.Vec2
+	perpMass     float32
+	perpBias     float32
+	spring       axialSpring2
+	motor        motor2
+	lower, upper axialLimit2
+}
+
+func (s *wheelSolver2) sides() (ecs.Entity, ecs.Entity) { return s.j.A, s.j.B }
+
+func (s *wheelSolver2) prepare(h float32) {
+	j := s.j
+	pA, rA := s.a.anchor(j.AnchorA)
+	pB, rB := s.b.anchor(j.AnchorB)
+	d := pB.Sub(pA)
+	c, sn := cosSin(s.a.rot)
+	s.axis = rotate2(unitAxis2(j.Axis, lin.V2(0, 1)), c, sn)
+	s.perp = lin.V2(-s.axis.Y, s.axis.X)
+	s.dA, s.rB = d.Add(rA), rB
+	mA, mB, iA, iB := s.a.invMass, s.b.invMass, s.a.invI, s.b.invI
+	s1, s2 := cross2(s.dA, s.perp), cross2(s.rB, s.perp)
+	s.perpMass = 0
+	if k := mA + mB + iA*s1*s1 + iB*s2*s2; k > 0 {
+		s.perpMass = 1 / k
+	}
+	s.perpBias = jointBaumgarte / h * s.perp.Dot(d)
+	a1, a2 := cross2(s.dA, s.axis), cross2(s.rB, s.axis)
+	axialInv := mA + mB + iA*a1*a1 + iB*a2*a2
+	var axialMass float32
+	if axialInv > 0 {
+		axialMass = 1 / axialInv
+	}
+	translation := s.axis.Dot(d)
+	s.spring.prepare(axialInv, translation, j.Frequency, j.DampingRatio, h)
+	s.motor.prepare(&s.a, &s.b, j.MotorSpeed, j.MaxMotorTorque*h)
+	s.lower.active, s.upper.active = false, false
+	if j.Min != 0 || j.Max != 0 {
+		if translation <= j.Min {
+			s.lower.prepare(axialMass, translation-j.Min, 1, h)
+		}
+		if translation >= j.Max {
+			s.upper.prepare(axialMass, translation-j.Max, -1, h)
+		}
+	}
+}
+
+func (s *wheelSolver2) solve() {
+	s.spring.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	s.motor.solve(&s.a, &s.b)
+	s.lower.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	s.upper.solve(&s.a, &s.b, s.axis, s.dA, s.rB)
+	if s.perpMass > 0 {
+		cdot := s.perp.Dot(s.b.vel(s.rB).Sub(s.a.vel(s.dA))) + s.perpBias
+		p := s.perp.Mul(-s.perpMass * cdot)
+		s.a.impulse(p, s.dA, -1)
+		s.b.impulse(p, s.rB, 1)
+	}
 }
 
 type revoluteSolver2 struct {

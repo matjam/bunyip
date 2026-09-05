@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -26,6 +27,18 @@ func init() {
 	runtime.LockOSThread()
 }
 
+// clipboardWait is how long a clipboard read waits on whoever owns the
+// selection: for the answer to a convert request and for each chunk of an
+// INCR transfer under X11, and for the owner to write into the pipe under
+// Wayland. A read that runs out of time returns what it has.
+const clipboardWait = time.Second
+
+// ErrNoInputYet is returned when the Wayland clipboard is written before
+// the window has had any input. Changing the selection quotes the serial
+// of a key, a button or a pointer or keyboard entering the window, and
+// until one of those has happened there is no serial to quote.
+var ErrNoInputYet = errors.New("platform: the Wayland clipboard cannot be set before the window has had input")
+
 // ErrUnsupported is returned when neither window system can be reached.
 var ErrUnsupported = errors.New("platform: cannot reach a Wayland compositor or an X server (is WAYLAND_DISPLAY or DISPLAY set?)")
 
@@ -35,7 +48,12 @@ type App struct {
 	wl *wlApp // nil under X11
 
 	pending []Event
-	mu      sync.Mutex
+	// queued holds what arrived while a blocking clipboard read was
+	// waiting for the selection, so that the next Poll delivers it
+	// instead of losing it; deferQueue sends pushes there.
+	queued     []Event
+	deferQueue bool
+	mu         sync.Mutex
 
 	// X11.
 	x       *xlib
@@ -46,9 +64,30 @@ type App struct {
 	mods    Mods
 
 	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
+	atomNetWMHidden                                                                                       uint32
+	atomClipboard, atomTargets, atomText, atomIncr, atomSelection                                         uint32
+
+	// The clipboard. clipText is what SetClipboard put on the CLIPBOARD
+	// selection and clipOwned says the layer still owns it, so a read
+	// needs no round trip. clipChunk is the largest property one request
+	// can write, which is what decides when a transfer goes through INCR,
+	// and incr holds the transfers in progress.
+	clipText  string
+	clipOwned bool
+	clipChunk int
+	incr      []incrSend
+	incrMask  incrMask
 
 	xkbCtx, xkbKeymap, xkbState unsafe.Pointer
 	xkbDevice                   int32
+
+	// Key repeat. keysDown is indexed by X11 key code, which is one byte,
+	// and says whether a press is the first or a repeat. detectableRepeat
+	// says the server agreed to send repeats as presses alone; peeked
+	// holds the event the fallback took off the queue to look at.
+	keysDown         [256]bool
+	detectableRepeat bool
+	peeked           *xcbGenericEvent
 }
 
 // Window is one window. Only the fields of the live backend are set.
@@ -63,6 +102,10 @@ type Window struct {
 	closed    bool
 	captured  bool
 	fullscr   bool
+	mapped    bool
+	obscured  bool
+	wmHidden  bool // _NET_WM_STATE_HIDDEN: the window manager minimised it
+	visible   bool
 	cursor    uint32 // the invisible cursor while captured
 	inputRect textRect
 	mouseX    float64
@@ -123,6 +166,23 @@ func (a *App) Poll(wait bool) []Event {
 	return a.x11Poll(wait)
 }
 
+// startPoll empties the event slice for a fresh poll and puts back what a
+// clipboard read queued while it was waiting.
+func (a *App) startPoll() {
+	a.pending = append(a.pending[:0], a.queued...)
+	a.queued = a.queued[:0]
+}
+
+// push records one event for this poll, or queues it when a clipboard
+// read is holding the loop.
+func (a *App) push(e Event) {
+	if a.deferQueue {
+		a.queued = append(a.queued, e)
+		return
+	}
+	a.pending = append(a.pending, e)
+}
+
 // Wake makes a blocked Poll return, delivering an EventWake. It is safe to
 // call from any goroutine.
 func (a *App) Wake() {
@@ -142,20 +202,34 @@ func (w *Window) Size() (int, int) {
 }
 
 // PixelSize is the framebuffer size. X11 reports no scale, so it matches
-// Size there; Wayland multiplies by the buffer scale.
+// Size there; Wayland multiplies by the fractional scale where the
+// compositor sends one and by the integer buffer scale otherwise.
 func (w *Window) PixelSize() (int, int) {
 	if w.wl != nil {
-		return w.wl.width * w.wl.scale, w.wl.height * w.wl.scale
+		return w.wl.pixelSize()
 	}
 	return w.width, w.height
 }
 
-// Scale is pixels per point.
+// Scale is pixels per point. It is fractional under a compositor that
+// offers wp_fractional_scale_v1 and a whole number everywhere else.
 func (w *Window) Scale() float64 {
 	if w.wl != nil {
-		return float64(w.wl.scale)
+		return w.wl.scaleFactor()
 	}
 	return 1
+}
+
+// Visible reports whether the window can be seen. It is false while the
+// window is minimised, unmapped or wholly covered by other windows. X11
+// reads MapNotify, VisibilityNotify and _NET_WM_STATE_HIDDEN; Wayland
+// reads the suspended state of xdg_toplevel version six, so a compositor
+// that offers an earlier version always reports true.
+func (w *Window) Visible() bool {
+	if w.wl != nil {
+		return w.wl.visible
+	}
+	return w.visible
 }
 
 // Closed reports whether the window was destroyed.

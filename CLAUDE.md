@@ -18,11 +18,13 @@ sprites and 3D models on one screen. Vulkan through a generated binding
 with no cgo (`CGO_ENABLED=0` is a hard rule), native window, input and
 audio layers per platform written against the OS APIs (no SDL, no GLFW),
 an archetype entity component system, rigid-body physics, an
-immediate-mode interface, an audio mixer with a tracker player, and the
+immediate-mode interface, an in-game debug console, an audio mixer with
+a tracker player, and the
 services a game needs (assets, saves, translation, networking). macOS is
 the tested platform. The Linux window layer has run on real hardware,
-both Wayland and X11; Linux audio, Linux gamepads and the whole Windows
-layer cross-compile but have not. Linux picks Wayland or X11 at startup;
+both Wayland and X11, and so have Linux audio output and capture; Linux
+gamepads, macOS capture and the whole Windows layer cross-compile but
+have not. Linux picks Wayland or X11 at startup;
 `BUNYIP_X11=1` forces
 X11 and `platform.Backend()` says which was chosen.
 
@@ -33,22 +35,25 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, paths, gradients, text (HarfBuzz shaping, atlases, SDF, emoji, rich text), colour matrices, lit sprites. 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
-| `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning. |
-| `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries. |
+| `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
+| `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
+| `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries, the signed distance to a placed shape. |
+| `phys/soft/` | Cloth, volumetric soft bodies and 2D fluids as particles under extended position-based dynamics, stepped by `soft.System` on the same world and the same static colliders. |
 | `anim/` | Keyframe curves and clips for components, flipbooks, skeleton playback, IK, blend spaces. |
 | `orbit/`, `orbit/sol/` | Celestial mechanics, unit-agnostic; real solar-system constants only in `sol`. |
-| `audio/`, `audio/tracker/` | The mixer (voices, buses, reverb, occlusion, Doppler, streams) and the MOD/S3M/XM/IT player. |
+| `audio/`, `audio/tracker/` | The mixer (voices, buses, reverb, occlusion, Doppler, binaural rendering, streams, microphone capture) and the MOD/S3M/XM/IT player. |
 | `input/` | Key codes by physical position, the per-update `State`, gamepads, action maps. |
-| `particle/`, `tiled/`, `gltf/`, `lin/`, `grid/`, `grid/autotile/`, `rng/`, `save/`, `locale/`, `timer/`, `tween/`, `asset/`, `network/` | Self-contained packages; each has a package comment that explains its model and conventions. `grid/autotile` picks tile frames from a terrain grid (blob, edge, dual-grid and Wang rules); `tiled` parses Tiled terrain sets into it. |
+| `particle/`, `tiled/`, `gltf/`, `lin/`, `grid/`, `grid/autotile/`, `rng/`, `save/`, `locale/`, `timer/`, `tween/`, `asset/`, `network/` | Self-contained packages; each has a package comment that explains its model and conventions. `grid/autotile` picks tile frames from a terrain grid (blob, edge, dual-grid and Wang rules) on a square, hexagonal or isometric `Layout`; `tiled` parses Tiled terrain sets into it and `Map.Layout` names the matching layout. |
 | `internal/vk/` | The Vulkan binding generated by `cmd/vkgen` from `third_party/vulkan/vk.xml`, with struct layout tests. Do not edit by hand. |
 | `internal/render/` | The Vulkan backend: device, swapchain, frames in flight, images, buffers, pipelines, descriptor sets, targets, readback. |
 | `internal/hook/` | The boundary between the engine loop and `gfx`, `input` and `audio`. Each of those packages keeps its plumbing (frame begin and end, resize, the event feed, the audio pull) on unexported methods, wraps the public value in an unexported driver implementing a `hook` interface, and registers a constructor from `init`. `run.go` builds all three through `hook` and hands the game the values `Game()` returns. |
-| `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface and audio output. `*_darwin.go` is the reference; Windows and Linux mirror it. Linux has two window backends behind one `App` and `Window`: Wayland in `wayland_linux.go`, its hand-built protocol tables in `wayland_proto_linux.go` and its listener callbacks in `wayland_listen_linux.go`, and X11 in `x11_linux.go`. `app_linux.go` holds the shared structs, chooses the backend in `NewApp` and forwards every method to the live one. |
+| `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface, audio output and microphone input. `*_darwin.go` is the reference; Windows and Linux mirror it. Linux has two window backends behind one `App` and `Window`: Wayland in `wayland_linux.go`, its hand-built protocol tables in `wayland_proto_linux.go` and its listener callbacks in `wayland_listen_linux.go`, and X11 in `x11_linux.go`. `app_linux.go` holds the shared structs, chooses the backend in `NewApp` and forwards every method to the live one. |
 | `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
-| `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless. |
-| `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
+| `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless, and each has a walkthrough in `docs/examples/`. |
+| `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services, the debug console), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
+| `docs/examples/` | One walkthrough per example, `<name>.md`, with front matter (`title`, `example`, `summary`) and a screenshot `<name>.png` beside it. The body quotes the whole program in source order, verbatim, with a section explaining each part. `cmd/bunyip-docs` renders these as the Example programs group; the examples are not rendered as packages. |
 
 ## Core concepts
 
@@ -69,13 +74,29 @@ runs the shadow atlas pass, the HDR pass (sky, opaque, blended,
 debug lines), decals, then the post pass composites. Colours are linear
 and non-premultiplied in the API, premultiplied in the 2D stream.
 
-**Descriptor sets for meshes.** Set 0 is the material (thirteen samplers:
-five material textures, four shader images, the environment cube, the
-thickness map, the scene copy for transmission, the transmission map).
-Set 1 is the per-frame `Frame` uniform block. Set 2 is the shadow atlas.
-Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal
-allows sixteen samplers per stage, which is why every shadow map is
-stored in one atlas image and why a new material texture is not free.
+**Descriptor sets for meshes.** Set 0 is the material: thirteen
+`SAMPLED_IMAGE` bindings (five material textures, four shader images,
+the environment cube, the thickness map, the scene copy for
+transmission, the transmission map) at bindings 0 to 12, then one array
+of four `SAMPLER` bindings at binding 13, immutable in the layout:
+linear repeat, linear clamp, nearest repeat, nearest clamp, in that
+order (`samplerIndex` in `gfx/mesh_draw.go`). A texture's own filtering
+and edge handling pick its sampler, and `materialSet` packs one index
+per texture slot, two bits each, into the instance stream's `atten.w`;
+the shader reads it back with `texSampler(slot)` and the GLSL preludes
+`#define` the old names (`albedoTex`, `image0`) as
+`sampler2D(image, samplers[...])` pairs, so game shaders are unchanged.
+Every instance of a draw shares set 0, so the index is the same across
+the draw, which is what `shaderSampledImageArrayDynamicIndexing` needs;
+`Device.ArrayIndexing` reports it and `initMeshPass` refuses a device
+without it. Set 1 is the per-frame `Frame` uniform block. Set 2 is the
+shadow atlas, the one comparison sampler. Set 3 is joint matrices. Set 4
+is a game shader's uniform block. Metal allows sixteen samplers a stage,
+which the four plus the shadow atlas's stay well under, and 31 sampled
+images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
+which is the budget the thirteen images and the atlas spend from: a new
+material texture costs an image and no sampler. The shadow maps still
+share one atlas image so the shadow pass costs one binding.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
 in six GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
@@ -102,7 +123,11 @@ are `func(w *World, dt float64)` run in registration order.
 or `gfx.Transform2`. Names carry the dimension: `Body2`/`Body3`,
 `Collider2`/`Collider3`, `Box2`/`Box3`; shapes that only exist in one
 dimension have no suffix (`Circle`, `Sphere`, `Capsule`). Convex 3D
-pairs use GJK and EPA; boxes keep a dedicated path.
+pairs use GJK and EPA; boxes keep a dedicated path. `phys/soft` adds
+deformable components (`Cloth`, `SoftBody3`, `Fluid2`) stepped by
+`soft.System`, solved by extended position-based dynamics; they read the
+static and kinematic colliders through `phys.SignedDistance2` and
+`SignedDistance3` and never write back to a rigid body.
 
 **Zero values mean the default.** A zero `Roughness` is 0.6, a zero
 `Color` where a tint is expected is white, a zero field of view is 60
@@ -132,8 +157,9 @@ Headless tests: `newHeadless(t, w, h)` in `gfx` and `newContext(t)` in
 `ui` give a `Graphics` on an offscreen surface; `renderMaterial` in
 `gfx/material_test.go` renders one frame and returns the image. UI tests
 must feed a mouse move and run one frame before a press, because hover
-is one frame behind. A glyph first drawn in a frame appears the next
-frame (the atlas uploads after drawing), so text tests draw two frames.
+is one frame behind. A glyph first drawn in a frame appears in that
+frame, because the atlas upload is recorded into the frame before the
+render pass, so text tests draw one frame.
 
 ## Rules
 
@@ -148,10 +174,22 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   with a comment saying so, not a stub that appears to work.
 - Every example must run headless to a screenshot; `examples_test.go`
   checks it.
+- **Changing an example means updating its walkthrough.** Every directory
+  under `examples/` with a `main.go` has `docs/examples/<name>.md`, and
+  the test in `cmd/bunyip-docs` checks that every fenced `go` block is a
+  verbatim run of contiguous lines in the file it quotes (`main.go`
+  unless an HTML comment `<!-- file: other.go -->` sits on the line
+  before the fence) and that every top-level declaration of the example
+  appears in some excerpt. Copy the changed lines back out of the source
+  rather than retyping them, and add a section when a declaration is new.
+  A new example needs a walkthrough and a screenshot; generate the
+  screenshot by running the example headless and scaling the frame to at
+  most 640 pixels wide.
 - **Documentation moves with the API.** A change to exported API,
   behaviour, a tool's flags or a build step is not done until the same
   change updates: the package comment and the doc comments of what
-  changed; the guide that covers the area in `docs/guides/`;
+  changed; the guide that covers the area in `docs/guides/`; the
+  walkthrough of any example it touches in `docs/examples/`;
   `README.md` if a feature list or the examples table is affected;
   `docs/design/gaps.md` if a listed gap closed or a new one opened; and
   this file if a concept, path or rule changed. A new guide needs
@@ -174,17 +212,51 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   output storage; copy in and out (see `gfx/text.go`).
 - The render-target colour images need `TRANSFER_DST` because
   `ClearColorForSampling` clears them before their first pass.
-- `Mesh.Update` and texture replacement retire the old GPU objects until
-  the frame that may use them has been submitted (`Graphics.retire*`).
-- Culling uses each mesh's bind-pose bounds and skips meshes whose
-  shader has a vertex hook.
+- Uploads inside a frame (`NewMesh`, `Mesh.Update`, `UpdateSkinned`,
+  `NewTexture`, `Texture.Write`, `NewEnvironment`) copy through the
+  per-slot staging arena (`render.Staging`, taken with
+  `Graphics.stage`) into the frame's command buffer before any pass,
+  with the barriers that let a draw recorded later in the frame read
+  the data. Outside a frame they keep the `OneShot` path. Everything
+  destroyed or replaced inside a frame goes on that slot's retire list
+  through `Graphics.deferDestroy` and is freed at the slot's next
+  `begin`, when its fence has been waited on; outside a frame
+  `deferDestroy` waits the device and frees at once. A `Texture` or
+  `Mesh` destroyed inside a frame keeps its image or buffers (and sets
+  `destroyed`) until the retire runs, so draws already queued still
+  draw. `FrameStats.Waits` counts the stalls a frame caused; a running
+  game reports zero.
+- Culling bounds a static mesh by its vertices, a skinned mesh by the
+  union of its per-joint boxes under the pose (computed at load in
+  `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
+  `Shader.VertexBounds`, whose zero means the draw is never culled.
+  `Mesh.SetBounds` overrides the box and survives `Update`.
+- The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
+  class, then depth for blended draws or dense shader, uniform, material
+  set and mesh ids for opaque ones, and the draw's index in the low
+  twenty bits so ties keep submission order. A frame with more of any of
+  those than a field holds falls back to `sortRecords`, which compares
+  the draw records.
+- `prepareDraws` runs before `writeUniforms`: the cascades need the
+  caster bounds it resolves, and the shadow pass culls each draw against
+  each cascade and spot light before recording it.
 - Immediate-mode identity comes from the label plus the enclosing
   containers plus call order; overlays (menus, modals, drag ghosts) are
   drawn deferred at `end`, and overlays may add overlays, so that list
   is iterated by index.
-- The physics sleep threshold is above the jitter of a default-quality
-  box stack; tests that need sleeping raise `Substeps` and
-  `Iterations`.
+- A placed convex in `phys` (`convex` in `gjk.go`) holds its core
+  vertices in a fixed array, so placing a shape allocates nothing. Take
+  its address only where the pointer cannot escape, or the whole value
+  lands on the heap; `convexPair` and `meshContacts` keep theirs in the
+  scratch for that reason. `phys/cache3.go` keeps each collider's placed
+  parts between queries, keyed by the collider's placement and bounds, so
+  a shape edited in place without moving goes stale.
+- Each physics substep ends with a relax pass over the contacts that
+  solves them again with the position-correction bias dropped. The bias
+  leaves the bodies separating at about the sleep threshold, so without
+  the pass a stack never rests. Restitution is held in its own field
+  (`solverContact.restBias`) and stays in the relax pass, so bounces
+  survive it.
 - Input edges are fed into two sets at once: the per-update set that
   `endUpdate` clears and the frame set that `endFrame` clears, which
   Draw reads. Nothing copies one into the other, so a frame that runs
@@ -193,6 +265,18 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   linear light before uploading to an sRGB image (`linearPremultiply`);
   Go's `image.RGBA` premultiplies in sRGB space, which an sRGB sampler
   would decode too dark. `Data` textures upload as given.
+- The glyph atlas is one texture written in place. `Font.flush` uploads
+  the glyphs rasterised so far through `Texture.Write`, whose in-frame
+  path records the copy into the frame's command buffer before any
+  render pass, so a glyph first drawn in a frame appears in it. Text
+  drawing flushes before it queues its sprites. The atlas never grows,
+  so a font whose atlas is full drops later glyphs rather than replacing
+  the texture the frame's draws already point at.
+- A colour glyph (COLR layers, an SVG document, a bitmap strike) is
+  composited on the CPU in `gfx/colr.go` and `gfx/svgglyph.go` and
+  stored premultiplied in linear light, because the atlas is a `Data`
+  texture that samples without gamma decoding. `DrawGlyphs` draws such a
+  glyph with a white tint, so a game's text colour does not reach it.
 - Descriptor sets come from a chain of pools that grows on
   `VK_ERROR_OUT_OF_POOL_MEMORY`; the capacities in `newGraphics` and
   `post.go` are starting sizes, not limits.
@@ -200,10 +284,27 @@ frame (the atlas uploads after drawing), so text tests draw two frames.
   returns zero, `Swapchain.Handle` stays zero and `BeginFrame`/`EndFrame`
   skip acquire and present. Do not add code that assumes a swapchain
   image is presentable.
+- Reading the clipboard on X11 waits for another client to answer, for
+  up to a second, inside the game's `Update`. Events that arrive during
+  the wait are handled as usual but pushed onto `App.queued` rather than
+  the slice `Poll` already returned, and the next `Poll` puts them back;
+  anything that pushes an event on Linux has to go through `App.push`
+  for that to hold.
 - An ECS query walk snapshots every matched table's row count when it
   begins (`matcher.begin`), so entities the callback moves into another
   matched table are not visited twice. A walk must not start another
   walk of the same query inside its callback.
+- The console is built in `runOnce` before `Init`, because it tees the
+  log and the game logs during `Init`, but the game draws it: `Draw` is
+  the game's, and the console has to be last. It cannot import the root
+  package, so it declares `Frame` and the one-method `Host` that
+  `Context` implements. Every console method is safe on a nil receiver,
+  so `ctx.Console.Draw(ctx)` compiles and does nothing when
+  `Config.Console` is off.
+- The console's panels are laid out inside `ui.ScrollArea`, which has to
+  be told how tall its contents are, so each tab counts its rows
+  (`Console.rowsH`). A row added to a tab without adding to its count
+  scrolls short.
 
 # Part two: using Bunyip in a game
 
@@ -257,8 +358,10 @@ goroutine.
 | Meshes, materials, lights, shadows, sky, fog, post-processing | `gfx` (3D half), `gltf` for loading models |
 | Game-written shaders | `cmd/bunyip-shader`, the shaders guide |
 | Widgets, menus, text fields, themes | `ui` |
-| Entities, queries, systems, saves, prefabs | `ecs` |
+| A debug console and panels over a running game | `console`, `bunyip.Config.Console` |
+| Entities, queries, systems, saves, prefabs, scene files | `ecs`, `asset.Scene` |
 | Rigid bodies, joints, ragdolls, character controllers, raycasts | `phys` |
+| Cloth, jelly and soft bodies, 2D fluids | `phys/soft` |
 | Skeletal and keyframe animation, IK, blend spaces | `anim`, `gfx.AnimPlayer` |
 | Orbits, planets, ships | `orbit`, `orbit/sol` |
 | Sounds, music, positional audio, tracker modules | `audio`, `audio/tracker` |

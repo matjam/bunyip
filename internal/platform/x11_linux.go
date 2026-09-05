@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"structs"
+	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -18,19 +20,29 @@ import (
 
 // xcb protocol constants.
 const (
-	xcbKeyPress        = 2
-	xcbKeyRelease      = 3
-	xcbButtonPress     = 4
-	xcbButtonRelease   = 5
-	xcbMotionNotify    = 6
-	xcbEnterNotify     = 7
-	xcbLeaveNotify     = 8
-	xcbFocusIn         = 9
-	xcbFocusOut        = 10
-	xcbDestroyNotify   = 17
-	xcbConfigureNotify = 22
-	xcbClientMessage   = 33
-	xcbMappingNotify   = 34
+	xcbKeyPress          = 2
+	xcbKeyRelease        = 3
+	xcbButtonPress       = 4
+	xcbButtonRelease     = 5
+	xcbMotionNotify      = 6
+	xcbEnterNotify       = 7
+	xcbLeaveNotify       = 8
+	xcbFocusIn           = 9
+	xcbFocusOut          = 10
+	xcbVisibilityNotify  = 15
+	xcbUnmapNotify       = 18
+	xcbMapNotify         = 19
+	xcbDestroyNotify     = 17
+	xcbConfigureNotify   = 22
+	xcbPropertyNotify    = 28
+	xcbSelectionClear    = 29
+	xcbSelectionRequest  = 30
+	xcbSelectionNotify   = 31
+	xcbClientMessage     = 33
+	xcbMappingNotify     = 34
+	xcbVisibilityObscure = 2 // VisibilityFullyObscured
+	xcbPropertyNewValue  = 0
+	xcbPropertyDelete    = 1
 
 	xcbEventMaskKeyPress      = 1
 	xcbEventMaskKeyRelease    = 2
@@ -40,10 +52,12 @@ const (
 	xcbEventMaskLeave         = 0x20
 	xcbEventMaskMotion        = 0x40
 	xcbEventMaskExposure      = 0x8000
+	xcbEventMaskVisibility    = 0x10000
 	xcbEventMaskStructure     = 0x20000
 	xcbEventMaskSubRedirect   = 0x100000
 	xcbEventMaskSubNotify     = 0x80000
 	xcbEventMaskFocus         = 0x200000
+	xcbEventMaskProperty      = 0x400000
 
 	xcbCWBackPixel            = 0x2
 	xcbCWEventMask            = 0x800
@@ -135,6 +149,124 @@ type xcbClientMessageEvent struct {
 	Data         [5]uint32
 }
 
+// xcbMapEvent is MapNotify and UnmapNotify, which name the window that
+// was mapped as well as the window the event was selected on.
+type xcbMapEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Event        uint32
+	Window       uint32
+	Flag         uint8 // override-redirect on a map, from-configure on an unmap
+	Pad1         [3]uint8
+}
+
+type xcbVisibilityEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Window       uint32
+	State        uint8
+	Pad1         [3]uint8
+}
+
+type xcbPropertyEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Window       uint32
+	Atom         uint32
+	Time         uint32
+	State        uint8
+	Pad1         [3]uint8
+}
+
+type xcbGetPropertyReply struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Format       uint8
+	Sequence     uint16
+	Length       uint32
+	Type         uint32
+	BytesAfter   uint32
+	ValueLen     uint32
+	Pad          [12]uint8
+}
+
+// The three selection events. A window that owns a selection answers
+// requests for it and hears when it loses it; a window that asks for one
+// hears the answer.
+type xcbSelectionRequestEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Time         uint32
+	Owner        uint32
+	Requestor    uint32
+	Selection    uint32
+	Target       uint32
+	Property     uint32
+}
+
+type xcbSelectionNotifyEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Time         uint32
+	Requestor    uint32
+	Selection    uint32
+	Target       uint32
+	Property     uint32
+}
+
+type xcbSelectionClearEvent struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Time         uint32
+	Owner        uint32
+	Selection    uint32
+}
+
+type xcbGetSelectionOwnerReply struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Pad          uint8
+	Sequence     uint16
+	Length       uint32
+	Owner        uint32
+}
+
+type xcbUseExtensionReply struct {
+	_            structs.HostLayout
+	ResponseType uint8
+	Supported    uint8
+	Sequence     uint16
+	Length       uint32
+	ServerMajor  uint16
+	ServerMinor  uint16
+	Pad          [20]uint8
+}
+
+type xcbPerClientFlagsReply struct {
+	_               structs.HostLayout
+	ResponseType    uint8
+	DeviceID        uint8
+	Sequence        uint16
+	Length          uint32
+	Supported       uint32
+	Value           uint32
+	AutoCtrls       uint32
+	AutoCtrlsValues uint32
+	Pad             [8]uint8
+}
+
 type xcbInternAtomReply struct {
 	_            structs.HostLayout
 	ResponseType uint8
@@ -189,6 +321,17 @@ type xlib struct {
 	internAtom         func(c unsafe.Pointer, onlyIfExists uint8, nameLen uint16, name *byte) xcbCookie
 	internAtomReply    func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbInternAtomReply
 	changeProperty     func(c unsafe.Pointer, mode uint8, w uint32, property, typ uint32, format uint8, dataLen uint32, data unsafe.Pointer) xcbCookie
+	deleteProperty     func(c unsafe.Pointer, w uint32, property uint32) xcbCookie
+	getProperty        func(c unsafe.Pointer, del uint8, w uint32, property, typ uint32, offset, length uint32) xcbCookie
+	getPropertyReply   func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbGetPropertyReply
+	getPropertyValue   func(reply *xcbGetPropertyReply) unsafe.Pointer
+	getPropertyValueLn func(reply *xcbGetPropertyReply) int32
+	setSelectionOwner  func(c unsafe.Pointer, owner, selection, time uint32) xcbCookie
+	getSelectionOwner  func(c unsafe.Pointer, selection uint32) xcbCookie
+	getSelOwnerReply   func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbGetSelectionOwnerReply
+	convertSelection   func(c unsafe.Pointer, requestor, selection, target, property, time uint32) xcbCookie
+	maxRequestLength   func(c unsafe.Pointer) uint32
+	fileDescriptor     func(c unsafe.Pointer) int32
 	sendEvent          func(c unsafe.Pointer, propagate uint8, dest uint32, mask uint32, event *byte) xcbCookie
 	grabPointer        func(c unsafe.Pointer, ownerEvents uint8, grabWindow uint32, eventMask uint16, pointerMode, keyboardMode uint8, confineTo, cursor, time uint32) xcbCookie
 	ungrabPointer      func(c unsafe.Pointer, time uint32) xcbCookie
@@ -202,6 +345,15 @@ type xlib struct {
 	createGlyphCursor  func(c unsafe.Pointer, cid, sourceFont, maskFont uint32, sourceChar, maskChar uint16, foreR, foreG, foreB, backR, backG, backB uint16) xcbCookie
 	freeCursor         func(c unsafe.Pointer, cid uint32) xcbCookie
 	free               func(p unsafe.Pointer)
+	poll               func(fds *pollFD, nfds uint64, timeout int32) int32
+
+	// libxcb-xkb, optional. It carries the requests that turn detectable
+	// auto-repeat on, which is what stops a held key reporting a release
+	// between every repeat.
+	xkbUseExtension        func(c unsafe.Pointer, major, minor uint16) xcbCookie
+	xkbUseExtensionReply   func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbUseExtensionReply
+	xkbPerClientFlags      func(c unsafe.Pointer, device uint16, change, value, ctrlsToChange, autoCtrls, autoCtrlsValues uint32) xcbCookie
+	xkbPerClientFlagsReply func(c unsafe.Pointer, cookie xcbCookie, err unsafe.Pointer) *xcbPerClientFlagsReply
 
 	// xkbcommon, optional.
 	xkbContextNew       func(flags int32) unsafe.Pointer
@@ -242,6 +394,11 @@ func loadX11() (*xlib, error) {
 		"xcb_create_window": &x.createWindow, "xcb_destroy_window": &x.destroyWindow, "xcb_map_window": &x.mapWindow,
 		"xcb_flush": &x.flush, "xcb_poll_for_event": &x.pollForEvent, "xcb_wait_for_event": &x.waitForEvent,
 		"xcb_intern_atom": &x.internAtom, "xcb_intern_atom_reply": &x.internAtomReply, "xcb_change_property": &x.changeProperty,
+		"xcb_delete_property": &x.deleteProperty, "xcb_get_property": &x.getProperty, "xcb_get_property_reply": &x.getPropertyReply,
+		"xcb_get_property_value": &x.getPropertyValue, "xcb_get_property_value_length": &x.getPropertyValueLn,
+		"xcb_set_selection_owner": &x.setSelectionOwner, "xcb_get_selection_owner": &x.getSelectionOwner,
+		"xcb_get_selection_owner_reply": &x.getSelOwnerReply, "xcb_convert_selection": &x.convertSelection,
+		"xcb_get_maximum_request_length": &x.maxRequestLength, "xcb_get_file_descriptor": &x.fileDescriptor,
 		"xcb_send_event": &x.sendEvent, "xcb_grab_pointer": &x.grabPointer, "xcb_ungrab_pointer": &x.ungrabPointer,
 		"xcb_warp_pointer": &x.warpPointer, "xcb_create_pixmap": &x.createPixmap, "xcb_free_pixmap": &x.freePixmap,
 		"xcb_create_cursor": &x.createCursor, "xcb_change_window_attributes": &x.changeWindowAttrs,
@@ -252,8 +409,24 @@ func loadX11() (*xlib, error) {
 			return nil, err
 		}
 	}
-	if err := load(libc, "free", &x.free); err != nil {
-		return nil, err
+	for name, fptr := range map[string]any{"free": &x.free, "poll": &x.poll} {
+		if err := load(libc, name, fptr); err != nil {
+			return nil, err
+		}
+	}
+	// Detectable auto-repeat is optional: without libxcb-xkb the layer
+	// falls back to spotting the release and press pair by its timestamp.
+	if xkb, err := purego.Dlopen("libxcb-xkb.so.1", purego.RTLD_NOW|purego.RTLD_GLOBAL); err == nil {
+		ok := true
+		for name, fptr := range map[string]any{
+			"xcb_xkb_use_extension": &x.xkbUseExtension, "xcb_xkb_use_extension_reply": &x.xkbUseExtensionReply,
+			"xcb_xkb_per_client_flags": &x.xkbPerClientFlags, "xcb_xkb_per_client_flags_reply": &x.xkbPerClientFlagsReply,
+		} {
+			ok = ok && load(xkb, name, fptr) == nil
+		}
+		if !ok {
+			x.xkbUseExtension = nil
+		}
 	}
 	// Text input is optional.
 	if xkb, err := purego.Dlopen("libxkbcommon.so.0", purego.RTLD_NOW|purego.RTLD_GLOBAL); err == nil {
@@ -308,9 +481,56 @@ func (a *App) connectX11() error {
 	a.atomUTF8 = a.atom("UTF8_STRING")
 	a.atomNetWMState = a.atom("_NET_WM_STATE")
 	a.atomNetWMFullscreen = a.atom("_NET_WM_STATE_FULLSCREEN")
+	a.atomNetWMHidden = a.atom("_NET_WM_STATE_HIDDEN")
 	a.atomWake = a.atom("BUNYIP_WAKE")
+	a.atomClipboard = a.atom("CLIPBOARD")
+	a.atomTargets = a.atom("TARGETS")
+	a.atomText = a.atom("TEXT")
+	a.atomIncr = a.atom("INCR")
+	a.atomSelection = a.atom("BUNYIP_SELECTION")
+	a.clipChunk = clipChunk(x.maxRequestLength(conn))
 	a.setupXKB()
+	a.detectableRepeat = a.setDetectableRepeat()
 	return nil
+}
+
+// XKB constants for the detectable auto-repeat request.
+const (
+	xkbUseCoreKbd            = 0x0100
+	xkbDetectableAutoRepeat  = 1 << 0
+	xkbExtensionMajorVersion = 1
+	xkbExtensionMinorVersion = 0
+)
+
+// setDetectableRepeat asks the server to deliver a held key as presses
+// alone. Without it X sends a release before every repeat, which reads as
+// the key having been let go. It reports whether the server agreed;
+// keyFromX11 events fall back to matching the release and press by their
+// timestamps when it did not.
+func (a *App) setDetectableRepeat() bool {
+	x := a.x
+	if x.xkbUseExtension == nil {
+		return false
+	}
+	// The extension has to be set up on this connection before any of its
+	// requests are sent, whether or not xkbcommon already did it.
+	use := x.xkbUseExtensionReply(a.conn, x.xkbUseExtension(a.conn, xkbExtensionMajorVersion, xkbExtensionMinorVersion), nil)
+	if use == nil {
+		return false
+	}
+	supported := use.Supported != 0
+	x.free(unsafe.Pointer(use))
+	if !supported {
+		return false
+	}
+	cookie := x.xkbPerClientFlags(a.conn, xkbUseCoreKbd, xkbDetectableAutoRepeat, xkbDetectableAutoRepeat, 0, 0, 0)
+	reply := x.xkbPerClientFlagsReply(a.conn, cookie, nil)
+	if reply == nil {
+		return false
+	}
+	on := reply.Value&xkbDetectableAutoRepeat != 0
+	x.free(unsafe.Pointer(reply))
+	return on
 }
 
 func (a *App) atom(name string) uint32 {
@@ -323,6 +543,44 @@ func (a *App) atom(name string) uint32 {
 	atom := reply.Atom
 	a.x.free(unsafe.Pointer(reply))
 	return atom
+}
+
+// xProperty is one reply to a property read.
+type xProperty struct {
+	Data       []byte
+	Type       uint32
+	Format     uint8
+	BytesAfter uint32
+}
+
+// atoms reads a property whose format is 32 as the atom list it is.
+func (p xProperty) atoms() []uint32 {
+	if p.Format != 32 || len(p.Data) < 4 {
+		return nil
+	}
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&p.Data[0])), len(p.Data)/4)
+}
+
+// property reads a window property. offset and length count four-byte
+// units, which is what the protocol counts; del deletes the property once
+// it has been read, which is how an INCR transfer asks for the next chunk.
+// A property that does not exist comes back with no data and type zero.
+func (a *App) property(win, prop, typ, offset, length uint32, del bool) xProperty {
+	x := a.x
+	var d uint8
+	if del {
+		d = 1
+	}
+	reply := x.getPropertyReply(a.conn, x.getProperty(a.conn, d, win, prop, typ, offset, length), nil)
+	if reply == nil {
+		return xProperty{}
+	}
+	defer x.free(unsafe.Pointer(reply))
+	out := xProperty{Type: reply.Type, Format: reply.Format, BytesAfter: reply.BytesAfter}
+	if n := int(x.getPropertyValueLn(reply)); n > 0 {
+		out.Data = append([]byte(nil), unsafe.Slice((*byte)(x.getPropertyValue(reply)), n)...)
+	}
+	return out
 }
 
 func (a *App) setupXKB() {
@@ -359,12 +617,19 @@ func (a *App) refreshKeymap() {
 func (a *App) newX11Window(cfg Config) (*Window, error) {
 	x := a.x
 	id := x.generateID(a.conn)
+	// Visibility and property changes are selected as well as input, so
+	// that a window that is minimised, unmapped or covered says so:
+	// UnmapNotify and MapNotify come from the structure mask,
+	// VisibilityNotify from the visibility mask, and _NET_WM_STATE_HIDDEN
+	// from the property mask.
 	values := [2]uint32{a.screen.BlackPixel, xcbEventMaskKeyPress | xcbEventMaskKeyRelease | xcbEventMaskButtonPress |
 		xcbEventMaskButtonRelease | xcbEventMaskEnter | xcbEventMaskLeave | xcbEventMaskMotion | xcbEventMaskExposure |
-		xcbEventMaskStructure | xcbEventMaskFocus}
+		xcbEventMaskVisibility | xcbEventMaskStructure | xcbEventMaskFocus | xcbEventMaskProperty}
 	x.createWindow(a.conn, xcbCopyFromParent, id, a.screen.Root, 0, 0, uint16(cfg.Width), uint16(cfg.Height), 0,
 		xcbWindowClassInputOutput, a.screen.RootVisual, xcbCWBackPixel|xcbCWEventMask, &values[0])
-	w := &Window{app: a, id: id, width: cfg.Width, height: cfg.Height}
+	// The window is mapped below, so it starts visible; only an unmap, a
+	// minimise or full obscuring changes that, and each sends an event.
+	w := &Window{app: a, id: id, width: cfg.Width, height: cfg.Height, mapped: true, visible: true}
 	a.windows[id] = w
 	a.wakeWin.CompareAndSwap(0, id)
 	title := []byte(cfg.Title)
@@ -388,7 +653,7 @@ func (a *App) newX11Window(cfg Config) (*Window, error) {
 // x11Poll drains pending X events into the returned slice, reused by the
 // next call. With wait set it blocks until at least one event arrives.
 func (a *App) x11Poll(wait bool) []Event {
-	a.pending = a.pending[:0]
+	a.startPoll()
 	x := a.x
 	x.flush(a.conn)
 	if wait {
@@ -399,21 +664,28 @@ func (a *App) x11Poll(wait bool) []Event {
 			}
 			return a.pending
 		}
-		a.handle(ev)
-		x.free(unsafe.Pointer(ev))
+		a.dispatch(ev)
 	}
 	for {
 		ev := x.pollForEvent(a.conn)
 		if ev == nil {
 			break
 		}
-		a.handle(ev)
-		x.free(unsafe.Pointer(ev))
+		a.dispatch(ev)
 	}
+	a.sweepIncr(time.Now())
 	return a.pending
 }
 
-func (a *App) push(e Event) { a.pending = append(a.pending, e) }
+// dispatch handles one event and frees it, then handles whatever the key
+// repeat lookahead took off the queue behind it.
+func (a *App) dispatch(ev *xcbGenericEvent) {
+	for ev != nil {
+		a.handle(ev)
+		a.x.free(unsafe.Pointer(ev))
+		ev, a.peeked = a.peeked, nil
+	}
+}
 
 func modsFromState(state uint16) Mods {
 	var m Mods
@@ -438,6 +710,40 @@ func modsFromState(state uint16) Mods {
 	return m
 }
 
+// repeatPress reports whether a key release and the event that follows it
+// are one key repeat. Without detectable auto-repeat the server sends a
+// repeat as a release and a press for the same key, on the same window,
+// carrying the same timestamp; no hand releases and presses a key inside
+// the one millisecond an X timestamp counts.
+func repeatPress(release *xcbInputEvent, next *xcbGenericEvent) bool {
+	if release == nil || next == nil || next.ResponseType&^0x80 != xcbKeyPress {
+		return false
+	}
+	press := (*xcbInputEvent)(unsafe.Pointer(next))
+	return press.Detail == release.Detail && press.Time == release.Time && press.Event == release.Event
+}
+
+// pushKeyDown reports a key press, or a repeat of one, with the text the
+// key produces after it.
+func (a *App) pushKeyDown(w *Window, ev *xcbInputEvent, repeat bool) {
+	x := a.x
+	a.push(Event{Kind: EventKeyDown, Window: w, Key: keyFromX11(ev.Detail), Mods: a.mods, Repeat: repeat})
+	if a.xkbState == nil || a.mods&(input.ModControl|input.ModSuper) != 0 {
+		return
+	}
+	// The event carries the server's modifier and group state, which
+	// includes keys pressed before this window had focus; tracking presses
+	// locally would miss those.
+	x.xkbStateUpdateMask(a.xkbState, uint32(ev.State&0xff), 0, 0, 0, 0, uint32(ev.State>>13)&3)
+	var buf [16]byte
+	n := x.xkbStateKeyGetUTF8(a.xkbState, uint32(ev.Detail), &buf[0], uintptr(len(buf)))
+	for _, r := range string(buf[:max(min(int(n), len(buf)-1), 0)]) {
+		if r >= ' ' || r == '\t' || r == '\n' || r == '\r' {
+			a.push(Event{Kind: EventChar, Window: w, Rune: r, Mods: a.mods})
+		}
+	}
+}
+
 func (a *App) handle(ge *xcbGenericEvent) {
 	x := a.x
 	switch ge.ResponseType &^ 0x80 {
@@ -448,25 +754,30 @@ func (a *App) handle(ge *xcbGenericEvent) {
 			return
 		}
 		a.mods = modsFromState(ev.State)
-		key := keyFromX11(ev.Detail)
 		if ge.ResponseType&^0x80 == xcbKeyRelease {
-			a.push(Event{Kind: EventKeyUp, Window: w, Key: key, Mods: a.mods})
+			if !a.detectableRepeat {
+				// Without detectable auto-repeat the server sends a repeat
+				// as this release followed by an identical press. Look at
+				// the next event: a match is one repeat, and anything else
+				// is handed back to the poll loop. The look reads the
+				// socket rather than only the queue, because the press is
+				// often still in the kernel's buffer when the release is
+				// handled, and a queue-only look would miss it.
+				next := x.pollForEvent(a.conn)
+				if repeatPress(ev, next) {
+					x.free(unsafe.Pointer(next))
+					a.pushKeyDown(w, ev, true)
+					return
+				}
+				a.peeked = next
+			}
+			a.keysDown[ev.Detail] = false
+			a.push(Event{Kind: EventKeyUp, Window: w, Key: keyFromX11(ev.Detail), Mods: a.mods})
 			return
 		}
-		a.push(Event{Kind: EventKeyDown, Window: w, Key: key, Mods: a.mods})
-		if a.xkbState != nil && a.mods&(input.ModControl|input.ModSuper) == 0 {
-			// The event carries the server's modifier and group state,
-			// which includes keys pressed before this window had focus;
-			// tracking presses locally would miss those.
-			x.xkbStateUpdateMask(a.xkbState, uint32(ev.State&0xff), 0, 0, 0, 0, uint32(ev.State>>13)&3)
-			var buf [16]byte
-			n := x.xkbStateKeyGetUTF8(a.xkbState, uint32(ev.Detail), &buf[0], uintptr(len(buf)))
-			for _, r := range string(buf[:max(n, 0)]) {
-				if r >= ' ' || r == '\t' || r == '\n' || r == '\r' {
-					a.push(Event{Kind: EventChar, Window: w, Rune: r, Mods: a.mods})
-				}
-			}
-		}
+		repeat := a.keysDown[ev.Detail]
+		a.keysDown[ev.Detail] = true
+		a.pushKeyDown(w, ev, repeat)
 	case xcbButtonPress, xcbButtonRelease:
 		ev := (*xcbInputEvent)(unsafe.Pointer(ge))
 		w := a.windows[ev.Event]
@@ -546,7 +857,13 @@ func (a *App) handle(ge *xcbGenericEvent) {
 	case xcbFocusIn, xcbFocusOut:
 		ev := (*xcbFocusEvent)(unsafe.Pointer(ge))
 		if w := a.windows[ev.Event]; w != nil {
-			a.push(Event{Kind: EventFocus, Window: w, Focused: ge.ResponseType&^0x80 == xcbFocusIn})
+			focused := ge.ResponseType&^0x80 == xcbFocusIn
+			if !focused {
+				// A key let go while another window has focus reports
+				// nothing here, so forget what was held.
+				a.keysDown = [256]bool{}
+			}
+			a.push(Event{Kind: EventFocus, Window: w, Focused: focused})
 		}
 	case xcbConfigureNotify:
 		ev := (*xcbConfigureEvent)(unsafe.Pointer(ge))
@@ -563,6 +880,35 @@ func (a *App) handle(ge *xcbGenericEvent) {
 		case w != nil && ev.Type == a.atomWMProtocols && ev.Data[0] == a.atomWMDelete:
 			a.push(Event{Kind: EventClose, Window: w})
 		}
+	case xcbMapNotify, xcbUnmapNotify:
+		ev := (*xcbMapEvent)(unsafe.Pointer(ge))
+		if w := a.windows[ev.Window]; w != nil {
+			w.mapped = ge.ResponseType&^0x80 == xcbMapNotify
+			w.updateVisible()
+		}
+	case xcbVisibilityNotify:
+		ev := (*xcbVisibilityEvent)(unsafe.Pointer(ge))
+		if w := a.windows[ev.Window]; w != nil {
+			w.obscured = ev.State == xcbVisibilityObscure
+			w.updateVisible()
+		}
+	case xcbPropertyNotify:
+		ev := (*xcbPropertyEvent)(unsafe.Pointer(ge))
+		if w := a.windows[ev.Window]; w != nil && ev.Atom == a.atomNetWMState {
+			w.wmHidden = w.netWMHidden()
+			w.updateVisible()
+		}
+		if ev.State == xcbPropertyDelete {
+			// A requestor deleting the property is how it asks for the
+			// next chunk of an INCR transfer.
+			a.sendIncrChunk(ev.Window, ev.Atom)
+		}
+	case xcbSelectionRequest:
+		a.answerSelectionRequest((*xcbSelectionRequestEvent)(unsafe.Pointer(ge)))
+	case xcbSelectionClear:
+		if ev := (*xcbSelectionClearEvent)(unsafe.Pointer(ge)); ev.Selection == a.atomClipboard {
+			a.clipOwned, a.clipText = false, ""
+		}
 	case xcbDestroyNotify:
 		ev := (*xcbConfigureEvent)(unsafe.Pointer(ge)) // window field sits at the same offset
 		if w := a.windows[ev.Window]; w != nil {
@@ -570,9 +916,38 @@ func (a *App) handle(ge *xcbGenericEvent) {
 			delete(a.windows, ev.Window)
 			a.wakeWin.CompareAndSwap(ev.Window, 0)
 		}
+		// A requestor that exits in the middle of a transfer will never
+		// ask for the rest of it.
+		a.forgetRequestor(ev.Window)
 	case xcbMappingNotify:
 		a.refreshKeymap()
 	}
+}
+
+// netWMHidden reports whether _NET_WM_STATE on the window carries
+// _NET_WM_STATE_HIDDEN, which is how a window manager says the window is
+// minimised or shaded. A window manager that does not set the property
+// reports nothing, which reads as shown.
+func (w *Window) netWMHidden() bool {
+	a := w.app
+	for _, at := range a.property(w.id, a.atomNetWMState, xcbAtomAtom, 0, 64, false).atoms() {
+		if at == a.atomNetWMHidden {
+			return true
+		}
+	}
+	return false
+}
+
+// updateVisible reports a change in whether the window can be seen. It is
+// hidden when it is unmapped, minimised or wholly covered by other
+// windows, which is what lets a game stop drawing.
+func (w *Window) updateVisible() {
+	visible := w.mapped && !w.obscured && !w.wmHidden
+	if visible == w.visible {
+		return
+	}
+	w.visible = visible
+	w.app.push(Event{Kind: EventVisible, Window: w, Visible: visible})
 }
 
 // x11Wake sends a client message to the window so a blocked Poll returns
@@ -589,6 +964,440 @@ func (a *App) x11Wake() {
 	msg.ResponseType, msg.Format, msg.Window, msg.Type = xcbClientMessage, 32, id, a.atomWake
 	a.x.sendEvent(a.conn, 0, id, 0, &ev[0])
 	a.x.flush(a.conn)
+}
+
+// --- selections ---
+//
+// X has no clipboard of its own. One client owns the CLIPBOARD selection
+// and hands the text to whoever asks, over the same event loop as
+// everything else, so the layer both answers requests while it owns the
+// selection and asks the current owner when a game reads. Text larger
+// than one request goes through INCR, a chunk at a time, with the
+// requestor deleting the property to ask for the next.
+
+// incrSend is one INCR transfer this process is handing over.
+type incrSend struct {
+	requestor uint32
+	property  uint32
+	target    uint32
+	data      []byte
+	sent      int
+	touched   time.Time // when the requestor last took a chunk
+}
+
+// incrIdle is how long a transfer waits for the requestor to ask for the
+// next chunk before it is abandoned. A client that exits mid-transfer,
+// or never deletes the property, would otherwise hold a copy of the
+// clipboard for as long as the game runs.
+const incrIdle = 5 * time.Second
+
+// putIncr replaces the transfer for the same requestor and property, or
+// appends a new one. Two requests for one property cannot run at once,
+// because the property is the whole channel, so the later request is the
+// one that counts.
+func putIncr(transfers []incrSend, t incrSend) []incrSend {
+	for i := range transfers {
+		if transfers[i].requestor == t.requestor && transfers[i].property == t.property {
+			transfers[i] = t
+			return transfers
+		}
+	}
+	return append(transfers, t)
+}
+
+// dropStaleIncr splits transfers into those still live at now and those
+// whose requestor has said nothing for timeout.
+func dropStaleIncr(transfers []incrSend, now time.Time, timeout time.Duration) (kept, stale []incrSend) {
+	for _, t := range transfers {
+		if now.Sub(t.touched) > timeout {
+			stale = append(stale, t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, stale
+}
+
+// incrMask counts the transfers that need property changes selected on
+// each requestor's window. Two transfers to one window would otherwise
+// have the first one's end stop the second one's events.
+type incrMask map[uint32]int
+
+// add records one more transfer and reports whether the mask has to be
+// selected now.
+func (m incrMask) add(win uint32) bool {
+	m[win]++
+	return m[win] == 1
+}
+
+// remove records one fewer and reports whether the mask can be cleared.
+func (m incrMask) remove(win uint32) bool {
+	n := m[win] - 1
+	if n <= 0 {
+		delete(m, win)
+		return true
+	}
+	m[win] = n
+	return false
+}
+
+// clipChunk is the largest property one request can write, from the
+// connection's maximum request length in four-byte units. It is kept well
+// under the limit to leave room for the request's own header, and capped
+// so that a server with BIG-REQUESTS does not make a chunk enormous.
+func clipChunk(units uint32) int {
+	n := int(units)*4 - 1024
+	if n < 4096 {
+		return 4096
+	}
+	if n > 1<<18 {
+		return 1 << 18
+	}
+	return n
+}
+
+// clipWindow is the window selections are owned and requested through.
+// Zero means no window is open, and the clipboard needs one.
+func (a *App) clipWindow() uint32 { return a.wakeWin.Load() }
+
+// setClipboardX11 takes ownership of the CLIPBOARD selection and holds
+// the text until another client takes it.
+func (a *App) setClipboardX11(text string) error {
+	win := a.clipWindow()
+	if win == 0 {
+		return ErrNoClipboard
+	}
+	a.clipText, a.clipOwned = text, true
+	a.x.setSelectionOwner(a.conn, win, a.atomClipboard, xcbCurrentTime)
+	a.x.flush(a.conn)
+	return nil
+}
+
+// clipboardX11 reads the CLIPBOARD selection. It returns the empty string
+// when nobody owns the selection, when the owner has no text to offer and
+// when the owner does not answer in time.
+func (a *App) clipboardX11() (string, error) {
+	if a.clipOwned {
+		return a.clipText, nil // no round trip to ourselves
+	}
+	x := a.x
+	win := a.clipWindow()
+	if win == 0 {
+		return "", ErrNoClipboard
+	}
+	reply := x.getSelOwnerReply(a.conn, x.getSelectionOwner(a.conn, a.atomClipboard), nil)
+	if reply == nil {
+		return "", nil
+	}
+	owner := reply.Owner
+	x.free(unsafe.Pointer(reply))
+	if owner == 0 {
+		return "", nil
+	}
+	// Events that arrive while the owner is answering are queued for the
+	// next Poll; dropping them would lose a key press or a resize.
+	a.deferQueue = true
+	defer func() { a.deferQueue = false }()
+	// UTF8_STRING first. An owner old enough to offer only STRING refuses
+	// it by naming no property, and STRING is the fallback every owner
+	// has.
+	for _, target := range [2]uint32{a.atomUTF8, xcbAtomString} {
+		x.deleteProperty(a.conn, win, a.atomSelection)
+		x.convertSelection(a.conn, win, a.atomClipboard, target, a.atomSelection, xcbCurrentTime)
+		x.flush(a.conn)
+		prop := a.waitSelection(win, time.Now().Add(clipboardWait))
+		if prop == 0 {
+			continue // the owner refused this target, or said nothing in time
+		}
+		text, typ := a.readSelection(win, prop)
+		return decodeSelection(text, typ == xcbAtomString), nil
+	}
+	return "", nil
+}
+
+// decodeSelection turns the bytes an owner wrote into a string. A
+// UTF8_STRING is already UTF-8. A STRING is Latin-1 by the protocol, but
+// most toolkits write UTF-8 into it anyway, so bytes that are valid UTF-8
+// are taken as they are and only the rest are widened from Latin-1, which
+// is what keeps both kinds of owner readable.
+func decodeSelection(data []byte, latin1 bool) string {
+	if !latin1 || utf8.Valid(data) {
+		return string(data)
+	}
+	runes := make([]rune, len(data))
+	for i, b := range data {
+		runes[i] = rune(b)
+	}
+	return string(runes)
+}
+
+// waitSelection waits for the SelectionNotify that answers a convert
+// request and returns the property the owner wrote to, or zero when it
+// refused or nothing came in time. Every other event is handled as usual.
+func (a *App) waitSelection(win uint32, deadline time.Time) uint32 {
+	x := a.x
+	for {
+		for {
+			ev := x.pollForEvent(a.conn)
+			if ev == nil {
+				break
+			}
+			if ev.ResponseType&^0x80 == xcbSelectionNotify {
+				sn := (*xcbSelectionNotifyEvent)(unsafe.Pointer(ev))
+				if sn.Requestor == win && sn.Selection == a.atomClipboard {
+					prop := sn.Property
+					x.free(unsafe.Pointer(ev))
+					return prop
+				}
+			}
+			a.dispatch(ev)
+		}
+		if !a.waitReadable(deadline) {
+			return 0
+		}
+	}
+}
+
+// waitProperty waits for the owner to write the next chunk of an INCR
+// transfer into the property. It reports whether one arrived in time.
+func (a *App) waitProperty(win, prop uint32, deadline time.Time) bool {
+	x := a.x
+	for {
+		for {
+			ev := x.pollForEvent(a.conn)
+			if ev == nil {
+				break
+			}
+			if ev.ResponseType&^0x80 == xcbPropertyNotify {
+				pn := (*xcbPropertyEvent)(unsafe.Pointer(ev))
+				if pn.Window == win && pn.Atom == prop && pn.State == xcbPropertyNewValue {
+					x.free(unsafe.Pointer(ev))
+					return true
+				}
+			}
+			a.dispatch(ev)
+		}
+		if !a.waitReadable(deadline) {
+			return false
+		}
+	}
+}
+
+// waitReadable sleeps until the X connection has something to read or the
+// deadline passes, and reports whether it is worth reading again.
+func (a *App) waitReadable(deadline time.Time) bool {
+	left := time.Until(deadline)
+	if left <= 0 {
+		return false
+	}
+	a.x.flush(a.conn)
+	fd := pollFD{Fd: a.x.fileDescriptor(a.conn), Events: pollIn}
+	a.x.poll(&fd, 1, int32(left/time.Millisecond)+1)
+	return true
+}
+
+// readSelection reads the bytes the owner wrote and the type it gave
+// them, following an INCR transfer where the text was too large for one
+// property.
+func (a *App) readSelection(win, prop uint32) ([]byte, uint32) {
+	x := a.x
+	// Read nothing at first, only the type, so that an INCR transfer is
+	// not started by a read that throws the property away.
+	if head := a.property(win, prop, 0, 0, 0, false); head.Type == a.atomIncr {
+		// Deleting the property tells the owner to send the first chunk,
+		// and deleting it again after each one asks for the next.
+		x.deleteProperty(a.conn, win, prop)
+		x.flush(a.conn)
+		var out []byte
+		typ := uint32(0)
+		for {
+			if !a.waitProperty(win, prop, time.Now().Add(clipboardWait)) {
+				return out, typ
+			}
+			chunk := a.propertyAll(win, prop, true)
+			if len(chunk.Data) == 0 {
+				return out, typ // the empty chunk ends the transfer
+			}
+			typ = chunk.Type
+			out = append(out, chunk.Data...)
+		}
+	}
+	all := a.propertyAll(win, prop, true)
+	return all.Data, all.Type
+}
+
+// propertyAll reads a property whole, following its offset until nothing
+// is left, and deletes it afterwards when del is set.
+func (a *App) propertyAll(win, prop uint32, del bool) xProperty {
+	var out xProperty
+	for offset := uint32(0); ; {
+		chunk := a.property(win, prop, 0, offset, 1<<16, false)
+		out.Type, out.Format = chunk.Type, chunk.Format
+		if len(chunk.Data) == 0 {
+			break
+		}
+		out.Data = append(out.Data, chunk.Data...)
+		if chunk.BytesAfter == 0 {
+			break
+		}
+		offset += uint32(len(chunk.Data)) / 4
+	}
+	if del {
+		a.x.deleteProperty(a.conn, win, prop)
+		a.x.flush(a.conn)
+	}
+	return out
+}
+
+// answerSelectionRequest hands the text to a client that asked for the
+// clipboard. A target the layer does not offer is refused with a
+// SelectionNotify naming no property, which is what the protocol says.
+func (a *App) answerSelectionRequest(req *xcbSelectionRequestEvent) {
+	x := a.x
+	if !a.clipOwned || req.Selection != a.atomClipboard {
+		a.sendSelectionNotify(req, 0)
+		return
+	}
+	prop := req.Property
+	if prop == 0 {
+		prop = req.Target // a client old enough to leave the property out
+	}
+	switch req.Target {
+	case a.atomTargets:
+		targets := [4]uint32{a.atomTargets, a.atomUTF8, xcbAtomString, a.atomText}
+		x.changeProperty(a.conn, xcbPropModeReplace, req.Requestor, prop, xcbAtomAtom, 32,
+			uint32(len(targets)), unsafe.Pointer(&targets[0]))
+	case a.atomUTF8, xcbAtomString, a.atomText:
+		data := []byte(a.clipText)
+		if len(data) > a.clipChunk {
+			a.startIncr(req, prop, data)
+			return
+		}
+		x.changeProperty(a.conn, xcbPropModeReplace, req.Requestor, prop, req.Target, 8,
+			uint32(len(data)), bytesPointer(data))
+	default:
+		a.sendSelectionNotify(req, 0)
+		return
+	}
+	a.sendSelectionNotify(req, prop)
+}
+
+// startIncr answers a request for text too large for one property. The
+// property is set to the total length with type INCR and the chunks
+// follow as the requestor deletes it, so property changes on the
+// requestor's window are selected until the transfer ends.
+func (a *App) startIncr(req *xcbSelectionRequestEvent, prop uint32, data []byte) {
+	x := a.x
+	if a.incrMask == nil {
+		a.incrMask = incrMask{}
+	}
+	if a.incrMask.add(req.Requestor) {
+		// Property changes are selected once per window, however many
+		// transfers it has, and the destroy notify tells us to give up on
+		// a requestor that exits in the middle of one.
+		mask := [1]uint32{xcbEventMaskProperty | xcbEventMaskStructure}
+		x.changeWindowAttrs(a.conn, req.Requestor, xcbCWEventMask, &mask[0])
+	}
+	total := [1]uint32{uint32(len(data))}
+	x.changeProperty(a.conn, xcbPropModeReplace, req.Requestor, prop, a.atomIncr, 32, 1, unsafe.Pointer(&total[0]))
+	before := len(a.incr)
+	a.incr = putIncr(a.incr, incrSend{requestor: req.Requestor, property: prop, target: req.Target,
+		data: data, touched: time.Now()})
+	if len(a.incr) == before {
+		// The new transfer replaced one for the same property, so the
+		// count this window holds has not gone up after all.
+		a.incrMask.remove(req.Requestor)
+	}
+	a.sendSelectionNotify(req, prop)
+}
+
+// endIncr forgets one transfer and stops watching its requestor when it
+// was the last.
+func (a *App) endIncr(i int) {
+	win := a.incr[i].requestor
+	a.incr = append(a.incr[:i], a.incr[i+1:]...)
+	if a.incrMask.remove(win) {
+		var none [1]uint32
+		a.x.changeWindowAttrs(a.conn, win, xcbCWEventMask, &none[0])
+	}
+}
+
+// sweepIncr abandons transfers whose requestor has stopped asking. It
+// runs once per poll, which is often enough for a timeout counted in
+// seconds.
+func (a *App) sweepIncr(now time.Time) {
+	if len(a.incr) == 0 {
+		return
+	}
+	kept, stale := dropStaleIncr(a.incr, now, incrIdle)
+	if len(stale) == 0 {
+		return
+	}
+	a.incr = kept
+	for _, t := range stale {
+		if a.incrMask.remove(t.requestor) {
+			var none [1]uint32
+			a.x.changeWindowAttrs(a.conn, t.requestor, xcbCWEventMask, &none[0])
+		}
+	}
+	a.x.flush(a.conn)
+}
+
+// forgetRequestor drops every transfer to a window that has gone away.
+func (a *App) forgetRequestor(win uint32) {
+	for i := len(a.incr) - 1; i >= 0; i-- {
+		if a.incr[i].requestor == win {
+			a.incr = append(a.incr[:i], a.incr[i+1:]...)
+			a.incrMask.remove(win) // the window is gone; nothing to unselect
+		}
+	}
+}
+
+// sendIncrChunk writes the next chunk of a transfer in progress. An empty
+// chunk ends it, and the transfer is forgotten.
+func (a *App) sendIncrChunk(win, prop uint32) {
+	x := a.x
+	for i := range a.incr {
+		t := &a.incr[i]
+		if t.requestor != win || t.property != prop {
+			continue
+		}
+		n := min(len(t.data)-t.sent, a.clipChunk)
+		part := t.data[t.sent : t.sent+n]
+		x.changeProperty(a.conn, xcbPropModeReplace, win, prop, t.target, 8, uint32(n), bytesPointer(part))
+		x.flush(a.conn)
+		t.sent += n
+		t.touched = time.Now()
+		if n == 0 {
+			a.endIncr(i) // the empty chunk ended it
+		}
+		return
+	}
+}
+
+// sendSelectionNotify tells a requestor where the answer is, or that
+// there is none when property is zero.
+func (a *App) sendSelectionNotify(req *xcbSelectionRequestEvent, property uint32) {
+	var buf [32]byte
+	n := (*xcbSelectionNotifyEvent)(unsafe.Pointer(&buf[0]))
+	n.ResponseType = xcbSelectionNotify
+	n.Time, n.Requestor, n.Selection = req.Time, req.Requestor, req.Selection
+	n.Target, n.Property = req.Target, property
+	a.x.sendEvent(a.conn, 0, req.Requestor, 0, &buf[0])
+	a.x.flush(a.conn)
+}
+
+// emptyProperty stands in for the data of a zero-length property, which
+// ends an INCR transfer. Nothing reads it; xcb is given an address rather
+// than nothing at all.
+var emptyProperty byte
+
+// bytesPointer is the address of a byte slice's first element.
+func bytesPointer(b []byte) unsafe.Pointer {
+	if len(b) == 0 {
+		return unsafe.Pointer(&emptyProperty)
+	}
+	return unsafe.Pointer(&b[0])
 }
 
 // Gamepads reads the Linux joystick devices; see gamepad_linux.go.

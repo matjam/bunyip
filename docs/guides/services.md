@@ -20,7 +20,9 @@ loaders turn a name into an engine object: `asset.Texture`,
 `asset.Atlas` (the JSON and the image it names, from the same
 directory), `asset.Font`, `asset.SDFFont`, `asset.Sound`, `asset.Music`,
 `asset.Model` (with the model's buffers and images resolved through the
-same files) and `asset.Tracker`. A `Loader` decodes on worker
+same files), `asset.Tracker`, and `asset.Scene` and `asset.Prefab` for
+the ECS documents described in the
+[ECS guide](ecs.html). A `Loader` decodes on worker
 goroutines behind a progress counter, for loading screens, and a
 `Watcher` reports loose files that changed on disk, for hot reload.
 `bunyip-pack` builds pack files.

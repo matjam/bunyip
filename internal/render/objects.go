@@ -73,11 +73,36 @@ func imageBarrierLevels(cb vk.VkCommandBuffer, img vk.VkImage, aspect vk.VkImage
 	vk.CmdPipelineBarrier2(cb, &depScratch)
 }
 
+// bufferBarrier orders access to the whole of a buffer, for a transfer
+// that a later command in the same command buffer reads.
+func bufferBarrier(cb vk.VkCommandBuffer, buf *Buffer,
+	srcStage vk.VkPipelineStageFlags2, srcAccess vk.VkAccessFlags2,
+	dstStage vk.VkPipelineStageFlags2, dstAccess vk.VkAccessFlags2) {
+	bufBarrierScratch = vk.VkBufferMemoryBarrier2{
+		SType:               vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+		SrcStageMask:        srcStage,
+		SrcAccessMask:       srcAccess,
+		DstStageMask:        dstStage,
+		DstAccessMask:       dstAccess,
+		SrcQueueFamilyIndex: vk.VK_QUEUE_FAMILY_IGNORED,
+		DstQueueFamilyIndex: vk.VK_QUEUE_FAMILY_IGNORED,
+		Buffer:              buf.Handle,
+		Size:                vk.VK_WHOLE_SIZE,
+	}
+	depScratch = vk.VkDependencyInfo{
+		SType:                    vk.VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		BufferMemoryBarrierCount: 1,
+		PBufferMemoryBarriers:    &bufBarrierScratch,
+	}
+	vk.CmdPipelineBarrier2(cb, &depScratch)
+}
+
 // A barrier is recorded by pointer, and a pointer to a local would be
-// forced onto the heap once per barrier. These two live for the process
+// forced onto the heap once per barrier. These live for the process
 // and are filled in place; commands are recorded from the goroutine that
 // owns the device, so there is one recorder at a time.
 var (
-	barrierScratch vk.VkImageMemoryBarrier2
-	depScratch     vk.VkDependencyInfo
+	barrierScratch    vk.VkImageMemoryBarrier2
+	bufBarrierScratch vk.VkBufferMemoryBarrier2
+	depScratch        vk.VkDependencyInfo
 )

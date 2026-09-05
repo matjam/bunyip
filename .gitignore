@@ -2,6 +2,7 @@
 *.png
 !assets/**/*.png
 !docs/guides/*.png
+!docs/examples/*.png
 *.spv
 !**/shaders/*.spv
 .DS_Store

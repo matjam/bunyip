@@ -61,38 +61,45 @@ func (h ConvexHull) inertia(mass float32) lin.Vec3 {
 	return Box3{Half: half}.inertia(mass)
 }
 
-// world transforms the hull's points into place.
-func (h ConvexHull) world(pos lin.Vec3, rot mat3) []lin.Vec3 {
-	out := make([]lin.Vec3, len(h.Points))
-	for i, p := range h.Points {
-		out[i] = pos.Add(rot.mulVec(p))
+// world appends the hull's points in place to dst and returns it.
+func (h ConvexHull) world(dst []lin.Vec3, pos lin.Vec3, rot mat3) []lin.Vec3 {
+	for _, p := range h.Points {
+		dst = append(dst, pos.Add(rot.mulVec(p)))
 	}
-	return out
+	return dst
 }
 
 // placeConvex builds the support description of a placed shape, or false
-// for shapes that are not one convex volume (meshes and compounds).
-func placeConvex(s Shape3, pos lin.Vec3, rot mat3) (convex, bool) {
+// for shapes that are not one convex volume (meshes and compounds). A
+// hull with more points than a convex holds by value keeps its world
+// points in hull, which the caller passes back in to be reused; every
+// other shape leaves hull alone.
+func placeConvex(hull []lin.Vec3, s Shape3, pos lin.Vec3, rot mat3) (convex, []lin.Vec3, bool) {
 	switch sh := s.(type) {
 	case Sphere:
-		return pointConvex(pos, sh.Radius), true
+		return pointConvex(pos, sh.Radius), hull, true
 	case Capsule:
 		a, b := sh.segment(pos, rot)
-		return segmentConvex(a, b, sh.Radius), true
+		return segmentConvex(a, b, sh.Radius), hull, true
 	case Box3:
 		o := obb{pos, rot, sh.Half}
-		var pts []lin.Vec3
+		var pts [8]lin.Vec3
 		for i := range 8 {
-			pts = append(pts, o.corner(i))
+			pts[i] = o.corner(i)
 		}
-		return pointsConvex(pts, pos), true
+		return pointsConvex(pts[:], pos), hull, true
 	case ConvexHull:
 		if len(sh.Points) == 0 {
-			return convex{}, false
+			return convex{}, hull, false
 		}
-		return pointsConvex(sh.world(pos, rot), pos), true
+		if len(sh.Points) <= convexBuf {
+			var pts [convexBuf]lin.Vec3
+			return pointsConvex(sh.world(pts[:0], pos, rot), pos), hull, true
+		}
+		hull = sh.world(hull[:0], pos, rot)
+		return hullConvex(hull, pos), hull, true
 	}
-	return convex{}, false
+	return convex{}, hull, false
 }
 
 // corner returns one of the box's eight corners.
@@ -112,7 +119,8 @@ func (o obb) corner(i int) lin.Vec3 {
 
 // triangleConvex describes one world-space triangle.
 func triangleConvex(a, b, c lin.Vec3) convex {
-	return pointsConvex([]lin.Vec3{a, b, c}, a.Add(b).Add(c).Mul(1.0/3))
+	pts := [3]lin.Vec3{a, b, c}
+	return pointsConvex(pts[:], a.Add(b).Add(c).Mul(1.0/3))
 }
 
 // penetration finds how far two grown convex shapes overlap: the normal
@@ -270,13 +278,13 @@ func pairContacts(sc *scratch3, out []contact3, a, b *convex, forced *lin.Vec3, 
 			}
 		}
 	}
-	for _, e := range a.ends {
-		end := pointConvex(e, a.margin)
+	for i := range a.endCount() {
+		end := pointConvex(a.end(i), a.margin)
 		sc.ends = convexContacts(sc, sc.ends[:0], &end, b, forced, planePoint)
 		addUnique(sc.ends)
 	}
-	for _, e := range b.ends {
-		end := pointConvex(e, b.margin)
+	for i := range b.endCount() {
+		end := pointConvex(b.end(i), b.margin)
 		sc.ends = convexContacts(sc, sc.ends[:0], a, &end, forced, planePoint)
 		addUnique(sc.ends)
 	}
@@ -286,20 +294,21 @@ func pairContacts(sc *scratch3, out []contact3, a, b *convex, forced *lin.Vec3, 
 // convexPair appends the contacts between two placed shapes found
 // through their support functions to out.
 func convexPair(sc *scratch3, out []contact3, sa Shape3, pa lin.Vec3, ra mat3, sb Shape3, pb lin.Vec3, rb mat3) []contact3 {
-	a, ok := placeConvex(sa, pa, ra)
+	var ok bool
+	sc.convA, sc.hullA, ok = placeConvex(sc.hullA, sa, pa, ra)
 	if !ok {
 		return out
 	}
-	b, ok := placeConvex(sb, pb, rb)
+	sc.convB, sc.hullB, ok = placeConvex(sc.hullB, sb, pb, rb)
 	if !ok {
 		return out
 	}
-	return pairContacts(sc, out, &a, &b, nil, lin.Vec3{})
+	return pairContacts(sc, out, &sc.convA, &sc.convB, nil, lin.Vec3{})
 }
 
 // rayConvex casts a ray at a placed convex shape.
 func rayConvex(r Ray3, c *convex) (float32, lin.Vec3, bool) {
-	t, n, ok := castRay(c.support, r.Origin, r.Dir, c.size)
+	t, n, ok := castRay(c, r.Origin, r.Dir, c.size)
 	if !ok || n == (lin.Vec3{}) {
 		return 0, lin.Vec3{}, false
 	}
@@ -309,14 +318,12 @@ func rayConvex(r Ray3, c *convex) (float32, lin.Vec3, bool) {
 // sweepConvex moves shape a by delta and reports the fraction at which it
 // first touches b, with b's surface normal there and the touching point.
 func sweepConvex(a, b *convex, delta lin.Vec3) (t float32, normal, point lin.Vec3, ok bool) {
-	sup := func(dir lin.Vec3) lin.Vec3 { return b.support(dir).Sub(a.support(dir.Neg())) }
-	t, normal, ok = castRay(sup, lin.Vec3{}, delta, a.size+b.size)
+	t, normal, ok = castRay(minkowski{a, b}, lin.Vec3{}, delta, a.size+b.size)
 	if !ok || normal == (lin.Vec3{}) {
 		return 0, lin.Vec3{}, lin.Vec3{}, false
 	}
 	moved := *a
-	base := a.sup
-	moved.sup = func(dir lin.Vec3) lin.Vec3 { return base(dir).Add(delta.Mul(t)) }
+	moved.offset = a.offset.Add(delta.Mul(t))
 	moved.center = a.center.Add(delta.Mul(t))
 	r := gjk(&moved, b)
 	point = r.pb.Add(normal.Mul(b.margin))

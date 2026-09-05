@@ -28,7 +28,13 @@ type PipelineDesc struct {
 	NoColor          bool    // depth-only pass (shadow maps)
 	DepthBias        float32 // constant depth bias, for shadow passes
 	DepthSlopeBias   float32
-	FrontFace        vk.VkFrontFace // zero means counter-clockwise
+	// DepthClamp clamps a fragment's depth to the viewport's range instead
+	// of clipping the primitive at the near and far planes, so a shadow
+	// caster in front of the near plane still writes depth. It needs the
+	// device's depthClamp feature and is dropped where that is missing;
+	// Device.DepthClamp says whether it took effect.
+	DepthClamp bool
+	FrontFace  vk.VkFrontFace // zero means counter-clockwise
 }
 
 // BlendFactors is a fixed-function blend equation: colour and alpha are
@@ -144,6 +150,9 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		CullMode:    desc.CullMode,
 		FrontFace:   desc.FrontFace,
 		LineWidth:   1,
+	}
+	if desc.DepthClamp && d.depthClamp {
+		raster.DepthClampEnable = vk.VK_TRUE
 	}
 	if desc.DepthBias != 0 || desc.DepthSlopeBias != 0 {
 		raster.DepthBiasEnable = vk.VK_TRUE

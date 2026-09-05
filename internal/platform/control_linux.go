@@ -159,11 +159,16 @@ func (w *Window) SetAlwaysOnTop(bool)                  {}
 func (w *Window) SetCursorImage(image.Image, int, int) {}
 
 // SetIcon sets _NET_WM_ICON under X11: width, height and ARGB pixels as
-// cardinals. Under Wayland it does nothing, because the icon comes from the
-// desktop entry the app id names; xdg-toplevel-icon-v1, which would let the
-// client send pixels, is not wired yet.
+// cardinals. Under Wayland it sends the pixels through
+// xdg-toplevel-icon-v1, and does nothing where the compositor lacks that
+// protocol, because the icon then comes from the desktop entry whose name
+// matches the app id.
 func (w *Window) SetIcon(img image.Image) {
-	if img == nil || w.wl != nil {
+	if w.wl != nil {
+		w.wl.setIcon(img)
+		return
+	}
+	if img == nil {
 		return
 	}
 	b := img.Bounds()
@@ -180,10 +185,28 @@ func (w *Window) SetIcon(img image.Image) {
 	x.flush(a.conn)
 }
 
-// Clipboard is not available on Linux yet: X11 selections need a request
-// loop the platform layer does not run, and Wayland needs wl_data_device
-// with a pipe to read the offer from.
-func (a *App) Clipboard() (string, error) { return "", ErrNoClipboard }
+// Clipboard returns the system clipboard's text, empty when it holds
+// none. Under X11 it asks whoever owns the CLIPBOARD selection and waits
+// about a second for the answer, and under Wayland it reads the offer the
+// compositor gave the seat. Text this process put there is returned
+// without asking anyone. It fails only where the window system has no
+// clipboard for a client with no window, or where the compositor has no
+// wl_data_device_manager.
+func (a *App) Clipboard() (string, error) {
+	if a.wl != nil {
+		return a.wl.clipboard()
+	}
+	return a.clipboardX11()
+}
 
-// SetClipboard is not available on Linux yet.
-func (a *App) SetClipboard(string) error { return ErrNoClipboard }
+// SetClipboard puts text on the system clipboard. Both backends hand the
+// text over when another client asks for it, so it stays available for as
+// long as this process owns the selection and no longer. Under Wayland it
+// returns ErrNoInputYet before the window has had any input, because
+// changing the selection quotes the serial of an input event.
+func (a *App) SetClipboard(text string) error {
+	if a.wl != nil {
+		return a.wl.setClipboard(text)
+	}
+	return a.setClipboardX11(text)
+}

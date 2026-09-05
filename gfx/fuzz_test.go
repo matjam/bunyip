@@ -25,6 +25,40 @@ func FuzzParseAtlas(f *testing.F) {
 	})
 }
 
+// FuzzParseAseprite feeds the Aseprite reader corrupt files: an error,
+// never a panic and never an unbounded allocation.
+func FuzzParseAseprite(f *testing.F) {
+	f.Add(twoLayerFile(f))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		a, err := ParseAseprite(data, AsepriteOptions{Layers: true})
+		if err == nil && a.Image == nil {
+			t.Fatal("parsed with no image")
+		}
+	})
+}
+
+// FuzzSVGGlyph feeds the SVG glyph reader corrupt documents: no panic
+// and no loop, whatever a font holds. It needs no GPU.
+func FuzzSVGGlyph(f *testing.F) {
+	f.Add(`<svg viewBox="0 0 10 10"><path d="M0 0 L10 10 A 5 5 0 1 1 0 0 Z" fill="#f00"/></svg>`)
+	f.Add(`<svg><g transform="rotate(45 1 2) scale(2)"><rect width="4" height="4" fill="url(#g)"/></g>` +
+		`<defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient></defs></svg>`)
+	f.Add(`<svg><use href="#a"/><g id="a"><use href="#a"/></g></svg>`)
+	f.Add(`<svg><path d="M0 0 z 5 5 5"/></svg>`)
+	f.Add(`<svg`)
+	f.Add(``)
+	f.Fuzz(func(t *testing.T, s string) {
+		root, err := parseSVGDocument([]byte(s))
+		if err != nil {
+			return
+		}
+		r := &svgRender{root: root, ids: map[string]*svgElem{}, k: 0.1}
+		indexSVG(root, r.ids)
+		_ = r.bounds(root, svgState{xform: svgViewBox(root, 1000), opacity: 1}, 0)
+	})
+}
+
 // FuzzParseRich feeds the rich text parser arbitrary markup.
 func FuzzParseRich(f *testing.F) {
 	f.Add("plain")

@@ -40,7 +40,7 @@ func run(seconds float64, wait bool) error {
 	}
 	w, h := win.Size()
 	pw, ph := win.PixelSize()
-	fmt.Printf("window: %dx%d points, %dx%d pixels, scale %.2f\n", w, h, pw, ph, win.Scale())
+	fmt.Printf("window: %dx%d points, %dx%d pixels, scale %.2f, visible %v\n", w, h, pw, ph, win.Scale(), win.Visible())
 
 	var surface vk.VkSurfaceKHR
 	r, err := render.NewRenderer(render.Config{AppName: "window"},
@@ -118,6 +118,8 @@ func printEvent(e platform.Event) {
 		fmt.Printf("%s %dx%d points, %dx%d pixels, scale %.2f\n", e.Kind, e.Width, e.Height, e.PixelW, e.PixelH, e.Scale)
 	case platform.EventFocus:
 		fmt.Printf("%s focused=%v\n", e.Kind, e.Focused)
+	case platform.EventVisible:
+		fmt.Printf("%s visible=%v\n", e.Kind, e.Visible)
 	default:
 		fmt.Println(e.Kind)
 	}

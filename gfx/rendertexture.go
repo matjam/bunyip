@@ -68,10 +68,14 @@ func (g *Graphics) NewRenderTextureOptions(width, height int, opts RenderTexture
 		return nil, err
 	}
 	rt.tex = &Texture{Width: width, Height: height, img: rt.target.Color, set: set, g: g, external: true}
-	if err := g.r.Device.OneShot(func(cb vk.VkCommandBuffer) { render.ClearColorForSampling(cb, rt.target.Color) }); err != nil {
+	if err := g.setup(func(cb vk.VkCommandBuffer) { render.ClearColorForSampling(cb, rt.target.Color) }); err != nil {
 		rt.Destroy()
 		return nil, err
 	}
+	// A render texture holds its colour image, a depth buffer and the
+	// scene targets behind it, which is about four times a plain colour
+	// image at the same size.
+	g.track(rt, Resource{Kind: ResourceRenderTexture, Width: width, Height: height, Bytes: width * height * 16})
 	return rt, nil
 }
 
@@ -85,10 +89,12 @@ func (rt *RenderTexture) Read() (*image.RGBA, error) { return rt.tex.Read() }
 // SetView sets the render texture's 2D coordinate space; default is pixels.
 func (rt *RenderTexture) SetView(width, height float32) { rt.queue.setView(width, height) }
 
-// Destroy frees the surface. It must not be in use by a frame in flight.
+// Destroy frees the surface. Called inside a frame it costs no wait:
+// everything it owns goes on the frame slot's retire list and is freed
+// once that frame has finished.
 func (rt *RenderTexture) Destroy() {
 	g := rt.g
-	_ = g.r.Device.WaitIdle()
+	g.forget(rt)
 	if rt.tex != nil {
 		// The texture frees both its descriptor sets and marks itself
 		// destroyed, so a pointer a game kept from Texture cannot draw
@@ -97,13 +103,19 @@ func (rt *RenderTexture) Destroy() {
 		rt.tex = nil
 	}
 	if rt.queue != nil {
-		rt.queue.destroy()
+		queue := rt.queue
+		rt.queue = nil
+		g.deferDestroy(queue.destroy)
 	}
 	if rt.scene != nil {
-		rt.scene.destroy(g)
+		scene := rt.scene
+		rt.scene = nil
+		g.deferDestroy(func() { scene.destroy(g) })
 	}
 	if rt.target != nil {
-		rt.target.Destroy()
+		target := rt.target
+		rt.target = nil
+		g.deferDestroy(target.Destroy)
 	}
 }
 
