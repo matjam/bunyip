@@ -45,9 +45,10 @@ type item struct {
 }
 
 type game struct {
-	seconds float64
-	shot    string
-	dir     string
+	seconds  float64
+	shot     string
+	dir      string
+	randSeed uint64
 
 	font     *gfx.Font
 	ui       *ui.Context
@@ -70,7 +71,10 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		return err
 	}
 	g.ui = ui.New(ctx.Gfx, ui.DarkTheme(g.font))
-	g.random = rng.New(uint64(time.Now().UnixNano()))
+	// A seed from the flag rather than the clock, so a run can be
+	// repeated: which image the timer rewrites is then the same every
+	// time, which is what a test comparing frames needs.
+	g.random = rng.New(g.randSeed)
 	// Settings persist between runs in the platform's data directory.
 	if g.store, err = save.Open("bunyip-assets"); err != nil {
 		return err
@@ -265,9 +269,10 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	dir := flag.String("dir", filepath.Join(os.TempDir(), "bunyip-assets"), "asset directory (created and seeded when empty)")
+	seed := flag.Uint64("seed", 5, "random seed, so a run can be repeated")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip assets", Width: 840, Height: 440, Validation: true},
-		&game{seconds: *seconds, shot: *shot, dir: *dir})
+		&game{seconds: *seconds, shot: *shot, dir: *dir, randSeed: *seed})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "assets:", err)
 		os.Exit(1)

@@ -346,16 +346,29 @@ the input devices and a game's own services.
 
 ## Quality and process
 
+The examples are compared against stored images, not merely run:
+`examples/examples_test.go` runs each one under `BUNYIP_HEADLESS=1` and
+`BUNYIP_FIXED_CLOCK=1`, downscales the frame to 320 wide and checks it
+against `examples/testdata/<name>.png` by a mean difference over the
+frame and a tighter comparison of both frames blurred, writing the
+frame, the stored image and a diff to a temporary directory when they
+disagree. `-update` rerecords them and `-update -docs` also rewrites the
+walkthrough screenshots from the same run.
+
 - Hardware verification on Windows, of the Linux audio and gamepad
   layers, and of the Linux window layer beyond the one desktop it has
   run on; a GPU matrix in CI.
-- Screenshot comparison for the examples. `examples/examples_test.go`
-  runs each one headless (`BUNYIP_HEADLESS=1`) and checks that it drew
-  something, but not what.
-- Regenerating the example screenshots in `docs/examples/` is manual.
-  The test in `cmd/bunyip-docs` catches a walkthrough whose excerpts have
-  drifted from the source, but nothing notices when a committed
-  screenshot no longer shows what the example draws.
+- The walkthrough screenshots in `docs/examples/` are still rewritten by
+  hand in practice. The test can write them (`-update -docs`), but it
+  writes what a 1.5 second run draws, which is not always the moment
+  that shows an example best, so they are not regenerated wholesale.
+- The comparison runs on one machine's GPU. The tolerances are set for a
+  frame redrawn on the same driver; a different driver may need them
+  loosened, and nothing yet records a golden per driver.
+- `examples/assets` has no stored image: it counts its runs in a save
+  file, draws the count, and rewrites its own images on disk as it goes,
+  so its frame is never the same twice. It is still run and checked for
+  having drawn something.
 - Longer fuzzing campaigns. Every parser (glTF, the sound decoders, the
   tracker loaders, HDR, atlases, Aseprite files, rich text, Tiled maps
   and tilesets in both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its

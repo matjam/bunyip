@@ -29,7 +29,7 @@ methods change it afterwards.
 | `Title` (the first one), `Width`, `Height`, `Resizable` | `SetTitle`, `SetIcon`, `SetSizeLimits` |
 | `Icon` | `SetCursor`, `SetCursorVisible`, `SetCursorImage`, `SetCursorCaptured` |
 | `ViewWidth`, `ViewHeight`, `Scaling` | `SetFullscreen`, `Fullscreen` |
-| `Headless`, `NoVSync`, `HandleClose`, `PauseUnfocused`, `PauseHidden` | `SetPosition`, `Position`, `SetAlwaysOnTop` |
+| `Headless`, `FixedClock`, `NoVSync`, `HandleClose`, `PauseUnfocused`, `PauseHidden` | `SetPosition`, `Position`, `SetAlwaysOnTop` |
 
 Two things are missing on purpose. There is no programmatic resize.
 Nothing in the API sets the window's size after it opens, so the player
@@ -146,6 +146,29 @@ test that runs them all runs headless on a machine with no display.
 ```
 BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
 ```
+
+## A reproducible run
+
+A screenshot is only worth comparing against a stored one if the same
+run draws the same frame every time, and the loop reads the wall clock,
+so it does not: how many updates ran before a given frame depends on how
+long the machine took.
+
+`Config.FixedClock`, or `BUNYIP_FIXED_CLOCK=1`, advances the clock by
+exactly one `FixedStep` each frame and runs exactly one `Update` per
+frame. `ctx.Time` is then the frame number times the step, `ctx.Delta`
+is always the step and `ctx.Alpha` is always zero, so frame N is the
+same picture on any machine as long as the game seeds its own random
+numbers. Nothing paces the loop either, so a headless run goes as fast
+as it can. It is for tests and for recording, not for playing: a game
+run this way speeds up and slows down with the frame rate.
+
+```
+BUNYIP_HEADLESS=1 BUNYIP_FIXED_CLOCK=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
+```
+
+The examples test uses both, which is how it compares each example
+against a stored image in `examples/testdata`.
 
 ## What each platform supports
 

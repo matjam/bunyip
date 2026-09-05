@@ -231,7 +231,16 @@ go vet ./...
 
 Renderer tests render into offscreen images, read the frame back and check
 pixels; headless mode needs no window system and no surface extension, so
-it works on any conformant Vulkan driver. `go test ./examples/` runs every example headless for a moment and
-checks that it drew something; it needs a GPU and is skipped with `-short`.
+it works on any conformant Vulkan driver. `go test ./examples/` runs every
+example headless for a moment and compares the frame against a stored
+image in `examples/testdata`: a mean difference over the whole frame, and
+a tighter comparison of both frames blurred, which is what catches
+something moving rather than something changing colour. A failure writes
+the frame, the stored image and a diff to a temporary directory it names.
+The runs are made reproducible by `BUNYIP_FIXED_CLOCK=1`, which counts
+frames instead of reading the wall clock. Rerecord the images after a
+deliberate change with `go test ./examples -run TestExamplesRun -update`,
+adding `-docs` to rewrite the walkthrough screenshots from the same run.
+It needs a GPU and is skipped with `-short`.
 The parsers have fuzz targets: `go test -fuzz=Fuzz ./audio/...` and the
 same in `gltf`, `tiled` and `gfx`.

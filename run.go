@@ -75,6 +75,9 @@ func runOnce(cfg Config, game Game) error {
 	if os.Getenv("BUNYIP_HEADLESS") != "" {
 		cfg.Headless = true // build machines and the examples test
 	}
+	if os.Getenv("BUNYIP_FIXED_CLOCK") != "" {
+		cfg.FixedClock = true // the examples test, comparing against stored images
+	}
 	if cfg.FixedStep <= 0 {
 		cfg.FixedStep = time.Second / 60
 	}
@@ -260,6 +263,7 @@ func (l *loop) run() error {
 	start := time.Now()
 	last := start
 	var accumulator time.Duration
+	var frames int64 // frames drawn, which is the clock under FixedClock
 	step := l.cfg.FixedStep
 	l.ctx.Input.SetStep(float32(step.Seconds()))
 	catchUp := l.cfg.MaxCatchUp
@@ -283,6 +287,26 @@ func (l *loop) run() error {
 		now := time.Now()
 		l.beginFrame(now)
 		l.ctx.Time = now.Sub(start).Seconds()
+		if l.cfg.FixedClock && !l.cfg.TurnBased {
+			// The clock is the frame count, so the run does not depend on
+			// how long the machine took: exactly one update a frame, at
+			// exactly one step, and nothing left over to interpolate.
+			// Nothing paces it either, so a headless run goes as fast as
+			// the machine allows.
+			l.ctx.Time = float64(frames) * step.Seconds()
+			l.ctx.Delta = step.Seconds() * l.ctx.timeScale
+			frames++
+			if !l.paused() {
+				if err := l.update(); err != nil {
+					return err
+				}
+			}
+			l.ctx.Alpha = 0
+			if err := l.draw(); err != nil {
+				return err
+			}
+			continue
+		}
 		if l.cfg.TurnBased {
 			l.ctx.Delta = now.Sub(last).Seconds() * l.ctx.timeScale
 			last = now

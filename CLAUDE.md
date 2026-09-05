@@ -51,7 +51,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `internal/hook/` | The boundary between the engine loop and `gfx`, `input` and `audio`. Each of those packages keeps its plumbing (frame begin and end, resize, the event feed, the audio pull) on unexported methods, wraps the public value in an unexported driver implementing a `hook` interface, and registers a constructor from `init`. `run.go` builds all three through `hook` and hands the game the values `Game()` returns. |
 | `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface, audio output and microphone input. `*_darwin.go` is the reference; Windows and Linux mirror it. Linux has two window backends behind one `App` and `Window`: Wayland in `wayland_linux.go`, its hand-built protocol tables in `wayland_proto_linux.go` and its listener callbacks in `wayland_listen_linux.go`, and X11 in `x11_linux.go`. `app_linux.go` holds the shared structs, chooses the backend in `NewApp` and forwards every method to the live one. |
 | `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
-| `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless, and each has a walkthrough in `docs/examples/`. |
+| `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless and compares each frame against `examples/testdata/<name>.png`, and each has a walkthrough in `docs/examples/`. |
 | `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services, the debug console), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
 | `docs/examples/` | One walkthrough per example, `<name>.md`, with front matter (`title`, `example`, `summary`) and a screenshot `<name>.png` beside it. The body quotes the whole program in source order, verbatim, with a section explaining each part. `cmd/bunyip-docs` renders these as the Example programs group; the examples are not rendered as packages. |
 
@@ -163,6 +163,8 @@ go test -fuzz=Fuzz ./gltf/                  # likewise audio, audio/tracker, til
 go generate ./gfx/shaders/ ./examples/shaders/
 go run ./examples/terrain -seconds 3 -shot /tmp/terrain.png
 BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
+CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update          # rerecord the golden images
+CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update -docs    # and the walkthrough screenshots
 go run ./cmd/bunyip-docs -out site
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...   # and linux
 ```
@@ -187,7 +189,21 @@ render pass, so text tests draw one frame.
   on hardware; a feature that cannot be implemented there gets a no-op
   with a comment saying so, not a stub that appears to work.
 - Every example must run headless to a screenshot; `examples_test.go`
-  checks it.
+  checks it. It also compares the frame against a stored image in
+  `examples/testdata/<name>.png`, downscaled to 320 wide: a mean
+  absolute difference over the whole frame, which is loose enough to
+  absorb a measured millisecond figure changing digits, and a much
+  tighter comparison of both frames blurred to 40 wide, which is what
+  catches a widget moving. A failure writes `got.png`, `want.png` and
+  `diff.png` to a temporary directory it names. The runs are made
+  reproducible by `BUNYIP_FIXED_CLOCK=1` (`Config.FixedClock`), which
+  makes the clock count frames instead of reading the wall clock, so an
+  example must seed its own random numbers from a flag rather than the
+  clock. After a deliberate change to an example, rerecord with
+  `CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update`, and
+  add `-docs` to rewrite the 640-wide walkthrough screenshots from the
+  same run. An example whose picture cannot be the same twice goes in
+  `noGolden` in the test with the reason.
 - **Changing an example means updating its walkthrough.** Every directory
   under `examples/` with a `main.go` has `docs/examples/<name>.md`, and
   the test in `cmd/bunyip-docs` checks that every fenced `go` block is a
