@@ -376,19 +376,25 @@ func (g *Graphics) postChain(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarget
 		if err := t.needTemporal(g); err != nil {
 			return err
 		}
+		g.timestamps.Begin(cb, "temporal")
 		g.renderTemporal(cb, q, t)
+		g.timestamps.End(cb)
 	}
 	if motion {
 		if err := t.needMotionBlur(g); err != nil {
 			return err
 		}
+		g.timestamps.Begin(cb, "motionblur")
 		g.renderMotionBlur(cb, q, t)
+		g.timestamps.End(cb)
 	}
 	if s.FocusDistance > 0 {
 		if err := t.needDOF(g); err != nil {
 			return err
 		}
+		g.timestamps.Begin(cb, "depthoffield")
 		g.renderDOF(cb, q, t)
+		g.timestamps.End(cb)
 	}
 	return nil
 }

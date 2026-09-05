@@ -1156,6 +1156,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	// picks the projection by index, spot lights past the cascades.
 	spotLights, spotMats := q.spotShadows()
 	if q.light.Shadows || len(spotLights) > 0 {
+		g.timestamps.Begin(cb, "shadow")
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadowAtlas, ClearDepth: 1})
 		var maps []int
 		if q.light.Shadows {
@@ -1174,9 +1175,11 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 			}
 		}
 		render.EndTargetPass(cb, mp.shadowAtlas)
+		g.timestamps.End(cb)
 	}
 	c := q.clear.premultiplied()
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
+	g.timestamps.Begin(cb, "opaque")
 	if q.light.Background {
 		// The sky first, under everything: it neither tests nor writes
 		// depth. An image environment is looked up; the procedural sky is
@@ -1199,6 +1202,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		return err
 	}
 	g.drawSolid(cb, fr, q, seen, 0, t.extent)
+	g.timestamps.End(cb)
 	reflections := g.reflections(seen)
 	if reflections || transmissive(seenBlended) {
 		// Glass reads what is behind it and a reflection ray reads what the
@@ -1207,19 +1211,25 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.EndTargetPass(cb, t.hdr)
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
 		if reflections {
+			g.timestamps.Begin(cb, "reflections")
 			g.drawReflections(cb, fr, q, t)
+			g.timestamps.End(cb)
 		}
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
+	g.timestamps.Begin(cb, "blended")
 	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil, nil); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q); err != nil {
 		return err
 	}
+	g.timestamps.End(cb)
 	render.EndTargetPass(cb, t.hdr)
 	if len(q.decals) > 0 {
+		g.timestamps.Begin(cb, "decals")
 		g.drawDecals(cb, fr, q, t)
+		g.timestamps.End(cb)
 	}
 	// The motion vectors go in last, over the finished depth buffer, so a
 	// moved mesh hidden behind something else writes nothing.
@@ -1227,7 +1237,9 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		if err := t.needVelocity(g); err != nil {
 			return err
 		}
+		g.timestamps.Begin(cb, "velocity")
 		g.renderVelocity(cb, fr, q, t, seen)
+		g.timestamps.End(cb)
 	}
 	return nil
 }
