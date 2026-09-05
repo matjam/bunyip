@@ -289,6 +289,70 @@ type Material struct {
 	// nil is the factor everywhere. Data, not colour.
 	TransmissionTexture *Texture
 
+	// Specular scales a dielectric's reflection and SpecularColor tints
+	// it, the KHR_materials_specular extension: zero means 1 and white,
+	// the plain material. A small Specular such as 0.01 all but removes
+	// the reflection, for chalk and unglazed clay. SpecularTexture
+	// carries the tint in its RGB and the strength in its alpha. Metals
+	// keep their own reflection, which is their base colour.
+	Specular        float32
+	SpecularColor   Color
+	SpecularTexture *Texture
+
+	// Iridescence (0..1) puts a thin film over the surface, whose
+	// interference shifts the reflection's hue with the viewing angle:
+	// soap bubbles, oil on water, beetle shells, tempered steel.
+	// IridescenceIOR is the film's index of refraction (zero means 1.3)
+	// and IridescenceThickness how thick it is in nanometres (zero means
+	// 400, and 100 to 800 is the range that shows colour).
+	// IridescenceTexture scales the strength by its red channel and mixes
+	// the thickness from IridescenceThicknessMin to IridescenceThickness
+	// by its green channel, the two maps glTF packs into one image.
+	Iridescence             float32
+	IridescenceIOR          float32
+	IridescenceThickness    float32
+	IridescenceThicknessMin float32
+	IridescenceTexture      *Texture
+
+	// Anisotropy (-1..1) stretches the specular highlight along the
+	// surface rather than leaving it round: brushed metal, hair, satin,
+	// vinyl records. AnisotropyRotation turns the direction it stretches
+	// in, in radians, and AnisotropyTexture holds a direction of its own
+	// in red and green (around a half, as glTF stores it) and a strength
+	// in blue. The direction comes from the mesh's texture coordinates,
+	// so an anisotropic mesh needs UVs but no tangents of its own.
+	Anisotropy         float32
+	AnisotropyRotation float32
+	AnisotropyTexture  *Texture
+
+	// Shells draws the mesh that many more times, each a little further
+	// out along its normals, for fur, grass, moss and hair; zero means
+	// none and eight to twenty-four look like fur. ShellLength is how far
+	// the outermost shell stands off in world units (zero means 0.05).
+	// FurTexture is the strand mask: a shell keeps a fragment where the
+	// map's red channel is above that shell's height, so a tiled noise
+	// image gives strands, and the material's UVTransform tiles it.
+	// Without a map the shells are solid and only fade outwards. Shells
+	// draw after the opaque scene, leave the depth buffer alone and cast
+	// no shadow, and each one costs an instance of the mesh.
+	Shells      int
+	ShellLength float32
+	FurTexture  *Texture
+
+	// Stencil masks the material against the stencil buffer: it draws only
+	// where the value already there compares to StencilRef the way the
+	// test says. StencilAlways, the zero value, draws everywhere.
+	// StencilWrite is what a drawn fragment stores, StencilKeep leaving
+	// the buffer alone. One material marks a shape with StencilReplace
+	// and another draws only inside it with StencilEqual: portals,
+	// cutaways, magic windows. The buffer starts each frame at zero, and
+	// materials that write it draw before those that do not, whatever
+	// order they were queued in. A material with an Outline uses the
+	// stencil buffer for the outline itself and ignores these three.
+	Stencil      StencilTest
+	StencilRef   uint8
+	StencilWrite StencilOp
+
 	// Outline draws a line of that many pixels around the mesh's
 	// silhouette in OutlineColor (zero means black): selection rings,
 	// cartoon edges. It needs a depth format with stencil, which every
@@ -411,7 +475,10 @@ type meshDraw struct {
 	blended    bool    // mat.blended(), resolved once by prepareDraws for the sort
 	oit        bool    // blended and drawn in the order-independent pass
 	culled     bool    // outside the camera's view; drawn only into shadows
-	skinned    bool
+	skinned bool
+	// shell is 0 for the mesh itself and rises to 1 on the outermost fur
+	// shell, which stands ShellLength world units off the surface.
+	shell      float32
 	jointBase  int // first joint matrix in the queue's joint list
 	jointCount int // how many joint matrices the draw's pose uses
 	// centre and radius are the draw's world bounding sphere, resolved by
@@ -446,15 +513,102 @@ type meshInstance struct {
 	// probe's index plus one (0 for the frame's own environment), y 1 for
 	// an opaque draw, whose alpha channel carries the screen-space
 	// reflection weight instead of a coverage.
-	gi [4]float32
+	gi   [4]float32
+	spec [4]float32 // specular colour, specular strength
+	irid [4]float32 // iridescence strength, film ior, thickness minimum and maximum in nm
+	fur  [4]float32 // anisotropy strength, its rotation; a shell's offset in world units and its height
 }
 
-const meshInstanceSize = 192
+const meshInstanceSize = 240
 
 // blended reports whether a material draws after the opaque scene. The
 // receiver is a pointer because Material is large and this sits in the
 // draw sort's comparator.
 func (m *Material) blended() bool { return m.Blend || m.Transmission > 0 }
+
+// marksStencil reports whether a material writes the stencil buffer, so
+// the draws that do come first.
+func (m *Material) marksStencil() bool { return m.StencilWrite != StencilKeep && m.Outline <= 0 }
+
+// StencilTest is when a material's fragments pass the stencil test: how
+// the value already in the stencil buffer must compare to the material's
+// StencilRef. The zero value draws everywhere.
+type StencilTest uint8
+
+const (
+	StencilAlways   StencilTest = iota // no test at all: the default
+	StencilEqual                       // only where the buffer holds StencilRef
+	StencilNotEqual                    // only where it holds anything else
+	StencilLess                        // only where it holds less than StencilRef
+	StencilGreater                     // only where it holds more than StencilRef
+	StencilNever                       // nowhere: mark the buffer and draw nothing
+	stencilTestCount
+)
+
+// String names the stencil test.
+func (s StencilTest) String() string {
+	names := [...]string{"always", "equal", "not-equal", "less", "greater", "never"}
+	if int(s) < len(names) {
+		return names[s]
+	}
+	return fmt.Sprintf("StencilTest(%d)", int(s))
+}
+
+// compareOp is the Vulkan comparison for the test. Vulkan compares the
+// reference against the stored value, so the sense is the other way
+// round from the way a material reads.
+func (s StencilTest) compareOp() vk.VkCompareOp {
+	switch s {
+	case StencilEqual:
+		return vk.VK_COMPARE_OP_EQUAL
+	case StencilNotEqual:
+		return vk.VK_COMPARE_OP_NOT_EQUAL
+	case StencilLess:
+		return vk.VK_COMPARE_OP_GREATER
+	case StencilGreater:
+		return vk.VK_COMPARE_OP_LESS
+	case StencilNever:
+		return vk.VK_COMPARE_OP_NEVER
+	}
+	return vk.VK_COMPARE_OP_ALWAYS
+}
+
+// StencilOp is what a fragment that passes both the stencil and the
+// depth test does to the stencil buffer. The zero value leaves it alone.
+type StencilOp uint8
+
+const (
+	StencilKeep      StencilOp = iota // leave the value alone: the default
+	StencilReplace                    // store StencilRef
+	StencilIncrement                  // add one, stopping at 255
+	StencilDecrement                  // subtract one, stopping at 0
+	StencilZero                       // store zero
+	stencilOpCount
+)
+
+// String names the stencil operation.
+func (o StencilOp) String() string {
+	names := [...]string{"keep", "replace", "increment", "decrement", "zero"}
+	if int(o) < len(names) {
+		return names[o]
+	}
+	return fmt.Sprintf("StencilOp(%d)", int(o))
+}
+
+// vkOp is the Vulkan operation.
+func (o StencilOp) vkOp() vk.VkStencilOp {
+	switch o {
+	case StencilReplace:
+		return vk.VK_STENCIL_OP_REPLACE
+	case StencilIncrement:
+		return vk.VK_STENCIL_OP_INCREMENT_AND_CLAMP
+	case StencilDecrement:
+		return vk.VK_STENCIL_OP_DECREMENT_AND_CLAMP
+	case StencilZero:
+		return vk.VK_STENCIL_OP_ZERO
+	}
+	return vk.VK_STENCIL_OP_KEEP
+}
 
 // drawList is a queue's mesh draws in the order they are drawn, held as
 // a permutation of the queue's draws. Ordering moves four-byte indices

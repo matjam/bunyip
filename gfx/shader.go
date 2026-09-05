@@ -150,6 +150,10 @@ type pipeKey struct {
 	shadow       bool // the depth-only shadow pass
 	stencil      bool // mark the stencil buffer, for outlines
 	oit          bool // the order-independent transparency pass
+	// The material's own stencil state, when it has one and no outline.
+	stencilTest StencilTest
+	stencilOp   StencilOp
+	stencilRef  uint8
 	// out is the pass's attachment set. A mesh shader uses its sample
 	// count, since the scene may be multisampled; a sprite shader uses
 	// all of it, since a render texture chooses its own colour format,
@@ -160,9 +164,14 @@ type pipeKey struct {
 
 // meshKey is the pipeline variant a material needs in a pass. It takes a
 // pointer because Material is large and this sits in the draw loop.
-func meshKey(mat *Material, skinned bool, out outKey) pipeKey {
+func meshKey(mat *Material, skinned, shell bool, out outKey) pipeKey {
 	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0, out: out}
-	if mat.blended() {
+	if !key.stencil {
+		key.stencilTest, key.stencilOp, key.stencilRef = mat.Stencil, mat.StencilWrite, mat.StencilRef
+	}
+	// A fur shell is blended and leaves the depth buffer alone whatever
+	// the material says, so the shells under it still draw.
+	if mat.blended() || shell {
 		key.blend = BlendAlpha
 	}
 	return key
@@ -280,6 +289,11 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 		}
 		if key.stencil {
 			desc.Stencil = render.StencilWrite(1)
+		} else if key.stencilTest != StencilAlways || key.stencilOp != StencilKeep {
+			desc.Stencil = &render.StencilState{
+				Compare: key.stencilTest.compareOp(), Ref: uint32(key.stencilRef),
+				Write: key.stencilOp != StencilKeep, Pass: key.stencilOp.vkOp(),
+			}
 		}
 		desc.Samples = key.out.samples
 		if key.oit {

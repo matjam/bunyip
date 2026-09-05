@@ -9,6 +9,7 @@ import (
 	"image"
 	_ "image/jpeg" // registers the decoders glTF images use
 	_ "image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,7 +376,56 @@ func (l *loader) materials() []Material {
 		mat := Material{Name: m.Name, BaseColor: [4]float32{1, 1, 1, 1}, Image: -1, Metallic: 1, Roughness: 1,
 			MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1, OcclusionImage: -1, OcclusionStrength: 1,
 			AlphaCutoff: 0.5, DoubleSided: m.DoubleSided, Unlit: m.Extensions.Unlit != nil, UVScale: [2]float32{1, 1},
-			IOR: 1.5, AttenuationColor: [3]float32{1, 1, 1}, TransmissionImage: -1, ThicknessImage: -1}
+			IOR: 1.5, AttenuationColor: [3]float32{1, 1, 1}, TransmissionImage: -1, ThicknessImage: -1,
+			SpecularFactor: 1, SpecularColor: [3]float32{1, 1, 1}, SpecularImage: -1, SpecularColorImage: -1,
+			IridescenceIOR: 1.3, IridescenceThicknessMin: 100, IridescenceThicknessMax: 400,
+			IridescenceImage: -1, IridescenceThicknessImage: -1, AnisotropyImage: -1,
+			SpecGlossImage: -1, Glossiness: 1}
+		if sp := m.Extensions.Specular; sp != nil {
+			if sp.Factor != nil {
+				mat.SpecularFactor = *sp.Factor
+			}
+			if len(sp.ColorFactor) == 3 {
+				copy(mat.SpecularColor[:], sp.ColorFactor)
+			}
+			mat.SpecularImage, _ = l.imageOf(sp.Texture)
+			mat.SpecularColorImage, _ = l.imageOf(sp.ColorTexture)
+		}
+		if ir := m.Extensions.Iridescence; ir != nil {
+			if ir.Factor != nil {
+				mat.IridescenceFactor = *ir.Factor
+			}
+			if ir.IOR != nil {
+				mat.IridescenceIOR = *ir.IOR
+			}
+			if ir.ThicknessMinimum != nil {
+				mat.IridescenceThicknessMin = *ir.ThicknessMinimum
+			}
+			if ir.ThicknessMaximum != nil {
+				mat.IridescenceThicknessMax = *ir.ThicknessMaximum
+			}
+			mat.IridescenceImage, _ = l.imageOf(ir.Texture)
+			mat.IridescenceThicknessImage, _ = l.imageOf(ir.ThicknessTexture)
+			if mat.IridescenceImage >= 0 && ir.Factor == nil {
+				mat.IridescenceFactor = 1 // a texture with no factor means "use me"
+			}
+			if mat.IridescenceThicknessImage < 0 {
+				// Without the map the film is at its maximum thickness.
+				mat.IridescenceThicknessMin = mat.IridescenceThicknessMax
+			}
+		}
+		if an := m.Extensions.Anisotropy; an != nil {
+			if an.Strength != nil {
+				mat.AnisotropyStrength = *an.Strength
+			}
+			if an.Rotation != nil {
+				mat.AnisotropyRotation = *an.Rotation
+			}
+			mat.AnisotropyImage, _ = l.imageOf(an.Texture)
+			if mat.AnisotropyImage >= 0 && an.Strength == nil {
+				mat.AnisotropyStrength = 1
+			}
+		}
 		if tr := m.Extensions.Transmission; tr != nil {
 			if tr.Factor != nil {
 				mat.Transmission = *tr.Factor
@@ -469,10 +519,75 @@ func (l *loader) materials() []Material {
 				mat.Emissive[i] *= es.Strength
 			}
 		}
+		if sg := m.Extensions.SpecGloss; sg != nil {
+			// The older specular-glossiness workflow, converted here so the
+			// renderer only ever sees metallic-roughness.
+			diffuse := [4]float32{1, 1, 1, 1}
+			if len(sg.DiffuseFactor) == 4 {
+				copy(diffuse[:], sg.DiffuseFactor)
+			}
+			spec := [3]float32{1, 1, 1}
+			if len(sg.SpecularFactor) == 3 {
+				copy(spec[:], sg.SpecularFactor)
+			}
+			gloss := float32(1)
+			if sg.GlossinessFactor != nil {
+				gloss = *sg.GlossinessFactor
+			}
+			mat.SpecGloss, mat.Glossiness = true, gloss
+			mat.Image, mat.Linear = l.imageOf(sg.DiffuseTexture)
+			mat.SpecGlossImage, _ = l.imageOf(sg.SpecGlossTexture)
+			mat.MetalRoughImage = -1
+			specGlossToMetalRough(&mat, diffuse, spec, gloss)
+		}
 		mats = append(mats, mat)
 	}
 	return mats
 }
+
+// dielectricSpecular is how much a plain dielectric reflects head on,
+// the constant both material models are built around.
+const dielectricSpecular = 0.04
+
+// specGlossToMetalRough writes the metallic-roughness form of a
+// specular-glossiness material into mat: the base colour, the metallic
+// factor and the roughness. It follows the conversion Khronos publishes
+// with the extension. A bright specular colour is what a metal has, so
+// it decides the metallic factor, and what is left over is the base
+// colour; the glossiness is the roughness the other way round.
+func specGlossToMetalRough(mat *Material, diffuse [4]float32, specular [3]float32, gloss float32) {
+	oneMinusSpec := 1 - max(specular[0], specular[1], specular[2])
+	metallic := solveMetallic(luminance(diffuse[0], diffuse[1], diffuse[2]), luminance(specular[0], specular[1], specular[2]), oneMinusSpec)
+	for i := range 3 {
+		fromDiffuse := diffuse[i] * oneMinusSpec / (1 - dielectricSpecular) / max(1-metallic, 1e-4)
+		fromSpecular := (specular[i] - dielectricSpecular*(1-metallic)) / max(metallic, 1e-4)
+		mat.BaseColor[i] = clamp01(fromDiffuse + (fromSpecular-fromDiffuse)*metallic*metallic)
+	}
+	mat.BaseColor[3] = diffuse[3]
+	mat.Metallic = metallic
+	mat.Roughness = clamp01(1 - gloss)
+}
+
+// solveMetallic is how metal a surface is, given how bright its diffuse
+// and specular colours are: the root of the quadratic that the two
+// models agree on.
+func solveMetallic(diffuse, specular, oneMinusSpecularStrength float32) float32 {
+	if specular < dielectricSpecular {
+		return 0
+	}
+	a := float32(dielectricSpecular)
+	b := diffuse*oneMinusSpecularStrength/(1-dielectricSpecular) + specular - 2*dielectricSpecular
+	c := dielectricSpecular - specular
+	d := max(b*b-4*a*c, 0)
+	return clamp01((-b + sqrt32(d)) / (2 * a))
+}
+
+// luminance is how bright a colour looks.
+func luminance(r, g, b float32) float32 { return 0.2126*r + 0.7152*g + 0.0722*b }
+
+func clamp01(v float32) float32 { return min(max(v, 0), 1) }
+
+func sqrt32(v float32) float32 { return float32(math.Sqrt(float64(v))) }
 
 // imageOf resolves a texture reference to an image index and filtering.
 func (l *loader) imageOf(ref *jsonTextureRef) (image int, linear bool) {

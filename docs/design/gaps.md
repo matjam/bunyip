@@ -213,19 +213,29 @@ and per-frame buffers that grow without ever idling the GPU are in.
 ## Materials and lighting
 
 Clearcoat, sheen, subsurface, transmission with volume attenuation and
-transmission and thickness textures, vertex colours, a second UV set,
-texture transforms, decals, outlines and x-ray are in.
+transmission and thickness textures, iridescence, anisotropy, specular
+colour and strength, fur and grass as shells, vertex colours, a second UV
+set, texture transforms, decals, outlines, x-ray, per-material stencil
+state, a material override on `DrawModel`, and panoramas from OpenEXR,
+Radiance and ordinary images are in. The glTF extensions behind the
+material fields load, and the specular-glossiness workflow is converted
+to metallic-roughness as a file is read.
 
-- Iridescence, anisotropy, specular colour and the specular-glossiness
-  workflow from glTF extensions.
-- A material override on `DrawModel`, which draws every part with the
-  material glTF gave it. Changing one part means walking `Model.Parts`
-  and calling `DrawMesh` for each.
-- Per-material stencil state beyond outlines and x-ray.
-- Hair, fur and cloth shading (anisotropic highlights, shell rendering).
-- OpenEXR panoramas for environments. Radiance `.hdr` and LDR images
-  decode today, and the procedural sky covers most outdoor and space
-  scenes without any image.
+- The thin film is an approximation at three wavelengths rather than the
+  Belcour and Barla model, so an iridescent surface has the right hues in
+  the right places but not the spectrum a renderer would integrate.
+- A specular-glossiness file whose specular colour varies across one
+  material keeps only its glossiness; the colour comes from the converted
+  factors alone.
+- The iridescence, anisotropy, specular and fur maps are always sampled
+  linear and repeating: the packed sampler index has two bits for each of
+  the first eleven texture slots and no room for more.
+- Fur shells are drawn from the inside out with the depth buffer left
+  alone, so two furry meshes that overlap blend in the order they were
+  queued rather than by depth.
+- PIZ, PXR24, B44, B44A, DWAA and DWAB compression in OpenEXR files, and
+  tiled, deep and multi-part ones. Each is refused with an error naming
+  what the file is.
 
 ## Animation
 

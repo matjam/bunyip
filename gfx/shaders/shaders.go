@@ -204,8 +204,34 @@ void main() {
     s.volume = vVolume.z * s.thickness;
     s.attenuation = vAtten.rgb;
     s.attenuationDistance = vVolume.w;
+    vec4 specSample = texture(specularTex, uv);
+    s.specularColor = vSpec.rgb * specSample.rgb;
+    s.specular = vSpec.w * specSample.a;
+    // glTF packs the thin film's strength in red and its thickness in
+    // green, the thickness running from the minimum to the maximum.
+    vec2 iridSample = texture(iridescenceTex, uv).rg;
+    s.iridescence = vIrid.x * iridSample.r;
+    s.iridescenceIOR = vIrid.y;
+    s.iridescenceThickness = mix(vIrid.z, vIrid.w, iridSample.g);
+    // An anisotropy map holds the direction the highlight stretches in
+    // as red and green around a half, and the strength in blue.
+    vec3 anisoSample = texture(anisotropyTex, uv).rgb;
+    s.anisotropy = vFur.x * anisoSample.b;
+    s.tangent = n;
+    if (s.anisotropy != 0.0) {
+        vec2 dir = anisoSample.rg * 2.0 - 1.0;
+        float c = cos(vFur.y), sn = sin(vFur.y);
+        s.tangent = surfaceTangent(n, uv, vec2(dir.x * c - dir.y * sn, dir.x * sn + dir.y * c));
+    }
+    s.shell = vFur.w;
     surface(s);
     if (vExtra.y > 0.0 && s.alpha < vExtra.y) discard;
+    if (s.shell > 0.0) {
+        // A fur shell keeps only the fragments where a strand reaches
+        // this far out, and fades as it goes.
+        if (texture(furTex, uv).r < s.shell) discard;
+        s.alpha *= 1.0 - s.shell * 0.5;
+    }
     vec3 color = s.unlit ? s.albedo : light(s);
     vec4 lit = finish(vec4(color + s.emissive, s.alpha), s);
     lit.rgb = applyFog(lit.rgb, vWorldPos, vViewDepth);
@@ -275,15 +301,20 @@ layout(location = 11) flat out vec4 vSheen;
 layout(location = 12) flat out vec4 vVolume;
 layout(location = 13) flat out vec4 vAtten;
 layout(location = 14) flat out vec4 vGI;
+layout(location = 15) flat out vec4 vSpec;
+layout(location = 16) flat out vec4 vIrid;
+layout(location = 17) flat out vec4 vFur;
 
 void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
     vertex(v);
     mat4 m = model()SKIN;
     vec4 world = m * vec4(v.position, 1.0);
+    vNormal = normalize(mat3(m) * v.normal);
+    // A fur shell is the same mesh pushed out along its normals.
+    world.xyz += vNormal * iFur.z;
     gl_Position = frame.viewProj * world;
     vWorldPos = world.xyz;
-    vNormal = normalize(mat3(m) * v.normal);
     vUV = v.uv;
     vUV2 = v.uv2;
     vColor = v.color;
@@ -297,6 +328,9 @@ void main() {
     vVolume = iVolume;
     vAtten = iAtten;
     vGI = iGI;
+    vSpec = iSpec;
+    vIrid = iIrid;
+    vFur = iFur;
 }
 `
 

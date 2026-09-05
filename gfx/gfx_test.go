@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"context"
 	"image"
 	"image/color"
 	"log/slog"
@@ -11,12 +12,35 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
+// validationWatch is the log the headless renderer writes to: it prints
+// everything as before and remembers the validation layers' errors, so a
+// test fails on a pipeline or descriptor mistake rather than passing
+// while the driver complains.
+type validationWatch struct {
+	slog.Handler
+	errors *[]string
+}
+
+func (v validationWatch) Handle(ctx context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		*v.errors = append(*v.errors, r.Message)
+	}
+	return v.Handler.Handle(ctx, r)
+}
+
 func newHeadless(t *testing.T, w, h int) *Graphics {
 	t.Helper()
 	if err := vk.Load(); err != nil {
 		t.Skipf("no Vulkan: %v", err)
 	}
-	cfg := render.Config{AppName: "gfx_test", Validation: true, Log: slog.New(slog.NewTextHandler(os.Stderr, nil))}
+	var complaints []string
+	log := slog.New(validationWatch{Handler: slog.NewTextHandler(os.Stderr, nil), errors: &complaints})
+	t.Cleanup(func() {
+		if len(complaints) > 0 {
+			t.Errorf("the Vulkan validation layers reported %d errors, the first being: %s", len(complaints), complaints[0])
+		}
+	})
+	cfg := render.Config{AppName: "gfx_test", Validation: true, Log: log}
 	r, err := render.NewRenderer(cfg, render.HeadlessSurfaceExtensions(), render.NewHeadlessSurface,
 		vk.VkExtent2D{Width: uint32(w), Height: uint32(h)}, true)
 	if err != nil {
