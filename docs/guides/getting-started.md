@@ -10,15 +10,19 @@ summary: install the Vulkan driver, open a window, learn the loop and the window
 Bunyip needs Go 1.26 or later and a Vulkan driver. There is nothing to
 compile against. The engine opens the driver at run time.
 
+Set `CGO_ENABLED=0` for all Go commands in this guide. On macOS or Linux,
+run `export CGO_ENABLED=0`; in PowerShell, use `$env:CGO_ENABLED = "0"`.
+
 | Platform | Install |
 |---|---|
 | macOS | `brew install vulkan-loader molten-vk`. For validation messages during development, also `brew install vulkan-validationlayers`. |
-| Linux | The GPU vendor's Vulkan driver, plus `libxcb` and `libasound`, which every desktop has. `libxkbcommon` and `libxkbcommon-x11` enable text input. |
+| Linux | The GPU vendor's Vulkan driver and Vulkan loader. Native Wayland needs `libwayland-client` and `libxkbcommon`; X11 needs `libxcb`, with `libxkbcommon` and `libxkbcommon-x11` for text input. Audio uses ALSA (`libasound`). |
 | Windows | A current GPU driver; `vulkan-1.dll` ships with it. |
 
-The engine is developed and tested on macOS. The Linux window layer has
-run on real hardware, both Wayland and X11. The Windows layer and the
-Linux audio layer cross-compile and pass their unit tests but have not.
+The engine has been tested on macOS and Linux. Linux windowing has run
+on both native Wayland and X11, and Linux audio output and capture have
+hardware verification. Windows, Linux gamepads and macOS capture have
+build and test coverage but still need hardware verification.
 
 ## A window
 
@@ -61,9 +65,14 @@ go run .
 `Run` opens the window, creates the renderer and the audio device,
 calls the game's `Init` method if it has one, and runs the loop until
 `Quit`. Textures, fonts, meshes and sounds are created from the context
-in `Init` and freed in an optional `Shutdown`. If the graphics device is
-lost, `Init` runs again on a fresh device, so it must be safe to call
-twice.
+in `Init` and freed in an optional `Shutdown`. To recover from a lost
+graphics device, implement `Recover(ctx *bunyip.Context) error` and
+recreate resources there. The engine calls `Recover` with a fresh
+context instead of `Init`; without that method, `Run` returns the
+device-loss error. The mixer and console are also rebuilt, so restore
+audio configuration, playback and console registrations in `Recover`.
+`Shutdown` is called only after successful `Init` or
+`Recover`, so either setup callback must clean up if it returns an error.
 
 ## The loop
 
@@ -88,7 +97,8 @@ so the simulation crawls and can be watched, and `0` freezes it.
 
 Turn-based games set `Config.TurnBased`. The loop then blocks in the
 operating system until input arrives and runs one `Update` and one
-`Draw` per batch of events, so the process uses no CPU between events.
+`Draw` per batch of events while active. The main loop blocks between
+events; audio and game-owned goroutines can still run.
 A timer, a network message or a finished asset load can wake it with
 `ctx.Wake`. Call `ctx.RequestRedraw` to ask for another frame while an
 animation is playing.
@@ -152,9 +162,10 @@ a 3D scene while it is being built.
 
 ## The examples
 
-Every example accepts `-seconds N` to exit after N seconds and
-`-shot file.png` to save a screenshot partway through, so each one can
-verify itself in a script. `Config.Headless` (or the environment
+Most examples accept `-seconds N` to exit after N seconds and
+`-shot file.png` to save a screenshot partway through. The headless
+harness excludes `window`, `network` and `clear`; `assets` runs with a
+nonblank check but no golden comparison. `Config.Headless` (or the environment
 variable `BUNYIP_HEADLESS=1`) runs a game with no window, rendering
 offscreen, so the same screenshots come out of a build machine. A few to
 try:

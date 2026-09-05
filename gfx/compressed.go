@@ -18,9 +18,10 @@ import (
 // TextureOptions.Data is ignored; Linear and Repeat choose the sampler
 // as usual, and NoMipmaps uploads level 0 alone. Where the device cannot
 // sample the format, which some MoltenVK configurations cannot for the
-// BC formats, the levels are decoded on the processor into a plain RGBA
-// texture instead, so the same file works everywhere; a file holding
-// ASTC has no such fallback and is an error there.
+// BC formats, level zero is decoded on the processor into a plain RGBA
+// texture and any requested mipmaps are generated at load. This fallback
+// supports the formats and BC7 modes the ktx2 CPU decoder implements;
+// unsupported formats such as ASTC return an error on such a device.
 func (g *Graphics) NewCompressedTexture(data []byte, opts TextureOptions) (*Texture, error) {
 	f, err := ktx2.Parse(data)
 	if err != nil {

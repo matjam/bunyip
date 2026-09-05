@@ -99,8 +99,9 @@ func (g *game) label(gr *gfx.Graphics, text string, x, y float32) {
 ## Fill rules
 
 One `gfx.Path` value is reused for the whole frame. `p.Reset()` clears
-it and keeps the memory it has already allocated, so a frame that draws
-twenty shapes makes no garbage after the first one.
+it and keeps the memory it has already allocated. Larger paths can still
+grow that storage, and fill or stroke tessellation has its own work and
+scratch allocation; `Reset` is not a no-allocation guarantee for the frame.
 
 The same pentagram is filled twice. Under `gfx.FillNonZero` a point is
 inside when the winding number is not zero, which makes the star solid.
@@ -233,7 +234,7 @@ cuts a hole rather than painting white, which is why that one case uses
 a different colour.
 
 The sprite behind the circles uses `UV1: lin.V2(11, 2)`, which is the
-top-right texture coordinate. Values above 1 tile the texture, which
+bottom-right texture coordinate. Values above 1 tile the texture, which
 works because it was created with `Repeat: true`.
 
 `Transformed(matrix, body)` pushes a 2D matrix for the closure. The

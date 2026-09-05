@@ -139,7 +139,7 @@ text field is, so an input method's candidate window appears beside it.
 The last three calls hand the gallery's own state to the
 [debug console](../guides/console.html), which `main` turns on with
 `Config.Console`. `Console.Float` and `Console.Bool` bind a name to a
-pointer, so `gallery.volume 0.2` at the command line moves the slider
+pointer, so `set gallery.volume 0.2` at the command line moves the slider
 and the Services panel shows both values live. `Console.Register` adds a
 command: `theme` with no argument lists the palettes and `theme light`
 switches to one, which is the same work the dropdown does. Binding a
@@ -250,9 +250,11 @@ the screenshot. `g.ui.WantsKeyboard` is why Escape does not quit while a
 text field has focus.
 
 The first thing it does is give way to the console. While the drop-down
-is open it has the keyboard, and a game that kept reading keys would quit
-on the Escape that was meant to close the console and type into its own
-text fields. Returning early is the whole protocol.
+is open, returning early prevents gameplay shortcuts in `Update` from
+also responding to console input. `Draw` still builds the gallery UI;
+this early return alone does not prevent its text fields from reading
+the same input. Games with both interfaces should gate their own UI input
+while the console is open as well.
 
 ```go
 func (g *gallery) Update(ctx *bunyip.Context) error {
@@ -856,9 +858,9 @@ func softCircle(g *gfx.Graphics) (*gfx.Texture, error) {
 
 - Comment out a widget in `Draw` and see it disappear with no other
   change: there is nothing to unregister.
-- Give two buttons in `Draw` the same label inside the same container and
-  watch them share state, then tell them apart by putting each in its own
-  `u.Row`.
+- Give two buttons in `Draw` the same label inside one panel. Their
+  occurrence order distinguishes them; keep that order stable across
+  frames. `u.Row` changes layout, not the identity scope.
 - Add a field to the game and a `u.Slider` for it in `Draw`; that is the
   whole procedure for a new control.
 - Change a colour in the theme returned by `applyTheme` and see every

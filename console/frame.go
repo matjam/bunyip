@@ -13,13 +13,14 @@ import (
 // fills it in from its own context, so a game never builds one; a game
 // driving a console outside the engine's loop fills in what it has.
 // Every field may be zero, and the console leaves out what it is not
-// given: without Screenshot there is no screenshot command, without
-// Audio the audio panel says so.
+// given: without Screenshot the screenshot command reports an error,
+// and without Audio the audio panel says so. Draw does nothing unless
+// both Gfx and Input are non-nil.
 type Frame struct {
-	Gfx   *gfx.Graphics
-	Input *input.State
-	Audio *audio.Mixer
-	Log   *slog.Logger
+	Gfx   *gfx.Graphics // drawing context; required by Draw
+	Input *input.State  // frame input; required by Draw
+	Audio *audio.Mixer  // optional mixer for the Audio panel
+	Log   *slog.Logger  // host logger, available to console integrations
 
 	// Clipboard is what the panels' text fields cut, copy and paste
 	// through; the engine's Context satisfies it.
@@ -30,7 +31,7 @@ type Frame struct {
 	// Delta is the seconds the last update covered, Time the seconds the
 	// game has run, and FrameCount the frames drawn.
 	Delta, Time float64
-	FrameCount  uint64
+	FrameCount  uint64 // number of frames drawn
 
 	// Stats are the previous frame's timings and counts.
 	Stats Stats
@@ -41,7 +42,7 @@ type Frame struct {
 	Quit func()
 	// SetTimeScale and TimeScale drive the timescale command.
 	SetTimeScale func(scale float64)
-	TimeScale    func() float64
+	TimeScale    func() float64 // read the current game-time multiplier
 }
 
 // Stats are the frame timings and counts the engine panel shows. They
@@ -61,7 +62,7 @@ type Stats struct {
 	// frame or two later, so they lag the frame on screen, and both are
 	// zero and empty on a device without timestamp queries.
 	GPUFrameMS float64
-	GPU        []Scope
+	GPU        []Scope // GPU duration by pass in milliseconds
 
 	// DrawBudget is the draw call count a frame should stay under, from
 	// Config.DrawBudget; zero means no budget was set.
@@ -70,6 +71,6 @@ type Stats struct {
 
 // Scope is one timed section of game code, as Context.Profile records it.
 type Scope struct {
-	Name string
-	MS   float64
+	Name string  // profile section or GPU pass name
+	MS   float64 // duration in milliseconds
 }

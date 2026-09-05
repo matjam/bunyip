@@ -463,7 +463,8 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 is a plain write into a `[]float32`. `Update` then rebuilds only the
 chunks covering the samples that changed, at every one of their levels,
 and recomputes their normals and bounds. The loop tracks the rectangle
-it touched so the rebuild is four chunks rather than sixteen.
+it touched to limit the rebuild; the number of chunks depends on the
+crater's position and which chunk boundaries it crosses.
 
 ```go
 // dig lowers the terrain around a point and rebuilds the chunks it

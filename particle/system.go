@@ -23,6 +23,7 @@ type Particle struct {
 
 // System runs one Emitter: it births particles, moves them and draws
 // them. Update advances by a step; Draw queues every live particle.
+// Create it with New; the zero value has no random source for births.
 type System struct {
 	e       Emitter
 	pos     lin.Vec2
@@ -43,7 +44,10 @@ func New(e Emitter) *System {
 
 // SetEmitter retunes the system: later births use the new emitter and
 // every live particle is drawn with its look. The random stream, the
-// position and the particles are kept. Raising Max reallocates.
+// position and the particles are kept. Raising Max reallocates; lowering
+// it blocks new births until the live count falls below the new cap.
+// Existing particles keep their birth palette tint, size and lifetime;
+// acceleration, damping and appearance curves use the new settings.
 func (s *System) SetEmitter(e Emitter) {
 	s.e = e
 	if n := e.max(); n > cap(s.live) {
@@ -108,7 +112,8 @@ func (s *System) Finished() bool { return !s.Emitting() && len(s.live) == 0 }
 // The slice is reused by Update; copy what must be kept.
 func (s *System) Particles() []Particle { return s.live }
 
-// Update advances the simulation by dt seconds: particles age, move and
+// Update advances the simulation by dt seconds; nonpositive dt does nothing.
+// Particles age, move and
 // die, and new ones are born at the emitter's Rate, with fractional
 // births carried to the next update.
 func (s *System) Update(dt float64) {

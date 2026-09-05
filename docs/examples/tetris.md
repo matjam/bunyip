@@ -79,8 +79,8 @@ handle of the repeating gravity timer. `Bag` deals pieces from a seeded
 source.
 
 The two events let the rules report what happened without knowing that
-sound exists. Events are read within the update they were emitted in and
-then cleared.
+sound exists. Later systems can read events in the update that emitted
+them; they remain available until the next `World.Update` starts.
 
 ```go
 // Components.
@@ -509,9 +509,9 @@ reading `ctx.Input` from inside the systems is what makes the rules
 testable without a window: a test sets `Controls` and calls
 `world.Update`.
 
-Every control is an edge rather than a held key, including Down, so a
-held key does not repeat. That is a design choice this program makes;
-a game wanting auto-repeat would add a timer.
+Every control uses `KeyPressed`, including Down. OS repeat events count
+as presses, so held keys repeat at the platform's configured rate. A game
+wanting its own repeat timing can exclude `KeyRepeated` and use a timer.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -552,7 +552,8 @@ tween.
 
 The panel is rebuilt inside `u.Begin(ctx.Input, ...)` and
 `u.Panel(title, rect, ...)`, both of which take closures; there is no
-call to end them. `u.Button` returns whether it was pressed this frame,
+call to end them. `u.Button` reports a mouse release inside the button
+after a press, or keyboard activation,
 which is the immediate-mode pattern: the widget's identity comes from
 its label, its container and the call order, and its result is a return
 value rather than a callback.

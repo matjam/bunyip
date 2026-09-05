@@ -173,8 +173,8 @@ func (g *game) Update(ctx *bunyip.Context) error {
 
 `Level.Draw` draws every visible tile layer at the given offset, tinted
 by the colour, in the order the editor put them in. The object layers
-are not drawn by it, because an object has no art of its own: it is a
-shape with properties, and what to do with one is the game's decision.
+are not drawn by it: what to do with their shapes, properties or tile
+references is the game's decision.
 This example walks the layers, skips anything that is not a visible
 object layer, and outlines each object.
 

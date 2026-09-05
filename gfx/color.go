@@ -3,7 +3,7 @@
 // frame the engine has open, and the engine submits it. 2D and 3D share
 // a frame. The 3D scene renders first into a high dynamic range image,
 // the post pass tone-maps it, and sprites, text and paths draw over the
-// top in the order they were queued.
+// top in layer order, preserving submission order within each layer.
 //
 // # 2D
 //
@@ -60,19 +60,21 @@
 // expected is white, and a zero Camera field of view is 60 degrees. A
 // field whose zero must mean something of its own is named for that zero
 // (NoMipmaps, NoDepthTest, Sky.Vacuum), so an empty struct is always a
-// valid starting point. Sizes and positions are float32 view units
-// unless a name says pixels. Rectangles are lin.Rect, and angles are
+// valid starting point. 2D sizes and positions use float32 view units;
+// 3D uses game-defined world units. Texture dimensions use pixels.
+// Rectangles are lin.Rect, and angles are
 // radians. Colours are linear, non-premultiplied floats (RGB and Hex
-// convert from sRGB bytes). Every GPU resource has a Destroy that must
-// not run while a frame using it is in flight, which under bunyip.Run
-// means calling it from Init, Update, Draw or Shutdown, never from
-// another goroutine. Stats reports what the last frame cost.
+// convert from sRGB bytes). Create, update and destroy GPU resources on
+// the game goroutine in Init, Update, Draw or Shutdown. Destruction during
+// Draw is deferred until queued work finishes; outside a frame it waits
+// for the GPU. Stats reports what the last frame cost.
 package gfx
 
 import "github.com/matjam/bunyip/lin"
 
 // Color is a straight (non-premultiplied) RGBA colour in linear light,
-// each channel 0..1.
+// with alpha in 0..1. RGB values above 1 represent HDR radiance in lights,
+// emissive materials and other HDR inputs; sprite colours are clamped.
 type Color struct{ R, G, B, A float32 }
 
 var (

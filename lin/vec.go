@@ -1,9 +1,12 @@
 // Package lin provides the engine's linear algebra: vectors, matrices
-// and quaternions in float32, column-major, right-handed, with Vulkan's
-// clip space (depth 0..1, +Y down).
+// and quaternions in float32. Mat3 and Mat4 use column-major storage;
+// Affine uses a row-major 2x3 layout. Projection helpers use right-handed
+// coordinates and Vulkan's clip space (depth 0..1, +Y down).
 //
 // Values are plain structs passed by value. Every operation returns a
-// new value and never modifies its receiver.
+// new value and never modifies its receiver. Angles are radians unless a
+// function explicitly converts degrees. Matrices have all-zero zero
+// values; use Identity, Identity3 or Identity2 for identity transforms.
 //
 //	eye := target.Add(lin.V3(0, 2, 5))
 //	view := lin.LookAt(eye, target, lin.V3(0, 1, 0))

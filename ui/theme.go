@@ -2,9 +2,9 @@
 // build the interface, call widget methods inside Begin's closure every
 // frame, nesting containers (Panel, Window, Row, Columns, ScrollArea,
 // Tabs, Table, Tree, MenuBar, Modal) the same way. Widgets return what
-// happened (a click, a changed value) and keep no state of their own
-// beyond what the Theme and the caller provide. Values live in the
-// game's variables and are passed by pointer.
+// happened (a click, a changed value). Values live in the game's
+// variables and are passed by pointer; Context retains interaction
+// state such as focus, caret, selection, undo history and scrolling.
 //
 // The widgets are Label and RichLabel, Button and IconButton, Checkbox,
 // Radio and RadioGroup, Slider, IntSlider and Spinner, Progress,
@@ -22,8 +22,9 @@
 // table's rows, a tree, a radio group and an open dropdown are each one
 // Tab stop, and the arrows, Home, End, PageUp and PageDown move between
 // the items inside. Sliders and spinners step with the left and right
-// arrows. WantsMouse and WantsKeyboard report when the interface took
-// the input. Accessible lists the last frame's widgets with roles and
+// arrows. WantsMouse reports panel hover and dragging; WantsKeyboard
+// reports text focus. Neither consumes input or gates the game's own
+// controls. Accessible lists the last frame's widgets with roles and
 // values for screen readers and tests.
 //
 // Colours, spacing and the font live in a Theme. To restyle the toolkit,
@@ -34,29 +35,31 @@ package ui
 
 import "github.com/matjam/bunyip/gfx"
 
-// Theme is every colour and measure the widgets use.
+// Theme is every colour and measure the widgets use. Measures are in
+// view units. Start with a built-in theme or FromPalette; the zero
+// Theme has no font and is not usable for text widgets.
 type Theme struct {
-	Font *gfx.Font
+	Font *gfx.Font // required default font; owned by the caller
 	// BoldFont, ItalicFont and BoldItalicFont serve RichLabel; nil falls
 	// back to Font.
 	BoldFont, ItalicFont, BoldItalicFont *gfx.Font
 
-	Text         gfx.Color
-	TextDim      gfx.Color
-	Panel        gfx.Color
-	PanelBorder  gfx.Color
-	Title        gfx.Color
-	Button       gfx.Color
-	ButtonHover  gfx.Color
-	ButtonActive gfx.Color
-	Accent       gfx.Color
-	Field        gfx.Color
-	FieldBorder  gfx.Color
-	Track        gfx.Color
+	Text         gfx.Color // ordinary labels and widget values
+	TextDim      gfx.Color // secondary labels and placeholders
+	Panel        gfx.Color // panel background
+	PanelBorder  gfx.Color // panel outline and separators
+	Title        gfx.Color // panel titles
+	Button       gfx.Color // idle button fill
+	ButtonHover  gfx.Color // hovered button fill
+	ButtonActive gfx.Color // pressed button fill
+	Accent       gfx.Color // selections, focus rings and filled controls
+	Field        gfx.Color // editor background
+	FieldBorder  gfx.Color // unfocused editor outline
+	Track        gfx.Color // slider, progress and scrollbar background
 
 	Padding     float32 // inside panels and buttons
 	Spacing     float32 // between stacked widgets
-	BorderWidth float32
+	BorderWidth float32 // outline thickness in view units
 	RowHeight   float32 // minimum widget height
 	FocusWidth  float32 // the keyboard focus ring; zero means 2
 
@@ -70,11 +73,11 @@ type Theme struct {
 type Palette struct {
 	Background gfx.Color // panels
 	Surface    gfx.Color // buttons and fields sit on this
-	Border     gfx.Color
-	Text       gfx.Color
-	TextDim    gfx.Color
+	Border     gfx.Color // panel and control outlines
+	Text       gfx.Color // ordinary text
+	TextDim    gfx.Color // secondary text and placeholders
 	Accent     gfx.Color // sliders, focus, checks
-	Title      gfx.Color
+	Title      gfx.Color // panel titles
 }
 
 // FromPalette derives a full theme: buttons brighten as they are hovered

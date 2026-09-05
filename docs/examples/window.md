@@ -4,7 +4,7 @@ example: window
 summary: the platform layer's smoke test, opening a native window and presenting cleared frames without the engine
 ---
 
-This is the only example that does not use the engine. It calls the
+Like [clear](clear.html), this example bypasses the engine loop. It calls the
 internal platform and render packages directly to open a native window,
 create a Vulkan surface on it, build a swapchain, present a cleared
 frame every iteration, and print every event the window layer produces.
@@ -313,8 +313,8 @@ func reportSurface(dev vk.VkPhysicalDevice, surface vk.VkSurfaceKHR) error {
 - Change the clear colour in `present` and confirm the window shows it;
   this is the fastest check that presenting works at all.
 - Run with `-wait` and no `-seconds` to see turn-based behaviour: the
-  process uses no CPU until an event arrives, and each keypress prints
-  one line and presents one frame.
+  loop blocks until events arrive, then prints them and presents another
+  frame. One poll can return several events.
 - Remove the `EventMouseMove` case from `printEvent` to watch the
   pointer coordinates the backend reports, including whether they are in
   points or pixels.

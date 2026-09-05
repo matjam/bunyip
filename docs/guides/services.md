@@ -5,9 +5,10 @@ order: 4
 summary: assets, saves, translation, random numbers, timers, sequences, tweens, grids and networking
 ---
 
-These packages have no GPU or window dependency. Their examples run
-under `go test`, and they work in a headless server as well as in a
-game. The entity component system has its own guide,
+The data and simulation helpers work in headless servers as well as in
+games. Asset file access and CPU decoding do not open a window; asset
+loaders that upload textures, fonts or models need a graphics context
+and must run on its rendering goroutine. The entity component system has its own guide,
 [Entities and systems](ecs.html).
 
 ## Assets
@@ -52,10 +53,14 @@ loose directory:
 //go:embed assets
 var embedded embed.FS
 
-fs, err := asset.OpenFS(asset.Dir("assets"), asset.FSSource(embedded))
+embeddedAssets, err := fs.Sub(embedded, "assets")
+if err != nil {
+	return err
+}
+files, err := asset.OpenFS(asset.Dir("assets"), asset.FSSource(embeddedAssets))
 ```
 
-A `Loader` decodes in the background while a loading screen draws.
+A `Loader` decodes CPU data in the background while a loading screen draws.
 `Handle.Ready` polls, `Get` blocks, and `Progress` drives the bar:
 
 ```go
@@ -69,6 +74,12 @@ if level.Ready() {
 	g.level, err = level.Get()
 }
 ```
+
+Submission may block when the 256-entry job queue fills. Stop submitting
+before shutdown: call `Close` to close the queue, then `Wait` to await
+queued loads before closing the asset FS. `Close` returns immediately;
+submitting after or concurrently with it is invalid. Upload decoded GPU
+resources on the rendering goroutine after a handle is ready.
 
 ### Hot reload
 
@@ -166,7 +177,10 @@ for a game with its own pipeline.
 
 [save](../pkg/save.html) writes JSON documents into the platform's data
 directory (Application Support, XDG data, AppData) and replaces them
-atomically, so a crash mid-write never corrupts a save. `Load` reads a
+through a synced temporary file and rename, so an interrupted write does
+not leave partial JSON at the target. Rename atomicity follows the host
+filesystem; the parent directory is not synced, so this is not a power-loss
+durability guarantee. `Load` reads a
 document over defaults, so new settings fields get sensible values when
 a file predates them. Whole ECS worlds are saved through
 `ecs.World.Save`, described in the ECS guide.
@@ -191,6 +205,9 @@ names, _ := store.List() // the save slots, for a load menu
 ```
 
 `save.OpenAt(dir)` takes any directory, which is what tests use.
+`BUNYIP_DATA_DIR` overrides the base data directory and the app name is
+appended to it. Save names omit `.json` and must be nonempty leaf names
+without slashes or `.`/`..` components.
 
 ## Translation
 
@@ -201,6 +218,13 @@ languages, from English's two forms to Arabic's six. A `Bundle` falls
 back through languages for keys a translation lacks, `Missing` lists
 what a translator still has to do, and `For` gives a `Translator` whose
 `T` and `N` the game calls.
+
+Supply fallbacks explicitly; English is not installed automatically.
+The lookup order is the requested language, its base language, then the
+configured fallbacks. A missing key becomes `[key]`, and a placeholder
+without an argument remains as written. Include `other` in each plural
+entry. Build tables before concurrent reads and synchronize any later
+changes; bundles and tables have no internal locks.
 
 ```go
 b := locale.NewBundle("en") // English last, for keys another language lacks
@@ -251,6 +275,11 @@ state, inc := r.State() // into the save file; r.Restore(state, inc) on load
 own, a paused game stops its timers by not calling `Update`, and a
 replay runs them identically.
 
+Use finite, nonnegative time steps. Timers due together fire in
+registration order. Repeating timers catch up every elapsed interval,
+so a large update may call the same function several times. Callbacks
+may schedule or cancel timers, but must not recursively call `Update`.
+
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
 	if !g.paused {
@@ -293,6 +322,11 @@ if ctx.Input.KeyPressed(input.KeySpace) {
 with the usual curves, repeats and yo-yos; `Sequence` chains tweens, and
 `Of` (with `NewVec2` and `NewVec3`) tweens vectors, colours or any
 value that has a blend function.
+
+Easing curves such as `OutBack` and `OutElastic` may overshoot the
+endpoints; `Progress` is not always between zero and one. Scalar tweens
+support `YoYo`; the current generic `Of` wrapper uses eased progress
+directly and does not reverse its endpoints for `YoYo`.
 
 ```go
 g.menuX = tween.New(-300, 40, 0.4, tween.OutQuad) // slide the panel in
@@ -344,7 +378,10 @@ grid.FOV(g.player, 9, opaque, func(p grid.Point) { seen[p] = true })
 
 The algorithms take a cost or passability function over points, not a
 `Grid`, so they work against whatever the game keeps its map in.
-Costs may be zero or fractional. `AStar` uses a zero heuristic, so it
+Costs may be zero or fractional, but must not be NaN. The callback
+defines diagonal costs and whether cutting across a blocked corner is
+allowed; the algorithms add neither restriction nor a diagonal multiplier.
+`AStar` uses a zero heuristic, so it
 finds cheapest paths without needing a lower bound on step costs.
 When that bound is known, `AStarWithMinCost` can explore fewer cells:
 pass `1` for unit-cost movement, or `0.1` if every traversable step
@@ -357,9 +394,19 @@ overstating it can produce a more expensive path. Pass zero when the
 minimum is unknown or zero-cost moves exist. Zero, negative and
 nonfinite bounds all use the safe zero heuristic.
 
-`AStar`, `Dijkstra` and `FOV` allocate only their result. To search or
-cast sight every frame without allocating at all, keep a `Pathfinder`
-for the map and a `Vision` for the viewer and call their methods.
+`Dijkstra` computes costs from its sources to every cell. With directed
+costs, reverse the callback arguments to compute costs toward a target.
+`Downhill` only chooses a neighboring cell with a lower stored value;
+it does not check passability, edge costs or blocked corners. It can
+stop on a zero-cost plateau and does not guarantee a cheapest route on
+weighted or directed maps. The chasing example above uses symmetric
+unit-cost movement; use the cost-aware path search for other rules.
+
+`AStar`, `Dijkstra` and `FOV` borrow pooled scratch buffers. First use,
+growth and pool eviction can allocate. To retain scratch across frames,
+keep a `Pathfinder` for the map and a `Vision` for the viewer and call
+their methods. They avoid steady-state allocations once their scratch
+and caller-owned result buffers have sufficient capacity.
 `Pathfinder.AStar` and `Pathfinder.AStarWithMinCost` append the path to
 a slice the game owns and report whether there was one.
 `Pathfinder.DijkstraInto` fills a map the game
@@ -400,6 +447,15 @@ A TCP client's `SetOnActivity` may be changed while messages arrive,
 including from inside its callback. Each event invokes one captured
 callback after releasing the registration lock. A server's setter
 continues to affect only connections accepted afterward.
+Callbacks run on network goroutines and should only signal the game
+loop, for example with `ctx.Wake`; keep them short. A captured callback
+may still run after replacement, and a client's initial `Connected`
+event is queued before a callback can be installed, so poll that event.
+TCP event queues hold 1024 events and apply backpressure when full.
+Sends may block on network I/O. `Broadcast` sends sequentially and
+discards per-connection errors; use `Conns` and `Send` to handle them.
+Complete registry registration before opening connections and leave it
+unchanged while network goroutines use it.
 
 Messages are plain structs. Both ends build the same registry in the
 same order:

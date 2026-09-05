@@ -278,7 +278,8 @@ func clipSegment(out, pts []lin.Vec2, n lin.Vec2, c float32) []lin.Vec2 {
 	return out
 }
 
-// Ray2 is a ray for casts.
+// Ray2 describes a finite cast from Origin to Origin+Dir. Dir is the
+// full displacement; a hit's Distance is its fraction in [0, 1].
 type Ray2 struct {
 	Origin, Dir lin.Vec2 // Dir need not be unit length
 }

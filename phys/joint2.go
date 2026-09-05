@@ -29,7 +29,8 @@ type DistanceJoint2 struct {
 // world.
 //
 // The angle is how far B has turned relative to A since the first
-// step, anticlockwise positive, in (-π, π]. MinAngle and MaxAngle
+// step or first Angle call, positive from +X toward +Y (clockwise on
+// screen), in (-π, π]. MinAngle and MaxAngle
 // limit it; both zero means unlimited. A motor drives the angle at
 // MotorSpeed radians per second with up to MaxMotorTorque; zero torque
 // means no motor.
@@ -45,7 +46,8 @@ type RevoluteJoint2 struct {
 }
 
 // Angle is the joint angle: how far B has turned relative to A since
-// the first step, in radians.
+// the reference pose, in radians. The first call captures that pose if
+// the solver has not measured it yet.
 func (j *RevoluteJoint2) Angle(w *ecs.World) float32 {
 	ra, rb := entityRot2(w, j.A), entityRot2(w, j.B)
 	j.measure(ra, rb)

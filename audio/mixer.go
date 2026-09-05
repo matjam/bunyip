@@ -14,10 +14,11 @@
 // ramps across a block so nothing clicks; stopping a voice ramps it to
 // silence over about a millisecond first. A setter copies its value in
 // under a short lock and the mixer applies it at the start of the next
-// block, so the game loop never waits for a block; the mixer reads
-// streams with no lock held, so a Stream may take locks of its own and
-// may call back into the mixer. Voice.Seek is the one method that waits
-// for the block in flight, because it moves the playhead being read.
+// block, so setters do not wait for a whole block. Stream.Read runs
+// without the settings lock but with the playback lock held; it may
+// call setters or start voices, but must not call Voice.Seek.
+// Voice.Seek waits for the block in flight, because it moves the
+// playhead being read.
 //
 // The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole
 // file as bytes. The streams (OpenMusic) take readers, because they seek
@@ -26,6 +27,11 @@
 // OpenCapture records from the machine's default input into a ring the
 // game drains with Read. It is separate from the mix: what it records is
 // not played back unless the game plays it.
+//
+// Playback advances only when an output device pulls mixed blocks.
+// Headless runs, Config.NoAudio and unavailable output devices leave
+// playheads stationary; do not use audio completion to drive essential
+// game progress in those modes.
 package audio
 
 import (
@@ -45,9 +51,10 @@ import (
 // and once to write back where every voice reached. mixMu is held across
 // the whole block and marks the playback state the mixer owns while it
 // runs, so nothing else may move a voice through its sound mid-block.
-// Streams are read with neither lock held, so music, a tracker player or
-// game code called from Stream.Read may take locks of its own, and may
-// call back into the mixer, without waiting on the game loop.
+// Streams are read with mu released and mixMu held. Stream.Read may
+// call setters or start voices, but must not seek a voice because Seek
+// also needs mixMu. Stream implementations must avoid lock cycles with
+// callers on other goroutines.
 type Mixer struct {
 	mu         sync.Mutex
 	mixMu      sync.Mutex // held across a block; guards playback position
@@ -85,7 +92,9 @@ type Mixer struct {
 	music, effects, dialogue *Bus
 }
 
-// NewMixer makes a mixer for the given output sample rate.
+// NewMixer makes a mixer for a positive output sample rate, with unity
+// master gain and a 64-voice limit. It does not open an output device;
+// the engine supplies and drives Context.Audio for normal games.
 func NewMixer(rate int) *Mixer {
 	m := &Mixer{rate: rate, master: 1, maxVoices: 64, stopFrames: max(rate/1000, 1),
 		buses: map[string]*Bus{}, speedOfSound: 343,
@@ -121,7 +130,7 @@ func (m *Mixer) SetMaxVoices(n int) {
 type PlayOptions struct {
 	Volume   float32 // 1
 	Pan      float32 // -1 left .. +1 right; ignored when Positional
-	Loop     bool
+	Loop     bool    // repeat a Sound; streams control their own looping
 	Pitch    float32 // playback rate multiplier for sounds; 1
 	Priority int     // higher survives when the mixer is full
 	FadeIn   float32 // seconds to rise from silence
@@ -139,13 +148,15 @@ type PlayOptions struct {
 	// MaxDistance (100), panned by direction. Velocity, in world units per
 	// second, drives Doppler once SetDoppler turns it on.
 	Positional  bool
-	Position    lin.Vec3
-	Velocity    lin.Vec3
-	MinDistance float32
-	MaxDistance float32
+	Position    lin.Vec3 // source position in listener world units
+	Velocity    lin.Vec3 // source velocity in world units per second
+	MinDistance float32  // full-volume radius; zero means 1
+	MaxDistance float32  // silent at this distance; zero means 100
 }
 
-// Play starts a sound and returns its voice.
+// Play starts a sound made for this mixer's rate and returns its voice.
+// If all available voices have higher priority, the returned voice is
+// already finished. A nil or empty sound ends when the mixer next reads it.
 func (m *Mixer) Play(s *Sound, opts PlayOptions) *Voice {
 	v := m.newVoice(opts)
 	v.snd = s
@@ -740,7 +751,8 @@ func (v *Voice) FadeOut(seconds float32) {
 	v.set(func() { v.startFade(0, seconds, true) })
 }
 
-// Playing reports whether the voice is still audible. A stopped voice
+// Playing reports whether the voice is active, including while paused,
+// muted or outside its audible range. A stopped voice
 // reports false as soon as it is stopped, while its last millisecond
 // ramps out.
 func (v *Voice) Playing() bool {
@@ -776,7 +788,8 @@ type Seeker interface {
 // otherwise it stays put and ErrNotSeekable is returned. Seeking waits
 // for the block being mixed to finish, because it moves the position the
 // mixer is reading from, so it may block for the length of one block; a
-// Seeker must not call back into the mixer.
+// Seeker must not recursively call Voice.Seek. Do not call Seek from
+// Stream.Read, which runs under the same playback lock.
 func (v *Voice) Seek(seconds float64) error {
 	v.m.mixMu.Lock()
 	defer v.m.mixMu.Unlock()
@@ -822,8 +835,8 @@ func (v *Voice) OnDone(fn func()) {
 }
 
 // render accumulates the voice into out and its reverb send, using
-// scratch for the dry signal. It runs with no lock held, so Stream.Read
-// may take locks of its own and may call back into the mixer.
+// scratch for the dry signal. It runs under mixMu but without mu, so
+// Stream.Read may call setters but must not call Voice.Seek.
 func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	if sn.skip || !sn.more {
 		return

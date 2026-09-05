@@ -160,11 +160,11 @@ func (p *Prefab) UnmarshalJSON(data []byte) error {
 // fields that referred to e refer to the copy.
 //
 // The copy is deep through exported fields: slices, maps, pointers and
-// interface values get their own storage, which covers every component
-// encoding/json can save. Unexported fields are copied as values, so a
-// slice or pointer in one is shared with the original; a component that
-// needs more can implement Remapper or keep such state out of
-// unexported fields.
+// interface values get their own storage. Unexported fields are copied
+// as values, so a slice or pointer in one is shared with the original.
+// Custom JSON methods are not used for cloning. Remapper handles entity
+// references, not general deep copying; initialize private mutable state
+// separately when it must be independent in the clone.
 func Clone(w *World, e Entity) Entity {
 	if !w.Alive(e) {
 		return None

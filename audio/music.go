@@ -13,9 +13,10 @@ import (
 	"github.com/jfreymuth/oggvorbis"
 )
 
-// Music is a WAV, Ogg Vorbis or MP3 file decoded while it plays, a couple
-// of seconds ahead of the output on its own goroutine, so a long track
-// never sits in memory. Open one with Mixer.OpenMusic, start it with
+// Music plays WAV, Ogg Vorbis or MP3 through a two-second PCM buffer
+// filled on a decoder goroutine. Ogg and MP3 decode incrementally; WAV
+// is decoded completely at open and retained in memory.
+// Open one with Mixer.OpenMusic, start it with
 // Mixer.PlayStream, and Close it when the game is done with it.
 type Music struct {
 	dec    decoder
@@ -48,7 +49,9 @@ type decoder interface {
 }
 
 // OpenMusic prepares a file for streaming; loop makes it start over at
-// the end. The reader must stay open until Close.
+// the end. It sniffs the format from the start of r and waits for the
+// first decoded chunk or an error. The reader must support seeking and
+// remain available to the decoder. Music does not close r.
 func (m *Mixer) OpenMusic(r io.ReadSeeker, loop bool) (*Music, error) {
 	var head [4]byte
 	if _, err := io.ReadFull(r, head[:]); err != nil {
@@ -136,7 +139,10 @@ func (mu *Music) wait(cond func() bool) {
 	mu.mu.Unlock()
 }
 
-// Close stops decoding; a voice playing the music ends.
+// Close requests decoder shutdown; subsequent Read calls return zero
+// and a voice ends when it next reads the stream. It is safe to repeat. Close does
+// not wait for an in-flight decoder read and does not close the reader
+// supplied to OpenMusic; callers retain ownership of that reader.
 func (mu *Music) Close() {
 	mu.mu.Lock()
 	mu.close = true

@@ -317,10 +317,10 @@ func (g *game) drive(ctx *bunyip.Context) {
 
 `ecs.Get` returns a pointer into the component's table, so writing
 `j.MotorSpeed` changes the joint the solver will read this step. The
-`ok` on the transform lookup is not defensive noise: `reset` builds a
-new world, so an entity handle from the old one stops resolving, and
-the check is what makes the order of `reset` and `drive` in an update
-not matter.
+`ok` on the transform lookup checks that the entity has that component
+in the current world. Handles are scoped to a world: the same numeric
+handle can resolve to a different entity in a new world. `reset` therefore
+also replaces the stored car handles.
 
 ## Dropping shapes
 
@@ -364,7 +364,8 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 ## Update: input, the paddle and the ray
 
 `Update` runs at the fixed step, which is what the simulation needs: a
-fixed `ctx.Delta` gives the same result on every machine.
+fixed `ctx.Delta` keeps the numerical step independent of rendering speed.
+It does not by itself guarantee identical results across machines.
 
 The paddle is driven by writing its velocity. `ecs.Get` returns a pointer
 to the component in its table, so assigning through it changes the
@@ -438,8 +439,8 @@ draw it. `t.Apply` takes a sprite and returns it positioned and rotated
 by the transform, which keeps the drawing in step with the body without
 recomputing the matrix. `UV1: lin.V2(1, 1)` uses the whole texture.
 Triangles are drawn as three lines, rotating each point by the
-transform's own angle, because there is no filled polygon call in the 2D
-API.
+transform's own angle. This example chooses outlines; `gfx.FillPolygon`
+can draw a filled triangle instead.
 
 The wheels get a second pass afterwards, drawing a diameter through each
 one. A disc drawn from a texture looks identical however fast it turns,
@@ -552,7 +553,7 @@ func main() {
   bodies ride it.
 - Drop `Frequency` in `buildCar` to 1 and watch the car wallow, then
   raise it to 20 for a suspension that barely gives. Setting it to 0
-  leaves the axis free, so the chassis falls onto its own wheels.
+  leaves the suspension axis free, without a spring restoring its offset.
 - Set `DampingRatio` to 0.05 and drive the car over the debris; the
   bouncing takes a long time to die away.
 - Cut `MaxMotorTorque` in `buildCar` to 600 and watch the car struggle

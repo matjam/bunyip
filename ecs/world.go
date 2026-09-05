@@ -74,7 +74,9 @@ func (w *World) Update(dt float64) {
 	}
 }
 
-// Stats reports each system's time in the last Update.
+// Stats reports each system's most recent timing in milliseconds.
+// The returned slice belongs to the world; do not modify it, and copy it
+// to retain a snapshot across updates. Disabled systems keep their last timing.
 func (w *World) Stats() []SystemStat { return w.stats }
 
 // Updates counts the Update calls the world has run, so a debug view can
@@ -130,7 +132,8 @@ func Emit[T any](w *World, ev T) {
 }
 
 // Events returns the events of type T emitted since the start of this
-// Update. Draw sees what the last Update emitted.
+// Update. Draw sees what the last Update emitted. The slice belongs to
+// the event queue; copy it to retain events across Emit or Update calls.
 func Events[T any](w *World) []T { return eventsOf[T](w).current }
 
 // Parent links an entity under another; SetParent maintains it.
@@ -141,7 +144,8 @@ type Children struct{ List []Entity }
 
 // SetParent attaches child under parent, or detaches it with None. A
 // child follows its parent's transform (see WorldMatrix) and is
-// despawned with it. Cycles are refused.
+// despawned with it. A missing parent detaches the child. Self-parenting
+// is ignored; an attempted longer cycle detaches the child from its old parent.
 func SetParent(w *World, child, parent Entity) {
 	if !w.Alive(child) || child == parent {
 		return
@@ -218,7 +222,7 @@ type worldMatrices struct {
 // slice index instead of a climb up the parent chain. Call it from a
 // system after the ones that move transforms and before the ones that
 // read world positions. The cache lasts until the next World.Update, so
-// Draw reads what the last Update left; changing a parent link or
+// Draw reads what the last Update left; spawning, changing a parent link or
 // despawning drops it, and a transform written after the pass is not
 // seen until the pass runs again.
 func UpdateWorldMatrices(w *World) {
@@ -293,7 +297,9 @@ func WorldMatrix(w *World, e Entity) lin.Mat4 {
 
 // Commands record structural changes to apply later with Apply, for
 // code running inside a query that must not change other entities'
-// tables mid-iteration.
+// tables mid-iteration. The zero value is ready to use. Component values
+// passed to Spawn and Add are retained until Apply, not deep-copied;
+// do not mutate their referenced storage or argument slices before then.
 type Commands struct {
 	ops []func(w *World)
 }

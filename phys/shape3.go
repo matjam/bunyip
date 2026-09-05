@@ -417,7 +417,8 @@ func projectHalf(o obb, axis lin.Vec3) float32 {
 		float32(math.Abs(float64(o.rot.axis(2).Dot(axis))))*o.half.Z
 }
 
-// Ray3 is a ray for casts.
+// Ray3 describes a finite cast from Origin to Origin+Dir. Dir is the
+// full displacement; a hit's Distance is its fraction in [0, 1].
 type Ray3 struct {
 	Origin, Dir lin.Vec3 // Dir need not be unit length
 }

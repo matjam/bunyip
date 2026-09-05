@@ -2,7 +2,9 @@ package lin
 
 import "math"
 
-// Quat is a unit quaternion (X, Y, Z, W) representing a rotation.
+// Quat is a quaternion (X, Y, Z, W) representing a rotation when it has
+// unit length. Use QuatIdentity for no rotation and Norm after repeated
+// composition; the zero quaternion is not a unit quaternion.
 type Quat struct{ X, Y, Z, W float32 }
 
 // QuatIdentity is the rotation that leaves vectors unchanged.
@@ -26,7 +28,7 @@ func (q Quat) Mul(p Quat) Quat {
 }
 
 // Norm returns the unit quaternion, which rotations must be to stay
-// rigid after repeated multiplication.
+// rigid after repeated multiplication. A zero quaternion becomes identity.
 func (q Quat) Norm() Quat {
 	l := float32(math.Sqrt(float64(q.X*q.X + q.Y*q.Y + q.Z*q.Z + q.W*q.W)))
 	if l == 0 {
@@ -49,7 +51,8 @@ func (q Quat) Mat4() Mat4 {
 // Rotate applies the rotation to v.
 func (q Quat) Rotate(v Vec3) Vec3 { return q.Mat4().MulPoint(v) }
 
-// Slerp interpolates between rotations.
+// Slerp interpolates unit rotations along the shortest arc. Both inputs
+// must be normalized; t is not clamped, so values outside 0..1 extrapolate.
 func (q Quat) Slerp(p Quat, t float32) Quat {
 	cos := q.X*p.X + q.Y*p.Y + q.Z*p.Z + q.W*p.W
 	if cos < 0 {

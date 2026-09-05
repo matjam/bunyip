@@ -2,6 +2,17 @@
 // registry. It covers the core versions up to -version and the extensions in
 // -ext, closed over every type those definitions mention, and emits a test
 // that pins each struct's C layout.
+//
+// From the repository root, regenerate the committed binding with:
+//
+//	CGO_ENABLED=0 go generate ./internal/vk
+//
+// Direct invocation accepts -registry (default ../../third_party/vulkan/vk.xml),
+// -out (default current directory), -pkg (default vk), -version (default 1.3)
+// and -ext (comma-separated extension names, with the engine's platform
+// and rendering extensions selected by default). Relative paths are
+// resolved from the current working directory. Generated files replace
+// files of the same names in -out; do not hand-edit the binding.
 package main
 
 import (

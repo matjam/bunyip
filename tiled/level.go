@@ -55,8 +55,8 @@ type Level struct {
 type LevelLayer struct {
 	Name string
 	Kind LayerKind
-	// Maps hold the layer's cells split by tileset, in Map.Tilesets
-	// order for the tilesets the layer uses; a cell belonging to another
+	// Maps hold the layer's cells split by tileset, in first-use order
+	// in the layer's cell data; a cell belonging to another
 	// tileset is -1 in each.
 	Maps    []*gfx.Tilemap
 	Objects []Object
@@ -68,7 +68,12 @@ type LevelLayer struct {
 // Build uploads a map's tileset images (nearest filtered, no mipmaps),
 // fills tilemaps from its tile layers, and registers tile animations.
 // Image layers and image-collection tilesets are not drawn. The Level
-// owns the textures; Destroy frees them.
+// owns the textures; Destroy frees them. Drawing uses a rectangular grid
+// regardless of Map.Orientation; isometric and hexagonal layouts need a
+// custom drawing path. Object layers are retained for the game to process.
+// Infinite tile layers are flattened by Parse, but Build does not apply
+// their StartX/StartY cell origin. Apply that origin in a custom drawing
+// path when infinite-map chunks do not start at (0, 0).
 func Build(g *gfx.Graphics, m *Map, images Images) (*Level, error) {
 	lv := &Level{Map: m, Sheets: make([]*gfx.Sheet, len(m.Tilesets))}
 	for i := range m.Tilesets {

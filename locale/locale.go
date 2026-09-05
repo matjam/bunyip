@@ -1,6 +1,6 @@
 // Package locale translates a game's strings. It provides tables of
 // messages by language with placeholders and plural forms, a fallback
-// chain so a half-translated language falls back to English rather than
+// chain so a half-translated language falls back to a configured source rather than
 // showing keys, and the plural rules of the common languages.
 //
 // A Bundle holds one Table per language, loaded from JSON files a
@@ -19,6 +19,8 @@
 // and a key missing everywhere returns itself in brackets so it is
 // visible and can be fixed. Right-to-left layout of the interface is the
 // game's responsibility; the text itself shapes correctly through gfx.
+// Bundles and tables have no internal locks. Finish loading them before
+// sharing translators, or synchronize mutations with all readers.
 package locale
 
 import (
@@ -32,6 +34,8 @@ import (
 // Category is a plural form a language distinguishes.
 type Category string
 
+// Plural-category names used in translation JSON. Which counts belong
+// to a category depends on the language; Other is the fallback form.
 const (
 	Zero  Category = "zero"
 	One   Category = "one"
@@ -174,7 +178,7 @@ func Plural(lang string, n float64) Category {
 
 // Table is one language's messages.
 type Table struct {
-	Lang  string
+	Lang  string // language tag used for plural rules and Bundle lookup
 	plain map[string]string
 	forms map[string]map[Category]string
 }
@@ -247,8 +251,11 @@ func (t *Table) addRaw(prefix string, raw map[string]json.RawMessage) error {
 // Set adds or replaces a plain message.
 func (t *Table) Set(key, message string) { t.plain[key] = message }
 
-// SetPlural adds or replaces a message with plural forms; Other is
-// required.
+// SetPlural adds or replaces a message with plural forms. Include Other
+// as a fallback: it is not validated, and when both the selected form
+// and Other are absent, lookup chooses an unspecified available form.
+// The map is retained, not copied. A plain entry of the same key takes
+// precedence until the table is replaced.
 func (t *Table) SetPlural(key string, forms map[Category]string) { t.forms[key] = forms }
 
 // Keys lists the table's keys, sorted, for checking a translation's
@@ -385,6 +392,9 @@ func (t *Translator) Lang() string { return t.lang }
 // alternating names and values ("n", 3, "who", "Ada"). A plural entry
 // picks its form from the value named "n", or the first number given.
 // A missing key returns "[key]".
+// Without a numeric argument a plural entry uses the category for 1.
+// Unmatched placeholders stay as written; a trailing unpaired argument
+// is ignored. Duplicate placeholder names use the last value.
 func (t *Translator) T(key string, args ...any) string {
 	n, hasN := float64(0), false
 	for i := 0; i+1 < len(args); i += 2 {

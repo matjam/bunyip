@@ -82,6 +82,10 @@ func backoff(f, length, skin float32) float32 {
 
 // Move advances the character by velocity·dt: horizontally with sliding
 // and stepping, then vertically, then out of anything it still overlaps.
+// dt is seconds and velocity is world units per second. It applies no
+// gravity or impulses; the game supplies vertical velocity. A missing
+// transform leaves the controller unchanged. Use nonnegative dt; even a
+// zero timestep may resolve overlaps and update ground contact.
 func (c *CharacterController3) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec3, dt float32) {
 	t, ok := ecs.Get[gfx.Transform](w, e)
 	if !ok {

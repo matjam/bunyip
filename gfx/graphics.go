@@ -13,7 +13,9 @@ import (
 )
 
 // Graphics is the drawing context for one window. The engine opens a
-// frame, the Draw* calls queue work, and the engine submits it.
+// frame, the Draw* calls queue work, and the engine submits it. Obtain
+// Graphics from bunyip.Context; its zero value is not usable. Use it and
+// its GPU resources only on the game goroutine.
 type Graphics struct {
 	r            *render.Renderer
 	descriptors  *render.DescriptorSets // five samplers: a texture and a shader's image0..3

@@ -114,6 +114,10 @@ type Options struct {
 // Console is one debug console: its output, its commands and variables,
 // and the panels. Register commands and variables from any goroutine;
 // draw it from the goroutine that runs the loop.
+// Command callbacks and registered variables are accessed on that loop
+// goroutine. Registration protects the registry, not the pointed-to
+// game values; synchronize any access from other goroutines. Attachments,
+// open state, Run and Draw also belong to the loop goroutine.
 type Console struct {
 	opts Options
 
@@ -182,6 +186,8 @@ func New(opts Options) *Console {
 
 // Open reports whether the drop-down is showing. A game checks it in
 // Update and leaves the keyboard alone while it is true.
+// Toggle keys are processed in Draw, so Update observes the state from
+// the preceding Draw. The debug panels alone do not make Open true.
 func (c *Console) Open() bool { return c != nil && c.open }
 
 // SetOpen opens or closes the drop-down.

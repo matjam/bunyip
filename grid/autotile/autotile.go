@@ -64,7 +64,8 @@ type weighted struct {
 }
 
 // Rules maps a cell's neighbourhood to tile frames. Build one with
-// Edge16, Corner16, Blob47 or Wang, then hand it to a Mapper.
+// Edge16, Edge64, Corner16, Blob47 or Wang, then hand it to a Mapper.
+// The zero value has no frames; use a constructor before applying rules.
 type Rules struct {
 	kind     ruleKind
 	terrain  int
@@ -138,8 +139,9 @@ func (r *Rules) Connect(terrains ...int) *Rules {
 // Variant adds an alternative frame for one neighbourhood, chosen at
 // random by cell position with the given weight; the frame passed to
 // the constructor keeps weight 1. mask is the scheme's mask: 4 bits for
-// Edge16 and Corner16, the raw 8-bit mask for Blob47. A zero weight
-// counts as 1. Wang rules take variants as extra tiles instead.
+// Edge16 and Corner16, 6 bits for Edge64, the raw 8-bit mask for Blob47.
+// A nonpositive weight counts as 1. An out-of-range mask is ignored.
+// Wang rules take variants as extra tiles instead.
 func (r *Rules) Variant(mask, frame int, weight float64) *Rules {
 	if weight <= 0 {
 		weight = 1
@@ -165,6 +167,8 @@ func (r *Rules) connected(neighbour, terrain int) bool {
 // Mapper applies one set of rules to a terrain grid. Rules is the only
 // required field. The zero values of the rest mean: the border
 // continues each cell's own terrain, and variants are seeded with zero.
+// A Mapper reuses scratch storage and is not safe for concurrent or
+// recursive use. Finish modifying its Rules before applying them.
 type Mapper struct {
 	Rules *Rules
 	// Layout is the grid's shape, which says where each direction's
@@ -185,7 +189,7 @@ type Mapper struct {
 // Apply computes a frame for every cell and hands each to set, with -1
 // for cells the rules leave empty. terrain returns the id at a cell and
 // is only called inside the map. Corner16 rules emit one extra row and
-// column: x and y run to w and h inclusive.
+// column: x and y run to w and h inclusive. A nil Rules makes no calls.
 func (m *Mapper) Apply(w, h int, terrain func(x, y int) int, set func(x, y, frame int)) {
 	if m.Rules == nil {
 		return

@@ -20,6 +20,14 @@ macOS and Windows through the system clipboard, X11 by owning the
 CLIPBOARD selection and answering requests for it (INCR included), and
 Wayland through `wl_data_device` with a pipe.
 
+- Generic `tween.Of` uses eased progress directly, so its embedded
+  `Tween.YoYo` does not reverse the blend endpoints. Scalar tweens do
+  reverse; generic vector and colour tweens need that behavior aligned.
+- `orbit.Elements.State` interprets `SemiMajorAxis` as periapsis distance
+  for exactly parabolic orbits, but `Elements.Periapsis()` still returns
+  zero when eccentricity is one. `Simulation.Energy` uses an unsoftened
+  potential even when the gravity simulation enables softening.
+
 ## Platforms and window
 
 - Web (WebAssembly) and mobile (Android, iOS). Both need a second
@@ -112,6 +120,11 @@ no per-particle state at all.
   staggered grid a hexagonal map uses. `Map.Layout` gives it `Square`,
   which matches the wrong cells; only orthogonal, isometric and
   hexagonal maps have a layout that fits.
+- `tiled.Build` draws rectangular tile grids regardless of the parsed
+  orientation. Image layers and image-collection tilesets are retained
+  by the parser but not drawn. It also omits the `StartX`/`StartY` origin
+  when placing flattened infinite-map tile layers. Those maps need a
+  custom drawing path until the bridge handles their layout and origin.
 - A 2D frame that goes through the post pass pays for a second image
   and a full-screen copy: `PostSettings.Post2D` draws the 2D stream into
   the LDR image and composites from there, rather than colouring the

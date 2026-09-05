@@ -221,6 +221,8 @@ func (s *Server) Conns() []*Conn {
 }
 
 // Broadcast sends a message to every connection, skipping any in except.
+// Sends run sequentially and may block; individual send errors are
+// ignored. Use Conns and Conn.Send when delivery errors must be handled.
 func (s *Server) Broadcast(msg any, except ...*Conn) {
 	for _, c := range s.Conns() {
 		skip := false
@@ -257,6 +259,7 @@ type Client struct {
 }
 
 // Dial connects to a server. The client's first event is Connected.
+// A nonpositive timeout defaults to ten seconds.
 func Dial(addr string, reg *Registry, timeout time.Duration) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second

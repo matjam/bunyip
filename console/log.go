@@ -16,7 +16,7 @@ import (
 //	con := console.New(console.Options{})
 //	cfg.Log = slog.New(con.Handler(slog.Default().Handler()))
 //
-// Records are captured as they arrive, so raising the level with the log
+// Records are captured as they arrive, so lowering the threshold with the log
 // command shows more from then on and never rewrites what is already
 // there. Handle is safe to call from any goroutine.
 func (c *Console) Handler(next slog.Handler) slog.Handler {

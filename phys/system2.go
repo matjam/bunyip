@@ -11,9 +11,9 @@ import (
 // Settings2 is the world resource that tunes 2D simulation. Zero
 // substeps or iterations mean 4 and 8.
 type Settings2 struct {
-	Gravity    lin.Vec2
-	Substeps   int // integration steps per update; more is stabler
-	Iterations int // solver passes per step; more is stiffer
+	Gravity    lin.Vec2 // world units per second squared; zero disables gravity
+	Substeps   int      // integration steps per update; more is stabler
+	Iterations int      // solver passes per step; more is stiffer
 	// SleepTime is how long a body and everything touching it must rest
 	// before they sleep and drop out of the simulation until touched;
 	// zero means bodies never sleep. Half a second suits most games.
@@ -27,7 +27,7 @@ type Settings2 struct {
 // move by their velocity and push others without being pushed.
 type Body2 struct {
 	Vel    lin.Vec2
-	AngVel float32 // radians per second, anticlockwise
+	AngVel float32 // radians per second; positive rotates +X toward +Y (clockwise on screen)
 	Mass   float32
 	// Restitution is bounciness, 0 to 1; Friction is the Coulomb
 	// coefficient, 0 slides freely.
@@ -55,7 +55,8 @@ type Body2 struct {
 	fraction  float32
 }
 
-// Dynamic2 returns a moving body with sensible defaults.
+// Dynamic2 returns a body with the given mass, restitution 0.1, friction
+// 0.5 and gravity scale 1. A positive mass makes it dynamic.
 func Dynamic2(mass float32) Body2 {
 	return Body2{Mass: mass, Restitution: 0.1, Friction: 0.5, GravityScale: 1}
 }
@@ -82,11 +83,13 @@ func (b *Body2) AddImpulse(i lin.Vec2) {
 // simulation until something touches or pushes it.
 func (b *Body2) Asleep() bool { return b.asleep }
 
-// Wake puts a sleeping body back in the simulation.
+// Wake clears automatic sleep and its timer. It does not clear Sleeping,
+// which remains under the game's control.
 func (b *Body2) Wake() { b.asleep, b.sleepTime = false, 0 }
 
 // Collider2 gives an entity a shape. An entity with a Collider2 and no
-// Body2 is a static obstacle.
+// Body2 is a static obstacle. It also needs gfx.Transform2. A nil Shape
+// is ignored; transform scale does not resize the shape.
 type Collider2 struct {
 	Shape   Shape2
 	Offset  lin.Vec2 // shape centre relative to the transform
@@ -107,6 +110,8 @@ type Collision2 struct {
 }
 
 // Trigger2 is emitted while a trigger collider overlaps another collider.
+// A pair is reported in its first overlapping substep of the update;
+// when both colliders are triggers, each receives its own event.
 type Trigger2 struct {
 	Trigger, Other ecs.Entity
 }

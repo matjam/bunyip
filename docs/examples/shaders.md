@@ -200,8 +200,9 @@ func (g *game) Update(ctx *bunyip.Context) error {
 
 ## Draw: the mesh shaders
 
-`SetUniforms` takes any struct and copies it into the shader's uniform
-block. The Go struct must match the GLSL `Params` block in field order
+`SetUniforms` copies a struct's bytes into the shader's uniform block.
+Use fixed-size numeric fields with explicit padding; strings and slices
+are not shader data. The Go struct must match the GLSL `Params` block in field order
 and layout, which is why each call passes an anonymous struct written
 next to the shader that consumes it.
 
@@ -243,7 +244,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 draws, and restores the previous state at the end. It is the same
 closure form as `Blended` and `Transformed`, which appear below it.
 Sprites drawn under a shader still go into the ordinary 2D stream, so
-they batch with each other and break only when the shader changes.
+compatible draws can batch together. Texture, blend and clip changes can
+also break a batch, even when the shader stays the same.
 
 The dissolve's progress is driven from `ctx.Time` through a cosine, so
 it burns away and back without any state on the game.

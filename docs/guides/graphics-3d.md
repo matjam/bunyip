@@ -46,9 +46,10 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 }
 ```
 
-`SetCamera`, `SetLight` and `SetPost` apply to the whole output for the
-frame, not to the calls after them, so where you put them does not
-matter. Call each once.
+`SetCamera` and `SetLight` apply to the whole current output for the
+frame. `SetPost` applies to every output, including render textures;
+the final settings are used when the frame is submitted. Call each once
+for its intended output rather than changing it between draws.
 
 ## Cameras
 
@@ -243,6 +244,8 @@ Malformed buffer bounds and animation accessor shapes or key counts
 return errors from the glTF loader. Translation and scale outputs are
 three-component vectors, rotations are four-component vectors, and
 morph weights are scalars; cubic keys include both tangent records.
+The loader retains the cubic keys' values but discards their tangents,
+so playback uses linear interpolation for CUBICSPLINE channels.
 The loader also rejects cyclic hierarchies, repeated children, multiple
 parents and invalid node or scene references before resolving resources.
 Scene roots must be parentless and unique within a scene; different
@@ -279,7 +282,9 @@ gr.DrawModelWith(g.ship, world, func(i int, p gfx.ModelPart) gfx.Material {
 	m.BaseColor = teamColor
 	return m
 })
-``` `NodeCount`,
+```
+
+`NodeCount`,
 `NodeName`, `NodeIndex` and `NodeParent` walk the node hierarchy by name,
 so you can find a node such as a gun muzzle and spawn an effect there;
 `Model.NodeMatrix` and `NodePosition` give a node's rest-pose place in
@@ -820,7 +825,9 @@ camera fall from 220 microseconds of culling a frame to under two.
 
 A batch is for geometry that never moves: the hierarchy is built from
 the models given and is not rebuilt, so anything that moves belongs in
-`DrawMesh`. It does not own its meshes or textures, which are destroyed
+`DrawMesh`. Rebuild it if mesh geometry or bounds change, and include
+vertex-shader displacement in the mesh bounds before building it.
+It does not own its meshes or textures, which are destroyed
 as usual, and `Len` and `Bounds` report what it holds.
 
 ```go

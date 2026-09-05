@@ -10,6 +10,13 @@ rebuilds the interface every frame by calling widget methods, and each
 widget returns what happened. There is no widget tree to create,
 update or free.
 
+Create a `ui.Context` once with `ui.New(ctx.Gfx, ui.DarkTheme(font))`
+and reuse it on the rendering goroutine. The context retains focus,
+scroll positions, caret, selection and undo history by widget identity;
+the game owns widget values, fonts and skin textures. Keep labels,
+container structure and the order of repeated labels stable to retain
+that interaction state.
+
 ## Frames and containers
 
 Build the interface inside `Begin`, which finishes the frame when its
@@ -44,7 +51,14 @@ lays out rows of `Cell` values (or any widget) under a header, `Tree`
 and `TreeOpen` nest collapsible sections, and `Window` is a panel the
 user drags by its title and resizes by its corner. `MenuBar`, `Menu` and
 `MenuItem` make a menu bar with drop-down lists, and `Modal` dims
-everything else and takes all input until its flag is cleared.
+everything else and blocks background widgets until its flag is cleared.
+A modal's body draws after ordinary widgets. Submit a newly opened modal
+before background controls to block those controls in its first frame;
+on later frames the modal owns input from the first widget regardless of
+submission order. Gate gameplay input separately using the open flag.
+`WantsKeyboard` reports text-editor focus only; it does not report a
+modal or navigation focus. `WantsMouse` reports panel hover and dragging.
+These queries describe the most recent `Begin` and do not consume input.
 
 ```go
 view := ui.Rect{W: ctx.Width, H: ctx.Height}
@@ -333,5 +347,7 @@ for _, n := range u.Accessible() {
 
 The list covers the frame that was built most recently, so read it
 after `Begin` returns. A
+returned slice is borrowed and reused by later frames; copy it before
+keeping it past the next `Begin`. A
 test finds a widget by role and label and clicks the centre of its
 `Rect`, which is how the package's own navigation tests work.

@@ -19,17 +19,25 @@ type VoiceInfo struct {
 	// Positional voices are heard from Position in the listener's world;
 	// the rest are panned.
 	Positional bool
-	Position   lin.Vec3
+	Position   lin.Vec3 // source position in listener world units
 
-	Loop, Paused, Muted, Soloed bool
-	Priority                    int
-	Reverb, Occlusion           float32
+	Loop      bool    // voice loop option; stream looping is controlled separately
+	Paused    bool    // voice pause only, excluding bus and mixer pauses
+	Muted     bool    // voice mute only, excluding bus mute and solo suppression
+	Soloed    bool    // voice solo flag
+	Priority  int     // priority used when choosing a voice to steal
+	Reverb    float32 // send level into the bus or shared reverb
+	Occlusion float32 // obstruction amount from 0 (clear) to 1 (blocked)
 }
 
-// Voices returns a snapshot of the playing voices, in the order the
+// Voices returns a snapshot of the voices retained by the mixer, in the order the
 // mixer holds them, for a debug view or a test. The values are copies:
 // changing them changes nothing, and a voice may end before the caller
 // reads them.
+// Stopped voices can remain here until the next blocks retire their
+// ramps, so the length need not equal Playing. Settings are copied under
+// the settings lock; positions are read afterward from the last mixed
+// block and need not represent the exact same instant.
 func (m *Mixer) Voices() []VoiceInfo {
 	m.mu.Lock()
 	voices := append([]*Voice(nil), m.voices...)

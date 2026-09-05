@@ -17,9 +17,10 @@
 // positions from the velocities, projects the constraints
 // Settings.Iterations times, pushes particles out of the solids they
 // ended up inside, and reads the new velocities back from how far each
-// particle moved. Constraint stiffness is compliance in metres per
-// newton, so it does not change with the substep count or the iteration
-// count: zero is rigid and larger is softer. A fluid keeps its own
+// particle moved. Distance-constraint compliance is in metres per
+// newton for SI units: zero is rigid and larger is softer. XPBD reduces
+// timestep dependence, but finite iterations still affect convergence.
+// A fluid keeps its own
 // substep count, one by default, for the reason Fluid2Spec.Substeps
 // gives.
 //
@@ -35,7 +36,9 @@
 // signed distance are Sphere, Box3, Capsule and compounds of those in 3D,
 // and Circle, Box2, Polygon2 and Capsule2 in 2D; other shapes, and the
 // colliders of dynamic bodies, are ignored. Soft bodies do not push rigid
-// bodies back.
+// bodies back. Triggers are ignored. Particle masks test the collider's
+// Layer; its Mask is not used by the soft solver. There is no cloth
+// self-collision or collision between separate soft components.
 //
 // For rigid bodies, joints and queries, see the phys package. Both
 // simulations run on the same world and the same colliders.
@@ -140,7 +143,8 @@ func stateOf(w *ecs.World) *state {
 
 // System advances every Cloth, SoftBody3 and Fluid2 in the world by dt
 // seconds. Register it after the phys system, so soft bodies see where
-// the rigid ones ended the update.
+// the rigid ones ended the update. Nonpositive dt does nothing. Colliders
+// are sampled once at entry and held fixed through the soft substeps.
 func System(w *ecs.World, dt float64) {
 	if dt <= 0 {
 		return

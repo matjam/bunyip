@@ -24,6 +24,8 @@ import (
 // tiles in canonical Blob47 order, and the matching frames array:
 // upload it, cut it with a sheet of the same tile size, and pass the
 // frames to Blob47.
+// tile must be a positive even pixel size; template must be non-nil and
+// contain at least two tiles across and three down from Bounds().Min.
 func ExpandBlob(template image.Image, tile int) (*image.RGBA, [47]int) {
 	const columns = 8
 	rows := (47 + columns - 1) / columns

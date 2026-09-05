@@ -77,9 +77,12 @@ func (a Vec3) Norm() Vec3 {
 // State is a position and velocity relative to the body being orbited.
 type State struct{ Pos, Vel Vec3 }
 
-// Elements are classical orbital elements; angles are radians.
+// Elements are classical orbital elements; angles are radians and the
+// reference plane is XY with +Z as its normal. Distances and mu must use
+// consistent units; mu is G times primary mass, with units distance³/time².
+// A zero Elements has no valid orbital radius.
 type Elements struct {
-	SemiMajorAxis float64 // negative for hyperbolic orbits
+	SemiMajorAxis float64 // negative for hyperbolic orbits; periapsis distance when eccentricity is exactly 1
 	Eccentricity  float64
 	Inclination   float64
 	Node          float64 // longitude of the ascending node
@@ -91,7 +94,9 @@ type Elements struct {
 // plane.
 func Circular(radius float64) Elements { return Elements{SemiMajorAxis: radius} }
 
-// Periapsis is the closest distance to the primary.
+// Periapsis returns SemiMajorAxis*(1-Eccentricity), the closest distance
+// for elliptic and hyperbolic orbits. For a parabola, read SemiMajorAxis
+// directly: this formula returns zero at eccentricity 1.
 func (e Elements) Periapsis() float64 { return e.SemiMajorAxis * (1 - e.Eccentricity) }
 
 // Apoapsis is the farthest distance; infinite for open orbits.
@@ -110,7 +115,7 @@ func (e Elements) Period(mu float64) float64 {
 	return 2 * math.Pi * math.Sqrt(e.SemiMajorAxis*e.SemiMajorAxis*e.SemiMajorAxis/mu)
 }
 
-// MeanMotion is the average angular rate, radians per second.
+// MeanMotion is the average angular rate in radians per simulation time unit.
 func (e Elements) MeanMotion(mu float64) float64 {
 	return math.Sqrt(mu / math.Abs(e.SemiMajorAxis*e.SemiMajorAxis*e.SemiMajorAxis))
 }
@@ -246,7 +251,8 @@ func MeanAnomalyFromTrue(trueAnomaly, e float64) float64 {
 	return wrap(E - e*math.Sin(E))
 }
 
-// AtTime returns the elements after dt seconds on a closed orbit.
+// AtTime returns the elements after dt simulation time units. Closed
+// orbits advance mean anomaly; open orbits use Propagate and ElementsOf.
 func (e Elements) AtTime(mu, dt float64) Elements {
 	if e.Eccentricity >= 1 {
 		s := Propagate(e.State(mu), mu, dt)
@@ -258,8 +264,11 @@ func (e Elements) AtTime(mu, dt float64) Elements {
 	return out
 }
 
-// Propagate advances a state by dt seconds under two-body gravity using
-// the universal variable formulation, which is exact for every conic.
+// Propagate advances a state by dt simulation time units under two-body
+// gravity using the universal variable formulation for any conic. It
+// solves iteratively in float64 and does not report failure to converge.
+// mu must be positive and the initial distance from the primary nonzero.
+// A zero dt returns s unchanged.
 func Propagate(s State, mu, dt float64) State {
 	if dt == 0 {
 		return s
@@ -337,7 +346,8 @@ func EscapeVelocity(mu, r float64) float64 { return math.Sqrt(2 * mu / r) }
 func VisViva(mu, r, a float64) float64 { return math.Sqrt(mu * (2/r - 1/a)) }
 
 // Hohmann plans the two-burn transfer between circular orbits of radii
-// r1 and r2: the delta-v of each burn and the coast time between them.
+// r1 and r2: the nonnegative delta-v magnitude of each burn and the coast
+// time between them. Both radii and mu must be positive and use consistent units.
 func Hohmann(mu, r1, r2 float64) (dv1, dv2, coast float64) {
 	at := (r1 + r2) / 2
 	dv1 = math.Abs(VisViva(mu, r1, at) - CircularVelocity(mu, r1))
@@ -346,6 +356,7 @@ func Hohmann(mu, r1, r2 float64) (dv1, dv2, coast float64) {
 	return
 }
 
-// SphereOfInfluence is the radius within which a body of mass m orbiting
-// a primary of mass M at distance a dominates gravity.
+// SphereOfInfluence returns the Laplace sphere-of-influence approximation
+// a*(m/M)^0.4 for a body's orbital semi-major axis a and masses m and M.
+// It is a patched-conic boundary estimate, not an exact gravity boundary.
 func SphereOfInfluence(a, m, M float64) float64 { return a * math.Pow(m/M, 0.4) }

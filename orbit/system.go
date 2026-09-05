@@ -13,10 +13,10 @@ func sqrtFloat(v float64) float64 { return math.Sqrt(v) }
 // Settings is the world resource for the orbit system.
 type Settings struct {
 	G         float64 // zero means the real constant
-	TimeScale float64 // simulated seconds per real second; zero means 1
-	Substeps  int     // integration steps per update for free bodies; zero means 8
-	Softening float64
-	// Rendering: world units per metre, and the floating origin that is
+	TimeScale float64 // simulation time units per real second; zero means 1
+	Substeps  int     // minimum integration steps per update for ships; nonpositive means 8
+	Softening float64 // distance softening: squared and added to squared separations; zero disables it
+	// Rendering: scene units per simulation distance unit, and the floating origin that is
 	// subtracted from every position before scaling so the scene stays
 	// near zero where float32 is precise. Move Origin with the camera.
 	Scale  float64 // zero means 1
@@ -36,13 +36,15 @@ type Kepler struct {
 	elapsed  float64
 }
 
-// Thrust is an acceleration applied to a free body, in m/s²; a ship's
-// engine.
+// Thrust is the constant acceleration applied to a Ship, in simulation
+// distance units per simulation time unit squared, in world axes.
 type Thrust struct{ Accel Vec3 }
 
 // Ship is a marker for free bodies: they are integrated numerically
-// under every massive body's gravity plus their own Thrust. Without it,
-// a Body with no Kepler stays put (a star at the origin).
+// under massive non-Ship bodies' gravity plus their own Thrust. Ships
+// do not exert gravity on one another, regardless of Mass. Without it,
+// a Body with no Kepler stays put (a star at the origin). Use either
+// Ship or Kepler on an entity, not both.
 type Ship struct{}
 
 type state struct {
@@ -75,7 +77,10 @@ func stateOf(w *ecs.World) *state {
 }
 
 // System advances orbits by dt real seconds (times Settings.TimeScale)
-// and writes scaled positions into gfx.Transform components.
+// and writes scaled positions into existing gfx.Transform components.
+// It creates default Settings when absent. Use a nonnegative scaled
+// timestep: the ship integrator does not integrate backwards. Kepler
+// primary chains should be acyclic and no more than sixteen links deep.
 func System(w *ecs.World, dt float64) {
 	settings := ecs.Resource[Settings](w)
 	if settings == nil {
@@ -224,9 +229,13 @@ func (s *state) keplerStates(w *ecs.World, g, ahead float64, ref ecs.Entity, all
 
 // Predict integrates a copy of a ship forward and returns its path in
 // world units (scaled, relative to the origin), for drawing where it is
-// heading. Kepler bodies move along their orbits as time advances, so
-// the path stays right around a planet that is itself moving; free
-// bodies other than the ship are held still.
+// heading. seconds is a nonnegative duration in simulation time units,
+// independent of Settings.TimeScale. The result contains exactly samples points,
+// excluding the starting point and including the end of the duration.
+// Kepler bodies move during prediction; other Ships are excluded from
+// gravity, and massive bodies with neither Ship nor Kepler stay fixed.
+// Settings and the ship's Body must exist and samples must be positive,
+// otherwise it returns nil. Current Thrust is held constant throughout.
 func Predict(w *ecs.World, ship ecs.Entity, seconds float64, samples int) []lin.Vec3 {
 	return PredictRelative(w, ship, ecs.None, seconds, samples)
 }
@@ -235,7 +244,9 @@ func Predict(w *ecs.World, ship ecs.Entity, seconds float64, samples int) []lin.
 // point is shifted by how far that body will have moved by then, so the
 // path of a ship orbiting a planet draws as a loop around the planet
 // where it is now rather than a streak across the sky. With ref None it
-// is the inertial path.
+// is the inertial path. Only a reference with Kepler is advanced; a
+// free reference body supplies no moving-frame correction. Requirements,
+// units and sample placement are the same as Predict.
 func PredictRelative(w *ecs.World, ship, ref ecs.Entity, seconds float64, samples int) []lin.Vec3 {
 	settings := ecs.Resource[Settings](w)
 	if settings == nil || samples <= 0 {

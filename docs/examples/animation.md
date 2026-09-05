@@ -486,7 +486,8 @@ sliders and the checkbox edit the game's own values, which `Update` then
 pushes into the players. The last two sliders are the morph target
 weights, which `Update` hands to the model every frame: with three
 targets, well inside `gfx.MaxGPUMorphTargets`, the blend happens in the
-vertex shader and dragging a slider uploads nothing.
+vertex shader. Updated weights travel with the draw; the geometry does
+not need to be blended on the CPU or uploaded again.
 
 ```go
 	u := g.ui
@@ -583,7 +584,8 @@ A file's blend shapes arrive in exactly this form through `gltf.Load`,
 including the sparse accessors Blender writes for them. Three targets is
 well inside `gfx.MaxGPUMorphTargets`, so the model's deltas go into a
 storage buffer when it loads and every draw blends them in the vertex
-shader: the sliders move as often as they like and nothing is uploaded.
+shader. Changing the sliders updates the weights without reuploading the
+mesh's vertices or target deltas.
 
 ```go
 // faceDocument builds a sphere with three morph targets as a glTF
@@ -701,13 +703,15 @@ func main() {
 
 ## What to try
 
-- Add a `anim.Tint` track to the hero's `jump` clip in `Init` and watch
-  the crossfade blend the colour as well as the position.
+- Add an `anim.Tint` track to the 2D sprite's `pulse` clip in `Init` and
+  animate its colour alongside its size. `Tint` targets `gfx.Sprite`;
+  the 3D hero would need a custom property track for its material.
 - Change the pole vector passed to `SolveTwoBoneIK` in `Init` and see the
   elbow swing to the other side.
 - Add a third point to the blend space in `Init` and give the slider
   another clip to reach.
-- Move the flipbook's `FPS` in `Init` and see it stay in step with the
-  speed slider, which multiplies the delta in `Update`.
+- Change the flipbook's `FPS` in `Init` to alter its walk rate. The speed
+  slider changes `anim.Player` and the skeletal players; the flipbook
+  still advances on the world's unscaled delta.
 - Add an event to the `stride` clip in `Init` and log it, then blend the
   pace and watch when the event still fires.

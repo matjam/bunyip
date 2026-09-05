@@ -29,8 +29,9 @@ const defaultStream = 0xda3e39cb94b95bdb
 // New seeds a generator.
 func New(seed uint64) *Rand { return NewStream(seed, defaultStream) }
 
-// NewStream seeds a generator on a particular stream: two generators with
-// the same seed and different streams produce unrelated sequences.
+// NewStream seeds a generator on a particular stream. Only the low 63
+// bits of stream select the sequence; stream values differing solely
+// in the highest bit select the same sequence.
 func NewStream(seed, stream uint64) *Rand {
 	r := &Rand{inc: stream<<1 | 1}
 	r.Uint32()
@@ -71,7 +72,8 @@ func (r *Rand) Intn(n int) int {
 	return int(r.Uint64() % uint64(n))
 }
 
-// Range returns a value in [lo, hi], inclusive at both ends.
+// Range returns a value in [lo, hi], inclusive at both ends, swapping
+// reversed bounds. The inclusive range width must fit in a positive int.
 func (r *Rand) Range(lo, hi int) int {
 	if hi < lo {
 		lo, hi = hi, lo
@@ -88,7 +90,8 @@ func (r *Rand) Float64() float64 { return float64(r.Uint64()>>11) / (1 << 53) }
 // Between returns a value in [lo, hi).
 func (r *Rand) Between(lo, hi float32) float32 { return lo + (hi-lo)*r.Float() }
 
-// Chance reports true with probability p.
+// Chance reports true with probability p: p <= 0 is always false and
+// p >= 1 is always true. Every call advances the generator.
 func (r *Rand) Chance(p float32) bool { return r.Float() < p }
 
 // Roll sums dice of the given sides, as in Roll(2, 6) for 2d6.
@@ -133,6 +136,7 @@ func Shuffle[T any](r *Rand, items []T) {
 // WeightedIndex picks an index with probability proportional to its
 // weight; weights at or below zero are never chosen. It returns -1 when
 // nothing can be picked.
+// Weights and their positive sum must be finite.
 func WeightedIndex(r *Rand, weights []float32) int {
 	var total float32
 	for _, w := range weights {

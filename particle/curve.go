@@ -9,8 +9,8 @@
 // as Curves and Gradients, gravity and drag, spin, and the texture or
 // region each is drawn with, additive or blended. The presets (Fire,
 // Smoke, Sparks, Rain, Confetti and more) are starting points to tweak.
-// A System owns the live particles and can be moved, paused, stopped
-// when its emitter finishes, and asked how many are alive. Thousands of
+// A System owns the live particles and can be moved or stopped and asked
+// how many are alive. To pause it, stop calling Update. Thousands of
 // particles are cheap. Tens of thousands still draw as one batch but
 // cost CPU in Update.
 //
@@ -19,7 +19,7 @@
 // numbers in parallel arrays, moves them with plain loops, and draws
 // them as one instanced call rather than as sprites; Draw3D puts the
 // same system in the 3D scene as camera-facing quads. Setting
-// Emitter.Stateless drops the per-particle state as well, computing
+// Emitter.Stateless avoids advancing per-particle state, computing
 // every particle from the seed and the clock, for effects whose
 // particles never interact. Stop fixes its final birth time while
 // existing particles age out; Start resets the clock and emission.

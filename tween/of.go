@@ -11,12 +11,13 @@ import "github.com/matjam/bunyip/lin"
 //	tint := fade.Update(dt)
 type Of[V any] struct {
 	*Tween
-	From, To V
-	Lerp     func(a, b V, t float32) V
+	From, To V                         // blend endpoints
+	Lerp     func(a, b V, t float32) V // required blend function, called with eased progress
 }
 
 // NewOf makes a tween over any value with a blend function; a nil ease
-// is linear.
+// is linear. The blend function must be non-nil. Of uses the embedded
+// Tween's Progress; its YoYo setting does not reverse the blend endpoints.
 func NewOf[V any](from, to V, seconds float32, ease Ease, lerp func(a, b V, t float32) V) *Of[V] {
 	return &Of[V]{Tween: New(0, 1, seconds, ease), From: from, To: to, Lerp: lerp}
 }

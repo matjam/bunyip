@@ -7,10 +7,11 @@ import (
 )
 
 // Player is the component that plays clips on an entity. Add an empty
-// one and call Play through PlayerOf, or set Clip directly.
+// one and call Play through PlayerOf. When setting Clip directly, also
+// set Playing to true. The zero Player is stopped.
 type Player struct {
 	Clip    *Clip
-	Time    float32
+	Time    float32 // playback clock in seconds; loops fold it back into their cycle
 	Speed   float32 // playback rate; zero means 1
 	Playing bool
 
@@ -29,7 +30,8 @@ func (p *Player) Play(c *Clip) {
 }
 
 // CrossFade starts a clip while blending out the current one over the
-// given seconds.
+// given seconds. The fade uses unscaled update time; Speed only scales
+// clip playback. A nonpositive duration or a stopped player uses Play.
 func (p *Player) CrossFade(c *Clip, seconds float32) {
 	if p.Clip == nil || !p.Playing || seconds <= 0 {
 		p.Play(c)
@@ -62,19 +64,21 @@ func PlayerOf(w *ecs.World, e ecs.Entity) *Player {
 	return p
 }
 
-// Finished is emitted when a Once clip or a non-looping Flipbook ends.
+// Finished is emitted once when a Player's Once clip or a non-looping
+// Flipbook ends. Skeleton does not emit it; poll gfx.AnimPlayer.Finished.
 type Finished struct {
 	Entity ecs.Entity
 	Clip   *Clip // nil for a Flipbook
 }
 
 // Flipbook plays sprite-sheet frames into the entity's gfx.Sprite.
+// The zero value is inactive: Sheet and Frames must both be supplied.
 type Flipbook struct {
 	Sheet  *gfx.Sheet
 	Frames []int
-	FPS    float32 // zero means 10
+	FPS    float32 // frames per second; nonpositive means 10
 	Loop   bool
-	Time   float64
+	Time   float64 // elapsed seconds; keep nonnegative
 	Done   bool
 }
 

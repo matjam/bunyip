@@ -10,6 +10,9 @@
 // Watcher reports loose files that change on disk, and a Reloader swaps
 // a changed file's texture or shader into the objects a game already
 // holds, so hot reload needs no bookkeeping in the game.
+// GPU loaders and Reloader methods run on the rendering goroutine.
+// The caller owns loaded resources; closing FS releases pack handles,
+// not textures, fonts, models, sounds or music returned by loaders.
 package asset
 
 import (
@@ -65,8 +68,9 @@ func PackFile(path string) Source { return Source{pack: path} }
 func FSSource(fsys fs.FS) Source { return Source{fsys: fsys} }
 
 // Open takes directories and pack files, searched in the order given.
-// A missing source is an error; use Exists checks first when a source is
-// optional. OpenFS accepts embedded file systems as well.
+// A missing source is an error. Check optional source paths with os.Stat before opening;
+// FS.Exists checks asset names after an FS is open. OpenFS accepts
+// embedded file systems as well.
 func Open(sources ...string) (*FS, error) {
 	srcs := make([]Source, 0, len(sources))
 	for _, src := range sources {

@@ -3,6 +3,8 @@ package input
 // GamepadButton indexes the buttons of a standard extended gamepad.
 type GamepadButton uint8
 
+// Standard controller buttons. GamepadButtonCount is the array bound,
+// not a button; face-button names describe positions across brands.
 const (
 	ButtonA GamepadButton = iota // bottom face button (Cross on PlayStation)
 	ButtonB                      // right face button (Circle)
@@ -25,6 +27,8 @@ const (
 // GamepadAxis indexes the analogue inputs, each in -1..1 (triggers 0..1).
 type GamepadAxis uint8
 
+// Standard axes: stick X is positive right, stick Y is positive up,
+// and triggers run from released (0) to pressed (1).
 const (
 	AxisLeftX GamepadAxis = iota
 	AxisLeftY             // +1 is up, as the hardware reports it
@@ -40,10 +44,10 @@ const MaxGamepads = 4
 
 // Gamepad is one controller's current state.
 type Gamepad struct {
-	Connected                       bool
-	Name                            string
-	Buttons                         [GamepadButtonCount]bool
-	Axes                            [GamepadAxisCount]float32
+	Connected                       bool                      // controller is currently present
+	Name                            string                    // device-provided display name
+	Buttons                         [GamepadButtonCount]bool  // held buttons
+	Axes                            [GamepadAxisCount]float32 // raw axes before Axis applies its dead zone
 	pressed                         [GamepadButtonCount]bool
 	released                        [GamepadButtonCount]bool
 	prevAxes                        [GamepadAxisCount]float32 // the previous update's axes, for edges on sticks
@@ -61,7 +65,8 @@ func (g *Gamepad) Released(b GamepadButton) bool { return g.released[b] }
 // Down reports whether the button is held.
 func (g *Gamepad) Down(b GamepadButton) bool { return g.Buttons[b] }
 
-// Axis returns an analogue value with a small dead zone applied.
+// Axis returns an analogue value, replacing values strictly between
+// -0.08 and 0.08 with zero; values outside that range are not rescaled.
 func (g *Gamepad) Axis(a GamepadAxis) float32 {
 	v := g.Axes[a]
 	if v > -0.08 && v < 0.08 {
@@ -71,8 +76,10 @@ func (g *Gamepad) Axis(a GamepadAxis) float32 {
 }
 
 // Gamepad returns a snapshot of controller i (0..MaxGamepads-1); a
-// disconnected one reads as idle. During Draw the edges cover the whole
-// frame, as for keys and mouse buttons.
+// disconnected one reads as idle. Out-of-range indices return an idle
+// snapshot. Changing the snapshot does not modify State. During Draw
+// button edges cover the whole frame, as for keys and mouse buttons;
+// connection flags and axis transitions still cover the update only.
 func (s *State) Gamepad(i int) *Gamepad {
 	if i < 0 || i >= MaxGamepads {
 		return &Gamepad{}

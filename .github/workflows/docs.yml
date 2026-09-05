@@ -21,11 +21,15 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Check documentation and generator
+        run: go test ./cmd/bunyip-docs
       - name: Generate the site
         run: go run ./cmd/bunyip-docs -out site
       - uses: actions/upload-pages-artifact@v3

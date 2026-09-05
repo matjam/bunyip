@@ -125,15 +125,16 @@ type convexPart struct {
 // OverlapShape3 returns every collider the shape overlaps when placed at
 // pos with rotation rot. Each hit carries the deepest contact: Point on
 // the collider, Normal pointing from the collider back toward the shape
-// and Distance the penetration depth. Triggers are included.
+// and Distance the penetration depth. Triggers are included. s must be
+// non-nil. A zero rot is identity; mask zero includes every collider layer.
 func OverlapShape3(w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, mask uint32) []Hit3 {
 	return OverlapShape3Into(nil, w, s, pos, rot, mask)
 }
 
 // OverlapShape3Into appends every collider the shape overlaps to out and
 // returns out. Pass the previous result truncated with [:0] to reuse its
-// storage; pass nil for a fresh slice. A game that overlaps every frame
-// then allocates nothing.
+// storage; pass nil for a fresh slice. Result and scratch buffers may
+// allocate on initial use or growth. OverlapShape3's contracts apply.
 func OverlapShape3Into(out []Hit3, w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, mask uint32) []Hit3 {
 	return overlapShape3(out, w, s, pos, mat3FromQuat(rot), mask, true, ecs.None)
 }

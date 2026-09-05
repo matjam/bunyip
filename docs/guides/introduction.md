@@ -27,8 +27,8 @@ The engine is pure Go. It builds with `go build` and no cgo, calls
 Vulkan through a generated binding and each operating system's own
 windowing and audio APIs through purego, and cross-compiles by setting
 `GOOS`. A game does not call Vulkan; it works with sprites, meshes,
-cameras, lights and widgets. Every example runs to a screenshot without
-a window, so the whole engine is testable on a build machine.
+cameras, lights and widgets. Rendering examples run to a screenshot
+without a window; native window interaction still needs a desktop.
 
 ## Design
 
@@ -49,11 +49,12 @@ a window, so the whole engine is testable on a build machine.
 - **Immediate-mode interface.** The interface is rebuilt every frame from
   Go values, and closures scope every container, so there is no widget
   tree to keep in step with the game.
-- **Self-verifying examples.** Every example takes `-seconds` and
+- **Self-verifying examples.** Rendering examples take `-seconds` and
   `-shot`, runs unattended to a screenshot, and the renderer's tests
   read pixels back from a headless surface. Each one also has a
   [walkthrough](../examples/index.html) that quotes the whole program and
-  explains it section by section.
+  explains it section by section. The native `window` example is excluded
+  from headless screenshot tests.
 
 ## The shape of a game
 
@@ -87,12 +88,13 @@ game uses: graphics, input, audio, timing and the window.
 
 | Area | Packages |
 |---|---|
-| Engine | [bunyip](../pkg/bunyip.html) (loop, context, window), [input](../pkg/input.html) (keys, mouse, gamepads, action maps) |
+| Engine | [bunyip](../pkg/bunyip.html) (loop, context, window), [input](../pkg/input.html) (keys, mouse, gamepads, action maps), [console](../pkg/console.html) (debugging commands and panels) |
 | Graphics | [gfx](../pkg/gfx.html) (2D, 3D, text, post-processing), [ui](../pkg/ui.html), [anim](../pkg/anim.html), [particle](../pkg/particle.html), [tiled](../pkg/tiled.html), [gltf](../pkg/gltf.html), [lin](../pkg/lin.html) |
-| Simulation | [ecs](../pkg/ecs.html), [phys](../pkg/phys.html) (2D and 3D rigid bodies), [orbit](../pkg/orbit.html) (celestial mechanics), [orbit/sol](../pkg/orbit/sol.html) |
+| Simulation | [ecs](../pkg/ecs.html), [phys](../pkg/phys.html) (2D and 3D rigid bodies), [phys/soft](../pkg/phys/soft.html) (cloth, soft bodies and 2D fluids), [orbit](../pkg/orbit.html) (celestial mechanics), [orbit/sol](../pkg/orbit/sol.html) |
 | Audio | [audio](../pkg/audio.html) (mixer, music, effects), [audio/tracker](../pkg/audio/tracker.html) |
 | Services | [asset](../pkg/asset.html), [save](../pkg/save.html), [locale](../pkg/locale.html), [rng](../pkg/rng.html), [timer](../pkg/timer.html), [tween](../pkg/tween.html), [grid](../pkg/grid.html), [network](../pkg/network.html) |
-| Tools | `bunyip-info`, `bunyip-play`, `bunyip-pack`, `bunyip-shader`, `bunyip-bundle`, `bunyip-docs` |
+| Assets and map formats | [gfx/ktx2](../pkg/gfx/ktx2.html) (compressed textures), [grid/autotile](../pkg/grid/autotile.html) (terrain tile selection) |
+| Tools | `bunyip-info`, `bunyip-play`, `bunyip-pack`, `bunyip-shader`, `bunyip-tex`, `bunyip-bundle`, `bunyip-docs` |
 
 ## Reading order
 

@@ -9,7 +9,10 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
-// Texture is an image on the GPU, sampled by sprites.
+// Texture is an image on the GPU, sampled by sprites, materials and
+// shaders. Create it through Graphics; its zero value is not drawable.
+// Width and Height are pixel dimensions maintained by the engine and
+// must not be assigned by callers. Destroy releases owned GPU storage.
 type Texture struct {
 	Width, Height int
 	img           *render.Image
@@ -39,8 +42,11 @@ type TextureOptions struct {
 	Repeat bool
 }
 
-// NewTexture uploads an image. Pixels are converted to premultiplied RGBA
-// and treated as sRGB, so shaders see linear light.
+// NewTexture uploads an image without modifying it. Colour pixels are
+// premultiplied in linear light and stored as sRGB, so shaders sample
+// premultiplied linear colour. Data textures skip this colour conversion.
+// Empty bounds return an error; src must be non-nil. During Draw, the
+// upload is recorded before rendering; outside a frame it waits for the GPU.
 func (g *Graphics) NewTexture(src image.Image, opts TextureOptions) (*Texture, error) {
 	b := src.Bounds()
 	if b.Dx() <= 0 || b.Dy() <= 0 {

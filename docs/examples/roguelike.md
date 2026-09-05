@@ -8,8 +8,8 @@ This is the engine's turn-based mode in a complete small game. It
 generates rooms joined by corridors, places a player and some goblins,
 computes what the player can see, moves the monsters when the player
 moves, and prints a message log under the map. Nothing happens between
-keypresses: the process blocks in the operating system, so an idle game
-uses no processor at all.
+turns in the dungeon. The engine loop can block in the operating system
+between events instead of continually updating and redrawing an idle game.
 
 Turn-based mode is a single field, `Config.TurnBased`, and its effect
 runs through everything else. `Update` runs when an event arrives rather
@@ -113,9 +113,9 @@ var moves = map[input.Key][2]int{
 ## Update: one keypress, one turn
 
 `Update` runs when an event arrives. Each movement key is tested with
-`KeyPressed`, which is an edge, so holding a key does not run turns
-continuously, and the loop breaks after the first match so a diagonal
-key cannot fire twice.
+`KeyPressed`, which includes OS key-repeat events, so holding a key can
+advance further turns at the platform's repeat rate. The loop breaks
+after the first matching movement key.
 
 `ctx.RequestRedraw()` asks for another pass even though nothing has
 happened. It is only used when `-seconds` is set: without it the program
@@ -409,7 +409,8 @@ so accepted rooms always have a wall between them.
 ## Acting
 
 The player's move is the standard roguelike one: a wall stops the move
-with no message and no turn cost, a monster in the way is attacked
+with no message, but `takeTurn` still advances the turn and the monsters.
+A monster in the way is attacked
 instead of being walked into, and otherwise the player moves. Returning
 the message rather than logging it keeps this file free of presentation.
 

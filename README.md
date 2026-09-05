@@ -6,8 +6,8 @@ physics, animation, celestial mechanics, interface toolkit, audio mixer,
 asset pipeline, saves, translation and networking, all written for this
 engine and documented in one voice. It is built for games that simulate
 as much as they render: roguelikes, 4X strategy, space games, arcade
-games. Pure Go, no cgo, and every example runs to a screenshot without a
-window.
+games. Pure Go, no cgo, with headless screenshot tests for the rendering
+examples.
 
 **How it is built**
 
@@ -17,7 +17,7 @@ window.
 - Native window, input and audio layers per platform. No SDL, no GLFW.
 - Two loop modes: a fixed timestep for real-time games, or turn-based,
   where the process sleeps in the operating system until input arrives.
-- Every example runs to a screenshot without a window, and the renderer's
+- Rendering examples run to a screenshot without a window, and the renderer's
   tests render into offscreen images and read the pixels back.
 
 **What it does**
@@ -74,7 +74,7 @@ window.
   UDP (with reliable channels, prediction and interpolation helpers).
 - The window: a fixed view scaled into the window, fullscreen, cursor
   capture and images, the clipboard on every platform, pausing while
-  unfocused or hidden, gamepads, IME text input, action maps with
+  unfocused or hidden, gamepads, macOS IME text input, action maps with
   rebinding, a frame-timing overlay on F3, and optional pprof.
 - Debugging: an in-game console with commands, variables, key bindings
   and the log, and panels for the frame timings, per-pass GPU times from
@@ -175,8 +175,11 @@ func main() {
 
 ## Examples
 
-Every example takes `-seconds N` and `-shot file.png`, so a run verifies
-itself without a person watching the screen.
+Screenshot-capable examples take `-seconds N` and `-shot file.png`, so a
+run can verify itself without a person watching the screen. The headless
+harness excludes `window` (native platform), `network` (needs a peer),
+and `clear` (uniform output). `assets` is checked for nonblank output
+but has no golden comparison because it changes its files and run counter.
 
 Each one has a walkthrough on the documentation site that quotes the
 whole program and explains it section by section:
@@ -226,6 +229,9 @@ whole program and explains it section by section:
 
 Go 1.26 or later, and a Vulkan driver.
 
+Set `CGO_ENABLED=0` for all Go commands shown here: `export CGO_ENABLED=0`
+in a POSIX shell, or `$env:CGO_ENABLED = "0"` in PowerShell.
+
 macOS: the Vulkan loader and MoltenVK (`brew install vulkan-loader molten-vk`),
 or the LunarG Vulkan SDK. Optional: `brew install vulkan-validationlayers`
 for validation in tests and examples. Set `BUNYIP_VULKAN_LIBRARY` to point at
@@ -249,8 +255,9 @@ go vet ./...
 
 Renderer tests render into offscreen images, read the frame back and check
 pixels; headless mode needs no window system and no surface extension, so
-it works on any conformant Vulkan driver. `go test ./examples/` runs every
-example headless for a moment and compares the frame against a stored
+it works without a desktop when the driver supports the renderer's Vulkan
+features. `go test ./examples/` runs the examples covered by the harness
+headless for a moment and compares the frame against a stored
 image in `examples/testdata`: a mean difference over the whole frame, and
 a tighter comparison of both frames blurred, which is what catches
 something moving rather than something changing colour. A failure writes

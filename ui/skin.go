@@ -11,12 +11,12 @@ type Slice = gfx.NineSlice
 // Skin holds the art for each widget part. Any nil slice falls back to
 // the theme's flat colours, so a skin can start with one button.
 type Skin struct {
-	Panel        *Slice
-	Button       *Slice
-	ButtonHover  *Slice
-	ButtonActive *Slice
+	Panel        *Slice // panel background and border
+	Button       *Slice // idle button
+	ButtonHover  *Slice // hovered button; falls back to Button
+	ButtonActive *Slice // held button; falls back to ButtonHover, then Button
 	Field        *Slice // text fields and drop-down heads
-	FieldFocus   *Slice
+	FieldFocus   *Slice // focused editor; falls back to Field
 	Check        *Slice // checkbox box, unticked
 	CheckOn      *Slice // checkbox box, ticked
 	Track        *Slice // slider, progress and scrollbar tracks

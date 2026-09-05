@@ -1,5 +1,9 @@
 // Package shaders holds the gfx package's GLSL sources and committed SPIR-V,
-// and the preludes that game shaders are compiled against.
+// and the preludes that game shaders are compiled against. Compose builds
+// GLSL without invoking a compiler; bunyip-shader invokes glslangValidator
+// offline. Mesh bundles contain regular and order-independent fragment
+// programs and optionally static/skinned vertex programs for lit and
+// shadow passes. Embedded byte slices are shared and must not be modified.
 package shaders
 
 import (
@@ -404,14 +408,17 @@ var (
 	skinCall    = regexp.MustCompile(`SKIN`)
 )
 
-// HasVertexHook reports whether a mesh shader source defines vertex().
+// HasVertexHook reports whether source matches a void vertex declaration.
+// It uses a textual pattern, not a GLSL parser; comments are not stripped.
 func HasVertexHook(source string) bool { return vertexDef.MatchString(source) }
 
 // Compose wraps a game's shader source with the prelude and main for its
 // kind and stage, filling in optional hooks the source leaves out. The
 // result is a complete GLSL program for glslangValidator. Line numbers in
 // compiler messages are offset by the prelude; Compose's second result is
-// that offset. Sprite shaders have only StageFrag.
+// that offset. Sprite shaders have only StageFrag. Mesh vertex hooks run
+// after morph blending and before skinning in both lit and shadow passes.
+// Hook detection is textual; GLSL syntax is checked by the compiler later.
 func Compose(kind Kind, stage Stage, source string) (glsl string, lineOffset int, err error) {
 	switch kind {
 	case Sprite:
@@ -464,12 +471,14 @@ func countLines(s string) int {
 	return n
 }
 
-// A bundle holds every stage of a mesh shader with a vertex hook in one
+// A bundle holds the programs of a mesh shader in one
 // file: the magic, a count, then (stage, size, SPIR-V) records. A file
 // without the magic is plain SPIR-V for the fragment stage alone.
 var bundleMagic = []byte("BYSH")
 
-// Bundle packs stage programs into one blob.
+// Bundle copies stage programs into a new blob in stage-number order.
+// Supply only defined Stage values and include StageFrag for Unbundle.
+// It does not validate SPIR-V program bytes.
 func Bundle(stages map[Stage][]byte) []byte {
 	out := append([]byte{}, bundleMagic...)
 	out = binary.LittleEndian.AppendUint32(out, uint32(len(stages)))
@@ -486,7 +495,9 @@ func Bundle(stages map[Stage][]byte) []byte {
 }
 
 // Unbundle splits a bundle into its stages; plain SPIR-V comes back as
-// the fragment stage alone.
+// the fragment stage alone. Returned slices alias data. It validates bundle
+// record bounds and stage numbers, but not the SPIR-V bytes themselves;
+// NewMeshShader validates those when loading the programs.
 func Unbundle(data []byte) (map[Stage][]byte, error) {
 	if len(data) < 4 || string(data[:4]) != string(bundleMagic) {
 		return map[Stage][]byte{StageFrag: data}, nil

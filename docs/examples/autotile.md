@@ -472,8 +472,9 @@ a pointy-top hexagon a tile wide, given by six vertices clockwise from
 the top, with vertical left and right sides `hexSideLen` long.
 
 Whether a pixel is inside the hexagon is one test done six times: the
-cross product of an edge with the vector to the pixel is the signed
-distance to that edge's line. The vertices run clockwise on a y-down
+cross product of the vector to the pixel with the edge, divided by the
+edge length, is the signed distance to that edge's line. The vertices run
+clockwise on a y-down
 screen, so a positive distance means the pixel is outside, and the
 smallest magnitude among the six says which side the pixel is nearest.
 

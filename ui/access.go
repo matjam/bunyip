@@ -10,11 +10,11 @@ type AccessibleNode struct {
 	// label, window, dropdown, progress, row (of a Table), list and
 	// listitem (a ReorderableList and its rows), draggable and droptarget.
 	Role    string
-	Label   string
+	Label   string // human-readable widget label
 	Value   string // the current value where there is one
-	Rect    Rect
-	State   bool // checked, selected, open, dragged or ready for a drop, as the role implies
-	Focused bool // has keyboard focus
+	Rect    Rect   // bounds in view units
+	State   bool   // checked, selected, open, dragged or ready for a drop, as the role implies
+	Focused bool   // has keyboard focus
 }
 
 // note records a widget for the accessibility list, at the rectangle the
@@ -31,4 +31,7 @@ func (c *Context) noteAt(role, label, value string, state bool, r Rect, id widge
 
 // Accessible returns the widgets of the last finished frame in reading
 // order.
+// The slice is borrowed and reused by later frames. Do not modify it;
+// copy it if it must outlive the next Begin. No operating-system
+// accessibility bridge is installed by this method.
 func (c *Context) Accessible() []AccessibleNode { return c.lastNodes }

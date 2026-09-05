@@ -1,5 +1,9 @@
 // Command bunyip-pack bundles an asset directory into a pack file that
 // asset.Open can read alongside, or instead of, loose directories.
+//
+//	bunyip-pack [-o assets.pak] directory
+//
+// The output defaults to assets.pak in the current working directory.
 package main
 
 import (

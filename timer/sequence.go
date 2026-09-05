@@ -64,6 +64,10 @@ func (s *Sequence) Loop() *Sequence { s.loop = true; return s }
 
 // Update advances the sequence by dt seconds, running as many steps as
 // finish within it. It reports whether the sequence is done.
+// Wait carries leftover time into following steps. A completed Run
+// consumes the entire remaining step, so later Run steps in the same
+// call receive zero dt. Use finite, nonnegative dt and do not call Update
+// recursively from a step.
 func (s *Sequence) Update(dt float32) bool {
 	wrapped := false // a looping sequence goes round at most once per update
 	for s.i < len(s.steps) {
@@ -103,7 +107,7 @@ func (s *Sequence) Update(dt float32) bool {
 }
 
 // Done reports whether every step has finished; a looping sequence is
-// never done.
+// never done unless Skip was called or it has no steps.
 func (s *Sequence) Done() bool { return s.i >= len(s.steps) }
 
 // Reset starts the sequence over from its first step.

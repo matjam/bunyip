@@ -261,6 +261,7 @@ type PrefabLibrary map[string]*Prefab
 // does not hold, or holds as nil. Name is the name the scene asked for.
 type MissingPrefabError struct{ Name string }
 
+// Error identifies the unresolved prefab name.
 func (e *MissingPrefabError) Error() string {
 	return fmt.Sprintf("ecs: scene: no prefab named %q", e.Name)
 }
@@ -297,7 +298,8 @@ type SceneInstance struct {
 }
 
 // Entity returns the entity this copy of the scene gave the name, and
-// false when the scene names nothing that.
+// false when the scene names nothing that. This lookup does not check
+// whether the entity has since despawned; use World.Alive to check it.
 func (si *SceneInstance) Entity(name string) (Entity, bool) {
 	e, ok := si.named[name]
 	return e, ok

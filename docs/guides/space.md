@@ -19,9 +19,14 @@ space example does.
 eccentricity, inclination, node, argument of periapsis, true anomaly).
 `Elements.State` turns them into a position and velocity for a primary
 of gravitational parameter mu (G times its mass), and `ElementsOf`
-goes back. `Propagate` advances a state by any time span exactly, for
-circles, ellipses, parabolas and hyperbolas alike, so a moon's position
+goes back. `Propagate` advances a state using an iterative two-body
+solution for circles, ellipses, parabolas and hyperbolas, so a moon's position
 a year from now takes one call rather than a million integration steps.
+Angles are radians in an XY reference plane with +Z as the normal.
+Use positive mu and a nonzero orbital radius. For an exactly parabolic
+orbit (`Eccentricity == 1`), `SemiMajorAxis` stores periapsis distance;
+the `Periapsis()` formula itself returns zero for that case. Propagation
+uses float64 arithmetic and does not report convergence failure.
 
 ```go
 el := orbit.Elements{SemiMajorAxis: 20, Eccentricity: 0.3}
@@ -46,8 +51,11 @@ soon := now.AtTime(sol.MuEarth, 600) // where it is ten minutes on
 ## N-body simulation
 
 `Simulation` integrates bodies under their mutual gravity with a
-symplectic leapfrog, which keeps the energy of a system steady over
-long runs. `RK4` steps a single particle through an acceleration field.
+symplectic leapfrog. A suitably small fixed step limits energy error;
+energy is not conserved exactly. `Softening` adds its square to squared
+separations to regularize close encounters. `Energy()` reports the
+unsoftened energy, so it is not the softened system's conserved quantity.
+`RK4` steps a single particle through an acceleration field.
 Use `RK4` for a ship whose engine contributes to the force on it.
 
 ```go
@@ -74,10 +82,17 @@ Give entities an `orbit.Body` (position, velocity, mass) and the
 - entities with a `Kepler` component follow an exact orbit around their
   `Primary`, and chains are supported, such as moons around planets
   around a star;
-- entities marked `Ship` are integrated numerically under every massive
-  body's gravity plus their `Thrust`;
-- everything with a `gfx.Transform` gets a scaled position written into
-  it each update.
+- entities marked `Ship` are integrated under massive non-Ship bodies'
+  gravity plus constant world-axis `Thrust`; ships do not attract one
+  another, regardless of mass;
+- a `Body` with neither `Ship` nor `Kepler` stays fixed;
+- entities with both `Body` and `gfx.Transform` get a scaled position
+  written into the transform each update.
+
+Use either `Ship` or `Kepler` on each moving entity. Keep primary chains
+acyclic and no more than sixteen links deep. This ECS system uses
+prescribed Kepler paths and independent ship integration; use
+`Simulation` when all bodies must exert mutual gravity.
 
 ```go
 ecs.SetResource(w, orbit.Settings{G: 1, TimeScale: 10, Scale: 1})
@@ -92,10 +107,15 @@ w.AddSystem("orbits", orbit.System)
 simulation distance into scene units. `Settings.Origin` is the floating
 origin. Set it to the ship's or camera's position each frame. The scene
 then stays near zero however far the ship has flown, which is the range
-where float32 rendering is precise.
+where float32 rendering is precise. Zero `TimeScale` and `Scale` each
+mean 1; zero `G` selects the SI constant. Use a nonnegative scaled
+timestep because the ship integrator does not run backwards. Pause by
+disabling the orbit system or skipping its update, not by setting
+`TimeScale` to zero.
 
-Register `Body`, `Kepler` and `Settings` with the ECS before saving an
-orbital world, and use `ecs.SaveOptions{SkipUnregistered: true}` to omit
+Before saving an orbital world, register each type it uses, including
+`Body`, `Kepler`, `Ship`, `Thrust` and `Settings`, and use
+`ecs.SaveOptions{SkipUnregistered: true}` to omit
 the orbit system's private query cache. Kepler's JSON includes its elapsed
 simulated time after time scaling, so a
 loaded world continues at the saved phase and remaps its `Primary`
@@ -103,12 +123,17 @@ references to the restored entities. Older saves without elapsed time
 start at the elements' original epoch.
 
 `Predict` integrates a copy of a ship ahead and returns its path in
-scene units for drawing. The Kepler bodies move along their orbits
-during the prediction, so the path is correct even around a fast-moving
-world.
+scene units for drawing. Its horizon is nonnegative simulation time,
+unaffected by `TimeScale`. It returns the requested number of samples
+after the starting point, including the end of the horizon. `Settings`
+and the ship's `Body` must exist; missing either or nonpositive sample
+count returns nil. Kepler sources advance during prediction, fixed
+sources stay fixed, other ships exert no gravity, and current thrust
+stays constant.
 `PredictRelative` returns that path in the frame of a chosen body, so a
 ship circling a planet draws a closed loop around the planet's current
-position instead of a long arc across the scene. `Around` reports which
+position instead of a long arc across the scene. Only Kepler reference
+bodies advance in that moving-frame correction. `Around` reports which
 body dominates a ship and the ship's orbital elements relative to it,
 which is what a readout needs. Pass that primary to `PredictRelative`.
 
@@ -124,10 +149,11 @@ for _, p := range orbit.PredictRelative(w, ship, primary, horizon, 90) {
 }
 ```
 
-Ships are integrated with an adaptive step. The step is never longer
-than a small fraction of the local orbital timescale, and the Kepler
-bodies are moved along their orbits at each step. A ship in a
-twenty-second orbit stays on it at a time warp of two hundred.
+Ships use adaptive RK4 steps, starting with at least `Substeps` per
+update (default 8) and reducing the step according to local speed and
+acceleration, down to one sixty-fourth of that initial step. Kepler
+sources are sampled at each step's midpoint. Large time warps still
+need adequate substeps and validation for the intended trajectories.
 
 ## The space example
 

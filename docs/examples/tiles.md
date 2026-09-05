@@ -463,8 +463,9 @@ func main() {
 ## What to try
 
 - Raise `mapW` and `mapH` to 512 and watch the frame time; the map is
-  culled to the view, so only the zoom changes the cost.
-- Change the easing in `Init` from `tween.OutQuad` to `tween.OutBounce`
+  culled to the view, while a larger map still uses more storage and
+  takes longer to generate. Compare several zoom levels.
+- Change the easing in the timer callback in `Init` from `tween.OutQuad` to `tween.OutBounce`
   for the particle life and see the fade change shape.
 - Give the particles a layer above the character in `Draw` by swapping
   the two `SetLayer` calls.

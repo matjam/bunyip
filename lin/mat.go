@@ -35,7 +35,8 @@ func (m Mat4) MulVec4(v Vec4) Vec4 {
 	}
 }
 
-// MulPoint transforms a point (w = 1) and drops w.
+// MulPoint transforms a point (w = 1) and drops w without perspective
+// division. Use MulVec4 and divide XYZ by W when projecting a point.
 func (m Mat4) MulPoint(p Vec3) Vec3 { return m.MulVec4(p.Vec4(1)).Vec3() }
 
 // Transpose swaps rows and columns.

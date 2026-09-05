@@ -75,6 +75,7 @@ type UnregisteredError struct {
 	Names []string
 }
 
+// Error lists the unregistered names encountered by the operation.
 func (e *UnregisteredError) Error() string {
 	return "ecs: unregistered: " + strings.Join(e.Names, ", ")
 }

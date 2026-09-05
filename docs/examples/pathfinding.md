@@ -20,8 +20,8 @@ produces the same map. Both are covered by
 Everything is recomputed from scratch every frame, which is honest for a
 grid of 40 by 24 and wrong for a large map. The package's doc comments
 say what to keep instead: a `grid.Pathfinder` for repeated searches and a
-`grid.Vision` for repeated casts, both of which allocate nothing per
-call.
+`grid.Vision` for repeated casts. Retained scratch avoids allocations
+once its buffers have grown large enough for the work.
 
 Run it:
 
@@ -128,8 +128,9 @@ func (g *game) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
 draws six longer barriers, one cell at a time in a random direction, to
 make dead ends the search has to work around. `Set` outside the grid is
 ignored, so the barrier loop does not have to check the edges. The last
-line clears the start cell, because a start inside a wall has no path
-anywhere.
+line clears the start cell so it represents walkable terrain. The cost
+callback only rejects blocked destinations, so the search itself would
+still allow a step out of a blocked start.
 
 ```go
 // roll scatters walls and a few longer barriers.

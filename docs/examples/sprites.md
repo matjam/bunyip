@@ -141,8 +141,9 @@ sprites are positioned in. `gfx.RGB` converts sRGB bytes to a linear
 `gfx.Color`, which is what makes the tints look like the numbers
 suggest.
 
-`Init` may run a second time if the GPU device is lost, so nothing here
-depends on running exactly once.
+Device loss does not rerun `Init`. A game must implement `bunyip.Recoverer`
+and rebuild its GPU resources in `Recover` to opt into recovery; this
+example does not, so device loss ends the run with an error.
 
 ```go
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -196,9 +197,10 @@ run more than once between two `Draw` calls, or not at all, so all
 simulation belongs here and nothing here should depend on the frame
 rate.
 
-`KeyPressed` reports the frame's edges: it is true on the update where
-the key went down, not for as long as it is held, which is what a
-toggle wants. `SetFullscreen` and `SetCursorCaptured` are read back
+`KeyPressed` reports key-down edges, including OS repeats. A held key can
+therefore retrigger these toggles; use `KeyRepeated` to exclude repeat
+updates when a toggle should react only to an initial press.
+`SetFullscreen` and `SetCursorCaptured` are read back
 through `Fullscreen()` and `CursorCaptured()` so F and C flip the
 current state. While the cursor is captured the pointer stays put and
 `MouseDelta` reports its movement, which is the input a first-person

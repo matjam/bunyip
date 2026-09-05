@@ -148,7 +148,9 @@ type Emitter struct {
 	// with it, as a thruster flame should.
 	WorldSpace bool
 
-	// Max caps live particles; births beyond it wait. Zero is 1000.
+	// Max caps live particles; stateful births beyond it are discarded.
+	// Stateless systems retain the newest births within the cap.
+	// Nonpositive values mean 1000.
 	Max int
 	// Seed starts the random stream, so the same seed replays the same
 	// effect. Zero is a fixed seed.
@@ -159,8 +161,9 @@ type Emitter struct {
 
 	// Stateless makes a GPUSystem keep no per-particle state: every
 	// particle is a closed-form function of the seed, its index in the
-	// stream and the clock, so memory is constant however many there
-	// are, the effect is exactly the same on every run, and it is
+	// stream and the clock. Simulation history is unnecessary, but the
+	// system still allocates capacity and draw buffers proportional to Max.
+	// The effect is exactly the same for the same settings and clock, and is
 	// already running at time zero with no Prewarm. It suits the effects
 	// whose particles never interact: rain, snow, sparks, dust, stars.
 	//

@@ -302,6 +302,11 @@ func (c *Context) MenuItem(label string) bool {
 // Modal dims everything and draws a panel above it that alone takes
 // input while open; body builds its contents. Pass the same open flag
 // each frame and clear it to close.
+// Its body runs later in Begin, after ordinary widgets. Once submitted,
+// it blocks subsequent background widgets; on following frames it owns
+// input from the first widget. Submit a newly opened modal before
+// background controls to block them in that opening frame too. The
+// game must separately suppress its own input while the modal is open.
 func (c *Context) Modal(title string, r Rect, open *bool, body func()) {
 	if open == nil || !*open {
 		return

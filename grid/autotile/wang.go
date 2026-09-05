@@ -34,6 +34,9 @@ type WangTile struct {
 //
 // A hexagonal layout has six sides and no diagonals, so every type
 // matches those six positions, in the direction slots the layout uses.
+// t must be WangCorners, WangEdges or WangFull. The tiles slice is retained,
+// not copied; edits affect later mapping. Use finite weights; nonpositive
+// weights count as 1. An empty set maps every cell to -1.
 func Wang(t WangType, tiles []WangTile) *Rules {
 	return &Rules{kind: kindWang, wangType: t, wang: tiles}
 }

@@ -9,13 +9,18 @@ The [audio](../pkg/audio.html) package mixes in Go on the output device's
 own thread. A game gets a `Mixer` from `ctx.Audio` and never touches the
 device.
 
+The engine still supplies `ctx.Audio` in headless mode, with `NoAudio`,
+or when output initialization fails. Without output callbacks, sound
+and stream playheads do not advance and natural-completion callbacks
+do not run. Keep essential game progress independent of audio completion.
+
 Every method is safe to call from the game loop. A setter copies its
 value in under a short lock and the mixer picks it up at the start of the
-next block, so the game thread never waits for a block to finish; the
-mixer in turn reads streams with no lock held, so a `Stream.Read` that
-takes locks of its own, or that calls back into the mixer, cannot stall
-the game. The exception is `Voice.Seek`, which moves the playhead the
-mixer is reading from and so waits for the block in flight.
+next block, so setters do not wait for a whole block to finish.
+`Stream.Read` runs without the settings lock, but retains the playback
+lock. It may call setters or start voices, but must return promptly and
+must not call `Voice.Seek`: seeking needs that same playback lock.
+`Voice.Seek` waits for the block in flight when called from the game loop.
 
 ## Sounds and voices
 
@@ -34,6 +39,15 @@ leaves `Playing` at once and the mixer spends that millisecond fading
 what is left. `Voice.Position` and `Seek` read and move the playhead,
 `Sound.Duration` is its length, and `Voice.OnDone` runs a callback when
 the voice ends, for chaining clips.
+
+`Volume: 0` and `Pitch: 0` in `PlayOptions` both mean 1. Use
+`SetVolume(0)` after starting a voice to silence it. `Playing` includes
+muted, paused and out-of-range voices; it does not measure audibility.
+An `OnDone` callback normally runs on the mixing thread after its locks
+are released. `StopAll` and voice stealing run it on their caller before
+the final ramp, and registration on an already finished voice calls it
+immediately. Keep callbacks short and send game-state changes back to
+the game loop.
 
 ```go
 pcm, err := audio.Decode(data) // WAV, Ogg Vorbis or MP3 bytes
@@ -118,32 +132,42 @@ for _, b := range []*audio.Bus{ctx.Audio.Music(), ctx.Audio.Effects(), ctx.Audio
 
 ## Music
 
-`OpenMusic` streams a WAV, Ogg or MP3 file, decoding a couple of seconds
-ahead on its own goroutine; `PlayStream` plays it, and `Close` stops it.
+`OpenMusic` plays WAV, Ogg or MP3 through a two-second buffer filled by
+a decoder goroutine. Ogg and MP3 decode incrementally; WAV is decoded
+fully at open and held in memory. `PlayStream` plays it, and `Close`
+requests decoding to stop.
 `Music.Duration` and `Music.Seek` work for all three formats.
 Looping retains resampling history across the track boundary, including
 tracks as short as one source frame. An explicit seek resets that history;
 nonlooping playback includes the final frame's interval.
-Anything implementing `Stream` (fill a buffer of stereo frames) plays the
-same way. Procedural music and the tracker player use that.
+Anything implementing `Stream` plays the same way. `Read` returns a
+frame count, not a sample count: each frame has two interleaved samples.
+A short return ends the voice. For a temporary underrun, fill with
+silence and report a full buffer. Procedural music and the tracker
+player use this contract.
 
 ```go
-f, err := os.Open("music/theme.ogg")
+data, err := os.ReadFile("music/theme.ogg")
 if err != nil {
 	return err
 }
-if g.music, err = ctx.Audio.OpenMusic(f, true); err != nil { // true loops
+if g.music, err = ctx.Audio.OpenMusic(bytes.NewReader(data), true); err != nil { // true loops
 	return err
 }
 g.theme = ctx.Audio.PlayStream(g.music, audio.PlayOptions{Bus: ctx.Audio.Music(), Volume: 0.5})
 ...
-g.music.Seek(30)  // jump half a minute in
+g.theme.Seek(30)  // move playback and the voice's reported position
 g.music.Close()   // in Shutdown; the voice playing it ends
 ```
 
 `asset.Music(ctx.Audio, fs, "music/theme.ogg", true)` does the same
 through the asset sources, so a packed or embedded track opens the same
-way as a loose one.
+way as a loose one. It reads the encoded file into memory, like the
+example above. For incremental file I/O, pass an open `io.ReadSeeker`
+instead. The caller owns that reader: `Music.Close` neither closes it
+nor waits for an in-flight decoder read. A custom reader must support
+the lifetime and shutdown behavior the game requires. Close every
+Music even after playback ends, since its decoder parks for a future seek.
 
 ## Positional audio
 
@@ -306,8 +330,10 @@ ctx.Audio.Play(g.step, audio.PlayOptions{Bus: ctx.Audio.Effects(), Reverb: 1})
 ## Voice limits
 
 `SetMaxVoices` caps the number of voices playing at once. When the cap
-is reached, a new voice replaces the quietest voice whose priority is no
-higher than its own, so a footstep never steals from the dialogue.
+is reached, a new voice chooses the lowest eligible priority, then the
+quietest voice at that priority. Voices with higher priority are
+ineligible, so a footstep never steals from the dialogue. If none is
+eligible, `Play` returns an already finished voice. The default cap is 64.
 
 ```go
 ctx.Audio.SetMaxVoices(32)
@@ -323,9 +349,9 @@ n := ctx.Audio.Playing() // for the debug overlay
 
 `OpenCapture` records from the machine's default input, the one the
 desktop is set to. It hands back a `Capture` whose `Read` copies
-whatever the device has recorded since the last call and returns at
-once, so the game loop calls it every update and never waits for the
-device. `Level` is the root mean square of the block that arrived most
+whatever is buffered without waiting for new samples, so the game loop
+can call it every update. The read briefly shares a mutex with the
+device's buffer writer. `Level` is the root mean square of the block that arrived most
 recently, which is what a meter draws, and `Close` releases the device.
 
 `CaptureOptions` take a rate and a channel count, defaulting to the
@@ -391,6 +417,8 @@ player screen or for driving visuals from the pattern data.
 
 ### Tracker control
 
+Set the player's `Loop`, `Cubic` and `AmigaFilter` fields before playback,
+and keep its `Module` and sample data unchanged while a player uses them.
 The player can be driven while it plays; its methods take the same lock
 as `Read`, so the game loop calls them freely. `Position` reports the
 song position (an index into the order list) and row, `Length` counts the

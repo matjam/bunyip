@@ -146,6 +146,7 @@ func (g *Graphics) NewRenderTextureOptions(width, height int, opts RenderTexture
 }
 
 // Texture returns the surface for drawing as a sprite or material.
+// RenderTexture owns it; destroy the RenderTexture rather than this view.
 func (rt *RenderTexture) Texture() *Texture { return rt.tex }
 
 // Read copies the last rendered image back from the GPU, after waiting
@@ -204,8 +205,8 @@ func (rt *RenderTexture) readMask() (*image.RGBA, error) {
 //
 // It waits for the GPU and copies the whole image back to the host, so
 // it is for tools, tests and one-off queries rather than for every
-// frame. A render texture that has had no 3D drawn into it reads back
-// all ones.
+// frame. Read only after a completed 3D render; no previous depth content
+// is guaranteed before that. Missing or destroyed scene targets return an error.
 func (rt *RenderTexture) ReadDepth() ([]float32, error) {
 	if rt.scene == nil || rt.scene.hdr == nil || rt.scene.hdr.Depth == nil {
 		return nil, fmt.Errorf("gfx: render texture has no depth to read")
@@ -251,6 +252,8 @@ func (rt *RenderTexture) Destroy() {
 // is rendered before the main frame, so it can be drawn in the same
 // frame. A second DrawTo on the same texture in one frame adds to what
 // the first queued, with the first call's clear colour.
+// Camera and lighting state belong to the target; post-processing is
+// global and uses the final SetPost settings when the frame submits.
 func (g *Graphics) DrawTo(rt *RenderTexture, clear Color, draw func()) {
 	if g.frame == nil {
 		return

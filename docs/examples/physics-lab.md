@@ -197,7 +197,7 @@ The last four calls wire the scene into the
 `Config.Console`. `Console.Attach("lab", g.world)` hands it the world:
 from then on the console's entity panel lists the bodies with their
 components, and its physics panel shows the solver's settings, the
-contact and island counts, and a pause. `Console.Float` binds
+contact, body and joint counts, and a pause. `Console.Float` binds
 `wheel.torque` to the field the next section reads, so the motor's
 strength can be changed while the wheel is turning, and
 `Console.Register` adds a `drop` command that does what R does. Every
@@ -396,8 +396,8 @@ character paces the staircase without input.
 
 `ecs.Events[phys.Collision3](g.world)` returns this update's contact
 events. They are copied into `g.contacts` with `append(g.contacts[:0],
-...)`, because events are cleared at the end of the update and `Draw`
-runs afterwards.
+...)`, retaining a separate snapshot for `Draw`. World events remain
+available after an update and are cleared at the start of the next one.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -622,7 +622,7 @@ reads the first profile scope from `ctx.Stats.Scopes`, which is the
 physics scope opened in `Update`, counts the sleeping bodies by walking
 the query again, and reads the wheel's angular velocity about the hinge
 axis so the motor can be seen working. `u.Button` returns true on the
-frame it is pressed.
+frame a mouse press is released inside it, or it is activated by keyboard.
 
 ```go
 	u := g.ui
@@ -680,8 +680,8 @@ func main() {
   turns grey, and what that does to a body a paddle is about to hit.
 - Give the hinge in `Init` `MotorSpeed: -4` and a larger
   `MaxMotorTorque`, and watch the wheel throw the debris.
-- Open the console with the backquote key and type `wheel.torque 40`,
-  then `wheel.torque 4000`, without restarting. Then run `drop`, and
+- Open the console with the backquote key and type `set wheel.torque 40`,
+  then `set wheel.torque 4000`, without restarting. Then run `drop`, and
   open the panels with F4 to watch the body count and the contacts while
   the debris settles.
 - Add a `phys.BallJoint3` in `Init` between two of the dropped bodies;

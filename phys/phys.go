@@ -10,6 +10,10 @@
 // bounding boxes, generates contact points, resolves them with
 // sequential impulses (restitution, friction, positional correction)
 // and emits Collision and Trigger events.
+// Times are seconds, distances use the game's world units, and angles
+// are radians unless a field says otherwise. Transform scale does not
+// resize colliders; size the shapes themselves. A zero gravity vector
+// means no gravity. World systems and queries require serialized access.
 //
 //	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
 //	w.SpawnWith(gfx.At(0, 5, 0), phys.Dynamic3(1), phys.Collider3{Shape: phys.Sphere{Radius: 0.5}})
@@ -41,10 +45,11 @@
 // as the soft bodies in phys/soft. The queries that return a slice have
 // an Into form (RaycastAll2Into, RaycastAll3Into, OverlapShape2Into,
 // OverlapShape3Into) that appends to a slice the caller reuses, so a
-// game querying every frame allocates nothing once its buffers have
-// grown. The sweeps take their candidates from the broadphase's sorted
-// axis and keep each collider's placed shape between queries, so a cast
-// pays for what is near its path.
+// game can reuse result and scratch storage after their buffers grow.
+// Shape sweeps gather nearby candidates and cache placed convex parts;
+// world queries still visit collider components to check current bounds.
+// In-place hull and compound edits invalidate cached geometry even when
+// bounds stay unchanged. MeshShape geometry must remain immutable.
 //
 // Joints are components on their own entities that name the bodies they
 // connect: DistanceJoint2 and DistanceJoint3 (rods and ropes),

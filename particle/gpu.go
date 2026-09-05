@@ -8,8 +8,8 @@ import (
 	"github.com/matjam/bunyip/rng"
 )
 
-// GPUSystem runs one Emitter over far more particles than System can
-// afford: hundreds of thousands rather than thousands. It keeps each
+// GPUSystem simulates particles on the CPU and draws them as GPU instances.
+// It supports larger counts than the per-sprite System path. It keeps each
 // particle as a few numbers in parallel arrays, moves them with plain
 // loops over those arrays, and draws the whole system as one instanced
 // draw call through gfx.DrawParticles or gfx.DrawParticles3D.
@@ -160,7 +160,9 @@ func (s *GPUSystem) Plane() (origin, xAxis, yAxis lin.Vec3) { return s.origin, s
 // SetEmitter retunes the system: later births use the new emitter and
 // every live particle is drawn with its look. Stateful particles keep
 // the palette tint chosen at birth. The random stream, the position
-// and the particles are kept. Raising Max reallocates.
+// and the particles are kept. Raising Max reallocates; lowering it
+// immediately truncates stateful particles to the new cap. Stateless
+// particles are recomputed from the new settings, including Seed.
 func (s *GPUSystem) SetEmitter(e Emitter) {
 	s.e = e
 	if n := e.max(); n > len(s.p.posX) {
@@ -188,7 +190,8 @@ func (s *GPUSystem) SetEmitter(e Emitter) {
 func (s *GPUSystem) Emitter() Emitter { return s.e }
 
 // SetPosition moves the system. Particles in a WorldSpace system stay
-// where they are; the rest move with it.
+// where they are; the rest move with it. Stateless systems always move
+// their entire stream because they do not retain birth positions.
 func (s *GPUSystem) SetPosition(p lin.Vec2) { s.pos = p }
 
 // Position is where the system is.
@@ -225,7 +228,9 @@ func (s *GPUSystem) Stop() {
 	s.running = false
 }
 
-// Clear kills every live particle at once.
+// Clear kills every stateful particle at once without stopping emission.
+// For a stateless emitter it only resets Alive's cached draw count; the
+// next draw reconstructs the stream. Use Stop and continue Update to drain it.
 func (s *GPUSystem) Clear() {
 	s.p.n = 0
 	s.statelessAlive = 0

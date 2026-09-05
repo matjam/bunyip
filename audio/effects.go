@@ -134,10 +134,10 @@ func (m *Mixer) Reverb() ReverbSettings {
 // but its doorway. Where zones overlap, the one the listener is furthest
 // inside wins.
 type ReverbZone struct {
-	Center   lin.Vec3
-	Radius   float32
-	Fade     float32
-	Settings ReverbSettings
+	Center   lin.Vec3       // sphere centre in listener world units
+	Radius   float32        // sphere radius; nonpositive zones are ignored
+	Fade     float32        // inward blend distance; nonpositive means Radius
+	Settings ReverbSettings // reverb at full zone strength
 }
 
 // SetReverbZones replaces the set of reverb zones. The mixer checks them

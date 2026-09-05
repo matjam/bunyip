@@ -131,8 +131,9 @@ type Shader struct {
 	// that ripples a quarter of its own size. Culling grows a draw's
 	// radius by 1 + VertexBounds. Zero means the program may put a vertex
 	// anywhere, so draws made with the shader are never culled; set it as
-	// soon as the displacement has a limit. It is read as each draw is
-	// prepared, so a game may change it between draws.
+	// soon as the displacement has a limit. This applies only to shaders
+	// with a vertex hook. It is read when the frame prepares its queued
+	// draws, so the final value applies to every draw using this shader.
 	VertexBounds float32
 
 	g    *Graphics
@@ -341,9 +342,13 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 }
 
 // SetUniforms copies a struct's bytes as the shader's uniform block for
-// draws from now on. Lay the struct out by std140 rules: float32, int32,
-// lin.Vec2, lin.Vec4 and lin.Mat4 fields are safe; a lin.Vec3 must be
-// followed by a float32 of padding, and the block is at most 1024 bytes.
+// draws from now on. Pass a struct or a non-nil pointer to one, containing
+// only fixed-size numeric fields and explicit padding. Go does not insert
+// std140 padding: align scalars to 4 bytes, Vec2 to 8, and Vec3, Vec4 and
+// Mat4 to 16. A scalar may occupy the fourth word after a Vec3. Arrays
+// require std140's element strides, including 16-byte strides for scalars.
+// SetUniforms performs no layout conversion or validation and panics for
+// non-struct values or blocks outside 1..1024 bytes.
 func (s *Shader) SetUniforms(v any) {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Pointer {

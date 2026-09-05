@@ -220,8 +220,9 @@ the edges and diagonals, and a bending constraint across each pair of
 edges in line. `Pinned` is the list of particle indices that are held,
 computed here as the first particle of every row, which hangs the sheet
 by its left edge. `Bend` is compliance in metres per newton, so zero is
-rigid and larger is softer, and it does not drift when the substep count
-changes. `Wind` pushes each cell by the air blowing through it, so a
+rigid and larger is softer. XPBD accounts for the timestep in compliance,
+though substeps and solver iterations still affect the result. `Wind`
+pushes each cell by the air blowing through it, so a
 sheet edge-on to the wind is barely moved.
 
 `soft.NewSoftBody3` takes a closed triangle mesh, here the built-in
@@ -433,9 +434,9 @@ cloth's material is `DoubleSided`, because a sheet is seen from both
 sides and its back faces would otherwise be culled. The jelly gets a
 clearcoat, which reads as a wet surface.
 
-Both calls are guarded by `ecs.Get`, because R despawns the entities and
-rebuilds them, and a frame between the two would otherwise draw a mesh
-with no body behind it.
+Both calls are guarded by `ecs.Get`, so drawing only proceeds when the
+expected component exists. R rebuilds the entities synchronously in
+`Update`; `Draw` does not run halfway through that reset.
 
 ```go
 	// The cloth and the jelly follow their particles. Both are drawn with

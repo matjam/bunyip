@@ -1,6 +1,11 @@
 // Package input reports the state of the keyboard, mouse and gamepads:
 // what is held, what changed this update, where the pointer is and what
 // text was typed, in view units.
+// Read Context.Input on the game loop goroutine. During Update, edge
+// accessors cover events since the preceding update; during Draw,
+// keyboard and mouse edges, text and motion cover the drawn frame.
+// These views are cleared independently, so drawing does not consume
+// input pending for Update. Repeated OS key events count as presses.
 package input
 
 import "github.com/matjam/bunyip/lin"
@@ -8,6 +13,8 @@ import "github.com/matjam/bunyip/lin"
 // State is the keyboard and mouse as a game sees them each update: what is
 // held, what changed since the last update, where the pointer is and what
 // text was typed. The engine feeds it from platform events.
+// The zero value is idle. State is not safe for concurrent access.
+// Key and mouse accessors require valid enum values below their Count.
 type State struct {
 	down     [KeyCount]bool
 	pressed  [KeyCount]bool
@@ -168,7 +175,8 @@ func (s *State) KeyPressed(k Key) bool {
 	return s.pressed[k]
 }
 
-// KeyReleased reports whether the key went up since the last update.
+// KeyReleased reports whether the key went up since the last update
+// (or, during Draw, since the last drawn frame).
 func (s *State) KeyReleased(k Key) bool {
 	if s.drawing {
 		return s.frame.released[k]
@@ -187,9 +195,10 @@ func (s *State) Mouse() (x, y float32) { return s.mouseX, s.mouseY }
 func (s *State) MousePos() lin.Vec2 { return lin.V2(s.mouseX, s.mouseY) }
 
 // KeyRepeated reports whether the key produced an operating-system
-// repeat since the last update: a held key in a menu or a text field.
-// KeyPressed already counts repeats; use KeyPressed and not KeyRepeated
-// for the first press alone.
+// repeat since the last update (or, during Draw, since the last frame).
+// KeyPressed already counts repeats. KeyPressed(k) && !KeyRepeated(k)
+// filters repeats, but also filters an initial press if both kinds of
+// event arrived in the same update or frame.
 func (s *State) KeyRepeated(k Key) bool {
 	if s.drawing {
 		return s.frame.repeated[k]
@@ -209,7 +218,8 @@ func (s *State) MousePressed(b MouseButton) bool {
 	return s.buttonsPressed[b]
 }
 
-// MouseReleased reports whether the button went up since the last update.
+// MouseReleased reports whether the button went up since the last update
+// (or, during Draw, since the last drawn frame).
 func (s *State) MouseReleased(b MouseButton) bool {
 	if s.drawing {
 		return s.frame.buttonsReleased[b]
@@ -219,6 +229,7 @@ func (s *State) MouseReleased(b MouseButton) bool {
 
 // Scroll returns wheel movement since the last update, in lines. A
 // trackpad's smooth scrolling is scaled to lines by the engine.
+// During Draw it covers movement since the last drawn frame.
 func (s *State) Scroll() (dx, dy float32) {
 	if s.drawing {
 		return s.frame.scrollX, s.frame.scrollY
@@ -226,7 +237,10 @@ func (s *State) Scroll() (dx, dy float32) {
 	return s.scrollX, s.scrollY
 }
 
-// Chars returns the text typed since the last update, in order.
+// Chars returns committed text typed since the last update, in order
+// (or, during Draw, since the last drawn frame). The returned slice is
+// borrowed from State; copy it to retain text beyond the current call
+// to the game's Update or Draw, and do not modify it.
 func (s *State) Chars() []rune {
 	if s.drawing {
 		return s.frame.chars

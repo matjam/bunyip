@@ -142,10 +142,9 @@ A `Font` is a GPU resource and each one is destroyed in `Shutdown`.
 ## Update
 
 There is no simulation. `Update` quits on Escape or on the deadline, and
-writes the screenshot once, halfway through the run so the atlas has
-had a frame to upload. A glyph first drawn in a frame appears in the
-next one, because the atlas is uploaded after drawing, which is why a
-screenshot on the first frame would be blank.
+writes the screenshot once, halfway through the run. Text layout uploads
+new glyphs before queuing their sprites, so a glyph can appear in the
+same frame in which it is first drawn.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -304,8 +303,9 @@ glyphs beside them and draw in the same batch.
 The last block draws the same two letters from the distance-field font
 at four sizes and then at an angle. `TextOptions.Size` overrides the
 size the font was created at, and `Angle` rotates the run in radians.
-Both are only meaningful for a distance-field face: a rasterised font
-draws at the size its atlas holds. `Measure` is used again to advance
+Both also work with rasterised fonts, which resample their atlas when
+scaled; a distance-field face preserves sharper edges over a wider range.
+`Measure` is used again to advance
 `x` past each pair by the width it will actually occupy.
 
 ```go

@@ -15,9 +15,9 @@ import (
 // command's name and returns the text to print, which may be empty, or
 // an error, which prints in red.
 type Command struct {
-	Name string
-	Help string
-	Fn   func(args []string) (string, error)
+	Name string                              // command token entered at the prompt
+	Help string                              // one-line usage and description
+	Fn   func(args []string) (string, error) // synchronous callback on the Run caller
 }
 
 // Register adds a command, replacing any command of the same name. Help

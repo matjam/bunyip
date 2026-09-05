@@ -11,7 +11,7 @@ import (
 // FlyCamera is a free-flying camera for looking around a scene while a
 // game is being written: W, A, S and D move, Q and E go down and up,
 // Shift goes faster, and the view turns while the right mouse button is
-// held (or always, when the cursor is captured). Call Update each
+// held (or always, when AlwaysLook is set). Call Update each
 // update and hand Camera to the renderer:
 //
 //	fly := &bunyip.FlyCamera{Position: lin.V3(0, 5, 10)}

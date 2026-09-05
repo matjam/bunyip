@@ -147,11 +147,17 @@ which is what makes it useful for waking a sleeping turn-based game.
 
 `Config.Headless`, or the environment variable `BUNYIP_HEADLESS=1`, runs
 the same loop with no window. Frames render offscreen at `Config.Width`
-by `Config.Height`, `ctx.Scale` is 1, the size never changes, and no
+by `Config.Height`. Without a fixed view, `ctx.Scale` is 1; a fixed view
+still uses the configured scaling. The size never changes, and no
 events arrive, so no key is ever pressed and the window never asks to
-close. The window controls still exist and do nothing. `ctx.Screenshot`
-works. Every example takes `-seconds N` and `-shot file.png`, and the
-test that runs them all runs headless on a machine with no display.
+close. Most window controls do nothing; fullscreen and cursor-capture
+setters remember their flags without affecting a desktop. Clipboard text
+is kept in memory. `ctx.Screenshot` works. Screenshot-capable examples
+take `-seconds N` and `-shot file.png`. The headless test harness skips
+`window` (native platform smoke test), `network` (requires a peer), and
+`clear` (intentionally uniform output). It checks `assets` for nonblank
+output but excludes it from golden comparisons because it changes its
+own files and run counter.
 
 ```
 BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
@@ -164,10 +170,11 @@ run draws the same frame every time, and the loop reads the wall clock,
 so it does not: how many updates ran before a given frame depends on how
 long the machine took.
 
-`Config.FixedClock`, or `BUNYIP_FIXED_CLOCK=1`, advances the clock by
-exactly one `FixedStep` each frame and runs exactly one `Update` per
-frame. `ctx.Time` is then the frame number times the step, `ctx.Delta`
-is always the step and `ctx.Alpha` is always zero, so frame N is the
+`Config.FixedClock`, or `BUNYIP_FIXED_CLOCK=1`, advances a real-time
+game's clock by one `FixedStep` each frame and runs one `Update` per
+frame unless paused. It has no effect in turn-based mode.
+`ctx.Time` is then the frame number times the step, `ctx.Delta`
+is the step multiplied by `TimeScale`, and `ctx.Alpha` is zero, so frame N is the
 same picture on any machine as long as the game seeds its own random
 numbers. Nothing paces the loop either, so a headless run goes as fast
 as it can. It is for tests and for recording, not for playing: a game
@@ -274,15 +281,18 @@ change of scale arrives as a resize event, the same as a change of size.
 2. The renderer is created on the window's surface, at its pixel size.
 3. Graphics, input and the mixer are built, and the audio device is
    opened unless `Config.NoAudio` or `Headless`.
-4. `Config.Icon` is applied and the view is placed in the window.
-5. With `Config.Console`, the console is built and the log is teed
+4. With `Config.Console`, the console is built and the log is teed
    through it, so records from `Init` onwards reach it.
+5. `Config.Icon` is applied and the view is placed in the window.
 6. `Init` runs, if the game has one, then the loop.
 
-On the way out the game's `Shutdown` runs first, while the context is
+After successful setup, the game's `Shutdown` runs first on exit, while the context is
 still live and GPU resources can still be destroyed, then the debug
 overlay and console, the audio device, the graphics context, the
 renderer, and last the window.
+
+If `Init` or `Recover` returns an error, `Shutdown` is not called. Clean
+up partially created game resources before returning that error.
 
 `Initer`, `Shutdowner` and `Recoverer` are all optional interfaces on the
 game. When the graphics driver reports a lost device, `Run` tears the
@@ -290,7 +300,10 @@ whole stack down and builds it again, reusing the one connection to the
 window system but opening a fresh window and renderer. A game that
 implements `Recoverer` gets `Recover` with the new context instead of
 `Init`; every texture, mesh, font and render texture it created is gone
-and must be created again. A game without `Recover` gets the error back
+and must be created again. The input state, mixer and console are also
+new: restore bus settings, restart desired audio playback, and register
+console commands again. Old voice handles belong to the discarded mixer.
+The loop clock and frame count restart. A game without `Recover` gets the error back
 from `Run` instead.
 
 Full detail on every field and method named here is in the

@@ -6,12 +6,12 @@ import "github.com/matjam/bunyip/lin"
 // the texture region in 0..1; Origin is the rotation pivot as a fraction
 // of Size.
 type Sprite struct {
-	Pos      lin.Vec2
-	Size     lin.Vec2
-	UV0, UV1 lin.Vec2
-	Color    Color
-	Rotation float32
-	Origin   lin.Vec2
+	Pos      lin.Vec2 // pivot position in view units before the transform stack
+	Size     lin.Vec2 // dimensions in view units; DrawRegion/DrawFrame fill a zero size
+	UV0, UV1 lin.Vec2 // normalized texture bounds; zero UV1 selects the full texture
+	Color    Color    // straight linear tint; zero means white
+	Rotation float32  // radians clockwise on a Y-down screen
+	Origin   lin.Vec2 // pivot fraction: zero is top-left, (0.5, 0.5) is center
 	// FlipX and FlipY mirror the image, for a character facing the other
 	// way.
 	FlipX, FlipY bool

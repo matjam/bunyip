@@ -12,7 +12,9 @@ import (
 // weight blends the sampled value with what the component holds, which
 // is how crossfades and layered clips mix; 1 replaces outright.
 type Track interface {
+	// Apply samples t seconds into the track and blends into the component.
 	Apply(w *ecs.World, e ecs.Entity, t, weight float32)
+	// Duration reports the final key time in seconds.
 	Duration() float32
 }
 
@@ -64,6 +66,8 @@ type boundTrack interface {
 
 // Property makes a track over any component field: get reads the field
 // so crossfades can blend from it, set writes the animated value.
+// The entity must already have C; a missing component is skipped. A
+// curve without a Lerper replaces the value even during a crossfade.
 //
 //	anim.Property(anim.Floats(anim.Num(0, 0), anim.Num(1, 100)),
 //		func(h *Health) float32 { return float32(h.HP) },
@@ -121,12 +125,14 @@ const (
 	PingPong                 // run backwards, then forwards again
 )
 
-// Clip is a named set of tracks that play together.
+// Clip is a named set of tracks that play together. The zero clip has
+// no tracks and finishes on its first update. Mode defaults to Once.
 type Clip struct {
 	Name   string
 	Tracks []Track
 	Mode   LoopMode
-	// Length overrides the duration, which is otherwise the longest track.
+	// Length, when positive, overrides the duration in seconds; otherwise
+	// the longest track supplies it.
 	Length float32
 
 	// The duration and the grouping of tracks by component are worked out
@@ -258,7 +264,8 @@ func (c *Clip) local(time float32) (t float32, done bool) {
 	return max(time, 0), false
 }
 
-// Apply samples every track at clip time t with the given weight. The
+// Apply samples every track at clip time t in seconds with the given weight.
+// It does not wrap t according to Mode; Player handles looping. The
 // tracks are grouped by the component they write, so a clip that
 // animates three fields of one component looks that component up once.
 // Tracks written by hand, which cannot be grouped, are applied last.

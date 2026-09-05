@@ -26,6 +26,8 @@ package input
 // keyboard layout, using the names of the equivalent US layout key.
 type Key uint8
 
+// Physical key identifiers in US-layout positions. KeyUnknown means
+// no recognized key; KeyCount is an array bound, not a key.
 const (
 	KeyUnknown Key = iota
 	KeyA

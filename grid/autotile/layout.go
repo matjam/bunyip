@@ -15,8 +15,8 @@ import "fmt"
 // axis X: every cell has a north and a south neighbour. Odd and even
 // say which rows or columns are shifted, matching Tiled's stagger index.
 //
-// IsoDiamond is a square grid of diamond tiles drawn rotated a quarter
-// turn, so the direction names are the tile's directions on screen: the
+// IsoDiamond is a square grid projected as isometric diamonds, so the
+// direction names are the tile's directions on screen: the
 // cell north of (x, y) is (x-1, y-1), and the cell that shares the
 // diamond's upper-right edge is (x, y-1).
 type Layout int
@@ -31,7 +31,7 @@ const (
 	// y runs south-east, so the offsets are the same for every cell. It
 	// has the same six directions as the rows layouts.
 	HexAxial
-	IsoDiamond // a square grid of diamond tiles, the directions rotated a quarter turn
+	IsoDiamond // a square grid projected as diamonds, with screen-relative directions
 )
 
 // Neighbour returns the cell one step from (x, y) in a direction. A

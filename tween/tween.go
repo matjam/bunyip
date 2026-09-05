@@ -9,6 +9,8 @@
 // to a target and damage numbers floating up. NewSequence runs several
 // in order. For keyframed curves over vectors, colours and component
 // fields, see the anim package.
+// Tweens and sequences are not safe for concurrent use; advance them
+// with finite, nonnegative steps on the game loop goroutine.
 package tween
 
 import "math"
@@ -74,9 +76,9 @@ func lerp(a, b, t float32) float32 { return a + (b-a)*t }
 
 // Tween moves a value from From to To over Duration seconds.
 type Tween struct {
-	From, To float32
-	Duration float32
-	Ease     Ease
+	From, To float32 // endpoints of the forward play
+	Duration float32 // seconds per play; nonpositive completes after Delay
+	Ease     Ease    // progress mapping; nil means linear
 	Delay    float32 // seconds before movement starts
 	Repeat   int     // extra plays after the first; -1 forever
 	YoYo     bool    // alternate direction on repeats
@@ -97,7 +99,9 @@ func New(from, to, seconds float32, ease Ease) *Tween {
 	return &Tween{From: from, To: to, Duration: seconds, Ease: ease}
 }
 
-// OnDone registers a callback for when the tween finishes.
+// OnDone replaces the callback called synchronously by the Update that
+// finishes the tween. Registration after completion does not invoke it;
+// Reset permits it to run again on the next completed playthrough.
 func (tw *Tween) OnDone(f func()) *Tween { tw.onDone = f; return tw }
 
 // Update advances by dt seconds and returns the current value.
@@ -138,7 +142,9 @@ func (tw *Tween) Update(dt float32) float32 {
 	return tw.Value()
 }
 
-// Progress is eased progress in [0,1].
+// Progress is eased progress. The input to Ease is clamped to [0,1],
+// but curves such as OutBack and OutElastic may overshoot that range.
+// A nonpositive Duration reports 1, including while Delay is pending.
 func (tw *Tween) Progress() float32 {
 	if tw.Duration <= 0 {
 		return 1

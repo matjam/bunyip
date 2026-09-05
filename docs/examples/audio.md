@@ -14,8 +14,8 @@ so the mixer has to steal. A checkbox swaps the pan law for the binaural
 head model, and `-mic` records from the default microphone and draws a
 level meter.
 
-Music is a stream rather than a sound: with `-music` it decodes an Ogg,
-MP3 or WAV file from disk as it plays, and without one it plays an
+Music is played as a stream: with `-music` it opens an Ogg, MP3 or WAV
+file (WAV is decoded in full at open), and without one it plays an
 arpeggio this program synthesises a buffer at a time. That is the same
 interface a game uses for procedural music or its own decoder.
 
@@ -139,11 +139,11 @@ of them per second to keep the orbit's shift musical.
 The music is either an `audio.Music` opened from a file with
 `m.OpenMusic`, or the `arpeggio` value at the bottom of this program.
 Both are played with `PlayStream`, which pulls samples as the device
-needs them instead of holding the whole sound in memory.
+needs them. Ogg and MP3 decode incrementally; WAV is fully decoded when
+`OpenMusic` opens it.
 
-`m.OpenCapture` opens the default input device and is the only part of
-this program that can fail for a reason outside it, so the error is kept
-and shown rather than returned: a machine with no microphone still runs
+`m.OpenCapture` opens the default input device. Its error is kept
+and shown rather than returned, so a machine with no microphone still runs
 the rest. The buffer is a tenth of a second at the capture rate, which
 is what the update drains into.
 
@@ -216,8 +216,11 @@ func (g *game) Init(ctx *bunyip.Context) error {
 
 ## Shutdown
 
-The capture and the music file are closed and the font destroyed. Voices
-belong to the mixer, which the engine shuts down.
+The capture and music decoder are closed and the font destroyed. Voices
+belong to the mixer, which the engine shuts down. `Music.Close` does not
+close its source reader: the file opened in this example is not retained
+for explicit cleanup. A game should own that file's lifetime, or pass a
+`bytes.Reader` over encoded bytes loaded with `os.ReadFile`.
 
 ```go
 func (g *game) Shutdown(ctx *bunyip.Context) {
@@ -248,7 +251,8 @@ means no shift.
 The capture is drained every update. `Read` copies what the device has
 recorded into the buffer and returns how much, so looping until it
 returns zero keeps the ring from filling; nothing is played back here.
-`Level` is the recent peak, held with a decay so the meter is readable.
+`Level` is the RMS amplitude of the most recent capture block; the example
+applies a decay to keep its meter readable.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -338,11 +342,11 @@ the burst button pushes against the cap.
 
 `SetSpatial(audio.SpatialSettings{Binaural: ...})` swaps the pan law for
 a head model with an interaural delay and a head shadow, which is worth
-turning on for headphones and wrong for speakers.
+turning on to compare the headphone spatial cues with ordinary panning.
 
 The meter is drawn on a decibel scale rather than on the raw amplitude,
 because a linear meter spends most of its length on sounds nobody can
-hear. `Dropped` counts the frames the ring lost, which is what a game
+hear. `Dropped` counts the samples the ring lost, which is what a game
 watches to know its drain loop is keeping up.
 
 ```go

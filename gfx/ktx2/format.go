@@ -3,10 +3,11 @@ package ktx2
 import "fmt"
 
 // Format is the Vulkan format number a KTX2 file names for its texel
-// data. The package encodes the BC formats listed here and decodes them
-// again; it reads and passes on the ASTC formats without encoding or
-// decoding them, so a file that already holds ASTC uploads on a device
-// that samples it.
+// data. Naming a format permits container parsing and GPU upload; it
+// does not imply CPU codec support. Encode supports RGBA8, BC1, BC3,
+// unsigned BC4/BC5 and BC7. DecodeLevel supports the same formats, with
+// BC7 limited to modes 1 and 6. Other named formats, including ASTC,
+// require a device that can sample them directly.
 type Format uint32
 
 // The formats this package names. The numbers are Vulkan's, which is

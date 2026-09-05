@@ -9,16 +9,17 @@
 // step, including zero and fractional costs. It uses a zero heuristic
 // because the callback provides no positive lower bound on step costs.
 // To guide the search when a lower bound is known, call AStarWithMinCost.
-// Dijkstra fills a map of distances from many sources at once, and
-// units descend that map with Downhill, which moves many units towards
-// the player for the cost of one fill. FOV computes which cells are
+// Dijkstra fills a map of distances from many sources at once. Downhill
+// selects a lower-valued neighbour, useful for uniform-cost movement
+// toward the sources. FOV computes which cells are
 // visible from a point against an opacity function. Line walks the cells
 // between two points for projectiles and line of sight. FloodFill
 // collects a connected region.
 //
-// The package functions allocate only their result. To search or cast
-// sight every frame without allocating at all, keep a Pathfinder for the
-// map and a Vision for the viewer, and call their methods: Pathfinder
+// Pathfinding and FOV functions borrow pooled scratch space, which can
+// allocate when first used, grown, or discarded by the runtime. To search
+// or cast sight without allocating after buffer growth, keep a Pathfinder
+// for the map and a Vision for the viewer, and call their methods: Pathfinder
 // appends a path to a slice the caller owns and fills a Dijkstra map the
 // caller already has, and Vision reuses the scratch space a field of
 // view cast needs. Both hold scratch space rather than results, so give
@@ -58,7 +59,9 @@ func abs(v int) int {
 	return v
 }
 
-// Grid is a W by H array of cells in row-major order.
+// Grid is a W by H array of cells in row-major order. Cells is owned by
+// the grid; keep its length equal to W*H when constructing or resizing
+// a grid manually. The zero value is an empty grid.
 type Grid[T any] struct {
 	W, H  int
 	Cells []T
@@ -109,16 +112,22 @@ var Blocked = float32(math.Inf(1))
 
 // Cost gives the nonnegative price of stepping from one cell to a
 // neighbour, or Blocked. Zero and fractional costs are valid. Negative
-// costs are treated as blocked. Diagonal moves are only offered when
-// the search allows them.
+// costs are treated as blocked. Return finite costs or Blocked, never NaN.
+// The callback controls diagonal prices and corner cutting; the search
+// does not check adjacent cardinal cells or add a diagonal multiplier.
+// Diagonal moves are only offered when the search allows them. Keep costs
+// stable during a search; directed costs are supported.
 type Cost func(from, to Point) float32
 
 // AStar finds the cheapest path from start to goal on a w by h grid,
 // including both endpoints, or returns nil when there is none. With
 // diagonal set, eight-way moves are considered. The scratch space the
-// search needs comes from a shared pool, so only the path is allocated.
+// search needs comes from a shared pool; the returned path owns its storage.
 // A game that searches every frame keeps a Pathfinder instead and calls
-// its AStar method, which allocates nothing at all.
+// its AStar method, which reuses scratch and caller-owned output storage.
+// Initial searches or buffer growth may allocate. An out-of-bounds
+// endpoint has no path; equal in-bounds endpoints return one point without
+// calling cost.
 // The search uses a zero heuristic to support every nonnegative cost;
 // this can explore more cells than a heuristic with a known cost bound.
 func AStar(w, h int, start, goal Point, diagonal bool, cost Cost) []Point {
@@ -132,8 +141,9 @@ func AStar(w, h int, start, goal Point, diagonal bool, cost Cost) []Point {
 // for eight-way moves. The search does not scan the map to check the bound;
 // overstating it loses the cheapest-path guarantee. Zero, negative, NaN
 // and infinite bounds use the same zero heuristic as AStar.
-// Only the returned path is allocated; use Pathfinder.AStarWithMinCost
-// with a reusable output buffer for repeated searches without allocations.
+// Scratch comes from a pool and may allocate on first use or growth; use
+// Pathfinder.AStarWithMinCost with a reusable output buffer for repeated
+// searches without allocations after buffers have grown.
 func AStarWithMinCost(w, h int, start, goal Point, diagonal bool, cost Cost, minCost float32) []Point {
 	pf := getPathfinder(w, h)
 	path, ok := pf.AStarWithMinCost(nil, start, goal, diagonal, cost, minCost)
@@ -146,9 +156,10 @@ func AStarWithMinCost(w, h int, start, goal Point, diagonal bool, cost Cost, min
 
 // Dijkstra returns the cost from the nearest source to every cell, with
 // Blocked for cells that cannot be reached. Roguelikes use the result as
-// a Dijkstra map: monsters walk downhill toward the sources. Only the
-// returned map is allocated; to reuse a map across frames, keep a
-// Pathfinder and call DijkstraInto.
+// a Dijkstra map. Distances follow cost in the source-to-cell direction;
+// reverse the callback's arguments when seeking costs back to a source
+// over directed edges. To reuse output and scratch across frames, keep a
+// Pathfinder and call DijkstraInto; pooled scratch may allocate initially.
 func Dijkstra(w, h int, sources []Point, diagonal bool, cost Cost) *Grid[float32] {
 	dist := New[float32](w, h)
 	pf := getPathfinder(w, h)
@@ -381,6 +392,10 @@ func putPathfinder(p *Pathfinder) { pathfinders.Put(p) }
 
 // Downhill returns the neighbour of p with the lowest value in a
 // Dijkstra map, and false when none is lower (p is a source or cut off).
+// p must be in bounds. This compares cell values only; it does not test
+// passability, diagonal restrictions or the cost of the chosen edge.
+// It can stop on a zero-cost plateau and does not guarantee a cheapest
+// route for weighted or directed movement.
 // Multiplying a map by a negative factor before descending makes
 // creatures flee instead.
 func Downhill(dist *Grid[float32], p Point, diagonal bool) (Point, bool) {
@@ -501,9 +516,10 @@ func Line(a, b Point) []Point {
 // recursive shadowcasting, calling visit once for each (the origin
 // included). opaque says whether a cell blocks sight; it is only asked
 // about cells the caster reaches, so it must tolerate coordinates off
-// the map. The scratch space comes from a shared pool, so a cast
-// allocates nothing; a game that casts every frame can keep a Vision
-// instead and call its FOV method.
+// the map. visit can also receive out-of-bounds coordinates; filter them
+// before storing results. Radius is Euclidean in cells; negative radius
+// is treated as zero. Scratch comes from a shared pool and may allocate
+// on first use or growth. Keep a Vision to reuse it.
 func FOV(origin Point, radius int, opaque func(Point) bool, visit func(Point)) {
 	v, _ := visions.Get().(*Vision)
 	if v == nil {
@@ -532,6 +548,7 @@ type Vision struct {
 // FOV computes which cells are visible from origin within radius,
 // calling visit once for each including the origin. It behaves exactly
 // as the package-level FOV and reuses the caster's scratch space.
+// Do not start another cast on this Vision from opaque or visit.
 func (v *Vision) FOV(origin Point, radius int, opaque func(Point) bool, visit func(Point)) {
 	if radius < 0 {
 		radius = 0

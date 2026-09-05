@@ -7,9 +7,9 @@ import (
 
 // PCM is decoded audio of any channel count and rate, interleaved.
 type PCM struct {
-	Samples  []float32
-	Channels int
-	Rate     int
+	Samples  []float32 // interleaved channel samples, nominally -1..1
+	Channels int       // samples per frame; NewSound accepts 1 or 2
+	Rate     int       // frames per second; must be positive
 }
 
 // Sound is a PCM clip converted to the mixer's stereo rate.
@@ -26,6 +26,8 @@ func (s *Sound) Duration() float64 { return float64(s.Frames()) / float64(s.rate
 
 // NewSound converts decoded PCM to the mixer's format: stereo at the mixer
 // rate, resampled linearly when the rates differ.
+// It copies p.Samples, which must contain a whole number of mono or
+// stereo frames. Unsupported channel counts or invalid PCM return an error.
 func (m *Mixer) NewSound(p PCM) (*Sound, error) {
 	if p.Channels < 1 || p.Channels > 2 || p.Rate <= 0 || len(p.Samples)%p.Channels != 0 {
 		return nil, fmt.Errorf("audio: unsupported PCM: %d channels at %d Hz, %d samples", p.Channels, p.Rate, len(p.Samples))

@@ -294,8 +294,9 @@ The two panes are the transparency comparison. Sorting orders whole
 draws, so whichever pane sorts second covers the other over the entire
 crossing, which is right on one side and wrong on the other. The
 order-independent pass accumulates every translucent fragment with a
-weight that favours the nearer one and resolves them in a single pass, so
-each side of the crossing shows the pane that is really in front of it.
+weight that favours the nearer one and resolves them in a single pass.
+This approximates the overlap without whole-pane sorting; weighted
+blending does not guarantee exact front-to-back transparency.
 Run the example twice, once with `-sorted`, and the overlap tells the two
 apart.
 

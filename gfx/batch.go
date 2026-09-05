@@ -25,7 +25,9 @@ type BatchItem struct {
 // A batch does not own its meshes or textures; destroy those as usual.
 // Build one with NewStaticBatch and draw it with DrawBatch. Anything
 // that moves belongs in DrawMesh instead: the hierarchy is built from
-// the models given and is not rebuilt.
+// the models given and is not rebuilt. Mesh geometry and bounds must also
+// remain fixed; rebuild the batch after changing either. Include any
+// shader displacement in mesh bounds before building the hierarchy.
 type StaticBatch struct {
 	items []meshDraw // prepared draws, in hierarchy order
 	nodes []batchNode

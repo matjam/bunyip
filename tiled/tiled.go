@@ -16,7 +16,10 @@
 // hexagonal map). Build loads the
 // tilesets' images, makes one gfx.Tilemap per tile layer with the
 // animations wired up, and returns a Level whose Draw draws the layers
-// in order. Keep the object layers to place your own entities.
+// in order on a rectangular grid. Parsing a map's orientation does not
+// make Build render isometric or hexagonal layouts. Image layers and
+// image-collection tilesets are parsed but not drawn by Build. Keep the
+// object layers to place your own entities.
 // Properties are typed (string, int, float, bool, colour, file, object)
 // and read with the accessors on Properties.
 package tiled
@@ -78,10 +81,10 @@ type Layer struct {
 	Objects    []Object
 	Image      string // image layers, relative to the map's directory
 	Layers     []Layer
-	Visible    bool
-	Opacity    float32
-	OffsetX    float32
-	OffsetY    float32
+	Visible    bool    // parser default true; inherited visibility is applied by Build
+	Opacity    float32 // 0..1; parser default 1, multiplied through groups by Build
+	OffsetX    float32 // pixels relative to the parent group
+	OffsetY    float32 // pixels relative to the parent group
 	Properties Properties
 }
 
@@ -141,7 +144,9 @@ type Object struct {
 	Properties Properties
 }
 
-// Rect is the object's bounding rectangle.
+// Rect returns the stored X, Y, Width and Height as a rectangle. It does
+// not apply rotation, polygon bounds, group offsets or the bottom-left
+// anchor adjustment for a tile object.
 func (o Object) Rect() lin.Rect { return lin.R(o.X, o.Y, o.Width, o.Height) }
 
 // Properties are custom properties by name. Values are bool, int,
@@ -232,7 +237,10 @@ const (
 	flipHex  uint32 = 0x10000000 // hexagonal rotation, not carried
 )
 
-// SplitGID separates a global id into the tile id and its flip bits.
+// SplitGID separates a global id into the tile id and its horizontal,
+// vertical and diagonal flip bits for rectangular maps. It strips the
+// hexagonal 120-degree rotation bit without returning it; callers drawing
+// hexagonal maps must interpret rotation flags from the original gid.
 func SplitGID(gid uint32) (id uint32, flipX, flipY, diagonal bool) {
 	return gid & (flipHex - 1), gid&FlipX != 0, gid&FlipY != 0, gid&FlipDiag != 0
 }

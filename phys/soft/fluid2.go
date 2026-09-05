@@ -53,6 +53,8 @@ type Fluid2Spec struct {
 // fill it with Fill or Add, and spawn it as a component; System steps it.
 // The game draws the particles itself, from Positions, as sprites or
 // circles. Positions are view units, with +Y down as the screen runs.
+// Copies share private particle storage; use NewFluid2 for independent
+// instances, including when constructing components for separate entities.
 type Fluid2 struct {
 	// Bounds is the tank, in view units. Particles are kept inside it.
 	// An empty rectangle leaves the fluid unbounded.

@@ -11,9 +11,10 @@ place. With `-reliable` the chat goes over UDP too, through
 `SendReliable`, and a panel counts how many lines arrived and whether
 they arrived in order, with the link's round trip and loss.
 
-It is also the only example that runs turn-based.
-`bunyip.Config{TurnBased: true}` makes the process block in the operating
-system until something happens, which costs no CPU while nothing does.
+Like [roguelike](roguelike.html), it runs turn-based.
+`bunyip.Config{TurnBased: true}` lets the engine loop block in the operating
+system until events or a wake request arrive. Network goroutines still run,
+including the UDP peer's retries and keepalives.
 Network traffic has to wake it, which is what `SetOnActivity(ctx.Wake)`
 arranges: the network calls `ctx.Wake` from its own goroutine and the
 loop runs an update. Read [the window guide](../guides/window.html) for
@@ -510,8 +511,8 @@ func main() {
   `Update` and the pointers.
 - Run with `-reliable -bot` on a client: it sends twenty numbered lines
   through `sendChat`, and the host's panel counts them in order.
-- Drop `TurnBased` in `main` and watch the process burn a core doing
-  nothing.
+- Drop `TurnBased` in `main` and compare the regular frame updates and CPU
+  use with the event-driven loop.
 - Remove the `SetOnActivity` calls in `Init` and see messages arrive only
   when the mouse moves.
 - Send the pointer at a fixed rate from `Update` instead of on every

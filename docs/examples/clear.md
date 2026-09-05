@@ -10,7 +10,7 @@ swapchain image to a colour that cycles with time. With `-shot` it reads
 one frame back and writes it to a PNG, which is how the renderer's output
 is checked on a build machine with nobody watching.
 
-It is also the only example that does not use the engine loop. There is
+Like [window](window.html), it bypasses the engine loop. There is
 no [bunyip.Run](../pkg/bunyip.html#Run), no `Game`, and no
 [gfx](../pkg/gfx.html): the program drives the platform layer and the
 Vulkan backend directly, through the module's internal packages. Read it

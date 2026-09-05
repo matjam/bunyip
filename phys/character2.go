@@ -72,6 +72,10 @@ func (c *CharacterController2) sweep(w *ecs.World, e ecs.Entity, pos, delta lin.
 
 // Move advances the character by velocity·dt: horizontally with sliding
 // and stepping, then vertically, then out of anything it still overlaps.
+// dt is seconds and velocity is world units per second. It applies no
+// gravity or impulses; the game supplies vertical velocity. A missing
+// transform leaves the controller unchanged. Use nonnegative dt; even a
+// zero timestep may resolve overlaps and update ground contact.
 func (c *CharacterController2) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec2, dt float32) {
 	t, ok := ecs.Get[gfx.Transform2](w, e)
 	if !ok {

@@ -7,8 +7,9 @@ summary: rigid bodies in 2D and 3D: shapes, collisions, queries, joints, ragdoll
 
 The [phys](../pkg/phys.html) package simulates rigid bodies on the
 [ECS](ecs.html) in two and three dimensions. Both dimensions use the
-same components. A transform holds the position and rotation, a body
-holds the mass and velocity, and a collider holds the shape. One system
+same component model with dimension-specific types. A transform holds
+the position and rotation, a body holds the mass and velocity, and a
+collider holds the shape. One system
 per dimension steps the simulation.
 
 ## Setting up
@@ -26,22 +27,27 @@ w.SpawnWith(gfx.At(0, 5, 0), phys.Dynamic3(2), phys.Collider3{Shape: phys.Box3{H
 
 2D is the same with `Settings2`, `System2`, `gfx.Transform2`, `Body2`
 and `Collider2`. Screen coordinates grow downward, so 2D gravity is
-usually positive, in pixels per second squared.
+usually positive, in view units per second squared. 3D uses +Y up.
+Gravity defaults to zero in both dimensions, and all step durations
+are seconds. Collider sizes are in world units; transform scale is
+ignored, so change shape dimensions to resize a collider.
 
 ## Bodies
 
-`Dynamic2` and `Dynamic3` return bodies with default values. Set
+`Dynamic2` and `Dynamic3` use the supplied mass, restitution 0.1,
+friction 0.5 and gravity scale 1. Set
 `Restitution` for bounce, `Friction` for grip and `LinearDamping` to
 reduce speed over time. `Kinematic2` and `Kinematic3` move by their
 velocity and push other bodies without being pushed, which suits
 platforms, doors and paddles. A body with zero mass, or an entity with
-only a collider, is static.
+only a collider and transform, is static unless marked kinematic.
 
 To apply a force between frames, call `AddForce` or `AddTorque`. To
 change the velocity at once, call `AddImpulse`. `GravityScale` scales
 how strongly gravity pulls on one body, `LockRotation` stops a body
 rotating, and setting `Sleeping` freezes a body until the game clears
-it again.
+it again. Zero `GravityScale` means 1, so it does not disable gravity.
+`Wake` only clears automatic sleep and does not clear `Sleeping`.
 
 ```go
 // 2D: a paddle that moves under the game's control and pushes what it meets.
@@ -71,14 +77,18 @@ heightfield, and `Compound3` for parts with their own offsets and
 rotations. Build a `MeshShape` with `NewMeshShape` so its triangle tree
 is built once, and draw the same vertices as a `gfx` mesh.
 
-Every pair of shapes collides. Spheres, capsules, boxes and hulls are
-tested through their support functions (GJK for distance, EPA for
-penetration depth), and any of them collides with a mesh's triangles.
+Dynamic convex shapes collide with one another and with static mesh
+triangles. Sphere and box pairs have dedicated tests; other convex
+pairs use support functions (GJK for distance, EPA for penetration).
+Mesh-to-mesh collision and dynamic triangle meshes are not supported.
+`NewMeshShape` retains its input slices. Leave both vertices and indices
+unchanged after construction; construct a new mesh shape to edit them.
 
 Each collider has an `Offset` from the transform, a `Trigger` flag and
 `Layers`. Two colliders collide only when each one's `Layer` bits
 appear in the other's `Mask`. Use this to let a bullet pass through
-bodies on its own team.
+bodies on its own team. Zero `Layer` or `Mask` means all bits. `Offset`
+is in the transform's local frame and rotates with it.
 
 ```go
 // 2D: a terrain outline and a triangle that lands on it.
@@ -102,7 +112,11 @@ w.SpawnWith(gfx.At(0, 4, 0), phys.Dynamic3(5), phys.Collider3{
 The system emits a `Collision2` or `Collision3` event for each pair of
 colliders in contact during an update, with the contact point, normal,
 depth and impulse, and a `Trigger2` or `Trigger3` event while a trigger
-overlaps something. Read them in a later system:
+overlaps something. Each collision pair is reported once per update,
+using the first substep in which it touches. If both colliders are
+triggers, each receives an event for that pair. `Impulse` is the total normal impulse
+from that substep, not a sum over the whole update. Events do not
+distinguish contact begin and end. Read them in a later system:
 
 ```go
 w.AddSystem("damage", func(w *ecs.World, dt float64) {
@@ -125,6 +139,13 @@ sweep a shape along a direction and report the first collider it would
 hit and how far along the sweep it got. `Nearest2` and `Nearest3` find
 the closest collider to a point within a radius.
 
+`Ray2.Dir` and `Ray3.Dir` are full displacements, not unit directions:
+the query tests the segment from `Origin` to `Origin + Dir`. Ray and
+shape casts return a `Distance` fraction from 0 to 1; overlap queries
+return penetration depth and nearest queries return world-space gap.
+Raycasts, shape casts and nearest queries ignore triggers; overlaps
+include them. Shape casts also ignore colliders overlapping at the start.
+
 `SignedDistance2` and `SignedDistance3` measure a point against one
 shape placed in the world, without touching the entity world at all.
 They return the distance to the surface, negative inside, and the
@@ -136,8 +157,8 @@ and report false for the rest.
 A game that queries every frame can avoid the result slice by calling
 `RaycastAll2Into`, `RaycastAll3Into`, `OverlapShape2Into` or
 `OverlapShape3Into`, which append to a slice the caller keeps and hands
-back truncated with `[:0]`. Every query then allocates nothing once the
-slice has grown to fit:
+back truncated with `[:0]`. Result and internal scratch buffers can be
+reused after they have grown to fit stable geometry:
 
 ```go
 g.hits = phys.RaycastAll3Into(g.hits[:0], w, ray, 0)
@@ -149,13 +170,13 @@ compound parts, including changes that preserve their outer bounds.
 Geometry changes refresh the cached snapshot; unchanged geometry reuses
 its placed parts without allocating.
 
-Casts and sweeps take their candidates from the broadphase's sorted axis
-rather than looking at every collider, order them along the sweep so the
-nearest is found first, and keep each collider's placed shape between
-queries. A cast across a level therefore costs what is near its path, not
-what the level contains. A collider's placed shape is rebuilt when it
-moves, turns or changes size; a shape whose points are edited in place
-without any of those changing must be assigned to the collider again.
+Shape sweeps reject distant bounds and order remaining candidates along
+the sweep, so later candidates can be skipped once a nearer hit is
+known. World queries still visit collider components to check current
+bounds. The 3D placed-shape cache rebuilds for motion, rotation or
+geometry changes and distinguishes recycled entity handles. Hull points
+and compound parts can be edited in place; immutable triangle meshes
+remain a separate case.
 
 ```go
 // The body under the pointer.
@@ -287,7 +308,9 @@ is then swept against the
 static colliders each substep and stopped at the first one it would
 have crossed, and its bounding sphere is swept against the other moving
 bodies so two fast bodies meet rather than cross. The second test is
-coarse, so two long thin bodies can still miss each other.
+conservative and does not reproduce each body's exact moving surface.
+CCD is an approximation, so retain suitable substeps for the speeds,
+dimensions and rotations in the game.
 
 ```go
 bullet := phys.Dynamic3(0.02)
@@ -334,8 +357,11 @@ direct control rather than through the solver. `Move` sweeps the
 capsule along a velocity, slides it along whatever it meets, steps it
 up ledges no taller than `StepHeight`, refuses slopes steeper than
 `MaxSlope`, and reports `Grounded` and the `GroundNormal`. A controller
-is kinematic, so it pushes nothing and nothing pushes it. To let other
-entities detect the character, give it a trigger collider.
+updates only its transform and controller state; it does not apply
+impulses. Give it a trigger collider for overlap detection, or a solid
+collider with a kinematic body when rigid bodies should respond to it.
+The controller ignores its own collider. Gravity and jumping are the
+game's responsibility; `Move` only applies the supplied velocity.
 
 ```go
 hero := w.SpawnWith(gfx.At(1, 3.5, -8))
@@ -404,7 +430,9 @@ Particles collide with the static and kinematic colliders already in
 the world, through the signed-distance queries above: spheres, boxes,
 capsules and compounds in 3D, and circles, boxes, polygons and capsules
 in 2D. They do not push rigid bodies back, and dynamic bodies are
-ignored.
+ignored. Triggers are also ignored. A soft component's mask checks
+collider layers; the collider's own mask is not consulted. There is no
+cloth self-collision or collision between separate soft components.
 
 ### Cloth
 
@@ -434,6 +462,11 @@ their particles. `NewMesh` uploads a mesh shaped like the body, and
 frame. Particle positions are world space, so the mesh is drawn with an
 identity matrix and needs no transform. Give cloth a `DoubleSided`
 material, because it is seen from both sides.
+
+Construct each soft component independently. Their particle storage is
+private, so copying a component, cloning it through the ECS, or spawning
+it repeatedly from a prefab shares that storage. `UpdateMesh` changes
+the mesh; it does not submit a draw call.
 
 ```go
 c, _ := ecs.Get[soft.Cloth](w, flag)
@@ -495,13 +528,15 @@ soft bodies.
 
 ### Tuning the soft solver
 
-Constraint stiffness is compliance, in metres per newton: zero is
-rigid, larger is softer, and it does not drift with the substep or
-iteration count. `Settings.Substeps` (default 4) and `Iterations`
+Distance-constraint compliance is in metres per newton with SI units:
+zero is rigid and larger is softer. Volume compliance has different
+dimensions because its constraint measures volume. XPBD reduces
+timestep dependence, while finite solver convergence still depends on
+substeps and iterations. `Settings.Substeps` (default 4) and `Iterations`
 (default 4) trade time for stiffness; cloth is stiffer for the same
 work with more substeps and fewer iterations than the other way around.
-A thousand-particle sheet and two thousand fluid particles each step in
-a few milliseconds, and a step allocates nothing.
+The solver reuses its scratch buffers; initial steps, particle growth
+and larger neighbourhoods can allocate.
 
 The `examples/softbody` program puts all three together:
 a flag on a pole, a jelly cube beside a rigid crate, and a tank of

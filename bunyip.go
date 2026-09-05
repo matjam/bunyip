@@ -12,8 +12,8 @@
 // so drawing can interpolate. Turn-based games set TurnBased. The loop
 // then sleeps in the operating system until input arrives, or until
 // Context.Wake is called from another goroutine, and runs one Update
-// and one Draw per batch of events. The process uses no CPU between
-// batches.
+// and one Draw per batch of events while not paused. The main loop blocks
+// between batches; audio and any game-owned goroutines can keep running.
 //
 // # The view
 //
@@ -29,8 +29,9 @@
 // Returning an error from Init, Update or Draw stops the loop, and Run
 // returns it. Context.Quit stops it cleanly. With Config.HandleClose the
 // window's close button sets Context.CloseRequested instead of quitting,
-// so a game can save or prompt first. A lost graphics device is rebuilt
-// and Init runs again, so Init must be safe to run twice.
+// so a game can save or prompt first. Games that implement Recoverer can
+// rebuild resources after a lost graphics device; Recover runs with the
+// new context instead of Init. Other games receive the device-loss error.
 package bunyip
 
 import (
@@ -48,11 +49,11 @@ import (
 
 // Config describes the window and the loop.
 type Config struct {
-	Title     string
-	Width     int // window content size in points
-	Height    int
-	Resizable bool
-	NoVSync   bool // present without waiting for the display; vsync is on by default
+	Title     string // window title; empty means "Bunyip"
+	Width     int    // window content width in points; if either dimension is nonpositive, use 1280 by 720
+	Height    int    // window content height in points
+	Resizable bool   // allow the player to resize the window; off by default
+	NoVSync   bool   // present without waiting for the display; vsync is on by default
 
 	TurnBased bool          // wait for input instead of running a clock
 	FixedStep time.Duration // real-time update interval; default 1/60 s
@@ -102,9 +103,10 @@ type Config struct {
 	// screenshot runs on a build machine.
 	Headless bool
 
-	// FixedClock advances the game clock by exactly one FixedStep each
-	// frame instead of reading the wall clock, and runs exactly one
-	// Update per frame. Frame N is then always at N steps, whatever the
+	// FixedClock advances the real-time game clock by one FixedStep each
+	// frame instead of reading the wall clock, and runs one Update per
+	// frame unless paused. It has no effect in turn-based mode.
+	// Frame N is then always at N steps, whatever the
 	// machine took to render it, so a run produces the same frames every
 	// time and a screenshot can be compared against a stored image. It is
 	// for tests and for recording, not for playing: a game run this way
@@ -121,7 +123,7 @@ type Config struct {
 	HandleClose bool
 
 	Validation bool // enable Vulkan validation when installed
-	NoAudio    bool // skip opening the audio device
+	NoAudio    bool // disable audio output and microphone capture
 	Log        *slog.Logger
 
 	// Debug shows the frame-timing overlay at start; F3 toggles it either
@@ -170,6 +172,9 @@ type Initer interface {
 }
 
 // Shutdowner is implemented by games that free resources on exit.
+// Shutdown runs with a live context after successful Init or Recover,
+// including before a device-loss rebuild. It is not called if Init or
+// Recover returns an error; those callbacks must clean up partial setup.
 type Shutdowner interface {
 	Shutdown(ctx *Context)
 }
@@ -178,18 +183,23 @@ type Shutdowner interface {
 // When the driver reports a device loss, Run rebuilds the graphics stack
 // and calls Recover with the new context; every texture, mesh, font and
 // render texture the game created is gone and must be created again.
+// Input, mixer and console are also new. Restore mixer/bus settings and
+// restart desired playback; old voice handles belong to the discarded mixer.
 // Games without Recover get the error from Run instead.
 type Recoverer interface {
 	Recover(ctx *Context) error
 }
 
-// Context is everything a game touches during a callback.
+// Context is everything a game touches during a callback. Use it from
+// the main goroutine in Init, Recover, Update, Draw or Shutdown. Wake is
+// safe from another goroutine; other operations are not synchronized.
 type Context struct {
 	Gfx   *gfx.Graphics
 	Input *input.State
 	Log   *slog.Logger
 
-	// Audio always exists; without an output device it mixes into silence.
+	// Audio always exists. Without an output device playback is silent
+	// and voices do not advance automatically.
 	Audio *audio.Mixer
 
 	// Console is the debug console, set when Config.Console is on and nil
@@ -210,7 +220,7 @@ type Context struct {
 	//
 	// Register commands and variables and attach worlds from Init. A lost
 	// GPU device rebuilds the console with the rest of the engine and
-	// runs Init again, so what Init registers comes back.
+	// calls Recover instead of Init; register the commands there too.
 	Console *console.Console
 
 	// Clear is the frame's background colour; set it whenever you like.
@@ -227,8 +237,9 @@ type Context struct {
 	// Delta is the seconds this Update covers, scaled by TimeScale: the
 	// fixed step in real-time mode, active wall time in turn-based mode.
 	// Configured pauses contribute no elapsed time; a turn-based resume
-	// update has zero Delta. Time is seconds since Run started and continues
-	// during pauses. Frame counts drawn frames.
+	// update has zero Delta. Time measures elapsed wall seconds in the
+	// current loop and continues during pauses, except with FixedClock.
+	// Frame counts drawn frames. Time and Frame restart after device recovery.
 	Delta float64
 	Time  float64
 	Frame uint64
@@ -312,6 +323,7 @@ func (c *Context) SetPosition(x, y int) { c.win.SetPosition(x, y) }
 
 // Position returns the window content's top-left corner on the screen,
 // in points from the screen's top-left, for saving with the settings.
+// Platforms other than macOS and headless runs return (0, 0).
 func (c *Context) Position() (x, y int) { return c.win.Position() }
 
 // SetAlwaysOnTop keeps the window above other applications' windows, for
@@ -330,6 +342,7 @@ func (c *Context) SetCursorImage(img image.Image, hotX, hotY int) {
 // Cursor is a pointer shape for SetCursor.
 type Cursor uint8
 
+// Standard cursor shapes for SetCursor.
 const (
 	CursorArrow      Cursor = Cursor(platform.CursorArrow)
 	CursorHand       Cursor = Cursor(platform.CursorHand)
@@ -400,6 +413,7 @@ func (c *Context) SetClipboard(text string) error { return c.app.SetClipboard(te
 // windows for languages such as Japanese open beside the field. Text
 // fields in the ui package call it for you. The rectangle follows the
 // fixed view's scaling and letterboxing.
+// Candidate placement is implemented on macOS; other platforms ignore it.
 func (c *Context) SetTextInputRect(x, y, w, h float32) {
 	// A minimized window can have no drawable area. Wait for a valid
 	// size before sending a rectangle to the platform.

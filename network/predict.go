@@ -10,9 +10,9 @@ import "sort"
 // a whole entity state); the blend function says how to mix two of
 // them.
 type Interpolator[T any] struct {
-	// Delay is how far behind the newest snapshot the interpolated time
-	// sits, in the snapshots' time units; two or three send intervals
-	// hides most jitter. Zero means one tenth of a unit.
+	// Delay is subtracted from the time passed to At, in the snapshots'
+	// time units. Two or three send intervals hide most jitter.
+	// Nonpositive values mean one tenth of a unit.
 	Delay float64
 	// Keep is how many snapshots to keep; zero means 32.
 	Keep  int
@@ -85,7 +85,7 @@ func (in *Interpolator[T]) Latest() (T, bool) {
 // input to a state for one fixed step and must be the same function the
 // server runs.
 type Predictor[S, I any] struct {
-	Step    func(state S, in I) S
+	Step    func(state S, in I) S // non-nil deterministic update, matching the server
 	state   S
 	pending []stamped[I]
 	next    uint32
@@ -143,7 +143,9 @@ type History[T any] struct {
 	items []snapshot[T]
 }
 
-// Record stores the state at a tick or time.
+// Record stores the state at a tick or time. Record times must be
+// nondecreasing; At uses binary search over insertion order. Values
+// are shallow copies, so do not mutate referenced data in a saved state.
 func (h *History[T]) Record(time float64, value T) {
 	h.items = append(h.items, snapshot[T]{time, value})
 	keep := h.Keep

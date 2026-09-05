@@ -9,9 +9,9 @@ import (
 	"github.com/matjam/bunyip/internal/audioout"
 )
 
-// ErrNoDevice is returned by OpenCapture when the run has no audio
-// device at all, which is what a headless run or Config.NoAudio asks
-// for.
+// ErrNoDevice is returned by OpenCapture when the engine explicitly
+// disabled devices for a headless run or Config.NoAudio. Failure to
+// open an output device alone does not disable an independent capture.
 var ErrNoDevice = errors.New("audio: this run has no audio device")
 
 // CaptureOptions shape a capture stream. Zero values mean the defaults
@@ -24,7 +24,8 @@ type CaptureOptions struct {
 
 // Capture is a running recording from the machine's default input. The
 // device fills a ring buffer from its own thread and the game drains it
-// with Read, which never blocks and never waits for the device. Samples
+// with Read, which does not wait for samples to arrive. It briefly
+// shares a mutex with the device's buffer writer. Samples
 // that are not read in time are dropped, oldest first, so a game that
 // stops reading falls behind by at most the buffer.
 //
@@ -111,7 +112,8 @@ func (c *Capture) write(in []float32) {
 
 // Read copies at most len(dst) recorded samples into dst and reports how
 // many it copied, which is 0 when nothing has arrived since the last
-// call. It never blocks and never waits for the device. With more than
+// call. It does not wait for new samples, but may briefly wait for the
+// buffer mutex. With more than
 // one channel the samples are interleaved, so a caller that works in
 // frames reads a multiple of Channels.
 func (c *Capture) Read(dst []float32) int {

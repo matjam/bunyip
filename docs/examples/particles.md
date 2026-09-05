@@ -5,13 +5,13 @@ summary: a campfire of fire and smoke, instanced rain, sparks on click and confe
 ---
 
 This program is a tour of the [particle](../pkg/particle.html) package.
-Four systems run at once: a campfire of fire and smoke, thousands of
+Several systems run at once: a campfire of fire and smoke, thousands of
 raindrops falling from a line above the screen as one instanced draw,
 sparks fired where the mouse is clicked, and a confetti burst on Space.
 A panel of sliders changes the fire's emission rate and gravity while it
 is burning.
 
-The particle package is a 2D effects layer over the sprite drawing in
+This example uses the particle package's 2D effects over sprite drawing in
 [gfx](../pkg/gfx.html). An `Emitter` is a plain value describing what to
 emit and how the particles behave; `particle.New` turns one into a
 running `System`; the system is stepped from `Update` and drawn from
@@ -24,7 +24,8 @@ about. The panel comes from [ui](../pkg/ui.html); see
 The rain is the exception: it runs on a `GPUSystem`, which takes the same
 `Emitter` but keeps its particles in parallel arrays and draws the whole
 storm as one instanced call rather than a sprite each. Its emitter is
-also `Stateless`, so nothing at all is kept between frames: every drop is
+also `Stateless`, so no individual particle state is kept between frames:
+the system retains its settings and clock, and every drop is
 a closed form of the seed, its index in the stream and the clock. Pass
 `-drops 200000` and the storm still draws in one call.
 
@@ -107,14 +108,15 @@ of the view. Each emitter starts from a preset and is then adjusted:
 - `Position` is where particles are born, and `Shape` spreads them over a
   region. The rain uses `particle.Line`, a horizontal line the width of
   the view plus a margin, so drops arrive from off screen.
-- `Prewarm` runs the system for that many seconds before the first frame,
-  so the fire is already burning and the rain already falling when the
-  window opens rather than starting empty.
+- `Prewarm` advances the stateful fire and smoke before the first frame.
+  Stateless rain ignores this setting: its closed-form stream already
+  includes drops born before time zero.
 - `Layer` is the sort key the sprites are drawn with. Smoke is 1, fire 2,
   sparks 3 and confetti 4, so each draws over the one before it whatever
   order the `Draw` calls happen to be in.
-- `Burst` set to zero stops the sparks emitting continuously; they only
-  appear when the program asks for a burst.
+- `Burst` set to zero prevents the initial burst from `New`. The sparks
+  preset already has a zero `Rate`, so later sparks only appear when the
+  program calls `Burst`.
 
 `Size` is a `particle.Range`, a minimum and a maximum the system picks
 between for each particle. The fire's `Rate` and `Acceleration.Y` are
@@ -317,9 +319,11 @@ scopes its widgets by nesting rather than by a matching end call.
 value changed this frame. Both sliders are called every frame, and the
 `|| changed` keeps the second call from being skipped by short-circuit
 evaluation. When either moved, the emitter value is updated and
-`SetEmitter` hands it back to the running system: particles already alive
-keep their own settings, and the ones emitted from now on use the new
-ones. The last line restores layer 0 for the next frame, since the layer
+`SetEmitter` hands it back to the running system. Existing particles keep
+their birth size, lifetime and palette tint, while acceleration, damping
+and appearance curves change for live particles too. Later births use
+the new settings. The last line restores layer 0 for the next frame, since
+the layer
 is graphics state rather than a per-call argument.
 
 ```go

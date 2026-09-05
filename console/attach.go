@@ -115,7 +115,7 @@ type Link struct {
 	RTT       time.Duration // round trip time
 	Loss      float32       // fraction of packets lost, 0 to 1
 	Pending   int           // messages sent and not yet acknowledged
-	Connected bool
+	Connected bool          // false marks the peer as down in the panel
 }
 
 // AttachLinks adds a connection's links to the Services panel. The

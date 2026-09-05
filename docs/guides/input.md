@@ -9,7 +9,8 @@ The [input](../pkg/input.html) package holds the state of every key,
 button, stick and pointer, read through `ctx.Input`. Game code never
 polls the platform. The engine feeds events in and clears the edges
 after each update, so `KeyPressed` is true for exactly one update per
-press, however many frames the press spans.
+press, however many frames the press spans. OS repeats also count as
+presses; several events in one update collapse to a single true value.
 
 ## Keys and the mouse
 
@@ -96,9 +97,14 @@ edge, and drawing does not consume the edge still pending for Update.
 `Pressed` and `Released` for the standard buttons, and `Axis` for the
 sticks and triggers in -1 to 1. Sticks report up as positive y, as the
 hardware does. `JustConnected` and `JustDisconnected` mark the update a
-controller appears or vanishes, for a join prompt or a pause. There are
+controller appears or vanishes, for a join prompt or a pause. These two
+connection flags and axis transitions are update-only; only gamepad
+button transitions have a separate whole-frame view during Draw. There are
 `MaxGamepads` of them, and `Gamepad(i)` is never nil, so an unplugged
-controller reads as nothing held.
+controller reads as nothing held. The returned pointer is a snapshot;
+fetch it again for fresh state. `Axis` zeroes values strictly between
+-0.08 and 0.08 without rescaling the remainder. Action maps use their
+own dead zone, 0.2 by default.
 
 ```go
 pad := ctx.Input.Gamepad(0)

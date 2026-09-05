@@ -1,7 +1,7 @@
 // Package save stores a game's files in the platform's own data
 // directory: settings, save slots and anything else worth keeping
-// between runs, written as JSON and replaced atomically so a crash
-// mid-write never corrupts a save.
+// between runs, written as JSON through a synced temporary file and
+// renamed into place to avoid exposing partial JSON.
 //
 // To open a store, call Open with the application name. It picks
 // Application Support on macOS, AppData on Windows and XDG data on
@@ -11,7 +11,9 @@
 // survive new versions. List names the files present for a load menu,
 // Delete removes one, and Exists checks before overwriting. Files are
 // written to a temporary name and renamed into place, so a reader sees
-// the old file or the new one and never a partly written one. For whole
+// the old file or the new one where the filesystem supports atomic
+// replacement. The containing directory is not synced, so power-loss
+// durability is not guaranteed. For whole
 // ECS worlds, ecs.World.Save produces the bytes and this package stores
 // them.
 package save
@@ -29,7 +31,9 @@ import (
 
 // Dir returns the per-user data directory for an app: Application
 // Support on macOS, XDG data on Linux, AppData on Windows. The
-// BUNYIP_DATA_DIR environment variable overrides it.
+// BUNYIP_DATA_DIR environment variable overrides the base directory;
+// app is appended to that base. The app argument is a trusted
+// application directory name, not unvalidated user input.
 func Dir(app string) (string, error) {
 	if dir := os.Getenv("BUNYIP_DATA_DIR"); dir != "" {
 		return filepath.Join(dir, app), nil
@@ -60,7 +64,10 @@ func Dir(app string) (string, error) {
 	return filepath.Join(base, app), nil
 }
 
-// Store reads and writes named JSON documents in one directory.
+// Store reads and writes named JSON documents in one directory. Names
+// omit the .json extension and must be nonempty leaf names without
+// slashes; "." and ".." are rejected. Concurrent writes use separate
+// temporary files; the last successful rename to a name wins.
 type Store struct {
 	dir string
 }
@@ -99,7 +106,10 @@ func checkName(name string) error {
 	return nil
 }
 
-// Write stores v as name.json, replacing any previous file atomically.
+// Write stores v as name.json through a synced temporary file, replacing
+// the previous file with os.Rename. Atomic replacement depends on the
+// host filesystem. Failures before rename leave the old file intact;
+// this method does not sync the containing directory.
 func (s *Store) Write(name string, v any) error {
 	if err := checkName(name); err != nil {
 		return err
@@ -189,6 +199,9 @@ func (s *Store) List() ([]string, error) {
 // Load reads name.json over a copy of defaults, so fields the file lacks
 // keep their default values and a missing file yields the defaults
 // without error. Use it for settings.
+// Defaults are copied through JSON before applying a present file;
+// provide JSON-round-trippable defaults for independent maps and slices.
+// A missing file returns defaults directly, which can share their data.
 func Load[T any](s *Store, name string, defaults T) (T, error) {
 	// A deep copy: decoding into a value that shares the defaults'
 	// slices and maps would write into them.

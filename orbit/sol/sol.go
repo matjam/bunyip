@@ -6,9 +6,9 @@ package sol
 
 // Distances in metres, masses in kilograms, time in seconds.
 const (
-	AU          = 1.495978707e11
-	Day         = 86400.0
-	Year        = 365.25 * Day
+	AU          = 1.495978707e11 // astronomical unit in metres
+	Day         = 86400.0        // day in seconds
+	Year        = 365.25 * Day   // Julian year in seconds
 	EarthRadius = 6.371e6
 	MoonRadius  = 1.7374e6
 	SunRadius   = 6.957e8
@@ -26,5 +26,5 @@ const (
 	MuMars    = 4.282837e13
 	MuJupiter = 1.26686534e17
 
-	MoonDistance = 384400e3
+	MoonDistance = 384400e3 // approximate mean Earth-Moon distance in metres
 )

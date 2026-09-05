@@ -1,21 +1,23 @@
 package orbit
 
 // Body is a mass with a position and velocity, used both as an ECS
-// component and inside a Simulation. Mass zero makes a test particle
-// that feels gravity without exerting it.
+// component and inside a Simulation. In a Simulation, Mass zero makes
+// a test particle that feels gravity without exerting it. In the ECS,
+// Ship or Kepler selects motion; a Body with neither stays fixed.
 type Body struct {
 	Pos, Vel Vec3
 	Mass     float64
 }
 
 // Simulation integrates bodies under their mutual gravity with the
-// leapfrog (kick-drift-kick) scheme, which conserves energy over long
-// runs where simpler integrators drift.
+// leapfrog (kick-drift-kick) scheme. Use a sufficiently small fixed step
+// to limit integration error; energy is not conserved exactly. The zero
+// value is an empty simulation with the SI gravitational constant.
 type Simulation struct {
 	Bodies    []Body
 	G         float64 // zero means the real constant
-	Softening float64 // metres added to distances to tame close passes
-	Time      float64
+	Softening float64 // simulation distance: its square is added to squared separations
+	Time      float64 // elapsed simulation time, advanced by Step
 	acc       []Vec3
 }
 
@@ -27,6 +29,8 @@ func (s *Simulation) g() float64 {
 }
 
 // Accelerations fills out with the gravitational acceleration on each body.
+// out must have length at least len(Bodies). Positive Softening avoids
+// the singularity when distinct bodies occupy the same position.
 func (s *Simulation) Accelerations(out []Vec3) {
 	g := s.g()
 	eps2 := s.Softening * s.Softening
@@ -65,7 +69,7 @@ func (s *Simulation) FieldAt(p Vec3) Vec3 {
 	return a
 }
 
-// Step advances every body by dt seconds.
+// Step advances every body and Time by dt simulation time units.
 func (s *Simulation) Step(dt float64) {
 	n := len(s.Bodies)
 	if cap(s.acc) < n {
@@ -86,8 +90,9 @@ func (s *Simulation) Step(dt float64) {
 	s.Time += dt
 }
 
-// Energy is the total kinetic plus potential energy, a check on the
-// integrator: it should stay constant.
+// Energy returns total kinetic plus unsoftened Newtonian potential energy.
+// It ignores Softening and omits potential terms for coincident bodies,
+// so it is an integration diagnostic for separated, unsoftened systems.
 func (s *Simulation) Energy() float64 {
 	g := s.g()
 	var e float64

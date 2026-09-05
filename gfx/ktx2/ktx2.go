@@ -78,9 +78,11 @@ func (f *File) maxMipLevels() int {
 	return bits.Len(uint(max(f.Width, f.Height)))
 }
 
-// Parse reads a KTX2 file. It rejects the features this package does not
-// carry: array layers, cube faces, depth beyond one and
-// supercompression.
+// Parse reads a KTX2 file with one face, depth at most one, at most one
+// layer and no supercompression. Dimensions must be 1..65536, every level
+// must have its exact format-specific byte size, and the chain cannot
+// extend beyond 1x1. A zero level count is read as one supplied base level.
+// Levels alias data: keep the input unchanged while the File is in use.
 func Parse(data []byte) (*File, error) {
 	if len(data) < headerSize {
 		return nil, fmt.Errorf("ktx2: %d bytes is too short for a header", len(data))

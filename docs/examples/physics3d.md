@@ -34,8 +34,8 @@ R drops the cubes again and Escape quits.
 ## Materials
 
 `cube` is the game's own component, holding the material to draw an
-entity with. A material is a plain value, so keeping one per entity costs
-nothing and the draw call takes it directly.
+entity with. A material is a plain value stored with the component, which
+the draw call takes directly; it is not a separately allocated GPU resource.
 
 `cubeMaterial` builds seven surfaces from a colour. The fields are the
 usual physically based ones: `Metallic` at one makes the base colour the

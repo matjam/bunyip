@@ -75,16 +75,6 @@ func newMatcher(w *World, ids []ComponentID, filters []Filter) matcher {
 	return m
 }
 
-// Rows are visited from the last to the first, so despawning or
-// restructuring the entity being visited is safe: the row swapped into
-// its place has already been seen. Every matched table's row count is
-// captured when the walk begins, so an entity that moves into another
-// matched table during the walk lands past that count and is not
-// visited again. Changes to other entities, including despawning an
-// entity with children (the cascade removes rows the walk has not
-// reached), should go through Commands. A walk must not start another
-// walk of the same query inside its callback.
-
 // Query1 iterates entities with an A.
 type Query1[A any] struct {
 	m matcher
@@ -98,7 +88,8 @@ func NewQuery1[A any](w *World, filters ...Filter) *Query1[A] {
 	return &Query1[A]{m: newMatcher(w, []ComponentID{a}, filters), a: a}
 }
 
-// Each calls fn for every matching entity.
+// Each calls fn for every matching entity. The package's query lifetime
+// and mutation rules apply; do not recursively walk this query from fn.
 func (q *Query1[A]) Each(fn func(e Entity, a *A)) {
 	q.m.begin()
 	for k, arch := range q.m.archs {
@@ -112,7 +103,8 @@ func (q *Query1[A]) Each(fn func(e Entity, a *A)) {
 // Count is the number of matching entities.
 func (q *Query1[A]) Count() int { return q.m.count() }
 
-// First returns the first matching entity, if any.
+// First returns one matching entity, if any, in unspecified order. Its
+// component pointer has the same storage lifetime as a pointer from Get.
 func (q *Query1[A]) First() (Entity, *A, bool) {
 	q.m.refresh()
 	for _, arch := range q.m.archs {
@@ -138,7 +130,8 @@ func NewQuery2[A, B any](w *World, filters ...Filter) *Query2[A, B] {
 	return &Query2[A, B]{m: newMatcher(w, []ComponentID{a, b}, filters), a: a, b: b}
 }
 
-// Each calls fn for every matching entity.
+// Each calls fn for every matching entity. The package's query lifetime
+// and mutation rules apply; do not recursively walk this query from fn.
 func (q *Query2[A, B]) Each(fn func(e Entity, a *A, b *B)) {
 	q.m.begin()
 	for k, arch := range q.m.archs {
@@ -168,7 +161,8 @@ func NewQuery3[A, B, C any](w *World, filters ...Filter) *Query3[A, B, C] {
 	return &Query3[A, B, C]{m: newMatcher(w, []ComponentID{a, b, c}, filters), a: a, b: b, c: c}
 }
 
-// Each calls fn for every matching entity.
+// Each calls fn for every matching entity. The package's query lifetime
+// and mutation rules apply; do not recursively walk this query from fn.
 func (q *Query3[A, B, C]) Each(fn func(e Entity, a *A, b *B, c *C)) {
 	q.m.begin()
 	for k, arch := range q.m.archs {
@@ -200,7 +194,8 @@ func NewQuery4[A, B, C, D any](w *World, filters ...Filter) *Query4[A, B, C, D] 
 	return &Query4[A, B, C, D]{m: newMatcher(w, []ComponentID{a, b, c, d}, filters), a: a, b: b, c: c, d: d}
 }
 
-// Each calls fn for every matching entity.
+// Each calls fn for every matching entity. The package's query lifetime
+// and mutation rules apply; do not recursively walk this query from fn.
 func (q *Query4[A, B, C, D]) Each(fn func(e Entity, a *A, b *B, c *C, d *D)) {
 	q.m.begin()
 	for k, arch := range q.m.archs {

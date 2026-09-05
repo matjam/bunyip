@@ -172,7 +172,10 @@ func DefaultPost() PostSettings {
 	return PostSettings{Exposure: 1, Bloom: 0.25, BloomThreshold: 1, Saturation: 1, Contrast: 1, AmbientOcclusion: 0.6, OcclusionRadius: 1}
 }
 
-// SetPost replaces the post-processing settings. A change to Samples
+// SetPost replaces the global post-processing settings for the screen
+// and every render texture. Queued DrawTo calls use the final settings
+// when the frame submits, so they cannot choose different post effects.
+// A change to Samples
 // takes effect on the next frame, which rebuilds the scene targets.
 func (g *Graphics) SetPost(p PostSettings) { g.post.settings = p }
 

@@ -10,8 +10,10 @@ import (
 // playing; Seek, Position, Mute and Solo take the same lock, so the game
 // loop can call them while it plays. Set Loop, AmigaFilter and Cubic
 // before playing.
+// Keep the Module and its referenced slices immutable while a player
+// uses them. The player retains them rather than copying the song.
 type Player struct {
-	Loop bool
+	Loop bool // restart at Module.Restart on reaching the order list's end
 	// AmigaFilter enables the ProTracker LED low-pass filter (E00/E01).
 	// Off by default: most players and listeners expect the unfiltered mix.
 	AmigaFilter bool
@@ -142,6 +144,11 @@ type autoVibState struct {
 }
 
 // NewPlayer prepares a module for playback at rate Hz.
+// Use a positive rate and a non-nil module returned by a loader. For a
+// hand-built module, Pan must contain Channels entries, and ChannelVol
+// must either be nil or contain Channels entries; pattern and sample
+// indices must follow the Module model. Construction does not validate
+// every field or return an error.
 func NewPlayer(m *Module, rate int) *Player {
 	p := &Player{mod: m, rate: rate, jumpOrder: -1, breakRow: -1,
 		mute: make([]bool, m.Channels), solo: make([]bool, m.Channels)}

@@ -39,15 +39,16 @@ func eachCollider2(w *ecs.World, lo, hi lin.Vec2, mask uint32, triggers bool, fn
 // OverlapShape2 returns every collider the shape overlaps when placed at
 // pos with rotation rot. Each hit carries the deepest contact: Point on
 // the collider, Normal pointing from the collider back toward the shape
-// and Distance the penetration depth. Triggers are included.
+// and Distance the penetration depth. Triggers are included. s must be
+// non-nil. rot is radians; mask zero includes every collider layer.
 func OverlapShape2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32) []Hit2 {
 	return OverlapShape2Into(nil, w, s, pos, rot, mask)
 }
 
 // OverlapShape2Into appends every collider the shape overlaps to out and
 // returns out. Pass the previous result truncated with [:0] to reuse its
-// storage; pass nil for a fresh slice. A game that overlaps every frame
-// then allocates nothing.
+// storage; pass nil for a fresh slice. Result and scratch buffers may
+// allocate on initial use or growth. OverlapShape2's contracts apply.
 func OverlapShape2Into(out []Hit2, w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32) []Hit2 {
 	return overlapShape2(out, w, s, pos, rot, mask, true, ecs.None)
 }

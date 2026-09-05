@@ -94,8 +94,8 @@ const asteroids = 300
 
 ## The game type
 
-Three cached queries: all drawable bodies, all bodies on a Kepler orbit,
-and the two entity handles for the star and the ship. `focus` is the
+Two cached queries find drawable bodies and bodies on a Kepler orbit;
+separate entity handles identify the star and the ship. `focus` is the
 list of bodies Tab cycles through and `focused` is the index into it.
 The camera is again three numbers, and `stars` is a set of unit
 directions used to place the background starfield.
@@ -142,9 +142,9 @@ update.
 Each body carries an `orbit.Body` with a mass, a `gfx.Transform` that
 the orbit system writes, a `look`, and for everything but the ship an
 `orbit.Kepler` naming its primary and its elements. A `Kepler` body is
-placed analytically on its ellipse rather than integrated, so it never
-drifts however long the program runs and however hard the time warp is
-pushed.
+placed analytically on its ellipse rather than integrated, avoiding
+accumulated integration drift. Finite-precision arithmetic still limits
+very large elapsed times and coordinates.
 
 The asteroids get `orbit.Body{}` with a zero mass. They follow their
 orbits but pull on nothing, so three hundred of them cost the ship's
@@ -590,8 +590,9 @@ func main() {
   outside, and push the time warp slider up.
 - Give the ship a fuel figure in `game`, decrement it in `Update` while
   thrusting, and show it as a label in `Draw`.
-- Raise `asteroids` to 5000 and check the frame time; massless Kepler
-  bodies are placed analytically, so the cost is in drawing them.
+- Raise `asteroids` to 5000 and check the frame time. Massless Kepler
+  bodies add no gravitational force, but computing their analytical
+  positions, updating transforms and drawing them still takes work.
 - Draw the predicted path in `Draw` in the star's frame instead of the
   primary's, by passing `g.star` to `PredictRelative`, and see why the
   primary's frame is the readable one.

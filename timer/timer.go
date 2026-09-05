@@ -13,7 +13,7 @@
 // freely.
 package timer
 
-// Scheduler runs timers in game time.
+// Scheduler runs timers in game time. Its zero value is ready to use.
 type Scheduler struct {
 	heap     []timer // a min-heap ordered by due time, then by handle
 	next     int
@@ -44,13 +44,16 @@ func (t timer) before(u timer) bool {
 // Handle identifies a scheduled timer for Cancel.
 type Handle int
 
-// After runs fn once, seconds from now.
+// After runs a non-nil fn once, seconds from now. A nonpositive delay
+// becomes due on the next Update, or in the current Update if scheduled
+// by a callback. It does not run fn during After itself.
 func (s *Scheduler) After(seconds float64, fn func()) Handle {
 	return s.add(seconds, 0, fn)
 }
 
 // Every runs fn every interval seconds, starting one interval from now,
-// until cancelled.
+// until cancelled. Use a positive interval for repetition; a
+// nonpositive interval fires once on the next Update.
 func (s *Scheduler) Every(seconds float64, fn func()) Handle {
 	return s.add(seconds, seconds, fn)
 }
@@ -86,6 +89,9 @@ func (s *Scheduler) Cancel(h Handle) {
 // Update advances time by dt seconds and fires what is due, earliest
 // first; timers due at the same moment fire in the order they were
 // scheduled. Callbacks may schedule or cancel timers.
+// Use finite, nonnegative dt. Repeating timers fire once for every
+// elapsed interval, including multiple times in a large step. Callbacks
+// must return and must not recursively call Update.
 func (s *Scheduler) Update(dt float64) {
 	s.now += dt
 	for len(s.heap) > 0 && s.heap[0].at <= s.now {
@@ -198,7 +204,7 @@ func (s *Scheduler) compact() {
 // Countdown is a simple timer a game polls rather than a callback: set
 // it and ask each frame whether it has run out.
 type Countdown struct {
-	Left float64
+	Left float64 // seconds remaining; may become negative on the final Update
 }
 
 // Start sets the countdown.

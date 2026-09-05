@@ -22,6 +22,8 @@ type MeshShape struct {
 }
 
 // NewMeshShape makes a mesh collider with its triangle tree built.
+// It retains vertices and indices without copying. Treat both slices as
+// immutable after construction; build a new MeshShape to change geometry.
 func NewMeshShape(vertices []lin.Vec3, indices []uint32) MeshShape {
 	m := MeshShape{Vertices: vertices, Indices: indices}
 	m.tree = buildMeshTree(m)

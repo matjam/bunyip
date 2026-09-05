@@ -116,9 +116,10 @@ gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
 `DrawNineSlice` stretches a `NineSlice` over any rectangle while its
 corners keep their size, so a 24 by 24 png draws a panel or a speech
 bubble at any size. Set `Tile` to repeat the edges and centre instead of
-stretching them. `NewBlankTexture` and `Texture.Write` replace a
-rectangle of a texture's pixels, streamed without waiting for the GPU,
-so a painting tool or a video can change one every frame;
+stretching them. `NewBlankTexture` creates writable storage and
+`Texture.Write` replaces a rectangle of its pixels. Writes during
+`Draw` stream without waiting for the GPU; writes outside a frame wait.
+A painting tool or a video can change one every frame;
 `Texture.Read` copies pixels back. `Texture.Replace` swaps the whole
 image, at a new size if need be, and keeps the `*Texture` the game
 holds, so every material and sprite that names it draws the new picture;
@@ -133,7 +134,8 @@ gr.DrawNineSlice(ns, lin.R(12, 12, 300, 92), gfx.White)
 ### Compressed textures
 
 A texture uploaded from a PNG costs four bytes a texel on the GPU, and
-the mip chain the driver blits for it costs a third again. `bunyip-tex`
+the mip chain requested by linear filtering costs about a third again.
+Nearest-filtered textures do not generate mipmaps by default. `bunyip-tex`
 compresses an image to one of the BC block formats ahead of time and
 writes it with its whole mip chain as a KTX2 file, which
 `gfx.NewCompressedTexture` uploads block for block:
@@ -173,7 +175,10 @@ as its supplied base level.
 A device that cannot sample the format, which some MoltenVK
 configurations cannot for the BC formats, decodes level 0 on the
 processor into a plain texture instead, so the same file works
-everywhere at the cost of the memory it was meant to save. A KTX2 file
+on those devices at the cost of the memory it was meant to save. This
+fallback supports the CPU decoder's formats, with BC7 limited to modes
+1 and 6, and generates any requested mipmaps from the decoded base level.
+A KTX2 file
 holding ASTC uploads on a device that samples it; nothing here encodes
 or decodes ASTC, so there is no fallback for one.
 
@@ -401,14 +406,23 @@ editor in its JSON form (`.tmj`, `.tsj`) or its XML form (`.tmx`,
 from disk and `LoadFS` through an asset filesystem. `Build` loads the
 tileset images, makes one `gfx.Tilemap` per tileset a layer uses, wires
 up the per-tile animations and returns a `Level` whose `Draw` draws the
-layers in order with the group state above them applied. `Advance` steps
+layers in order with the group state above them applied. `Build` draws
+a rectangular grid regardless of the parsed orientation; isometric and
+hexagonal maps need a custom drawing path. Image layers and tilesets
+made from separate per-tile images are parsed but not drawn. `Advance` steps
 the tile animations, `Size` gives the map's pixel size, `Layer` finds a
 layer by name and `Destroy` releases the textures.
+
+Infinite tile layers retain their flattened cell origin in `StartX` and
+`StartY`, but `Build` does not apply it to the drawing offset. Use a custom
+drawing path for infinite chunks whose origin is not (0, 0).
 
 Object layers are left to the game. They hold rectangles, ellipses,
 points, polygons and polylines with names, classes and typed custom
 properties; read them for spawn points, triggers and collision shapes.
-Tiled's flip and rotation bits survive the import. Tile layer data
+Horizontal, vertical and diagonal flips on rectangular maps survive
+the drawing bridge. For hexagonal maps, interpret the raw global ID's
+rotation flags yourself; `SplitGID` discards the 120-degree bit. Tile layer data
 decodes in every form Tiled writes: CSV, and base64 plain or compressed
 with zlib, gzip or zstd.
 
@@ -595,9 +609,10 @@ each particle as a few numbers in parallel arrays, moves them with plain
 loops over those arrays, and draws the whole system as one instanced
 draw through `gfx.DrawParticles`, so no sprite is built and no vertices
 are written. `NewGPU` replaces `New`; everything else (`Update`, `Draw`,
-`SetPosition`, `Burst`, `Finished`) is the same, and the random stream
-matches the CPU path particle for particle, so switching between them
-does not change the effect. Raise `Emitter.Max`, which defaults to the
+`SetPosition`, `Burst`, `Finished`) is similar, and the stateful random
+stream matches the CPU path particle for particle. GPU appearance curves
+use 64-entry lookup tables, so their interpolation is quantized. Raise
+`Emitter.Max`, which defaults to the
 1000 the CPU path assumes.
 
 `SetEmitter` retunes the appearance and future births. Existing stateful
@@ -628,8 +643,9 @@ is what additive effects want.
 
 Set `Emitter.Stateless` and the system keeps no per-particle state at
 all: every particle is a closed-form function of the seed, its index in
-the stream and the clock. Memory is then constant however many there
-are, the effect is identical on every run, it is already running at time
+the stream and the clock. It needs no simulation history, but the system
+still allocates arrays up to `Max` and buffers for the drawn instances.
+The effect is identical for the same settings and clock and already runs at time
 zero with no `Prewarm`, and `SetClock` scrubs it to any time without
 simulating the gap. It suits the effects whose particles never interact:
 rain, snow, sparks, dust. The cost is per-particle work each frame, so a
@@ -642,6 +658,10 @@ particles age out. `Finished` checks their lifetimes at the current clock,
 even before the next draw; `Alive` reports the last draw's count.
 `SetClock` retains the stop time when scrubbing, and `Start` resets the
 clock to zero and resumes births.
+
+`Clear` removes stateful particles without stopping emission. For a
+stateless emitter it only resets the cached `Alive` count; the next draw
+reconstructs the stream. Use `Stop` and continue advancing time to drain it.
 
 ### Particles in the 3D scene
 

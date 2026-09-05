@@ -312,9 +312,12 @@ func TestSiteBuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	site.Base = siteURL
-	if err := site.write(t.TempDir()); err != nil {
+	out := t.TempDir()
+	if err := site.write(out); err != nil {
 		t.Fatal(err)
 	}
+	checkSiteLinks(t, site, out)
+	checkPublicAPICoverage(t, site)
 	for _, p := range site.Programs {
 		if p.Missing && !allowMissing() {
 			t.Errorf("examples/%s has no walkthrough", p.Name)
@@ -327,6 +330,16 @@ func TestSiteBuilds(t *testing.T) {
 		t.Error("no example index rendered")
 	}
 	full := string(site.pages["llms-full.txt"])
+	for _, p := range site.Packages {
+		if !strings.Contains(full, "`import \""+p.ImportPath+"\"`") {
+			t.Errorf("%s: package absent from aggregate", p.ImportPath)
+		}
+	}
+	for _, g := range site.Guides {
+		if !strings.Contains(full, "# "+g.Title+"\n") {
+			t.Errorf("%s: guide absent from aggregate", g.Slug)
+		}
+	}
 	for _, p := range site.Programs {
 		if p.Missing {
 			continue

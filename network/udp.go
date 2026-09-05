@@ -266,8 +266,11 @@ func (l *link) receiveReliable(rid uint32, data []byte) [][]byte {
 	}
 }
 
-// SetOnActivity runs fn on a network goroutine whenever an event is
-// queued; point it at Context.Wake in a turn-based game.
+// SetOnActivity runs fn on a network goroutine when event activity is
+// observed; point it at Context.Wake in a turn-based game. One callback
+// may cover several events, including unreliable events dropped by a
+// full queue. Keep fn short. A callback captured before replacement
+// may still run afterward; nil disables future captures.
 func (p *Peer) SetOnActivity(fn func()) {
 	p.mu.Lock()
 	p.activity = fn
@@ -367,6 +370,9 @@ func (p *Peer) Send(to *Addr, msg any) error { return p.send(to, msg, false) }
 // SendReliable sends one message that is resent until acknowledged and
 // delivered in order with the sender's other reliable messages. It
 // returns once the message is queued; Stats reports what is pending.
+// The initial datagram is written before return, so a write error can
+// be returned while the message remains queued for retry. A reset,
+// timeout, Disconnect or Close discards unacknowledged messages.
 func (p *Peer) SendReliable(to *Addr, msg any) error { return p.send(to, msg, true) }
 
 func (p *Peer) send(to *Addr, msg any, reliable bool) error {
@@ -639,6 +645,8 @@ func (p *Peer) maintain(now time.Time) {
 
 // Poll returns the events received since the last call without
 // blocking: Connected and Disconnected with From set, and Message.
+// Unreliable messages are dropped when the 4096-entry queue is full;
+// reliable messages and connection events wait for room or local close.
 func (p *Peer) Poll() []Event { return drain(p.events) }
 
 // Peers lists the addresses that have sent something and not gone away.

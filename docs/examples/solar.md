@@ -407,8 +407,9 @@ func main() {
 ## What to try
 
 - Raise the belt in `system.json` from a few hundred to 20000 and watch
-  the entity count, the frame time and the draw count; the belt stays one
-  draw.
+  the entity count, the frame time and the draw count. Compatible belt
+  draws can still instance together, but culling, material changes such
+  as selection, and renderer batch limits affect the final draw count.
 - Add a planet to `system.json`, with a moon that references the prefab,
   and see it appear without a line of Go changing.
 - Add a `trail` component and a third system in `Init` that records past

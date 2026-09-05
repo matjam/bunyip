@@ -50,8 +50,10 @@ type ClothSpec struct {
 
 // Cloth is a sheet of particles held together by distance constraints:
 // a flag, a curtain, a cape, a sail. Build one with NewCloth and spawn it
-// as a component; System steps it and UpdateMesh draws it. Positions are
-// world space, so a cloth needs no transform.
+// as a component; System steps it and UpdateMesh updates its render mesh.
+// Draw that mesh separately with gfx.Graphics.DrawMesh. Positions are
+// world space, so a cloth needs no transform. Copies of a Cloth share
+// private particle storage; call NewCloth for each independent instance.
 type Cloth struct {
 	// Wind is the air velocity the sheet feels, in units per second. The
 	// force on each cell is its area times the speed of the wind through

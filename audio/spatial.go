@@ -6,8 +6,10 @@ import "github.com/matjam/bunyip/lin"
 // orient it; the right ear lies along Forward × Up. Velocity, in world
 // units per second, only matters once Doppler is on (see SetDoppler).
 type Listener struct {
-	Position, Forward, Up lin.Vec3
-	Velocity              lin.Vec3
+	Position lin.Vec3 // listener position in world units
+	Forward  lin.Vec3 // facing direction; zero means (0, 0, -1) in SetListener
+	Up       lin.Vec3 // head-up direction; zero means (0, 1, 0) in SetListener
+	Velocity lin.Vec3 // world units per second for Doppler
 }
 
 // SetListener places the listener, usually at the camera each frame.

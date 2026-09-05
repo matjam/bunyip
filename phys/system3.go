@@ -11,9 +11,9 @@ import (
 // Settings3 is the world resource that tunes 3D simulation. Zero
 // substeps or iterations mean 4 and 8.
 type Settings3 struct {
-	Gravity    lin.Vec3
-	Substeps   int
-	Iterations int
+	Gravity    lin.Vec3 // world units per second squared; zero disables gravity
+	Substeps   int      // integration steps per update; nonpositive means 4
+	Iterations int      // solver passes per substep; nonpositive means 8
 	// SleepTime is how long a body and everything touching it must rest
 	// before they sleep and drop out of the simulation until touched;
 	// zero means bodies never sleep. Half a second suits most games.
@@ -56,7 +56,8 @@ type Body3 struct {
 	fraction  float32
 }
 
-// Dynamic3 returns a moving body with sensible defaults.
+// Dynamic3 returns a body with the given mass, restitution 0.1, friction
+// 0.5 and gravity scale 1. A positive mass makes it dynamic.
 func Dynamic3(mass float32) Body3 {
 	return Body3{Mass: mass, Restitution: 0.1, Friction: 0.5, GravityScale: 1}
 }
@@ -82,15 +83,17 @@ func (b *Body3) AddImpulse(i lin.Vec3) {
 // simulation until something touches or pushes it.
 func (b *Body3) Asleep() bool { return b.asleep }
 
-// Wake puts a sleeping body back in the simulation.
+// Wake clears automatic sleep and its timer. It does not clear Sleeping,
+// which remains under the game's control.
 func (b *Body3) Wake() { b.asleep, b.sleepTime = false, 0 }
 
 // Collider3 gives an entity a shape. An entity with a Collider3 and no
-// Body3 is a static obstacle.
+// Body3 is a static obstacle. It also needs gfx.Transform. A nil Shape
+// is ignored; transform scale does not resize the shape.
 type Collider3 struct {
 	Shape   Shape3
-	Offset  lin.Vec3
-	Trigger bool
+	Offset  lin.Vec3 // local offset, rotated by the transform's rotation
+	Trigger bool     // overlaps emit events without applying collision impulses
 	Layers
 }
 
@@ -107,6 +110,8 @@ type Collision3 struct {
 }
 
 // Trigger3 is emitted while a trigger collider overlaps another collider.
+// A pair is reported in its first overlapping substep of the update;
+// when both colliders are triggers, each receives its own event.
 type Trigger3 struct {
 	Trigger, Other ecs.Entity
 }

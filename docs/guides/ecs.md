@@ -30,12 +30,19 @@ w.Despawn(e)
 Entity handles are generational. A handle to a despawned entity stays
 invalid even after its slot is reused, so a stale handle never reads
 another entity's data.
+Use `w.Alive(e)` to test whether it exists; `e.Valid()` only tests for a
+nonzero handle. Handles belong to their world and are not portable to
+another world. Construct worlds with `NewWorld`; their zero value is
+not initialized, and world access must be serialized.
 
 Where the type is known only at run time, `w.Components(e)` lists the
-types an entity carries, `w.ComponentValues(e)` returns copies of them
+types an entity carries, `w.ComponentValues(e)` returns shallow copies
 in the same order, and `w.SetComponent(e, v)` writes one back from an
 `any`. That is what an editor or the debug console's entity panel uses;
 game code that knows the type calls `ecs.Get` and `ecs.Add`.
+Slices, maps and pointers inside those copies still refer to the
+entity's storage. Component pointers from `Get` and queries are only
+valid until a structural change touches their table.
 
 ## Queries
 
@@ -53,17 +60,17 @@ movers.Each(func(e ecs.Entity, p *Position, v *Velocity) {
 ```
 
 `With` and `Without` filters narrow a query without reading the extra
-component. `Each`, `Each2` and `Count` are one-off shortcuts for code
-that does not keep a query.
+component. `Each`, `Each2`, `Each3`, `Each4` and `Count` are shortcuts
+that reuse a cached query per world and ordered component set.
 
 ## Storage
 
 Every distinct set of component types gets a table (an archetype) with
 one dense column per type. An entity lives in exactly one table. A query
 finds the tables containing its components and then walks their columns
-side by side, with no hashing, no pointer chasing and no allocation.
-Iterating two components over a hundred thousand entities takes a
-fraction of a millisecond.
+side by side. Repeated walks reuse their scratch storage after the
+matching table list and snapshots have grown. A world supports up to
+256 distinct component types.
 
 Adding or removing a component moves the entity to another table by
 copying its row, so structural changes cost more than reads. Make them
@@ -74,7 +81,16 @@ in response to game events rather than every frame.
 Rows are visited last to first, so the entity a query is currently
 visiting may be despawned or given a new component inside the callback.
 Changes to *other* entities go through a `Commands` buffer and are
-applied after the walk:
+applied after the walk.
+
+The walk snapshots all matched table lengths, so moving the current
+entity into another matched table does not visit it twice. Despawning
+an entity with children changes other entities and must be deferred.
+Do not start another walk of the same query within its callback; the
+same restriction applies to nested `Each` helpers with the same
+ordered component set.
+
+Apply the commands after the query walk completes:
 
 ```go
 var cmd ecs.Commands
@@ -154,8 +170,8 @@ w.AddSystem("transforms", func(w *ecs.World, dt float64) {
 ```
 
 The cache lasts until the next `World.Update`, so `Draw` reads what the
-last `Update` left. `SetParent` and `Despawn` drop it, and a transform
-written after the pass is not seen until the pass runs again.
+last `Update` left. Spawning, `SetParent` and `Despawn` drop it, and a
+transform written after the pass is not seen until the pass runs again.
 `WorldMatrix` falls back to the walk whenever the cache is not fresh, so
 code that never calls the pass behaves as it always has.
 
@@ -187,6 +203,11 @@ inside a component or resource, including inside slices, maps and
 pointers. A component that stores entities where reflection cannot
 reach them can implement `Remap(func(Entity) Entity)` and rewrite them
 itself. A reference to an entity the file does not hold becomes `None`.
+Loading adds to the current world and replaces resources of matching
+types; it does not clear existing entities. Unknown type names fail
+before adding anything unless `LoadOptions.SkipUnknown` is set. A
+component decode error may leave a partially loaded world, so load
+into a fresh world when failure must leave the running one untouched.
 `gfx.Transform`, `gfx.Transform2` and `ecs.Name` are registered by
 default.
 
@@ -282,8 +303,10 @@ camp.Despawn(w) // every entity this copy spawned, and their children
 Each call spawns fresh entities, so several copies of one scene coexist
 and one copy's `Despawn` leaves the others alone. `Roots` are the
 entities the scene left unparented and `Spawned` is every entity the
-copy made, in scene order. `InstantiateOptions.Parent` hangs the roots
-under an entity you already have, and `Offset` moves each root by adding
+copy made, in scene order with each prefab's children after its root.
+Name lookup does not check whether the entity is still alive; call
+`w.Alive` when entities may have despawned. `InstantiateOptions.Parent`
+hangs the roots under an entity you already have, and `Offset` moves each root by adding
 to its `gfx.Transform` or `gfx.Transform2` position; a root with neither
 component is not moved.
 
@@ -365,9 +388,12 @@ spark := ecs.Clone(w, muzzleFlash) // one entity, no descendants
 Copies are deep through exported fields: slices, maps, pointers and
 interface values get their own storage, so an inventory slice in the
 clone is not the original's. Unexported fields are copied as values,
-so a slice or pointer kept in one is still shared. A component that
-`encoding/json` can save is always copied fully. Use that as the test
-for both cloning and prefabs.
+so a slice or pointer kept in one is still shared. Cloning does not
+invoke custom JSON methods, and `Remapper` rewrites entity references
+rather than arbitrary private storage. Components such as cloth and
+soft bodies keep private particle slices; construct those separately
+for independent instances rather than cloning or spawning shared
+templates of them.
 
 ## Modelling advice
 

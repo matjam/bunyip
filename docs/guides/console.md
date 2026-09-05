@@ -72,6 +72,12 @@ command line, and the game is expected to check `Open` and leave the
 keys alone for that update. Key bindings made with `bind` fire only
 while the console is shut, so they do not go off as you type.
 
+The toggle keys and command line are processed in `Draw`. An `Open`
+check in `Update` therefore sees the previous draw's state; the opening
+keypress may already have reached gameplay. `Open` describes the
+drop-down only, not the F4 panels. Keep gameplay input routing explicit
+when the panels or another interface also need controls.
+
 ## The built-in commands
 
 `help` on its own lists every command with its one-line description, and
@@ -123,6 +129,11 @@ ctx.Console.Register("give", "give <item> [count]: add an item to the pack",
 ```
 
 What the function returns is printed; the error is printed in red.
+Callbacks run synchronously on the goroutine calling `Run` or `Draw`,
+so avoid blocking work there. Registration is synchronized, but the
+game values exposed through variables and attachment callbacks are
+still the game's responsibility to synchronize. Normally these are
+all read and written on the game loop goroutine.
 
 A variable is a pointer the console reads and writes, which is how a
 game exposes the numbers it is still tuning without writing a command
@@ -140,8 +151,11 @@ list a group. Tab completes variable names after `set` and `get`. A
 value of another type implements the two-method `console.Var` interface
 and registers with `Var`.
 
-Registering from `Init` is the usual place. `Init` runs again after a
-lost GPU device, on a fresh console, so what it registers comes back.
+Registering from `Init` is the usual place. Device recovery creates a
+fresh console and calls the game's `Recover` method when it implements
+`bunyip.Recoverer`; it does not call `Init` again. Put registrations in
+shared setup called from both methods. A game without `Recoverer`
+returns the device-loss error instead of recovering.
 
 A file of commands loaded with `exec` sets a whole scene up at once:
 

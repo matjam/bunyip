@@ -13,7 +13,8 @@ import (
 // place, Layer plays more clips over parts of the skeleton, AddEvent
 // marks moments to be told about, SetRootMotion hands the root's
 // movement to the game, and PostPose with the node setters adjusts the
-// pose before it is drawn.
+// pose before it is drawn. Create one with Model.NewAnimPlayer; the zero
+// value has no model or pose storage. Times and Advance deltas are seconds.
 type AnimPlayer struct {
 	// OnEvent, when set, is called from Advance for every event playback
 	// crosses; Events lists the same after Advance returns.
@@ -50,7 +51,7 @@ type AnimPlayer struct {
 // hit frame, a spawn point.
 type AnimEvent struct {
 	Clip string
-	Time float32
+	Time float32 // event's position in the clip, in seconds
 	Name string
 }
 
@@ -73,7 +74,7 @@ type animTrack struct {
 type AnimBlend struct {
 	Clip   string
 	Weight float32
-	Time   float64
+	Time   float64 // sample time in seconds, supplied by the blend controller
 }
 
 // animBlend is a clip in the blend set by SetBlend.

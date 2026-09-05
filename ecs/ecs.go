@@ -18,7 +18,23 @@
 //
 // Systems are functions registered on the world and run in order by
 // Update. Resources are singletons such as the score or the rules.
-// Events are per-frame queues that carry values between systems.
+// Events are per-Update queues that carry values between systems; Update
+// clears them before running the first system.
+//
+// # Query lifetime and mutation
+//
+// Query callbacks receive pointers into component storage. Use them before
+// a structural change touches their table; do not retain them across frames.
+// Rows are visited last to first and matched table lengths are captured
+// at the start of a walk. The currently visited entity may be restructured
+// or despawned, but changes to other entities must be deferred with Commands.
+// Despawning a parent also removes its children, so defer that operation.
+// Do not nest a walk of the same query within its callback. The package
+// Each helpers share a cached query per world and ordered component set,
+// so nesting the same helper and component set has the same restriction.
+// Worlds and their queries require externally serialized access.
+//
+// # Persistence and scenes
 //
 // Worlds save and load as JSON. Register names each component and
 // resource type so files stay valid across builds. Save writes every
@@ -53,10 +69,12 @@ type Entity struct {
 // None is the absent entity.
 var None = Entity{}
 
-// Valid reports whether the handle refers to some entity (not None).
+// Valid reports whether the handle is nonzero. It does not check whether
+// the entity is still alive; use World.Alive for that.
 func (e Entity) Valid() bool { return e.id != 0 }
 
-// ID is a number unique among live entities, for debugging and maps.
+// ID combines the slot and generation, for debugging and maps. It is
+// unique among live entities within one world, not across worlds.
 func (e Entity) ID() uint64 { return uint64(e.gen)<<32 | uint64(e.id) }
 
 // String formats the entity as index and generation.
@@ -149,6 +167,8 @@ type compInfo struct {
 }
 
 // World holds entities, their components, systems, resources and events.
+// Construct it with NewWorld; the zero value is not initialized. A world
+// supports at most 256 distinct component types and is not concurrency-safe.
 type World struct {
 	meta  []entityMeta
 	free  []uint32
@@ -512,9 +532,10 @@ func (w *World) Components(e Entity) []reflect.Type {
 	return out
 }
 
-// ComponentValues returns a copy of each of the entity's components as
-// an any value, in the same order as Components. Changing a returned
-// value does not change the entity; Add writes it back.
+// ComponentValues returns a shallow copy of each component as an any
+// value, in the same order as Components. Replacing fields in the copy
+// requires Add to write them back; slices, maps and pointers still share
+// their underlying storage with the entity. A dead entity returns nil.
 func (w *World) ComponentValues(e Entity) []any {
 	if !w.Alive(e) {
 		return nil

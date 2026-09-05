@@ -27,7 +27,8 @@ type SoftBody3Spec struct {
 	Mass float32
 	// Compliance is the give in the constraints along the surface edges,
 	// in metres per newton; zero means 0.0005, a firm jelly. Larger is
-	// softer and zero is rigid.
+	// softer. To request rigid surface constraints, set the returned body's
+	// Compliance to zero after construction.
 	Compliance float32
 	// VolumeCompliance is the give in the constraint that holds the
 	// enclosed volume; zero means 0, which holds the volume as hard as
@@ -54,12 +55,15 @@ type SoftBody3Spec struct {
 // SoftBody3 is a closed mesh simulated as a skin of particles that keeps
 // its volume: a jelly cube, a beach ball, a lump of dough. Build one with
 // NewSoftBody3 and spawn it as a component; System steps it and
-// UpdateMesh draws it. Positions are world space, so a soft body needs no
-// transform.
+// UpdateMesh updates its render mesh, which the game draws separately.
+// Positions are world space, so a soft body needs no transform. Copies
+// share private particle storage; construct each independent instance.
 type SoftBody3 struct {
 	// Compliance is the give in the surface constraints and
-	// VolumeCompliance the give in the volume constraint, both in metres
-	// per newton. Zero is rigid; larger is softer.
+	// VolumeCompliance the give in the volume constraint. Surface compliance
+	// is metres per newton with SI units; volume compliance has different
+	// dimensions because the constrained quantity is volume. Zero is rigid;
+	// larger is softer.
 	Compliance, VolumeCompliance float32
 	// Pressure is the volume the body aims for as a multiple of its rest
 	// volume. Raise it above 1 to inflate the body, lower it to deflate.

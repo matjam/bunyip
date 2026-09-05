@@ -51,7 +51,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `internal/hook/` | The boundary between the engine loop and `gfx`, `input` and `audio`. Each of those packages keeps its plumbing (frame begin and end, resize, the event feed, the audio pull) on unexported methods, wraps the public value in an unexported driver implementing a `hook` interface, and registers a constructor from `init`. `run.go` builds all three through `hook` and hands the game the values `Game()` returns. |
 | `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface, audio output and microphone input. `*_darwin.go` is the reference; Windows and Linux mirror it. Linux has two window backends behind one `App` and `Window`: Wayland in `wayland_linux.go`, its hand-built protocol tables in `wayland_proto_linux.go` and its listener callbacks in `wayland_listen_linux.go`, and X11 in `x11_linux.go`. `app_linux.go` holds the shared structs, chooses the backend in `NewApp` and forwards every method to the live one. |
 | `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-tex` (compresses images to KTX2 with their mip chains), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
-| `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless and compares each frame against `examples/testdata/<name>.png` on the GPU named in `examples/testdata/gpu.txt` (elsewhere it only checks the frame is not blank), and each has a walkthrough in `docs/examples/`. |
+| `examples/` | One directory per example; screenshot-capable programs take `-seconds N` and `-shot file.png`. `examples_test.go` runs them headless except `window` (native platform), `network` (needs a peer) and `clear` (uniform output). On the GPU named in `examples/testdata/gpu.txt`, it compares golden images except for stateful `assets`; elsewhere it checks nonblank output. Every example has a walkthrough in `docs/examples/`. |
 | `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services, the debug console), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
 | `docs/examples/` | One walkthrough per example, `<name>.md`, with front matter (`title`, `example`, `summary`) and a screenshot `<name>.png` beside it. The body quotes the whole program in source order, verbatim, with a section explaining each part. `cmd/bunyip-docs` renders these as the Example programs group; the examples are not rendered as packages. |
 
@@ -280,7 +280,8 @@ render pass, so text tests draw one frame.
   (`GOOS=windows` and `GOOS=linux` builds) even where they are untested
   on hardware; a feature that cannot be implemented there gets a no-op
   with a comment saying so, not a stub that appears to work.
-- Every example must run headless to a screenshot; `examples_test.go`
+- Rendering examples must run headless to a screenshot; the native
+  `window` smoke test is excluded. `examples_test.go`
   checks it. It also compares the frame against a stored image in
   `examples/testdata/<name>.png`, downscaled to 320 wide: a mean
   absolute difference over the whole frame, which is loose enough to
@@ -621,10 +622,13 @@ func main() {
 }
 ```
 
-`Init` and `Shutdown` are optional. `Init` may run twice if the GPU
-device is lost. Create GPU resources from the context in `Init`, `Update`
-or `Draw` and destroy them from the same goroutine; never from another
-goroutine.
+`Init` and `Shutdown` are optional. Device-loss recovery requires
+`Recover(ctx *Context) error`; it receives the replacement context
+instead of `Init`. Recreate resources and console registrations there.
+Without `Recover`, `Run` returns the device-loss error. `Shutdown` only
+runs after successful setup; clean up partial setup when `Init` or
+`Recover` returns an error. Create and destroy GPU resources from those
+callbacks, `Update`, `Draw` or `Shutdown` on the main goroutine.
 
 ## Where things are
 
@@ -670,8 +674,8 @@ goroutine.
   components, register the system, call `world.Update(ctx.Delta)` from
   `Update`.
 - Examples are the fastest reference: `examples/<name>/main.go` is a
-  complete program for each area, and every one runs with `-seconds 3
-  -shot out.png`.
+  complete program for each area. Screenshot-capable examples run with
+  `-seconds 3 -shot out.png`; `window` needs a desktop.
 
 ## Reading the documentation
 

@@ -61,10 +61,16 @@ sets it as state, and nil restores the default. Each draw keeps the
 uniform values and images that were set when it was queued, so changing
 them between draws is cheap.
 
-Uniforms are a struct copied byte for byte, laid out by std140 rules.
-`float32`, `int32`, `lin.Vec2`, `lin.Vec4` and `lin.Mat4` fields line up
-one after another. A `lin.Vec3` takes sixteen bytes, so follow it with a
-`float32` of padding. A block is at most 1024 bytes.
+Uniforms are a struct, or a pointer to a struct, copied byte for byte.
+Match GLSL's std140 offsets with explicit Go padding: scalars align to
+4 bytes, `lin.Vec2` to 8, and `lin.Vec3`, `lin.Vec4` and `lin.Mat4`
+to 16. Go only aligns these float32 structs to 4 bytes. For example,
+`struct{ Gain float32; _ [3]float32; Tint lin.Vec4 }` places `Tint` at
+byte 16. A scalar may fill the fourth word after a `Vec3`; a subsequent
+vector may need padding. Arrays also need std140 strides, including
+16 bytes per scalar element. Use only fixed-size numeric fields and
+padding. The engine does not convert or validate the layout, and
+`SetUniforms` panics for a block outside 1..1024 bytes.
 
 ## A mesh shader
 
@@ -144,7 +150,7 @@ assign one to a `sampler2D` of your own.
 ## Moving vertices
 
 A mesh shader may also define a vertex hook, which runs before the
-model matrix in object space (after skinning, for skinned meshes):
+model matrix in object space, after morph blending and before skinning:
 
 ```glsl
 void vertex(inout VertexData v) {
@@ -152,13 +158,15 @@ void vertex(inout VertexData v) {
 }
 ```
 
-`VertexData` has `position`, `normal` and `uv`; `model()` is the
+`VertexData` has `position`, `normal`, `uv`, `uv2` and `color`; `model()` is the
 instance's matrix and the material's textures and the shader's images
 can be sampled for displacement maps. The hook runs in the shadow pass
 too, so displaced geometry casts the right shadow. When a source has a
-vertex hook, `bunyip-shader` writes a bundle of all five programs
-(fragment; static and skinned vertex, lit and shadow) to the one output
-file, and `NewMeshShader` reads either that or plain fragment SPIR-V.
+vertex hook, `bunyip-shader` includes the four static and skinned vertex
+programs for the lit and shadow passes. Mesh bundles also carry regular
+and order-independent transparency fragment programs. `NewMeshShader`
+reads that bundle or plain fragment SPIR-V; a shader without the second
+fragment program uses sorted transparency.
 The rippling flag in the `shaders` example uses a vertex hook.
 
 Culling cannot see where the hook put a vertex, so draws made with such
@@ -169,6 +177,9 @@ bounding radius, and culling grows the radius by 1 + `VertexBounds`:
 ```go
 lava.VertexBounds = 0.2 // the hook lifts a vertex a fifth of the mesh
 ```
+
+The renderer reads this bound when it prepares the frame. Keep it large
+enough for every draw using the shader in that frame.
 
 ## Blend modes and transforms
 

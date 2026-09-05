@@ -88,7 +88,10 @@ w.AddSystem("anim", anim.System)
 `CrossFade(clip, seconds)` starts a clip while the previous one blends
 out, so a jump does not snap out of the idle pose. `Speed` scales
 playback, `Stop` freezes it, and `Progress` reports where it is. The
-same `Player` works for a 2D entity; only the tracks differ.
+same `Player` works for a 2D entity; only the tracks differ. `Speed` zero
+means normal speed, so use `Stop` to pause. A manually initialized
+`Player{Clip: clip}` also needs `Playing: true`; `Play` sets both.
+Crossfade durations use update seconds independently of playback speed.
 
 ## Finishing and sequencing
 
@@ -123,8 +126,8 @@ clips; the system advances it, and the entity draws with
 `gfx.DrawModelAnimated`. Clip selection stays on the player, so a
 character controller system names the clip to play. `Play(name, loop)`
 snaps to a clip, `CrossFade(name, loop, seconds)` blends into it from
-whatever is playing, and `Finished` reports when a one-shot clip has
-ended.
+whatever is playing. Poll `player.Finished()` to detect a one-shot clip's
+end; `anim.System` does not emit `anim.Finished` for a `Skeleton`.
 
 ```go
 player := model.NewAnimPlayer()
@@ -162,9 +165,9 @@ w.AddSystem("footsteps", func(w *ecs.World, dt float64) {
 
 ## Root motion
 
-A walk cycle authored in place slides the character across the floor
-without moving the entity, so collisions and the camera do not follow
-it. `SetRootMotion("Hips")` takes that movement out of the pose and
+A walk cycle whose root translates moves the visible character without
+moving the entity, so collisions and the camera do not follow it.
+`SetRootMotion("Hips")` takes that authored movement out of the pose and
 reports it instead. `RootMotion` returns how far the root moved and how
 far it turned about +Y during the last `Advance`, in model space,
 blended through crossfades and added up across a loop point. The
@@ -181,6 +184,9 @@ tr.Rotation = lin.AxisAngle(lin.V3(0, 1, 0), yaw).Mul(tr.Rotation)
 The root's translation and yaw are held at the rest pose; pitch and
 roll, and every other node, animate as before. Vertical movement is
 reported too, so a jump's rise comes through the delta.
+
+An in-place cycle has no authored root travel to extract. Move that
+entity through the controller or physics system instead.
 
 ## Layers and masks
 

@@ -62,7 +62,7 @@ func SlerpQuat(a, b lin.Quat, t float32) lin.Quat {
 	return a.Slerp(b, t)
 }
 
-// Key is a value at a time. Ease shapes the approach to this key from
+// Key is a value at a time in seconds. Ease shapes the approach to this key from
 // the previous one; nil is linear.
 type Key[V any] struct {
 	Time  float32
@@ -88,13 +88,15 @@ func NumEased(time, v float32, ease tween.Ease) Key[float32] {
 }
 
 // Curve interpolates keys over time. Before the first key it holds the
-// first value; after the last it holds the last.
+// first value; after the last it holds the last. The zero curve samples
+// to V's zero value. Keep Keys sorted by Time when editing them directly.
+// A nil Lerp holds the previous key until the next key is reached.
 type Curve[V any] struct {
 	Keys []Key[V]
 	Lerp Lerper[V]
 }
 
-// NewCurve makes a curve from keys, sorted by time.
+// NewCurve copies the keys and sorts them stably by time in seconds.
 func NewCurve[V any](lerp Lerper[V], keys ...Key[V]) Curve[V] {
 	sorted := append([]Key[V](nil), keys...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Time < sorted[j].Time })
@@ -116,7 +118,7 @@ func Quats(keys ...Key[lin.Quat]) Curve[lin.Quat] { return NewCurve(SlerpQuat, k
 // Colors makes a curve of colours.
 func Colors(keys ...Key[gfx.Color]) Curve[gfx.Color] { return NewCurve(LerpColor, keys...) }
 
-// Duration is the time of the last key.
+// Duration is the last key's time in seconds, or zero for an empty curve.
 func (c Curve[V]) Duration() float32 {
 	if len(c.Keys) == 0 {
 		return 0
@@ -124,7 +126,8 @@ func (c Curve[V]) Duration() float32 {
 	return c.Keys[len(c.Keys)-1].Time
 }
 
-// Sample returns the value at time t.
+// Sample returns the value at t seconds. Easing may overshoot the segment's
+// values; the interpolation parameter is not clamped after easing.
 func (c Curve[V]) Sample(t float32) V {
 	var zero V
 	n := len(c.Keys)

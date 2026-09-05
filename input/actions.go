@@ -22,9 +22,9 @@ const (
 // Scale is what it contributes to the action's value when fully on
 // (1 by default, -1 for the negative side of an axis pair).
 type Source struct {
-	Kind  SourceKind
-	Code  int // Key, MouseButton, GamepadButton or GamepadAxis
-	Scale float32
+	Kind  SourceKind // device input category
+	Code  int        // Key, MouseButton, GamepadButton or GamepadAxis
+	Scale float32    // signed contribution at full travel; zero means 1
 }
 
 // KeySource binds a key.
@@ -163,6 +163,8 @@ func (s *Source) UnmarshalText(b []byte) error {
 // fires from any; an axis action sums its sources (the D key and the A
 // key with Neg, plus a stick) and clamps to -1..1. Bindings save and
 // load as JSON, and Listen captures the next input for rebinding.
+// Use Actions on the game loop goroutine; concurrent binding changes
+// and queries require external synchronization.
 type Actions struct {
 	entries []binding      // one per name ever bound, in binding order
 	index   map[string]int // name to its position in entries

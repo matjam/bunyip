@@ -1,5 +1,11 @@
 // Command bunyip-play plays an audio file through the engine's mixer and
-// the native output device: WAV, Ogg Vorbis, MP3, MOD or S3M.
+// the native output device: WAV, Ogg Vorbis, MP3, MOD, S3M, XM or IT.
+//
+//	bunyip-play [-seconds N] [-volume 0.8] [-dump output.wav] file
+//
+// Zero seconds plays to the end. The volume defaults to 0.8. With -dump,
+// the samples sent to the output device are also written as a WAV file;
+// an audio output device is still required.
 package main
 
 import (

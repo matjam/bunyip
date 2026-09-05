@@ -3,7 +3,13 @@
 // program, every package's godoc with its examples, a symbol search, and
 // links back to the source on GitHub.
 //
-//	go run ./cmd/bunyip-docs -out site
+//	CGO_ENABLED=0 go run ./cmd/bunyip-docs -out site
+//
+// Run from the module root. The -out flag defaults to site; -guides and
+// -examples default to docs/guides and docs/examples. The -base flag
+// defaults to https://matjam.github.io/bunyip/ and controls published
+// links in llms.txt and llms-full.txt. Generation writes local files;
+// publishing is a separate step handled by the repository's Docs workflow.
 //
 // The example walkthroughs are the Markdown files in docs/examples, one
 // per directory under examples, with the same front matter as a guide
@@ -30,7 +36,6 @@ import (
 	"html/template"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -59,10 +64,10 @@ var groups = []struct {
 	Paths []string
 }{
 	{"Engine", []string{"bunyip", "input", "console"}},
-	{"Graphics", []string{"gfx", "anim", "ui", "particle", "tiled", "gltf", "lin"}},
+	{"Graphics", []string{"gfx", "gfx/", "anim", "ui", "particle", "tiled", "gltf", "lin"}},
 	{"Simulation", []string{"ecs", "phys", "phys/soft", "orbit", "orbit/sol"}},
 	{"Audio", []string{"audio", "audio/tracker"}},
-	{"Services", []string{"asset", "save", "locale", "rng", "timer", "tween", "grid", "network"}},
+	{"Services", []string{"asset", "save", "locale", "rng", "timer", "tween", "grid", "grid/", "network"}},
 	{"Tools", []string{"cmd/"}},
 }
 
@@ -75,7 +80,7 @@ func main() {
 	out := flag.String("out", "site", "output directory")
 	guides := flag.String("guides", "docs/guides", "directory of Markdown guides")
 	walkthroughs := flag.String("examples", "docs/examples", "directory of Markdown example walkthroughs")
-	base := flag.String("base", siteURL, "the URL the site is published at, for the llms.txt index")
+	base := flag.String("base", siteURL, "the published site URL, for llms.txt and links in llms-full.txt")
 	flag.Parse()
 	site, err := build(".", *guides, *walkthroughs)
 	if err != nil {
@@ -198,6 +203,7 @@ type Type struct {
 	Funcs        []*Func // constructors
 	Methods      []*Func
 	Examples     []*Example
+	Members      []symbol // exported fields and explicitly declared interface methods
 }
 
 // Example is a runnable example with its code and output.
@@ -238,9 +244,9 @@ func build(root, guideDir, exampleDir string) (*Site, error) {
 // unexported helpers do not belong in the symbol index.
 func (s *Site) loadPackages(root string) error {
 	var dirs []string
-	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			name := d.Name()
@@ -257,6 +263,9 @@ func (s *Site) loadPackages(root string) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("walk packages in %s: %w", root, err)
+	}
 	sort.Strings(dirs)
 	seen := map[string]bool{}
 	for _, dir := range dirs {
@@ -264,7 +273,10 @@ func (s *Site) loadPackages(root string) error {
 			continue
 		}
 		seen[dir] = true
-		rel, _ := filepath.Rel(root, dir)
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			return fmt.Errorf("package path %s relative to %s: %w", dir, root, err)
+		}
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
 			rel = ""
@@ -337,15 +349,10 @@ func (s *Site) loadPackage(dir, rel string) (*Package, error) {
 		for _, m := range t.Methods {
 			tt.Methods = append(tt.Methods, r.fn(m, t.Name))
 		}
+		tt.Members = typeMembers(t)
 		p.Types = append(p.Types, tt)
-		s.symbols = append(s.symbols, symbol{Name: t.Name, Pkg: shortName(rel), URL: p.URL + "#" + t.Name, Kind: "type"})
-		for _, m := range tt.Methods {
-			s.symbols = append(s.symbols, symbol{Name: t.Name + "." + m.Name, Pkg: shortName(rel), URL: p.URL + "#" + m.ID, Kind: "method"})
-		}
 	}
-	for _, f := range p.Funcs {
-		s.symbols = append(s.symbols, symbol{Name: f.Name, Pkg: shortName(rel), URL: p.URL + "#" + f.ID, Kind: "func"})
-	}
+	s.symbols = append(s.symbols, packageSymbols(p)...)
 	p.Examples = r.examples(dp.Examples)
 	return p, nil
 }
@@ -379,21 +386,7 @@ func (r *renderer) doc(text string) template.HTML {
 	p := r.pkg.Printer()
 	p.HeadingLevel = 3
 	p.DocLinkURL = func(link *comment.DocLink) string {
-		rel := r.rel
-		if link.ImportPath != "" {
-			if !strings.HasPrefix(link.ImportPath, module) {
-				return "https://pkg.go.dev/" + link.ImportPath
-			}
-			rel = strings.TrimPrefix(strings.TrimPrefix(link.ImportPath, module), "/")
-		}
-		url := pkgURL(rel)
-		switch {
-		case link.Recv != "" && link.Name != "":
-			return url + "#" + link.Recv + "." + link.Name
-		case link.Name != "":
-			return url + "#" + link.Name
-		}
-		return url
+		return r.docLinkURL(link, ".html")
 	}
 	return template.HTML(p.HTML(r.pkg.Parser().Parse(text)))
 }
@@ -407,21 +400,7 @@ func (r *renderer) md(text string) string {
 	p := r.pkg.Printer()
 	p.HeadingLevel = 3
 	p.DocLinkURL = func(link *comment.DocLink) string {
-		rel := r.rel
-		if link.ImportPath != "" {
-			if !strings.HasPrefix(link.ImportPath, module) {
-				return "https://pkg.go.dev/" + link.ImportPath
-			}
-			rel = strings.TrimPrefix(strings.TrimPrefix(link.ImportPath, module), "/")
-		}
-		url := strings.TrimSuffix(pkgURL(rel), ".html") + ".md"
-		switch {
-		case link.Recv != "" && link.Name != "":
-			return url + "#" + link.Recv + "." + link.Name
-		case link.Name != "":
-			return url + "#" + link.Name
-		}
-		return url
+		return r.docLinkURL(link, ".md")
 	}
 	return strings.TrimSpace(string(p.Markdown(r.pkg.Parser().Parse(text))))
 }
@@ -489,7 +468,7 @@ func (r *renderer) declText(d ast.Node) string {
 
 func (r *renderer) src(d ast.Node) string {
 	pos := r.fset.Position(d.Pos())
-	rel, _ := filepath.Rel(".", pos.Filename)
+	rel := filepath.Join(r.rel, filepath.Base(pos.Filename))
 	return fmt.Sprintf("%s/blob/main/%s#L%d", repo, filepath.ToSlash(rel), pos.Line)
 }
 
@@ -621,14 +600,6 @@ func frontMatter(src string) (map[string]string, string) {
 	return meta, src[4+end+4:]
 }
 
-// markdownLinks points a page's internal links at the Markdown copies of
-// the pages they name, so the Markdown a language model reads stays
-// inside the Markdown site.
-func markdownLinks(body string) string {
-	body = strings.ReplaceAll(body, ".html)", ".md)")
-	return strings.ReplaceAll(body, ".html#", ".md#")
-}
-
 // loadGuides renders every Markdown file in dir; a leading front matter
 // block gives title, order and summary.
 func (s *Site) loadGuides(dir string) error {
@@ -694,6 +665,8 @@ func (s *Site) loadPrograms(srcDir, docDir string) error {
 		p := &Program{Title: name, Name: name, Files: files}
 		if _, err := os.Stat(filepath.Join(docDir, name+".png")); err == nil {
 			p.Shot = true
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("example screenshot %s: %w", name, err)
 		}
 		raw, err := os.ReadFile(filepath.Join(docDir, name+".md"))
 		if err != nil {
@@ -836,7 +809,10 @@ func (s *Site) group() {
 func copyImages(src, dst string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read images in %s: %w", src, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() || strings.HasSuffix(e.Name(), ".md") {
@@ -920,7 +896,7 @@ func (s *Site) write(dir string) error {
 		if err := writeText("guides/"+g.Slug+".md", g.Markdown); err != nil {
 			return err
 		}
-		fmt.Fprintf(&full, "\n\n---\n\n%s", g.Markdown)
+		fmt.Fprintf(&full, "\n\n---\n\n%s", aggregateLinks(g.Markdown, "guides/"+g.Slug+".md", s.Base))
 	}
 	if len(s.Programs) > 0 {
 		if err := render("examples/index.html", "programIndex", page{Site: s, URL: "examples/index.html", Title: "Example programs", Programs: true, Markdown: "examples/index.md"}); err != nil {
@@ -938,7 +914,7 @@ func (s *Site) write(dir string) error {
 		if err := writeText(p.MarkdownURL(), md); err != nil {
 			return err
 		}
-		fmt.Fprintf(&full, "\n\n---\n\n%s", md)
+		fmt.Fprintf(&full, "\n\n---\n\n%s", aggregateLinks(md, p.MarkdownURL(), s.Base))
 	}
 	for _, p := range s.Packages {
 		if err := render(p.URL, "package", page{Site: s, URL: p.URL, Title: shortName(p.Rel), Package: p, Markdown: p.MarkdownURL()}); err != nil {
@@ -948,319 +924,10 @@ func (s *Site) write(dir string) error {
 		if err := writeText(p.MarkdownURL(), md); err != nil {
 			return err
 		}
-		fmt.Fprintf(&full, "\n\n---\n\n%s", md)
+		fmt.Fprintf(&full, "\n\n---\n\n%s", aggregateLinks(md, p.MarkdownURL(), s.Base))
 	}
 	if err := writeText("llms.txt", s.llmsIndex()); err != nil {
 		return err
 	}
 	return writeText("llms-full.txt", full.String())
 }
-
-// llmsIntro opens llms.txt and llms-full.txt.
-const llmsIntro = "> A complete game engine in Go: a Vulkan renderer without cgo that draws 2D sprites and physically based 3D models in the same frame, an entity component system, rigid-body physics, skeletal animation, celestial mechanics, an immediate-mode interface, an audio mixer with a tracker player, and asset, save, translation and networking services, for real-time and turn-based games.\n\nThe guides explain each area of the engine; the package pages are the full API reference with doc comments, declarations and examples. Import path: github.com/matjam/bunyip."
-
-// llmsIndex writes llms.txt: the site's pages as Markdown links with a
-// line of description each.
-func (s *Site) llmsIndex() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# Bunyip\n\n%s\n\n", llmsIntro)
-	fmt.Fprintf(&b, "The whole documentation in one file: %sllms-full.txt\n\n", s.Base)
-	for i, grp := range s.GuideGroups {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		fmt.Fprintf(&b, "## %s guides\n\n", grp.Title)
-		for _, g := range grp.Guides {
-			fmt.Fprintf(&b, "- [%s](%sguides/%s.md): %s\n", g.Title, s.Base, g.Slug, g.Summary)
-		}
-	}
-	if len(s.Programs) > 0 {
-		b.WriteString("\n## Example programs\n\n")
-		fmt.Fprintf(&b, "Every example runs headless to a screenshot; each walkthrough explains the whole program section by section. The list: %sexamples/index.md\n\n", s.Base)
-		for _, p := range s.Programs {
-			fmt.Fprintf(&b, "- [%s](%s%s): %s\n", p.Title, s.Base, p.MarkdownURL(), p.Summary)
-		}
-	}
-	for _, grp := range s.Groups {
-		fmt.Fprintf(&b, "\n## %s\n\n", grp.Title)
-		for _, p := range grp.Packages {
-			fmt.Fprintf(&b, "- [%s](%s%s): %s\n", shortName(p.Rel), s.Base, p.MarkdownURL(), strings.TrimSpace(p.Synopsis))
-		}
-	}
-	return b.String()
-}
-
-// programIndexMarkdown lists every example with its summary.
-func (s *Site) programIndexMarkdown() string {
-	var b strings.Builder
-	b.WriteString("# Example programs\n\n")
-	b.WriteString("One directory per example under `examples/`. Every one takes `-seconds N` and `-shot file.png`, so a run verifies itself without anyone watching the screen, and every one has a walkthrough that explains its source section by section.\n\n")
-	for _, p := range s.Programs {
-		fmt.Fprintf(&b, "- [%s](%s.md): %s\n", p.Title, p.Name, p.Summary)
-	}
-	return b.String()
-}
-
-// programMarkdown renders one walkthrough as the Markdown page, with the
-// screenshot and the link to the source ahead of the body.
-func programMarkdown(p *Program) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", p.Title)
-	if p.Shot {
-		fmt.Fprintf(&b, "![%s](%s.png)\n\n", p.Title, p.Name)
-	}
-	fmt.Fprintf(&b, "Source: [`examples/%s`](%s) (%s)\n\n", p.Name, p.SourceURL(), strings.Join(p.Files, ", "))
-	body := strings.TrimPrefix(p.Markdown, "# "+p.Title+"\n\n")
-	b.WriteString(body)
-	return strings.TrimSpace(b.String()) + "\n"
-}
-
-// packageMarkdown renders a package's reference as Markdown.
-func packageMarkdown(p *Package) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n`import \"%s\"`\n\n", shortName(p.Rel), p.ImportPath)
-	if p.DocMD != "" {
-		b.WriteString(p.DocMD + "\n\n")
-	}
-	values := func(title string, vals []*Value) {
-		if len(vals) == 0 {
-			return
-		}
-		fmt.Fprintf(&b, "## %s\n\n", title)
-		for _, v := range vals {
-			fmt.Fprintf(&b, "```go\n%s\n```\n\n", strings.TrimSpace(v.DeclText))
-			if v.DocMD != "" {
-				b.WriteString(v.DocMD + "\n\n")
-			}
-		}
-	}
-	examples := func(list []*Example) {
-		for _, ex := range list {
-			fmt.Fprintf(&b, "Example%s:\n\n", map[bool]string{true: " (" + ex.Suffix + ")", false: ""}[ex.Suffix != ""])
-			if ex.DocMD != "" {
-				b.WriteString(ex.DocMD + "\n\n")
-			}
-			fmt.Fprintf(&b, "```go\n%s\n```\n\n", strings.TrimSpace(ex.CodeText))
-			if ex.Output != "" {
-				fmt.Fprintf(&b, "Output:\n\n```\n%s\n```\n\n", ex.Output)
-			}
-		}
-	}
-	fn := func(level string, f *Func) {
-		fmt.Fprintf(&b, "%s %s\n\n```go\n%s\n```\n\n", level, f.ID, strings.TrimSpace(f.DeclText))
-		if f.DocMD != "" {
-			b.WriteString(f.DocMD + "\n\n")
-		}
-		examples(f.Examples)
-	}
-	values("Constants", p.Consts)
-	values("Variables", p.Vars)
-	if len(p.Funcs) > 0 {
-		b.WriteString("## Functions\n\n")
-		for _, f := range p.Funcs {
-			fn("###", f)
-		}
-	}
-	if len(p.Types) > 0 {
-		b.WriteString("## Types\n\n")
-		for _, t := range p.Types {
-			fmt.Fprintf(&b, "### %s\n\n```go\n%s\n```\n\n", t.Name, strings.TrimSpace(t.DeclText))
-			if t.DocMD != "" {
-				b.WriteString(t.DocMD + "\n\n")
-			}
-			for _, v := range append(append([]*Value{}, t.Consts...), t.Vars...) {
-				fmt.Fprintf(&b, "```go\n%s\n```\n\n", strings.TrimSpace(v.DeclText))
-				if v.DocMD != "" {
-					b.WriteString(v.DocMD + "\n\n")
-				}
-			}
-			examples(t.Examples)
-			for _, f := range t.Funcs {
-				fn("####", f)
-			}
-			for _, m := range t.Methods {
-				fn("####", m)
-			}
-		}
-	}
-	if len(p.Examples) > 0 {
-		b.WriteString("## Examples\n\n")
-		examples(p.Examples)
-	}
-	return strings.TrimSpace(b.String()) + "\n"
-}
-
-// page is the data every template sees.
-type page struct {
-	Site     *Site
-	URL      string
-	Title    string
-	Markdown string // the same page as Markdown, relative to the site root
-	Guide    *Guide
-	Program  *Program
-	Programs bool // this is the list of example programs
-	Package  *Package
-}
-
-// Root is the relative path back to the site root from this page.
-func (p page) Root() string { return strings.Repeat("../", strings.Count(p.URL, "/")) }
-
-// Active reports whether a sidebar link points at this page.
-func (p page) Active(url string) bool { return p.URL == url }
-
-const layoutTmpl = `{{define "layout"}}<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}} · Bunyip</title>
-{{if .Markdown}}<link rel="alternate" type="text/markdown" href="{{.Root}}{{.Markdown}}" title="{{.Title}} as Markdown">
-{{end}}<link rel="stylesheet" href="{{.Root}}site.css">
-<script defer src="{{.Root}}site.js" data-root="{{.Root}}"></script>
-</head>
-<body>
-<header class="top">
-<button class="menu" aria-label="Menu">☰</button>
-<a class="brand" href="{{.Root}}index.html">Bunyip</a>
-<span class="tagline">a game engine in Go</span>
-<div class="search"><input id="search" type="search" placeholder="Search symbols…" autocomplete="off"><div id="results" class="results" hidden></div></div>
-<a class="gh" href="` + repo + `">GitHub</a>
-</header>
-<div class="shell">
-<nav class="side">
-{{range .Site.GuideGroups}}<section><h4>{{.Title}} guides</h4><ul>
-{{range .Guides}}<li><a href="{{$.Root}}guides/{{.Slug}}.html"{{if $.Active (printf "guides/%s.html" .Slug)}} class="active"{{end}}>{{.Title}}</a></li>
-{{end}}</ul></section>
-{{end}}{{range .Site.Groups}}<section><h4>{{.Title}}</h4><ul>
-{{range .Packages}}<li><a href="{{$.Root}}{{.URL}}"{{if $.Active .URL}} class="active"{{end}}>{{short .Rel}}</a></li>
-{{end}}</ul></section>
-{{end}}{{if .Site.Programs}}<section><h4>Example programs</h4><ul>
-<li><a href="{{.Root}}examples/index.html"{{if .Active "examples/index.html"}} class="active"{{end}}>All examples</a></li>
-{{range .Site.Programs}}<li><a href="{{$.Root}}{{.URL}}"{{if $.Active .URL}} class="active"{{end}}>{{.Title}}</a></li>
-{{end}}</ul></section>
-{{end}}</nav>
-<main class="content">
-{{template "body" .}}
-</main>
-</div>
-</body>
-</html>{{end}}`
-
-const indexTmpl = `{{define "index"}}{{template "layout" .}}{{end}}
-{{define "body"}}{{if .Package}}{{template "packageBody" .}}{{else if .Guide}}{{template "guideBody" .}}{{else if .Program}}{{template "programBody" .}}{{else if .Programs}}{{template "programIndexBody" .}}{{else}}{{template "indexBody" .}}{{end}}{{end}}
-{{define "indexBody"}}
-<div class="hero">
-<h1>Bunyip</h1>
-<p class="lead">A game engine in Go for real-time and turn-based games: roguelikes, 4X, arcade, and anything that wants 2D sprites and 3D models on the same screen. Vulkan underneath, no cgo, native window and audio layers, and every subsystem a game needs from the first frame to the shipped build.</p>
-<p class="actions"><a class="button" href="guides/getting-started.html">Get started</a> <a class="button secondary" href="guides/tetris.html">Build Tetris</a> <a class="button secondary" href="pkg/bunyip.html">API reference</a></p>
-</div>
-<div class="cards">
-<a class="card" href="pkg/gfx.html"><h3>Rendering</h3><p>Sprites, tilemaps and scalable text on top of a physically based 3D renderer with cascaded shadows, ambient occlusion, bloom and skeletal animation. No Vulkan knowledge required.</p></a>
-<a class="card" href="pkg/ui.html"><h3>Interface</h3><p>An immediate-mode toolkit rebuilt every frame: panels, buttons, sliders, drop-downs, scroll areas, text fields with IME support, eight colour themes and texture skins.</p></a>
-<a class="card" href="pkg/audio.html"><h3>Audio</h3><p>A mixer with streamed music, positional voices, reverb and filters, priorities and fades, plus a tracker player for MOD, S3M, XM and IT.</p></a>
-<a class="card" href="pkg/ecs.html"><h3>Game services</h3><p>An archetype-based entity component system with systems, resources and events, assets with packs and hot reload, saves and settings, seeded random numbers, timers and tweens, grids with pathfinding, and TCP and UDP messaging.</p></a>
-</div>
-<h2>Guides</h2>
-{{range .Site.GuideGroups}}<h3>{{.Title}}</h3><ul class="guide-list">
-{{range .Guides}}<li><a href="guides/{{.Slug}}.html">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
-{{end}}</ul>
-{{end}}{{if .Site.Programs}}<h2>Example programs</h2>
-<p>Every example runs headless to a screenshot, and every one has a <a href="examples/index.html">walkthrough</a> that explains its source section by section.</p>
-<ul class="guide-list">
-{{range .Site.Programs}}<li><a href="{{.URL}}">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
-{{end}}</ul>
-{{end}}<h2>Packages</h2>
-{{range .Site.Groups}}<h3>{{.Title}}</h3><table class="pkgs">
-{{range .Packages}}<tr><td><a href="{{.URL}}">{{short .Rel}}</a></td><td>{{.Synopsis}}</td></tr>
-{{end}}</table>
-{{end}}
-{{end}}`
-
-const guideTmpl = `{{define "guide"}}{{template "layout" .}}{{end}}
-{{define "guideBody"}}
-<article class="guide">
-{{if .Guide.Headings}}<aside class="toc"><h4>On this page</h4><ul>{{range .Guide.Headings}}<li><a href="#{{.ID}}">{{.Text}}</a></li>{{end}}</ul></aside>{{end}}
-<h1>{{.Guide.Title}}</h1>
-{{.Guide.Body}}
-</article>
-{{end}}`
-
-const programTmpl = `{{define "program"}}{{template "layout" .}}{{end}}
-{{define "programBody"}}
-{{$p := .Program}}
-<article class="guide">
-{{if $p.Headings}}<aside class="toc"><h4>On this page</h4><ul>{{range $p.Headings}}<li><a href="#{{.ID}}">{{.Text}}</a></li>{{end}}</ul></aside>{{end}}
-<p class="crumbs">Example <code>examples/{{$p.Name}}</code></p>
-<h1>{{$p.Title}}</h1>
-{{if $p.Shot}}<p class="shot"><img src="{{$p.Name}}.png" alt="{{$p.Title}}"></p>{{end}}
-{{if $p.Missing}}<p>The walkthrough for this example is not written yet. Read the source until it is.</p>{{end}}
-{{$p.Body}}
-<h2 id="files">Source files</h2>
-<p class="files">{{range $p.Files}}<a href="` + repo + `/blob/main/examples/{{$p.Name}}/{{.}}">{{.}}</a> {{end}}</p>
-<p><a href="{{$p.SourceURL}}">The whole directory on GitHub</a></p>
-</article>
-{{end}}
-{{define "programIndex"}}{{template "layout" .}}{{end}}
-{{define "programIndexBody"}}
-<article class="guide">
-<h1>Example programs</h1>
-<p>One directory per example under <code>examples/</code>. Every one takes <code>-seconds N</code> and <code>-shot file.png</code>, so a run verifies itself without anyone watching the screen, and every one has a walkthrough that explains its source section by section.</p>
-<ul class="guide-list">
-{{range .Site.Programs}}<li><a href="{{.Name}}.html">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
-{{end}}</ul>
-</article>
-{{end}}`
-
-const packageTmpl = `{{define "package"}}{{template "layout" .}}{{end}}
-{{define "example"}}<details class="example" open><summary>Example{{if .Suffix}} ({{.Suffix}}){{end}}</summary>
-{{.Doc}}<pre class="code"><code>{{.Code}}</code></pre>
-{{if .Output}}<div class="output"><span>Output</span><pre>{{.Output}}</pre></div>{{end}}</details>{{end}}
-{{define "func"}}<div class="decl" id="{{.ID}}">
-<h4><a class="anchor" href="#{{.ID}}">{{.Name}}</a> <a class="src" href="{{.Src}}">source</a></h4>
-<pre class="code sig"><code>{{.Decl}}</code></pre>
-{{.Doc}}
-{{range .Examples}}{{template "example" .}}{{end}}
-</div>{{end}}
-{{define "value"}}<div class="decl">
-<pre class="code"><code>{{.Decl}}</code></pre>
-{{.Doc}}
-</div>{{end}}
-{{define "packageBody"}}
-{{$p := .Package}}
-<article class="package">
-<p class="crumbs">{{if $p.IsCommand}}Command{{else}}Package{{end}} <code>{{$p.ImportPath}}</code></p>
-<h1>{{short $p.Rel}}</h1>
-{{$p.Doc}}
-{{if or $p.Consts $p.Vars $p.Funcs $p.Types}}
-<h2 id="index">Index</h2>
-<ul class="index">
-{{if $p.Consts}}<li><a href="#constants">Constants</a></li>{{end}}
-{{if $p.Vars}}<li><a href="#variables">Variables</a></li>{{end}}
-{{range $p.Funcs}}<li><a href="#{{.ID}}"><code>{{.Decl}}</code></a></li>{{end}}
-{{range $p.Types}}<li><a href="#{{.Name}}">type {{.Name}}</a>
-{{if or .Funcs .Methods}}<ul>{{range .Funcs}}<li><a href="#{{.ID}}"><code>{{.Decl}}</code></a></li>{{end}}
-{{range .Methods}}<li><a href="#{{.ID}}"><code>{{.Decl}}</code></a></li>{{end}}</ul>{{end}}</li>{{end}}
-</ul>
-{{end}}
-{{if $p.Examples}}<h2 id="examples">Examples</h2>{{range $p.Examples}}{{template "example" .}}{{end}}{{end}}
-{{if $p.Consts}}<h2 id="constants">Constants</h2>{{range $p.Consts}}{{template "value" .}}{{end}}{{end}}
-{{if $p.Vars}}<h2 id="variables">Variables</h2>{{range $p.Vars}}{{template "value" .}}{{end}}{{end}}
-{{if $p.Funcs}}<h2 id="functions">Functions</h2>{{range $p.Funcs}}{{template "func" .}}{{end}}{{end}}
-{{if $p.Types}}<h2 id="types">Types</h2>
-{{range $p.Types}}<div class="type" id="{{.Name}}">
-<h3><a class="anchor" href="#{{.Name}}">type {{.Name}}</a> <a class="src" href="{{.Src}}">source</a></h3>
-<pre class="code"><code>{{.Decl}}</code></pre>
-{{.Doc}}
-{{range .Examples}}{{template "example" .}}{{end}}
-{{range .Consts}}{{template "value" .}}{{end}}
-{{range .Vars}}{{template "value" .}}{{end}}
-{{range .Funcs}}{{template "func" .}}{{end}}
-{{range .Methods}}{{template "func" .}}{{end}}
-</div>{{end}}{{end}}
-<h2 id="files">Source files</h2>
-<p class="files">{{range $p.Files}}<a href="` + repo + `/blob/main/{{$p.Rel}}{{if $p.Rel}}/{{end}}{{.}}">{{.}}</a> {{end}}</p>
-</article>
-{{end}}`
-
-// unused helper kept for path joining in templates if needed.
-var _ = path.Join

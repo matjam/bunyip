@@ -1,8 +1,20 @@
 // Command bunyip-bundle packages a built game for distribution: a .app
 // bundle on macOS with the Vulkan loader and MoltenVK inside, or a plain
 // folder with the executable and assets elsewhere.
+// Missing macOS Vulkan libraries produce warnings rather than a build
+// error; inspect the output before distributing it as a self-contained app.
 //
 //	bunyip-bundle -name "My Game" -id com.example.mygame -exe ./mygame -assets ./assets -o dist
+//
+// -name and -exe are required. -target selects the output layout and
+// defaults to the host OS; it does not cross-compile the executable.
+// -o defaults to dist. Optional -assets copies a directory or pack file.
+// For macOS, -icon takes an .icns file, -version defaults to 1.0, and
+// -vulkan names the directory containing libvulkan.1.dylib and
+// libMoltenVK.dylib (otherwise the usual Homebrew paths are tried).
+// Without -id the bundle identifier is com.example. followed by the
+// lowercased display name with spaces removed. The tool does not sign,
+// notarize or build an installer for the result.
 package main
 
 import (

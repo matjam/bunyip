@@ -127,8 +127,9 @@ w.AddSystem("effects", g.effectsSystem(ctx.Audio))
 
 The first system rebuilds the occupancy grid from the `Cell` entities,
 so the others test collisions against a plain array. Walking two
-hundred cells costs nothing, and rebuilding the grid every update means
-it can never disagree with the entities:
+hundred cells is a small, bounded scan. Rebuilding the grid brings it into
+agreement with the entities at that point; code that changes cells later
+in the update must rebuild it again before testing occupancy:
 
 ```go
 func boardSystem(w *ecs.World, dt float64) {
@@ -309,7 +310,7 @@ func (g *game) effectsSystem(mixer *audio.Mixer) ecs.System {
 
 ## 8. Drawing
 
-Everything on screen is a filled rectangle. `Draw` walks the cells
+The board and blocks are drawn as filled rectangles. `Draw` walks the cells
 query, then draws a translucent ghost where the piece will land and the
 piece itself:
 
@@ -357,8 +358,8 @@ u.Begin(ctx.Input, func() {
 
 ## 10. Running and shipping
 
-The whole game is under five hundred lines. It accepts the same
-`-seconds` and `-shot` flags as every example, so a script can run it
+The finished source is in `examples/tetris/main.go`. It accepts the
+`-seconds` and `-shot` flags used by the screenshot examples, so a script can run it
 and save a screenshot:
 
 ```
@@ -379,8 +380,8 @@ go run ./cmd/bunyip-bundle -name Tetris -exe ./tetris -o dist
   as `Score.Lines` grows.
 - Two players: a second `Falling` entity and a `Player` component on
   cells, with queries filtered by `With[PlayerOne]()`.
-- Replays: because the systems are pure functions of the world and the
-  `Controls` resource, recording the controls per update replays the
-  game exactly.
+- Replays: record `Controls` per update along with the initial random
+  seed and reset timing, then replay them with the same simulation step
+  and rules. Keep external effects such as audio separate from the rules.
 - Music: stream a file with `ctx.Audio.OpenMusic` and `PlayStream`, or
   write a `Stream` that synthesises it, as `examples/audio` does.

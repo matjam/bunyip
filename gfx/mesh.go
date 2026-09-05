@@ -72,7 +72,8 @@ type Mesh struct {
 func (m *Mesh) Vertices() []Vertex { return m.verts }
 
 // Indices returns the mesh's triangle indices, three per triangle; the
-// slice is the mesh's own.
+// slice is the mesh's own and must not be modified. Copy it to retain
+// a snapshot across Update.
 func (m *Mesh) Indices() []uint32 { return m.indices }
 
 // Update replaces the mesh's geometry: a voxel chunk after a block is

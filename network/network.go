@@ -18,6 +18,9 @@
 // SnapshotBuffer and SnapshotReceiver sends only what changed since the
 // snapshot a client acknowledged. Interest chooses which entities a
 // viewer needs at all.
+// These stateful helpers have no internal synchronization; update them
+// on the game loop goroutine or protect them externally. Snapshots of
+// generic values are shallow copies, so treat referenced data as immutable.
 package network
 
 import (
@@ -32,6 +35,10 @@ import (
 
 // Registry maps message types to the small numbers sent on the wire.
 // Register the same types in the same order on both ends.
+// Finish registration before sharing a registry with connections. Reads
+// may run concurrently, but Register must not run alongside them. Use
+// non-nil values and at most 65536 distinct types. A binary message must
+// provide matching BinaryMarshaler and BinaryUnmarshaler implementations.
 type Registry struct {
 	byType map[reflect.Type]uint16
 	byID   []reflect.Type
@@ -173,9 +180,9 @@ const (
 
 // Event is something that happened on a connection.
 type Event struct {
-	Kind EventKind
-	Conn *Conn // TCP connection, when applicable
-	From *Addr // UDP address, when applicable
-	Msg  any   // *T for a registered T
-	Err  error
+	Kind EventKind // connection, disconnection or decoded message
+	Conn *Conn     // TCP connection, when applicable
+	From *Addr     // UDP address, when applicable
+	Msg  any       // *T for a registered T
+	Err  error     // disconnection cause; nil for a clean close
 }

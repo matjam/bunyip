@@ -27,6 +27,8 @@ var keyNames = [...]string{
 	KeyKeypadAdd: "KeypadAdd", KeyKeypadEnter: "KeypadEnter", KeyKeypadEqual: "KeypadEqual",
 }
 
+// String returns a stable physical-key name for prompts and bindings,
+// independent of the active keyboard layout. Unknown values use Key(n).
 func (k Key) String() string {
 	if int(k) < len(keyNames) && keyNames[k] != "" {
 		return keyNames[k]
@@ -34,6 +36,8 @@ func (k Key) String() string {
 	return "Key(" + strconv.Itoa(int(k)) + ")"
 }
 
+// String joins active modifier names with "+", or returns an empty
+// string when no recognized modifiers are set.
 func (m Mods) String() string {
 	s := ""
 	for _, f := range []struct {

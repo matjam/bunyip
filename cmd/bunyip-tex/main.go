@@ -19,8 +19,8 @@
 //	-v                                 report each file's size and quality
 //
 // Pick the format by what the texture is for: bc7 for colour that has to
-// hold up close, bc1 for opaque colour at a quarter of the size, bc3 for
-// colour with alpha at half of bc7's, bc4 for a one-channel mask or
+// hold up close, bc1 for opaque colour at half BC7's block size, bc3 for
+// colour with alpha at the same block size as BC7, bc4 for a one-channel mask or
 // height field and bc5 for a tangent-space normal map. A normal map, a
 // mask or a roughness map is data rather than colour, so it wants
 // -linear; bc4 and bc5 are always linear whatever the flag says.

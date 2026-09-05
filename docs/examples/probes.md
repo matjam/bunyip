@@ -14,10 +14,10 @@ wall takes blue. Screen-space reflections put what is above the floor
 back into it, including the glowing bar the probes are too coarse to
 place.
 
-Nothing in the room is lit from outside: the walls, the ceiling panel and
-the bar are their own light, and the only way that light reaches a ball
-is through a bake. Turning all three checkboxes off leaves the scene as
-the engine drew it before, which is a dark room with three unlit balls in
+The walls, ceiling panel and bar emit light captured by the probes. A dim
+directional light also illuminates the scene directly. Turning all three
+checkboxes off removes the baked lighting and screen-space reflections,
+leaving a dim room with three balls in
 it.
 
 The engine area is the 3D half of [gfx](../pkg/gfx.html). Read
@@ -123,7 +123,8 @@ as `Draw` would; here it is the same `drawRoom` every frame calls.
 `gfx.LightProbeGrid` is a lattice: an origin, a spacing and how many
 cells on each axis. `BakeLightProbes` renders a small cube at every cell
 and keeps the irradiance around it as nine spherical harmonics, so
-eighteen cells here cost eighteen little renders once. `Resolution` can
+eighteen cells here require eighteen cube captures, each with six faces.
+`Resolution` can
 be small because harmonics keep only the low frequencies of what the cell
 saw.
 
@@ -230,8 +231,8 @@ One function draws the room, and both bakes and every frame call it, so
 what the probes hold is what the camera sees. The floor is nearly smooth,
 which is what gives the screen-space reflections something to land on.
 The red and blue walls carry `Emissive`, so they are the light in the
-room rather than surfaces lit by something else; a bake is the only way
-that light reaches anything.
+room. The bakes carry that emission into the scene's indirect lighting;
+screen-space reflections can also show visible emissive surfaces.
 
 ```go
 // drawRoom queues the room itself: the walls, the floor and the light in
@@ -278,9 +279,9 @@ sky. `SetLightProbes` hands the frame a baked grid, which replaces the
 single ambient term where the grid reaches and fades back to it at the
 edge.
 
-The chrome ball shows the probe, since a mirror shows nothing but its
-reflection. The two matte balls show the grid, since a rough surface
-shows nothing but its irradiance. The floor shows the screen-space
+The chrome ball emphasizes the reflection probe. The two matte balls
+emphasize diffuse light from the grid, though rough materials still have
+a specular response. The floor shows the screen-space
 reflections, which the slider turns down to nothing.
 
 ```go

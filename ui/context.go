@@ -19,8 +19,10 @@ func contains(r Rect, x, y float32) bool {
 type widgetID uint64
 
 // Context drives one interface. Create one and reuse it every frame.
+// Build it during the game's Draw on the rendering goroutine; it is
+// not safe for concurrent use and does not own fonts or skin textures.
 type Context struct {
-	Theme Theme
+	Theme Theme // live widget styling; caller owns referenced fonts and textures
 	g     *gfx.Graphics
 	in    *input.State
 
@@ -273,7 +275,9 @@ func (c *Context) WantsMouse() bool {
 	return false
 }
 
-// WantsKeyboard reports whether a text field has focus.
+// WantsKeyboard reports whether a text editor has focus after the most
+// recent Begin. It does not report navigation focus or a modal without
+// a focused editor; gate gameplay separately while a modal is open.
 func (c *Context) WantsKeyboard() bool { return c.focus != 0 }
 
 // id derives a widget identity from its label, its panel and how many

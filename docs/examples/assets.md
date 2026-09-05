@@ -268,9 +268,10 @@ func abs(v int) int {
 ## Shutdown: closing in order
 
 The watcher and the loader are closed before the filesystem they read
-from, and every texture that was created is destroyed. Closing the loader
-waits for the workers, so no goroutine is left holding a file after the
-window is gone.
+from, and every texture that was created is destroyed. `Loader.Close`
+stops submissions but does not wait for queued work. This example omits
+`Loader.Wait`; add it after `Close` and before closing the filesystem if
+workers may still be reading at shutdown.
 
 ```go
 func (g *game) Shutdown(ctx *bunyip.Context) {
@@ -418,8 +419,9 @@ func main() {
 
 - Run it twice and watch the run counter in the panel, then delete the
   settings file the path in `Init` names.
-- Press P, quit, and start again: the panel still loads twelve images,
-  now from the pack file that `asset.Open` in `Init` found.
+- Press P and inspect the pack file. Loose files take precedence when
+  `asset.Open` finds both sources; creating a pack alone does not switch
+  these images away from the asset directory.
 - Edit one of the PNGs in the asset directory with an image editor and
   watch the watcher in `Update` reload it within a quarter second.
 - Change the watcher's interval in `Init` and see the reload latency

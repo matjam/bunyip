@@ -16,8 +16,8 @@ frame's lights and shadow draws. A second panel holds the settings that
 read the depth buffer or the velocity buffer: temporal anti-aliasing and
 its blend, depth of field, motion blur, god rays, and the lens effects
 (chromatic aberration, distortion, ghosts and film grain). A sphere
-orbits the scene and reports the transform it had last frame, so those
-last two have something moving to work on.
+orbits the scene and reports the transform it had last frame, so temporal
+anti-aliasing and motion blur have motion information to work on.
 
 With `-model` it loads a glTF file instead and plays its animation clips,
 which is the shortest path from a file exported by a modelling tool to
@@ -209,8 +209,8 @@ func (g *game) Init(ctx *bunyip.Context) error {
 ## Shutdown
 
 Every GPU resource is destroyed, and the optional ones are checked for
-nil first. Order does not matter here; the engine has already waited for
-the last frame.
+nil first. `Shutdown` runs before the graphics context is destroyed;
+resource destruction handles any necessary synchronization with GPU work.
 
 ```go
 func (g *game) Shutdown(ctx *bunyip.Context) {

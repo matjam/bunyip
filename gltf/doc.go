@@ -2,7 +2,8 @@
 // buffers, and .glb) into plain Go slices: positions, normals, UVs,
 // vertex colours, joints and weights, indices, materials with their
 // textures and the KHR extensions the renderer supports (clearcoat,
-// sheen, transmission, volume, emissive strength, texture transforms),
+// sheen, transmission, volume, IOR, emissive strength, texture transforms,
+// specular, iridescence, anisotropy and converted specular-glossiness),
 // decoded images, morph targets with their default weights, skins,
 // animation clips (node transforms and morph weights) and the flattened
 // node hierarchy with world matrices. Sparse accessors, which store only
@@ -41,13 +42,13 @@ type Document struct {
 // Node is one node of the hierarchy with its rest-pose local transform.
 type Node struct {
 	Name        string
-	Parent      int // -1 for a root
-	Children    []int
-	Translation lin.Vec3
-	Rotation    lin.Quat
-	Scale       lin.Vec3
-	Mesh        int // -1 none
-	Skin        int // -1 none
+	Parent      int      // -1 for a root
+	Children    []int    // indices into Document.Nodes
+	Translation lin.Vec3 // relative to Parent, in model units
+	Rotation    lin.Quat // local rotation; Parse supplies identity when omitted
+	Scale       lin.Vec3 // local scale; Parse supplies (1, 1, 1) when omitted
+	Mesh        int      // -1 none
+	Skin        int      // -1 none
 	// Weights are the node's own morph target weights, overriding the
 	// mesh's defaults; nil means the mesh's.
 	Weights []float32
@@ -59,14 +60,14 @@ func (n Node) Local() lin.Mat4 { return lin.TRS(n.Translation, n.Rotation, n.Sca
 // Skin binds joints (node indices) with their inverse bind matrices.
 type Skin struct {
 	Name        string
-	Joints      []int
-	InverseBind []lin.Mat4
+	Joints      []int      // Document.Nodes indices, addressed by vertex joint indices
+	InverseBind []lin.Mat4 // inverse bind matrix for each entry in Joints
 }
 
 // Animation is a named clip of node channels.
 type Animation struct {
 	Name     string
-	Duration float32
+	Duration float32 // final channel key time in seconds
 	Channels []Channel
 }
 
@@ -84,7 +85,7 @@ const (
 type Channel struct {
 	Node   int
 	Path   ChannelPath
-	Times  []float32
+	Times  []float32  // key times in seconds
 	Values []lin.Vec4 // xyz for translation and scale, xyzw for rotation; nil for weights
 	// Weights holds a PathWeights channel's keys: one weight per morph
 	// target for each time, in time order.
@@ -146,7 +147,10 @@ type Primitive struct {
 // Skinned reports whether the primitive carries joint weights.
 func (p *Primitive) Skinned() bool { return len(p.Joints) == len(p.Positions) && len(p.Positions) > 0 }
 
-// Material is the metallic-roughness material.
+// Material is a decoded metallic-roughness material. Defaults below are
+// supplied by Parse for omitted file properties, not by the Go zero value.
+// Image references index Document.Images; -1 means no image. A hand-built
+// material must set unused image references to -1 explicitly.
 type Material struct {
 	Name      string
 	BaseColor [4]float32 // linear RGBA factor
@@ -243,8 +247,10 @@ const (
 	AlphaBlend            // alpha-blended
 )
 
-// IsDataImage reports whether an image holds non-colour data (metallic-
-// roughness or normals) and must not be decoded as sRGB.
+// IsDataImage reports whether any material uses image i as non-colour
+// data, such as normals, metallic-roughness or extension factor maps.
+// Pass a valid index into Images. An image reused for both colour and
+// data is classified as data; separate images avoid that ambiguity.
 func (d *Document) IsDataImage(i int) bool {
 	for _, m := range d.Materials {
 		if m.MetalRoughImage == i || m.NormalImage == i || m.OcclusionImage == i || m.TransmissionImage == i || m.ThicknessImage == i ||

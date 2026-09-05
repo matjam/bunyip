@@ -50,7 +50,8 @@ type HingeJoint3 struct {
 }
 
 // Angle is the hinge angle: how far B has turned about the axis
-// relative to A since the first step, in radians.
+// relative to A since the reference pose, in radians. The first call
+// captures that pose if the solver has not measured it yet.
 func (j *HingeJoint3) Angle(w *ecs.World) float32 {
 	qa, qb := entityQuat(w, j.A), entityQuat(w, j.B)
 	j.measure(qa, qb)
@@ -83,7 +84,8 @@ type BallJoint3 struct {
 }
 
 // Angles returns the swing of AxisB away from AxisA and the twist of B
-// about AxisB, in radians.
+// about AxisB, in radians. The first call captures the reference pose
+// and default cone axis if the solver has not measured them yet.
 func (j *BallJoint3) Angles(w *ecs.World) (cone, twist float32) {
 	qa, qb := entityQuat(w, j.A), entityQuat(w, j.B)
 	j.measure(qa, qb)
