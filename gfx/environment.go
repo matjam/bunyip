@@ -37,6 +37,18 @@ type EnvironmentOptions struct {
 
 const envMips = 6
 
+// envLevels is how many roughness levels a cube of that many texels a
+// side holds: one per mip down to a single texel, and never more than
+// envMips. A cube of 16 has five, so asking for six would be an image
+// with more levels than its size allows.
+func envLevels(size int) int {
+	n := 1
+	for s := size; s > 1 && n < envMips; s >>= 1 {
+		n++
+	}
+	return n
+}
+
 // NewEnvironment builds an environment from an equirectangular panorama:
 // longitude across, latitude down, sRGB colour, any size. It prefilters
 // the image for every roughness (a second or so for a large panorama).
@@ -132,16 +144,17 @@ func (g *Graphics) newEnvironmentFrom(sample radianceSampler, opts EnvironmentOp
 		size = 128
 	}
 	size = max(8, size)
-	env := &Environment{g: g, mips: envMips, scale: opts.Intensity}
+	mips := envLevels(size)
+	env := &Environment{g: g, mips: mips, scale: opts.Intensity}
 	if env.scale == 0 {
 		env.scale = 1
 	}
 	// Prefilter one level per roughness step: level 0 is the panorama
 	// itself, later levels blur it with the GGX lobe of their roughness.
-	faces := make([][6][]byte, envMips)
-	for level := range envMips {
+	faces := make([][6][]byte, mips)
+	for level := range mips {
 		side := max(size>>level, 1)
-		roughness := float32(level) / float32(envMips-1)
+		roughness := float32(level) / float32(max(mips-1, 1))
 		for face := range 6 {
 			pix := make([]byte, side*side*8)
 			for y := range side {

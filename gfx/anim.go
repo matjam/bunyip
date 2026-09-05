@@ -878,6 +878,13 @@ func sampleWeights(ch gltf.Channel, t float32, out []float32) {
 // pose: node-animated parts move rigidly, skinned parts deform and morph
 // targets blend to the player's weights.
 func (g *Graphics) DrawModelAnimated(m *Model, t Transform, p *AnimPlayer) {
+	g.DrawModelAnimatedWith(m, t, p, nil)
+}
+
+// DrawModelAnimatedWith is DrawModelAnimated with a material override,
+// so a posed character can be drawn in a team colour or with one part
+// swapped. A nil override draws the file's materials.
+func (g *Graphics) DrawModelAnimatedWith(m *Model, t Transform, p *AnimPlayer, override MaterialOverride) {
 	world := t.Matrix()
 	for _, mm := range m.morphs {
 		if w := p.MorphWeights(mm.node); w != nil {
@@ -885,12 +892,13 @@ func (g *Graphics) DrawModelAnimated(m *Model, t Transform, p *AnimPlayer) {
 		}
 	}
 	var joints []lin.Mat4
-	for _, part := range m.Parts {
+	for i, part := range m.Parts {
+		mat := override.apply(i, part)
 		if part.Mesh.skinned && part.skin >= 0 {
 			joints = p.jointMatrices(part.skin, joints[:0])
-			g.DrawSkinned(part.Mesh, part.Material, world, joints)
+			g.DrawSkinned(part.Mesh, mat, world, joints)
 			continue
 		}
-		g.DrawMesh(part.Mesh, part.Material, world.Mul(p.NodeMatrix(part.node)))
+		g.DrawMesh(part.Mesh, mat, world.Mul(p.NodeMatrix(part.node)))
 	}
 }

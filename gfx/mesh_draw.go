@@ -39,11 +39,12 @@ const (
 	pointFacesPerRow = shadowAtlasW / pointFaceSize
 	// matImages is how many sampled images the material set holds:
 	// five material textures, four shader images, the environment cube,
-	// the thickness map, the scene copy for transmission and the
-	// transmission map. Keeping this and the shadow atlas together at or
-	// under thirty-one leaves the mesh pipelines inside the texture
-	// limit MoltenVK reports on Intel Macs; Apple silicon allows 128.
-	matImages = 13
+	// the thickness map, the scene copy for transmission, the
+	// transmission map, and the iridescence, anisotropy, specular and fur
+	// maps. Keeping this and the shadow atlas together at or under
+	// thirty-one leaves the mesh pipelines inside the texture limit
+	// MoltenVK reports on Intel Macs; Apple silicon allows 128.
+	matImages = 17
 	// matSamplerBinding is where the material set's shared sampler array
 	// sits, after the images.
 	matSamplerBinding = matImages
@@ -97,16 +98,18 @@ type meshPass struct {
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
-	// materials is set 0: thirteen sampled images (five material
+	// materials is set 0: seventeen sampled images (five material
 	// textures, a shader's image0..3, the environment cube, the
-	// thickness map, the scene copy, the transmission map) and the
-	// shared sampler array, which is immutable in the layout.
+	// thickness map, the scene copy, the transmission map, and the
+	// iridescence, anisotropy, specular and fur maps) and the shared
+	// sampler array, which is immutable in the layout.
 	materials    *render.DescriptorSets
 	matSets      map[materialKey]vk.VkDescriptorSet
 	lastMatKey   materialKey // the key materialSet last resolved, to skip hashing matSets
 	lastMatSet   vk.VkDescriptorSet
 	lastMatOK    bool
 	flatNormal   *Texture
+	flatTangent  *Texture // the anisotropy map's default: along the tangent, full strength
 	black        *Texture
 	blackCube    *render.Image    // stands in for the environment when none is set
 	skyPipe      *render.Pipeline // an image environment as the background
@@ -236,10 +239,18 @@ type frameUniforms struct {
 // the order the set binds them and the order the packed sampler indices
 // are read in.
 type materialKey struct {
-	tex   [11]*Texture // five material textures, four shader images, the thickness and transmission maps
+	// tex is the five material textures, the four shader images, the
+	// thickness and transmission maps, then the iridescence, anisotropy,
+	// specular and fur maps. Only the first eleven have a sampler index
+	// in the packed value; the rest are read linear and repeating.
+	tex   [15]*Texture
 	env   *Environment
 	scene *render.Image // the output's opaque scene copy, for transmission
 }
+
+// packedSamplerSlots is how many of a material key's textures carry a
+// sampler index in the instance stream's packed value, two bits each.
+const packedSamplerSlots = 11
 
 func (g *Graphics) initMeshPass() error {
 	mp := &g.meshes
@@ -356,6 +367,11 @@ func (g *Graphics) initMeshPass() error {
 	if mp.shadowSet, err = mp.shadowDesc.AllocateMany([]render.SamplerBinding{{View: atlasDepth.View, Sampler: mp.shadowSamp}}); err != nil {
 		return err
 	}
+	// The anisotropy map's stand-in: red 1 and green a half are the
+	// direction (1, 0) along the tangent, blue 1 is full strength.
+	if mp.flatTangent, err = g.newTexture(1, 1, []byte{255, 128, 255, 255}, TextureOptions{Data: true}); err != nil {
+		return err
+	}
 	if mp.flatNormal, err = g.newTexture(1, 1, []byte{128, 128, 255, 255}, TextureOptions{Data: true}); err != nil {
 		return err
 	}
@@ -423,8 +439,14 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 		{Location: 3, Binding: 0, Format: vk.VK_FORMAT_R32G32_SFLOAT, Offset: 32},
 		{Location: 4, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UNORM, Offset: 40},
 	}
-	for i := range 12 { // the instance stream: twelve vec4s
-		attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: uint32(5 + i), Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: uint32(16 * i)})
+	// The instance stream is fifteen vec4s at locations 5 to 16 and 19 to
+	// 21; 17 and 18 are a skinned mesh's joints and weights.
+	for i := range 15 {
+		loc := 5 + i
+		if i >= 12 {
+			loc += 2
+		}
+		attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: uint32(loc), Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: uint32(16 * i)})
 	}
 	return bindings, attrs
 }
@@ -612,6 +634,33 @@ func (g *Graphics) queueMesh(d meshDraw) {
 	}
 	d.uniform = d.shader.uniformOffset()
 	g.cur.draws = append(g.cur.draws, d)
+	if n := d.mat.Shells; n > 0 {
+		// Fur: the same mesh again for each shell, standing further out
+		// along its normals. They share the material and so become one
+		// instanced draw, and each one's height rides in the instance
+		// stream. Shells are blended and are left out of the shadow pass.
+		if n > maxShells {
+			n = maxShells
+		}
+		for i := 1; i <= n; i++ {
+			shell := d
+			shell.shell = float32(i) / float32(n)
+			g.cur.draws = append(g.cur.draws, shell)
+		}
+	}
+}
+
+// maxShells caps how many shells one fur material draws, so a stray
+// count cannot fill the instance stream.
+const maxShells = 64
+
+// shellLength is how far a material's outermost fur shell stands off the
+// surface, in world units.
+func shellLength(m *Material) float32 {
+	if m.ShellLength == 0 {
+		return 0.05
+	}
+	return m.ShellLength
 }
 
 // materialSet returns the descriptor set for a material's textures, its
@@ -623,7 +672,7 @@ func (g *Graphics) queueMesh(d meshDraw) {
 func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, float32, error) {
 	mp := &g.meshes
 	key := materialKey{env: env, scene: scene}
-	key.tex = [11]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
+	key.tex = [15]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
 	if mat.Shader != nil {
 		for i, t := range mat.Shader.images {
 			key.tex[5+i] = t
@@ -635,6 +684,13 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 	}
 	key.tex[9] = orTex(mat.ThicknessTexture, thin)
 	key.tex[10] = orTex(mat.TransmissionTexture, g.white)
+	// White stands in for the iridescence, specular and fur maps: full
+	// strength, the maximum film thickness and an unbroken strand mask.
+	// The anisotropy map's default points along the tangent instead.
+	key.tex[11] = orTex(mat.IridescenceTexture, g.white)
+	key.tex[12] = orTex(mat.AnisotropyTexture, mp.flatTangent)
+	key.tex[13] = orTex(mat.SpecularTexture, g.white)
+	key.tex[14] = orTex(mat.FurTexture, g.white)
 	// Each slot's sampler index rides with the draw rather than in the
 	// set, so the four samplers are shared by every material. A texture
 	// destroyed earlier this frame still has its image until the frame
@@ -646,7 +702,9 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 		if t == nil {
 			t = g.white
 		}
-		bits |= samplerIndex(!t.nearest, t.repeat) << (2 * i)
+		if i < packedSamplerSlots {
+			bits |= samplerIndex(!t.nearest, t.repeat) << (2 * i)
+		}
 		if t.destroyed {
 			cache = false
 		}
@@ -663,7 +721,8 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 	}
 	// Bindings 0..8 are the material and image textures, 9 the environment
 	// cube, 10 the thickness map, 11 the scene copy, 12 the transmission
-	// map. They are sampled images; binding 13 holds the samplers.
+	// map, then 13 to 16 the iridescence, anisotropy, specular and fur
+	// maps. They are sampled images; binding 17 holds the samplers.
 	bindings := make([]render.SamplerBinding, matImages)
 	for i, t := range key.tex[:9] {
 		if t == nil {
@@ -679,6 +738,9 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 	bindings[10] = render.SamplerBinding{View: key.tex[9].img.View}
 	bindings[11] = render.SamplerBinding{View: scene.View}
 	bindings[12] = render.SamplerBinding{View: key.tex[10].img.View}
+	for i, t := range key.tex[11:] {
+		bindings[13+i] = render.SamplerBinding{View: t.img.View}
+	}
 	set, err := mp.materials.AllocateMany(bindings)
 	if err != nil {
 		return 0, 0, err
@@ -1012,8 +1074,13 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			return drawList{}, drawList{}, drawList{}, err
 		}
 		d.depth = -view.MulPoint(d.centre).Z
-		d.blended = d.mat.blended()
-		d.oit = independent && d.blended && d.mat.Transmission == 0 && d.shader.orderIndependent()
+		d.blended = d.mat.blended() || d.shell > 0
+		if d.shell > 0 {
+			d.radius += shellLength(&d.mat) // a shell stands off the surface
+		}
+		// Fur shells are drawn from the inside out and read as one surface
+		// only in that order, so they keep the sorted path.
+		d.oit = independent && d.blended && d.shell == 0 && d.mat.Transmission == 0 && d.shader.orderIndependent()
 		if d.cullable {
 			tests++
 		}
@@ -1076,6 +1143,22 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		if atten == (Color{}) {
 			atten = White
 		}
+		specColor := m.SpecularColor
+		if specColor == (Color{}) {
+			specColor = White
+		}
+		specular := m.Specular
+		if specular == 0 {
+			specular = 1
+		}
+		filmIOR := m.IridescenceIOR
+		if filmIOR == 0 {
+			filmIOR = 1.3
+		}
+		filmThick := m.IridescenceThickness
+		if filmThick == 0 {
+			filmThick = 400
+		}
 		mm := d.model
 		q.inst.add(meshInstance{
 			model: [3]lin.Vec4{
@@ -1092,6 +1175,9 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			volume:    [4]float32{m.Transmission, ior, m.Thickness, m.AttenuationDistance},
 			atten:     [4]float32{atten.R, atten.G, atten.B, d.samplers},
 			gi:        [4]float32{float32(d.probe), boolFloat(!d.blended), 0, 0},
+			spec:      [4]float32{specColor.R, specColor.G, specColor.B, specular},
+			irid:      [4]float32{m.Iridescence, filmIOR, m.IridescenceThicknessMin, filmThick},
+			fur:       [4]float32{m.Anisotropy, m.AnisotropyRotation, d.shell * shellLength(m), d.shell},
 		})
 	}
 	if err := q.inst.upload(g, slot); err != nil {
@@ -1184,19 +1270,19 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		d := draws.at(i)
 		run := 1
 		if !d.skinned {
-			runKey := meshKey(&d.mat, false)
+			runKey := meshKey(&d.mat, false, d.shell > 0)
 			for i+run < n {
 				e := draws.at(i + run)
 				if mask != nil && !mask[i+run] {
 					break
 				}
-				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false) != runKey {
+				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0) != runKey {
 					break
 				}
 				run++
 			}
 		}
-		key := meshKey(&d.mat, d.skinned)
+		key := meshKey(&d.mat, d.skinned, d.shell > 0)
 		key.oit = oit
 		if cascade != nil {
 			key = pipeKey{shadow: true, skinned: d.skinned}
@@ -1469,6 +1555,9 @@ func (mp *meshPass) destroy(g *Graphics) {
 	}
 	if mp.blackCube != nil {
 		mp.blackCube.Destroy()
+	}
+	if mp.flatTangent != nil {
+		mp.flatTangent.Destroy()
 	}
 	if mp.flatNormal != nil {
 		mp.flatNormal.Destroy()

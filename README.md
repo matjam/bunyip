@@ -33,18 +33,20 @@ window.
   thirteen languages, colour matrices, lit sprites with shadows cast
   from occluders, blend modes and
   game-written fragment shaders.
-- 3D: physically based materials with clearcoat, sheen, subsurface and
-  glass; glTF models with skeletal animation, blend spaces, IK and morph
-  targets; cascaded shadows, spot and point lights with shadows,
-  clustered lighting for a thousand lights a frame, a procedural sky with
-  atmospheric scattering and aerial perspective or image-based lighting,
-  fog; reflection probes, baked light probe grids and screen-space
-  reflections; order-independent transparency; instancing, frustum and
-  occlusion culling, static batches behind a bounding volume hierarchy,
-  levels of detail and impostors baked from a model; billboards, decals,
-  outlines and x-ray; dynamic meshes and chunked terrain with a splat
-  map; SSAO, bloom, FXAA, tone mapping and colour grading; render
-  textures and picking.
+- 3D: physically based materials with clearcoat, sheen, subsurface,
+  glass, iridescence, anisotropy, specular tinting and fur as shells;
+  glTF models with skeletal animation, blend spaces, IK and morph
+  targets, whose materials any part can override; cascaded shadows, spot
+  and point lights with shadows, clustered lighting for a thousand lights
+  a frame, a procedural sky with atmospheric scattering and aerial
+  perspective or image-based lighting from OpenEXR, Radiance or ordinary
+  panoramas, fog; reflection probes, baked light probe grids and
+  screen-space reflections; order-independent transparency; instancing,
+  frustum and occlusion culling, static batches behind a bounding volume
+  hierarchy, levels of detail and impostors baked from a model;
+  billboards, decals, outlines, x-ray and stencil masks; dynamic meshes
+  and chunked terrain with a splat map; SSAO, bloom, FXAA, tone mapping
+  and colour grading; render textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.
@@ -199,7 +201,7 @@ whole program and explains it section by section:
 | `go run ./examples/softbody` | a cloth flag flapping on a pole in a swinging gust, a jelly cube that drops and can be kicked beside a rigid crate, and a tank of 2D fluid breaking around a post |
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
-| `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |
+| `go run ./examples/materials [-env panorama.exr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption, iridescence, anisotropy, a specular tint, fur; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall, a stencil mask |
 | `go run ./examples/tiled` | a map from the Tiled editor: layers, an external tileset, flipped and rotated tiles, an animated pond, object outlines |
 | `go run ./examples/autotile` | paint terrain that picks its own tiles: a 47-tile blob set composed from a six-tile template, an edge-matched wall set, a corner Wang water set with curving shores, weighted flower variants, and a 64-tile hexagonal edge set on a staggered-row layout |
 | `go run ./examples/particles` | a campfire of fire and smoke, rain, sparks on click and confetti on Space from the particle package, with a tuning panel |

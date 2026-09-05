@@ -89,10 +89,14 @@ vec4 finish(vec4 lit, Surface s) { return lit; } // optional
 (the vertex colour), `worldPos` and `viewDir`, then the layered
 material's `clearcoat`, `clearcoatRoughness`, `sheen`,
 `sheenRoughness`, `subsurface`, `thickness`, `transmission`, `ior`,
-`volume` (thickness in world units), `attenuation` and
-`attenuationDistance`, all filled in from the material's textures and
-factors before `surface` runs. Changing any of them changes the
-lighting. Everything else is the standard pipeline: the shadowed
+`volume` (thickness in world units), `attenuation`,
+`attenuationDistance`, `specular` and `specularColor`, `iridescence`
+with `iridescenceIOR` and `iridescenceThickness` in nanometres,
+`anisotropy` with the world-space `tangent` its highlight stretches
+along, and `shell`, which is 0 on the surface itself and rises to 1 on
+the outermost fur shell. All of them are filled in from the material's
+textures and factors before `surface` runs. Changing any of them changes
+the lighting. Everything else is the standard pipeline: the shadowed
 directional light, point and spot lights, the sky or environment map,
 fog, alpha cutout, bloom and anti-aliasing. Compile with `-kind mesh`,
 create it with `NewMeshShader`, and set it on a material:
@@ -102,6 +106,28 @@ lava, err := ctx.Gfx.NewMeshShader(lavaSPV)
 lava.SetImage(0, noise)
 lava.SetUniforms(struct{ Heat float32 }{1})
 ctx.Gfx.DrawMesh(slab, gfx.Material{Shader: lava}, model)
+```
+
+The material's own maps are there to be read as well, each a
+`sampler2D`: `albedoTex`, `metalRoughTex`, `normalTex`, `emissiveTex`,
+`occlusionTex`, `thicknessTex`, `transmissionTex`, and the four added
+for the layered features, `iridescenceTex` (red the strength, green the
+film's thickness), `anisotropyTex` (red and green the direction around a
+half, blue the strength), `specularTex` (RGB the tint, alpha the
+strength) and `furTex` (red the strand mask). `uvTransform(uv)` maps a
+coordinate through the material's transform the way the engine does, and
+`surfaceTangent(n, uv, dir)` builds the tangent an anisotropic highlight
+stretches along, from the surface's derivatives:
+
+```glsl
+void surface(inout Surface s) {
+	// Brushed metal whose grain follows a flow map.
+	vec2 flow = texture(image0, s.uv).rg * 2.0 - 1.0;
+	s.anisotropy = 0.8;
+	s.tangent = surfaceTangent(s.normal, s.uv, flow);
+	s.iridescence = 0.4;            // a thin oily film over it
+	s.iridescenceThickness = 320.0; // nanometres
+}
 ```
 
 A mesh shader can sample the material's own maps as well as its images:

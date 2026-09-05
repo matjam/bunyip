@@ -212,11 +212,30 @@ func (m *Model) SetMorphWeights(node int, weights []float32) error {
 
 // ModelPart is one primitive placed by one node.
 type ModelPart struct {
-	Mesh     *Mesh
+	Mesh *Mesh
+	// Name is the name glTF gave the primitive's material, empty when the
+	// file names none. Match on it to override one part's material.
+	Name     string
 	Material Material
 	World    lin.Mat4
 	node     int
 	skin     int
+}
+
+// MaterialOverride returns the material to draw one part of a model
+// with. i is the part's index in Model.Parts and part is the part
+// itself, so a game can decide by index or by part.Name, the name glTF
+// gave the material. Returning part.Material draws what the file asked
+// for.
+type MaterialOverride func(i int, part ModelPart) Material
+
+// apply returns the material a part is drawn with under an override; a
+// nil override is the file's own material.
+func (o MaterialOverride) apply(i int, part ModelPart) Material {
+	if o == nil {
+		return part.Material
+	}
+	return o(i, part)
 }
 
 // LoadModel uploads a parsed glTF document.
@@ -243,6 +262,7 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 		}
 		m.textures = append(m.textures, tex)
 	}
+	deriv := &derived{g: g, m: m, doc: doc, cache: map[derivedKey]*Texture{}}
 	type key struct{ mesh, prim int }
 	uploaded := map[key]*Mesh{}
 	for _, inst := range doc.Instances {
@@ -309,8 +329,10 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				}
 			}
 			mat := Material{BaseColor: White, Roughness: 0.6}
+			name := ""
 			if p.Material >= 0 {
 				src := doc.Materials[p.Material]
+				name = src.Name
 				mat.BaseColor = Color{src.BaseColor[0], src.BaseColor[1], src.BaseColor[2], src.BaseColor[3]}
 				mat.Metallic, mat.Roughness = src.Metallic, max(src.Roughness, 0.04)
 				mat.Texture = m.texture(src.Image)
@@ -336,6 +358,45 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 					mat.TransmissionTexture = m.texture(src.TransmissionImage)
 					mat.ThicknessTexture = m.texture(src.ThicknessImage)
 				}
+				// KHR_materials_specular: the strength and the tint, whose
+				// two images become one.
+				mat.Specular = src.SpecularFactor
+				if mat.Specular == 0 {
+					mat.Specular = 1e-4 // a zero factor means none, not the default
+				}
+				mat.SpecularColor = Color{src.SpecularColor[0], src.SpecularColor[1], src.SpecularColor[2], 1}
+				specTex, err := deriv.get("specular", src.SpecularColorImage, src.SpecularImage, mergeSpecular)
+				if err != nil {
+					m.Destroy()
+					return nil, err
+				}
+				mat.SpecularTexture = specTex
+				// KHR_materials_iridescence, likewise two images in one.
+				mat.Iridescence = src.IridescenceFactor
+				mat.IridescenceIOR = src.IridescenceIOR
+				mat.IridescenceThickness = src.IridescenceThicknessMax
+				mat.IridescenceThicknessMin = src.IridescenceThicknessMin
+				iridTex, err := deriv.get("iridescence", src.IridescenceImage, src.IridescenceThicknessImage, mergeIridescence)
+				if err != nil {
+					m.Destroy()
+					return nil, err
+				}
+				mat.IridescenceTexture = iridTex
+				// KHR_materials_anisotropy.
+				mat.Anisotropy, mat.AnisotropyRotation = src.AnisotropyStrength, src.AnisotropyRotation
+				mat.AnisotropyTexture = m.texture(src.AnisotropyImage)
+				// The specular-glossiness workflow arrives converted, apart
+				// from its image, which becomes a metallic-roughness map.
+				if src.SpecGloss && src.SpecGlossImage >= 0 {
+					tex, err := deriv.get("specgloss", src.SpecGlossImage, -1, func(a, _ image.Image) image.Image {
+						return specGlossMetalRough(a, src.Glossiness, src.Metallic)
+					})
+					if err != nil {
+						m.Destroy()
+						return nil, err
+					}
+					mat.MetalRoughTexture, mat.Metallic, mat.Roughness = tex, 1, 1
+				}
 				if src.UVOffset != [2]float32{} || src.UVRotation != 0 || src.UVScale != [2]float32{1, 1} {
 					// glTF: uv' = T · R · S · uv.
 					mat.UVTransform = lin.Translate2(src.UVOffset[0], src.UVOffset[1]).Mul(lin.Rotate2(-src.UVRotation)).Mul(lin.Scale2(src.UVScale[0], src.UVScale[1]))
@@ -347,7 +408,7 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 					mat.Blend = true
 				}
 			}
-			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})
+			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Name: name, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})
 		}
 	}
 	g.track(m, Resource{Kind: ResourceModel, Parts: len(m.Parts)})
@@ -365,6 +426,127 @@ func (m *Model) restWeights(node int, mesh gltf.Mesh) []float32 {
 	}
 	return w
 }
+
+// derived builds the textures a model needs that are not images of the
+// file: glTF keeps a material's specular tint and strength, and a thin
+// film's strength and thickness, in two images each, where the renderer
+// reads one. Results are cached by their sources, so materials sharing
+// images share one upload, and the model owns them.
+type derived struct {
+	g     *Graphics
+	m     *Model
+	doc   *gltf.Document
+	cache map[derivedKey]*Texture
+}
+
+type derivedKey struct {
+	kind string
+	a, b int
+}
+
+// image returns one of the document's images, or nil.
+func (d *derived) image(i int) image.Image {
+	if i < 0 || i >= len(d.doc.Images) {
+		return nil
+	}
+	return d.doc.Images[i]
+}
+
+// get builds the texture for a pair of source images, or returns the one
+// built earlier. Both sources may be -1, in which case the caller has
+// asked for nothing and the result is nil.
+func (d *derived) get(kind string, a, b int, build func(a, b image.Image) image.Image) (*Texture, error) {
+	if a < 0 && b < 0 {
+		return nil, nil
+	}
+	key := derivedKey{kind, a, b}
+	if tex, ok := d.cache[key]; ok {
+		return tex, nil
+	}
+	// The combined images are read as data: their channels are already
+	// linear by the time they are written.
+	tex, err := d.g.NewTexture(build(d.image(a), d.image(b)), TextureOptions{Linear: true, Data: true})
+	if err != nil {
+		return nil, err
+	}
+	d.cache[key] = tex
+	d.m.textures = append(d.m.textures, tex)
+	return tex, nil
+}
+
+// combineSize is the size a combined image is built at: the larger of
+// its two sources in each direction, or one pixel when neither is given.
+func combineSize(a, b image.Image) (w, h int) {
+	w, h = 1, 1
+	for _, img := range []image.Image{a, b} {
+		if img != nil {
+			w = max(w, img.Bounds().Dx())
+			h = max(h, img.Bounds().Dy())
+		}
+	}
+	return w, h
+}
+
+// texelAt reads one texel of a source scaled to a w by h grid, white
+// where the source is missing.
+func texelAt(src image.Image, x, y, w, h int) color.RGBA {
+	if src == nil {
+		return color.RGBA{255, 255, 255, 255}
+	}
+	b := src.Bounds()
+	r, g, bl, a := src.At(b.Min.X+x*b.Dx()/w, b.Min.Y+y*b.Dy()/h).RGBA()
+	return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(bl >> 8), uint8(a >> 8)}
+}
+
+// mergeSpecular builds the specular map from glTF's two: the colour
+// map's RGB, converted to linear because the slot is read as data, and
+// the strength map's alpha.
+func mergeSpecular(colorMap, strength image.Image) image.Image {
+	w, h := combineSize(colorMap, strength)
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			c := texelAt(colorMap, x, y, w, h)
+			s := texelAt(strength, x, y, w, h)
+			lin := func(v uint8) uint8 { return uint8(lin32(srgbToLinear(v))*255 + 0.5) }
+			out.SetRGBA(x, y, color.RGBA{lin(c.R), lin(c.G), lin(c.B), s.A})
+		}
+	}
+	return out
+}
+
+// mergeIridescence builds the iridescence map: the strength map's red
+// channel and the thickness map's green, which is where glTF keeps each.
+func mergeIridescence(strength, thickness image.Image) image.Image {
+	w, h := combineSize(strength, thickness)
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			out.SetRGBA(x, y, color.RGBA{texelAt(strength, x, y, w, h).R, texelAt(thickness, x, y, w, h).G, 0, 255})
+		}
+	}
+	return out
+}
+
+// specGlossMetalRough turns a specular-glossiness image into the
+// metallic-roughness map the renderer reads: the glossiness in its
+// alpha, scaled by the material's factor, becomes roughness in green,
+// and the converted metallic factor fills blue.
+func specGlossMetalRough(src image.Image, gloss, metallic float32) image.Image {
+	w, h := combineSize(src, nil)
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	blue := uint8(lin.Clamp(metallic, 0, 1)*255 + 0.5)
+	for y := range h {
+		for x := range w {
+			g := float32(texelAt(src, x, y, w, h).A) / 255 * gloss
+			out.SetRGBA(x, y, color.RGBA{0, uint8(lin.Clamp(1-g, 0, 1)*255 + 0.5), blue, 255})
+		}
+	}
+	return out
+}
+
+// lin32 keeps a linear value inside the unit range.
+func lin32(v float32) float32 { return lin.Clamp(v, 0, 1) }
 
 // greenToRed copies an image with its green channel in red, for glTF
 // thickness maps, which store thickness in green.
@@ -409,10 +591,29 @@ func topoOrder(nodes []gltf.Node) []int {
 	return order
 }
 
-// DrawModel queues every part of the model under a world transform.
+// DrawModel queues every part of the model under a world transform,
+// each with the material its file gave it.
 func (g *Graphics) DrawModel(m *Model, world lin.Mat4) {
-	for _, p := range m.Parts {
-		g.DrawMesh(p.Mesh, p.Material, world.Mul(p.World))
+	g.DrawModelWith(m, world, nil)
+}
+
+// DrawModelWith queues every part of the model under a world transform,
+// passing each part through override to decide the material it is drawn
+// with: one material for the whole model, a different one for a named
+// part, or the file's own material with a field changed. A nil override
+// is DrawModel.
+//
+//	gr.DrawModelWith(ship, world, func(i int, p gfx.ModelPart) gfx.Material {
+//		if p.Name == "hull" {
+//			m := p.Material
+//			m.BaseColor = team
+//			return m
+//		}
+//		return p.Material
+//	})
+func (g *Graphics) DrawModelWith(m *Model, world lin.Mat4, override MaterialOverride) {
+	for i, p := range m.Parts {
+		g.DrawMesh(p.Mesh, override.apply(i, p), world.Mul(p.World))
 	}
 }
 

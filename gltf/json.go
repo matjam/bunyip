@@ -151,6 +151,32 @@ type jsonMaterial struct {
 			AttenuationDistance *float32        `json:"attenuationDistance"`
 			AttenuationColor    []float32       `json:"attenuationColor"`
 		} `json:"KHR_materials_volume"`
+		Specular *struct {
+			Factor       *float32        `json:"specularFactor"`
+			Texture      *jsonTextureRef `json:"specularTexture"`
+			ColorFactor  []float32       `json:"specularColorFactor"`
+			ColorTexture *jsonTextureRef `json:"specularColorTexture"`
+		} `json:"KHR_materials_specular"`
+		Iridescence *struct {
+			Factor           *float32        `json:"iridescenceFactor"`
+			Texture          *jsonTextureRef `json:"iridescenceTexture"`
+			IOR              *float32        `json:"iridescenceIor"`
+			ThicknessMinimum *float32        `json:"iridescenceThicknessMinimum"`
+			ThicknessMaximum *float32        `json:"iridescenceThicknessMaximum"`
+			ThicknessTexture *jsonTextureRef `json:"iridescenceThicknessTexture"`
+		} `json:"KHR_materials_iridescence"`
+		Anisotropy *struct {
+			Strength *float32        `json:"anisotropyStrength"`
+			Rotation *float32        `json:"anisotropyRotation"`
+			Texture  *jsonTextureRef `json:"anisotropyTexture"`
+		} `json:"KHR_materials_anisotropy"`
+		SpecGloss *struct {
+			DiffuseFactor    []float32       `json:"diffuseFactor"`
+			DiffuseTexture   *jsonTextureRef `json:"diffuseTexture"`
+			SpecularFactor   []float32       `json:"specularFactor"`
+			GlossinessFactor *float32        `json:"glossinessFactor"`
+			SpecGlossTexture *jsonTextureRef `json:"specularGlossinessTexture"`
+		} `json:"KHR_materials_pbrSpecularGlossiness"`
 	} `json:"extensions"`
 }
 

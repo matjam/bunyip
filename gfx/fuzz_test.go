@@ -14,6 +14,20 @@ func FuzzDecodeHDR(f *testing.F) {
 	})
 }
 
+// FuzzDecodeEXR feeds the OpenEXR decoder corrupt files: an error, never
+// a panic. It needs no GPU.
+func FuzzDecodeEXR(f *testing.F) {
+	pix := exrGradient(3, 2)
+	f.Add(encodeEXR(3, 2, pix, true, exrNone))
+	f.Add(encodeEXR(3, 2, pix, false, exrZIP))
+	f.Add(encodeEXR(3, 2, pix, true, exrRLE))
+	f.Add([]byte("v/\x01\x00\x02\x00\x00\x00"))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = DecodeEXR(data)
+	})
+}
+
 // FuzzParseAtlas feeds the atlas parsers corrupt JSON.
 func FuzzParseAtlas(f *testing.F) {
 	f.Add([]byte(`{"frames":{"a.png":{"frame":{"x":0,"y":0,"w":8,"h":8}}},"meta":{"size":{"w":16,"h":16}}}`))
