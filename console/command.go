@@ -316,7 +316,7 @@ func (c *Console) cmdStats([]string) (string, error) {
 	if g := c.frame.Gfx; g != nil {
 		gs := g.Stats()
 		fmt.Fprintf(&b, "2D %d draws %d verts (%d culled)\n", gs.Draws2D, gs.Vertices2D, gs.Culled2D)
-		fmt.Fprintf(&b, "3D %d draws %d instances (%d culled, %d lights dropped)\n", gs.Draws3D, gs.Instances, gs.Culled, gs.LightsDropped)
+		fmt.Fprintf(&b, "3D %d draws %d instances (%d culled, %d of them occluded, %d lights dropped)\n", gs.Draws3D, gs.Instances, gs.Culled, gs.Occluded, gs.LightsDropped)
 	}
 	for _, sc := range s.Scopes {
 		fmt.Fprintf(&b, "  %s %.2f ms\n", sc.Name, sc.MS)

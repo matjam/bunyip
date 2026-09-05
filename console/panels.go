@@ -153,7 +153,7 @@ func (c *Console) drawEngine(f Frame, area ui.Rect) {
 		}
 		u.Separator()
 		u.Label(fmt.Sprintf("2D: %d draws, %d vertices, %d culled", gs.Draws2D, gs.Vertices2D, gs.Culled2D))
-		u.Label(fmt.Sprintf("3D: %d draws, %d instances, %d culled", gs.Draws3D, gs.Instances, gs.Culled))
+		u.Label(fmt.Sprintf("3D: %d draws, %d instances, %d culled (%d occluded)", gs.Draws3D, gs.Instances, gs.Culled, gs.Occluded))
 		total := gs.Draws2D + gs.Draws3D
 		if s.DrawBudget > 0 {
 			u.Progress(fmt.Sprintf("draws %d of budget %d", total, s.DrawBudget), float32(total)/float32(s.DrawBudget))

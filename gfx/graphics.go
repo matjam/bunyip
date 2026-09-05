@@ -51,7 +51,8 @@ type Graphics struct {
 	linePipe      *render.Pipeline // debug lines over the 3D scene
 	dbgFont       *Font            // the built-in font, made on first use
 	dbgFontFailed bool
-	rec           recordScratch // long-lived arguments for the recording commands
+	occ           occlusionBuffer // the software occlusion depth buffer, reused every frame
+	rec           recordScratch   // long-lived arguments for the recording commands
 	viewport      vk.VkRect2D   // the main output's pixel rectangle; zero means the whole window
 	res           resources     // the live resources a debug view lists
 }
@@ -426,6 +427,10 @@ type FrameStats struct {
 	Draws3D    int // mesh draw calls after instancing, all passes
 	Instances  int // mesh instances drawn in the main pass
 	Culled     int // mesh draws outside the camera's view, skipped in the main pass
+	// Occluded counts the mesh draws inside the camera's view that the
+	// software occlusion buffer found behind an occluder, which is a
+	// subset of Culled. It is zero in a frame with no AddOccluder3D.
+	Occluded int
 	// ShadowDraws counts the mesh instances recorded into the shadow maps,
 	// summed over the cascades and the shadowed spot lights. A caster is
 	// only recorded into the maps its bounds reach, so this falls as

@@ -231,6 +231,14 @@ render pass, so text tests draw one frame.
   `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
   `Shader.VertexBounds`, whose zero means the draw is never culled.
   `Mesh.SetBounds` overrides the box and survives `Update`.
+- Occlusion culling (`gfx/occlude.go`) runs after the frustum test in
+  `prepareDraws`. `AddOccluder3D` meshes are rasterised into a CPU depth
+  buffer (256 by 144 by default) holding the nearest occluder depth per
+  pixel; a draw is culled when its bounding sphere's box is behind that
+  everywhere it covers. Triangles are clipped in clip space against the
+  near plane and the four sides first, so screen coordinates stay in the
+  buffer and the fixed-point edge functions cannot overflow. An occluded
+  draw is `culled` like any other, so it still casts shadows.
 - The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
   class, then depth for blended draws or dense shader, uniform, material
   set and mesh ids for opaque ones, and the draw's index in the low

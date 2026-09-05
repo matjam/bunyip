@@ -51,8 +51,11 @@ type drawQueue struct {
 	lights       lights2D     // this frame's 2D lights
 	lightsDirty  bool
 	shadows      bool         // some light this frame casts shadows
-	occluders    []lin.Vec2   // this frame's occluder polygons, run after run
-	occluderRuns []int32      // how many points each occluder has
+	occluders    []lin.Vec2 // this frame's 2D occluder polygons, run after run
+	occluderRuns []int32    // how many points each occluder has
+	// meshOccluders are the meshes AddOccluder3D marked as blocking the
+	// camera's view, rasterised into the software occlusion buffer.
+	meshOccluders []meshOccluder
 	shadowTex    *Texture     // the polar shadow maps, one row per light
 	shadowPix    []byte       // the strip's pixels, filled each frame
 	shadowDist   []float32    // one light's distances, reused across lights
@@ -84,6 +87,7 @@ func (q *drawQueue) reset() {
 	q.shadows = false
 	q.occluders = q.occluders[:0]
 	q.occluderRuns = q.occluderRuns[:0]
+	q.meshOccluders = q.meshOccluders[:0]
 	q.xform = lin.Identity2()
 	q.xforms = q.xforms[:0]
 }

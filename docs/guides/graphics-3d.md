@@ -482,6 +482,32 @@ aspect, `Camera.Frustum(aspect)` gives one for any camera, and
 `ContainsSphere(centre, radius)` and `ContainsBox(min, max)` are the
 tests.
 
+The frustum only knows what is outside the view. To skip what is inside
+it but hidden, mark the geometry that blocks the view with
+`AddOccluder3D(mesh, model)` or `AddOccluder3DAt(mesh, transform)`: a
+wall, a hill, a building's shell. Each frame the engine rasterises the
+occluders into a small depth buffer on the CPU and culls every draw
+whose bounding sphere lies entirely behind it.
+`FrameStats.Occluded` counts them, and they still cast shadows like any
+culled draw. Adding an occluder does not draw it, so draw the mesh too,
+or add a coarse box in place of geometry drawn in detail.
+
+Occluders must be opaque and closed enough that nothing shows through
+their triangles, so a fence whose gaps are a cutout texture is a bad
+one. Keep them few and low-poly, since every triangle is rasterised on
+the CPU and a mesh with more than `MaxOccluderTriangles` is ignored.
+`SetOcclusionSize(width, height)` sizes the buffer, 256 by 144 by
+default: a gap narrower than one of its pixels counts as covered, so
+raise it when a real gap is being missed and lower it when the test
+costs more than it saves. Fifty box occluders and a thousand draws cost
+around 170 microseconds a frame at the default size.
+
+```go
+// The castle wall hides most of the town behind it.
+gr.AddOccluder3DAt(g.wallBox, g.wallAt)   // a coarse box, not the wall's own mesh
+gr.DrawMeshAt(g.wall, stone, g.wallAt)
+```
+
 `NewLOD(meshes, distances)` takes meshes from finest to coarsest and the
 camera distances at which each hands over to the next, so three meshes
 take two distances. A nil last mesh draws nothing beyond the last
@@ -596,7 +622,8 @@ gr.DebugText3D(scout.Position, "scout")
 `FrameStats`: `Draws3D` is mesh draw calls after instancing across all
 passes, `Instances` is mesh instances in the main pass, `ShadowDraws` is
 the instances recorded into the shadow maps, `Culled` is the draws
-skipped as out of view, `Lights` and `LightsDropped` are the point and
+skipped as out of view and `Occluded` how many of those an occluder hid
+rather than the frustum, `Lights` and `LightsDropped` are the point and
 spot lights the frame kept and threw away, `Draws2D` and `Vertices2D`
 cover the sprite stream, and `Waits` counts the times the frame stopped
 for the GPU to go idle, which a running game keeps at zero. The F3

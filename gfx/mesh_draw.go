@@ -804,8 +804,9 @@ func boolFloat(b bool) float32 {
 }
 
 // prepareDraws resolves material sets and bounds, culls draws outside
-// the camera's view, sorts opaque draws for instancing and blended draws
-// back to front, and uploads the instance stream. Culled draws sort to
+// the camera's view and draws the frame's occluders hide, sorts opaque
+// draws for instancing and blended draws back to front, and uploads the
+// instance stream. Culled draws sort to
 // the end of their group and stay in the lists for the shadow pass,
 // which sees them from the light; q.visOpaque and q.visBlended count the
 // draws the camera sees at the front of each list. It runs before
@@ -815,12 +816,14 @@ func boolFloat(b bool) float32 {
 func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, blended drawList, err error) {
 	q.ensureCamera() // culling, sorting and the frame block share one view
 	view := q.camera.viewMatrix()
-	frustum := FrustumOf(q.camera.ViewProj(aspect))
+	viewProj := q.camera.ViewProj(aspect)
+	frustum := FrustumOf(viewProj)
 	env := q.light.Environment
 	if env != nil && env.cube == nil {
 		env = nil
 	}
-	culled := 0
+	occluding := g.rasteriseOccluders(q, viewProj)
+	culled, occluded := 0, 0
 	q.depthClamp = g.r.Device.DepthClamp()
 	q.hasCasters, q.casterAlong = false, 0
 	lightDir := q.light.Direction.Norm()
@@ -833,6 +836,9 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		d.depth = -view.MulPoint(d.centre).Z
 		d.blended = d.mat.blended()
 		d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
+		if occluding && d.cullable && !d.culled && g.occ.hides(viewProj, d.centre, d.radius) {
+			d.culled, occluded = true, occluded+1
+		}
 		if d.culled {
 			culled++
 		}
@@ -843,6 +849,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		}
 	}
 	g.stats.Culled += culled
+	g.stats.Occluded += occluded
 	all := q.sortDraws()
 	q.inst.reset()
 	for k := range all.len() {
