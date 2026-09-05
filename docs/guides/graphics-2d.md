@@ -584,6 +584,70 @@ g.fire.Update(ctx.Delta) // Update
 g.fire.Draw(gr)          // Draw
 ```
 
+### Hundreds of thousands at once
+
+`GPUSystem` runs the same `Emitter` over far more particles. It keeps
+each particle as a few numbers in parallel arrays, moves them with plain
+loops over those arrays, and draws the whole system as one instanced
+draw through `gfx.DrawParticles`, so no sprite is built and no vertices
+are written. `NewGPU` replaces `New`; everything else (`Update`, `Draw`,
+`SetPosition`, `Burst`, `Finished`) is the same, and the random stream
+matches the CPU path particle for particle, so switching between them
+does not change the effect. Raise `Emitter.Max`, which defaults to the
+1000 the CPU path assumes.
+
+On a desktop machine, two hundred thousand particles cost about 0.3 ms
+to simulate, 1.1 ms to pack into instance records and 1.8 ms to upload
+and draw, against about 15 ms to draw the same count through the sprite
+stream.
+
+```go
+e := particle.Rain()
+e.Max = 200_000
+e.Rate = 60_000
+g.storm = particle.NewGPU(e)
+
+g.storm.Update(ctx.Delta)
+g.storm.Draw(gr) // one instanced draw call
+```
+
+A batch takes the layer its emitter names and interleaves with the
+sprite stream by layer, so sprites on lower layers still draw under it;
+within one layer the particles draw over the sprites. Particles are
+drawn in the order the system holds them, without depth sorting, which
+is what additive effects want.
+
+Set `Emitter.Stateless` and the system keeps no per-particle state at
+all: every particle is a closed-form function of the seed, its index in
+the stream and the clock. Memory is then constant however many there
+are, the effect is identical on every run, it is already running at time
+zero with no `Prewarm`, and `SetClock` scrubs it to any time without
+simulating the gap. It suits the effects whose particles never interact:
+rain, snow, sparks, dust. The cost is per-particle work each frame, so a
+stateless emitter is slower per particle than a simulated one;
+`Burst`, `Prewarm`, `WorldSpace` and the radial and tangential
+accelerations do not apply to it.
+
+### Particles in the 3D scene
+
+`Draw3D` draws the same system as camera-facing quads in the 3D scene
+through `gfx.DrawParticles3D`: smoke over a battlefield, embers above a
+fire, snow through a forest. `SetPlane` says where the simulated plane
+sits in the world, so a particle at (x, y) lands at
+`origin + xAxis*x + yAxis*y`; the default puts it in the world's xy
+plane with the emitter's up (`-Y`, as on screen) pointing at the world's
+up. Sizes are then world units.
+
+The particles are drawn over the finished scene and are hidden by the
+geometry in front of them. The `soft` argument fades a particle out over
+that many world units as it approaches the surface behind it, which
+hides the hard line a quad otherwise cuts where it meets the ground.
+
+```go
+g.smoke.SetPlane(lin.V3(0, 0, -4), lin.V3(1, 0, 0), lin.V3(0, -1, 0))
+g.smoke.Draw3D(gr, 1.5) // fade over the last 1.5 units
+```
+
 ## Lights on sprites
 
 `SetLights2D` places an ambient colour and up to eight `Light2D` point
@@ -642,13 +706,48 @@ gr.ScreenSpace()
 gr.Draw(g.mini.Texture(), gfx.Sprite{Pos: lin.V2(ctx.Width-232, 12), Size: lin.V2(220, 124)})
 ```
 
-For a post effect, render the whole game into a render texture and draw
-it back as one sprite with a sprite shader on that draw, which gives a
-vignette, a CRT curve or a palette swap. `PostSettings` and its bloom,
-ambient occlusion and LUT grading apply to the 3D scene's HDR pass, not
-to 2D drawing. `RenderTexture.Read` copies the pixels back, and
-`ctx.Screenshot(path)` writes the whole frame to a PNG, which is what
-every example does with `-shot`.
+A render texture also gives a game its own post effect: render the whole
+game into one and draw it back as a single sprite with a sprite shader on
+that draw, for a CRT curve, a palette swap or anything else the engine's
+own post pass does not offer. `RenderTexture.Read` copies the pixels
+back, and `ctx.Screenshot(path)` writes the whole frame to a PNG, which
+is what every example does with `-shot`.
+
+## Post-processing on a 2D frame
+
+A frame with no 3D draws in it goes straight to the screen and skips the
+post pass, which is what a 2D game usually wants and costs nothing. Set
+`PostSettings.Post2D` to send it through the composite instead:
+
+```go
+p := gfx.PostSettings{
+	Post2D: true, Exposure: 1, Saturation: 1.1, Contrast: 1,
+	Bloom: 0.3, BloomThreshold: 0.9, Vignette: 0.3,
+	Aberration: 0.6, Grain: 0.03,
+}
+gr.SetPost(p)
+```
+
+Bloom, the vignette, saturation and contrast, the LUT grade, chromatic
+aberration, lens distortion, lens ghosts, film grain and FXAA all apply.
+The effects that need a depth buffer or a velocity buffer do not:
+ambient occlusion, depth of field, motion blur, temporal anti-aliasing
+and god rays stay off however they are set.
+
+Two things to know about the mode. Exposure and tone mapping are skipped,
+so a frame with `Post2D` on and nothing else turned up comes back with
+the colours the game drew; that also means bloom needs
+`BloomThreshold` below 1 to catch anything, since 2D colours are already
+inside the displayable range. And `Saturation` and `Contrast` are
+absolute values whose zero drains the frame, so start from
+`gfx.DefaultPost()` or write both as 1, the way the example above does.
+FXAA follows `NoAntiAlias` as it does in 3D; a game of hard-edged pixel
+art wants `NoAntiAlias: true`.
+
+Post applies to everything in the frame, including text and the interface,
+because there is one image and one grade. The
+[sprites example](https://github.com/matjam/bunyip/tree/main/examples/sprites)
+puts this on the P key.
 
 ## Shaders
 

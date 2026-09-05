@@ -465,17 +465,21 @@ type meshDraw struct {
 	mesh  *Mesh
 	mat   Material
 	model lin.Mat4
+	// prev is the model matrix the draw had last frame and moved says the
+	// game supplied one. The velocity pass draws only what moved.
+	prev  lin.Mat4
+	moved bool
 	set   vk.VkDescriptorSet
 	// samplers packs the sampler index of each of the material set's
 	// eleven texture slots, two bits apiece, for the instance stream.
-	samplers   float32
-	shader     *Shader // never nil once queued
-	uniform    int32   // arena offset of the shader's uniforms, -1 for none
-	depth      float32 // view-space distance for transparency sorting
-	blended    bool    // mat.blended(), resolved once by prepareDraws for the sort
-	oit        bool    // blended and drawn in the order-independent pass
-	culled     bool    // outside the camera's view; drawn only into shadows
-	skinned bool
+	samplers float32
+	shader   *Shader // never nil once queued
+	uniform  int32   // arena offset of the shader's uniforms, -1 for none
+	depth    float32 // view-space distance for transparency sorting
+	blended  bool    // mat.blended(), resolved once by prepareDraws for the sort
+	oit      bool    // blended and drawn in the order-independent pass
+	culled   bool    // outside the camera's view; drawn only into shadows
+	skinned  bool
 	// shell is 0 for the mesh itself and rises to 1 on the outermost fur
 	// shell, which stands ShellLength world units off the surface.
 	shell      float32
@@ -523,6 +527,10 @@ type meshInstance struct {
 	spec [4]float32 // specular colour, specular strength
 	irid [4]float32 // iridescence strength, film ior, thickness minimum and maximum in nm
 	fur  [4]float32 // anisotropy strength, its rotation; a shell's offset in world units and its height
+	// prevModel is the model matrix's three rows as they were last frame,
+	// read by the velocity pass alone. The lit and shadow programs do not
+	// declare it; it only has to be in the stride they share.
+	prevModel [3]lin.Vec4
 	// morph names the draw's morph targets in its model's delta buffer: x
 	// the first element of the mesh's block, y the vertices in a target, z
 	// how many of morphW and morphIdx are in use. A zero z is a draw with
@@ -534,7 +542,7 @@ type meshInstance struct {
 	morphIdx [2]uint32
 }
 
-const meshInstanceSize = 296
+const meshInstanceSize = 344
 
 // blended reports whether a material draws after the opaque scene. The
 // receiver is a pointer because Material is large and this sits in the

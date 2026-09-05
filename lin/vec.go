@@ -112,6 +112,10 @@ func (a Vec4) Vec3() Vec3 { return Vec3{a.X, a.Y, a.Z} }
 // Radians converts degrees.
 func Radians(deg float32) float32 { return deg * math.Pi / 180 }
 
+// Degrees converts radians, for showing an angle to a person: the
+// engine's own angles are radians throughout.
+func Degrees(rad float32) float32 { return rad * 180 / math.Pi }
+
 // Clamp limits v to [lo, hi].
 func Clamp(v, lo, hi float32) float32 { return min(max(v, lo), hi) }
 

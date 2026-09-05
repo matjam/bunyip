@@ -93,6 +93,11 @@ against the 2D camera by the sprite's own corners and under the
 transform stack, a sort key within a layer (`SetSortKey`), camera
 follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
+So are GPU-instanced particles: `particle.GPUSystem` simulates over
+parallel arrays and draws through `gfx.DrawParticles` in 2D or
+`gfx.DrawParticles3D` in the scene, interleaved with the sprite stream
+by layer, with a soft depth fade in 3D and a stateless mode that keeps
+no per-particle state at all.
 
 - 2D shadows are cast by the occluder outlines a frame adds, not by the
   sprites themselves: nothing derives an occluder from a sprite's alpha,
@@ -105,15 +110,25 @@ follow, clamp and shake on `Camera2D`, tiled nine-slices,
   staggered grid a hexagonal map uses. `Map.Layout` gives it `Square`,
   which matches the wrong cells; only orthogonal, isometric and
   hexagonal maps have a layout that fits.
-- Post-processing on a 2D-only frame. Bloom, ambient occlusion,
-  vignette, the LUT and FXAA all run in the composite pass, which
-  `renderQueue` skips when the frame has no 3D draws, no background and
-  no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
-  `RenderTexture` and blits it with its own sprite shader instead.
-- GPU-instanced particles for very large counts; the system is CPU
-  simulated and drawn through the sprite stream, which is fine for
-  thousands.
-- A particle editor in the gallery.
+- A 2D frame that goes through the post pass pays for a second image
+  and a full-screen copy: `PostSettings.Post2D` draws the 2D stream into
+  the LDR image and composites from there, rather than colouring the
+  stream in place. Ambient occlusion, depth of field, motion blur,
+  temporal anti-aliasing and god rays need a depth buffer a 2D frame
+  does not have, so they stay off in that mode.
+- Stateless emitters are evaluated on the CPU, not in the vertex shader.
+  Every particle is a closed form of its seed and the clock, so the
+  vertex program could compute it from `gl_InstanceIndex` and upload
+  nothing at all; that needs a third pipeline and the emitter's curves
+  in a uniform block. Radial and tangential acceleration have no closed
+  form and would stay unsupported either way.
+- Instanced particles are drawn in the order the system holds them, with
+  no depth sort, in 2D or 3D. Additive effects do not care; a game with
+  overlapping alpha-blended particles orders the slice itself.
+- 3D particles are not lit and cast no shadows.
+- The gallery's particle editor edits one emitter at a time and previews
+  it in 2D. It does not show the instanced or the 3D path, chain several
+  emitters into one effect, or preview against a game's own background.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.
 
@@ -160,8 +175,10 @@ and point lights with shadows, per-light culling in the shadow pass,
 clustered forward lighting for a thousand lights a frame, a chunked
 `Terrain` with per-chunk levels of detail, a splat map and height, normal
 and ray queries, heightfield and primitive meshes, dynamic mesh updates,
-colour grading LUTs, and nearest or repeating sampling for render
-textures are in.
+colour grading LUTs, multisampling of the scene pass, render textures
+that choose their colour format, their depth and their own sample count
+and can be read back as pixels or as depth, and per-frame buffers that
+grow without ever idling the GPU are in.
 
 - Soft shadows beyond the fixed nine-tap filter: no contact hardening,
   and a cube face's filter is clamped inside the face, so a point light's
@@ -203,20 +220,39 @@ textures are in.
   and what is off screen or hidden falls back to the probe or the
   environment. There is no temporal accumulation, so a rough surface's
   rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
-- Volumetrics: god rays, and light shafts through a medium. Fog is a
-  per-pixel fade, and `Sky.Atmosphere` scatters single bounces only, so
-  neither casts a shaft.
-- Temporal anti-aliasing and MSAA; FXAA is the only option.
-- Depth of field, motion blur and lens effects.
+- Volumetrics: light shafts through a medium. Fog is a per-pixel fade,
+  `Sky.Atmosphere` scatters single bounces only, and the god rays are a
+  screen-space radial blur over the depth buffer's sky mask, so none of
+  the three casts a shaft through anything.
 - Order-independent transparency is the weighted blended approximation
   (`PostSettings.OrderIndependent`), so a deep stack of layers comes out
   flatter than compositing them in order would, and transmissive draws
   stay sorted. Per-pixel lists or depth peeling would be exact.
-- Render texture options beyond sampling: colour format, no depth,
-  multisampling, and reading the depth back. Post settings are also one
-  set for the whole frame, read when it ends rather than when `DrawTo`
-  queued the pass, so two render textures in one frame cannot be graded
-  differently.
+- Post settings are one set for the whole frame, read when it ends
+  rather than when `DrawTo` queued the pass, so two render textures in
+  one frame cannot be graded differently.
+- The order-independent transparency pass is single-sample, so its edges
+  are as hard as at one sample whatever `PostSettings.Samples` asks for,
+  and multisampling smooths only what is opaque behind them.
+- Motion vectors come from a pass of their own rather than from a second
+  colour attachment on the HDR pass, so a frame with moving meshes in it
+  rasterises their geometry twice. Multiple render targets in
+  `internal/render` would let the lit pass write them as it goes.
+- A moving mesh has to say so: `DrawMeshMoved` and its companions take
+  the transform the draw had last frame, because immediate-mode drawing
+  has no identity across frames. A mesh that moves and is drawn through
+  plain `DrawMesh` softens under temporal anti-aliasing and does not
+  blur along its own path.
+- A skinned mesh's motion vectors carry its model matrix and not its
+  pose, so a limb swinging in place has none. Keeping the previous
+  frame's joint matrices would fix it and would double the joint buffer.
+- Depth of field gathers one disc at full resolution rather than a
+  half-resolution near and far layer, so a very wide bokeh costs more
+  than it should and a bright out-of-focus highlight does not bloom into
+  the shape of the aperture.
+- Motion blur gathers along each pixel's own vector, with no tile-max
+  pass to dilate a fast object's blur past its silhouette, so an object
+  smears inside its own outline and leaves no trail behind it.
 - Culling a draw that was queued on its own is by bounding sphere and
   costs one test each; only the geometry a game puts in a
   `NewStaticBatch` is behind a hierarchy, and the hierarchy is built
@@ -298,7 +334,7 @@ splits, tabs, tables, trees, menus, modals, draggable windows, radios,
 integer sliders, spinners, list boxes, colour pickers, images, icon
 buttons, rich labels with links, arrow-key navigation inside lists,
 tables, trees, tabs, radios and dropdowns, drag and drop, reorderable
-lists, and an accessibility tree are in.
+lists, curve editors, and an accessibility tree are in.
 
 - Handing the accessibility tree to a platform screen reader. The tree
   exists; the bridge to VoiceOver and its counterparts does not.
@@ -412,16 +448,29 @@ listed by the engine panel and totalled by the F3 overlay.
 
 ## Quality and process
 
+The examples are compared against stored images, not merely run:
+`examples/examples_test.go` runs each one under `BUNYIP_HEADLESS=1` and
+`BUNYIP_FIXED_CLOCK=1`, downscales the frame to 320 wide and checks it
+against `examples/testdata/<name>.png` by a mean difference over the
+frame and a tighter comparison of both frames blurred, writing the
+frame, the stored image and a diff to a temporary directory when they
+disagree. `-update` rerecords them and `-update -docs` also rewrites the
+walkthrough screenshots from the same run.
+
 - Hardware verification on Windows, of the Linux audio and gamepad
   layers, and of the Linux window layer beyond the one desktop it has
   run on; a GPU matrix in CI.
-- Screenshot comparison for the examples. `examples/examples_test.go`
-  runs each one headless (`BUNYIP_HEADLESS=1`) and checks that it drew
-  something, but not what.
-- Regenerating the example screenshots in `docs/examples/` is manual.
-  The test in `cmd/bunyip-docs` catches a walkthrough whose excerpts have
-  drifted from the source, but nothing notices when a committed
-  screenshot no longer shows what the example draws.
+- The walkthrough screenshots in `docs/examples/` are still rewritten by
+  hand in practice. The test can write them (`-update -docs`), but it
+  writes what a 1.5 second run draws, which is not always the moment
+  that shows an example best, so they are not regenerated wholesale.
+- The comparison runs on one machine's GPU. The tolerances are set for a
+  frame redrawn on the same driver; a different driver may need them
+  loosened, and nothing yet records a golden per driver.
+- `examples/assets` has no stored image: it counts its runs in a save
+  file, draws the count, and rewrites its own images on disk as it goes,
+  so its frame is never the same twice. It is still run and checked for
+  having drawn something.
 - Longer fuzzing campaigns. Every parser (glTF, the sound decoders, the
   tracker loaders, HDR, atlases, Aseprite files, rich text, Tiled maps
   and tilesets in both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its

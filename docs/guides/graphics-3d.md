@@ -706,6 +706,18 @@ five hundred trees are one call. `DrawText3D(font, text, pos, scale,
 color, onTop, opts)` draws a line of text the same way, centred on
 `pos`, with `scale` in world units per view unit of the font.
 
+For the many small quads an effect needs rather than the few a scene
+places by hand, `DrawParticles3D(tex, quads, opts)` draws a whole slice
+of camera-facing quads as one instanced call: smoke, embers, snow,
+magic. It runs over the finished scene, after decals, so the geometry in
+front hides them, and `opts.Soft` fades a particle out over that many
+world units as it nears the surface behind it, which hides the hard line
+a quad otherwise cuts where it meets the ground. `opts.Blend` picks the
+blend mode. The particles are neither lit nor depth sorted against each
+other, so unlit and additive effects suit them. The `particle` package
+fills the slice: `GPUSystem.Draw3D` simulates an `Emitter` and hands the
+result straight to this call. See the 2D graphics guide for the emitter.
+
 `DrawDecal(tex, box, tint)` projects a texture onto whatever geometry
 lies inside a box, for bullet holes, blood, footprints and road
 markings. The box matrix maps the unit cube to the world, the texture
@@ -882,6 +894,35 @@ darkening creases and contact points, 0 to 1 with a default of 0.6, over
 buffer instead of the scene while you tune it. `Vignette`, `Saturation`
 and `Contrast` are the grade, and `NoAntiAlias` skips the FXAA pass.
 
+`Samples` multisamples the scene pass: 1 (the default), 2, 4 or 8,
+clamped to what the GPU supports, which `Graphics.MaxSamples` reports.
+Every triangle edge is then resolved from that many coverage samples,
+which is the one anti-aliasing that does not blur the picture, at the
+cost of that many times the scene's colour and depth memory and
+bandwidth. Shading still runs once a pixel, so the cost is in the
+attachments rather than in the fragment programs. Set `NoAntiAlias` with
+it: FXAA over an already resolved image only softens it again.
+`TemporalAA` is the other choice and resolves the same edges over time,
+so the two are alternatives rather than a pair: leave `Samples` at 1 when
+it is on.
+
+```go
+p := gfx.DefaultPost()
+p.Samples, p.NoAntiAlias = 4, true
+gr.SetPost(p)
+```
+
+Changing `Samples` rebuilds the scene targets and the pipelines that draw
+into them at the start of the next frame, so it belongs in a settings
+menu rather than in a per-frame update. Everything after the scene pass
+reads the resolved single-sample images, so ambient occlusion, decals,
+reflections and the transmission snapshot behave the same at every sample
+count; the depth they read is sample zero of each pixel, which is exact
+except on an edge, where it is one of the surfaces covering it. The
+order-independent transparency pass keeps its own two images at one
+sample and tests against that resolved depth, so translucent edges stay
+as hard as they are at one sample while everything opaque smooths.
+
 `PostSettings.LUT` grades the finished colours through a lookup table.
 `NeutralLUT(n)` returns the identity strip of n slices (16 or 32 are
 usual); paste it into a corner of a screenshot, grade that in an image
@@ -900,7 +941,102 @@ gr.SetPost(p)
 Post applies to the 3D scene, not to the 2D drawn over it. A HUD is not
 bloomed, tone-mapped or graded. That keeps text readable, and it
 explains why a sprite over the scene can look brighter than the scene
-does. The `lighting` example puts all of these on sliders.
+does. A frame with no 3D draws in it can go through the composite as
+well; see [2D graphics](graphics-2d.html). The `lighting` example puts
+all of these on sliders.
+
+### Temporal anti-aliasing
+
+`TemporalAA` averages each frame with the ones before it. The projection
+moves by a fraction of a pixel each frame along a Halton sequence, so
+successive frames sample a different point inside every pixel, and the
+resolve blends the last resolved frame into this one after reprojecting
+it. `TemporalBlend` is how much of the new frame goes in, 0.02 to 1;
+zero means 0.1, and lower is steadier and softer. It replaces FXAA while
+it is on, so `NoAntiAlias` does not apply.
+
+Reprojection needs to know where every pixel was last frame. The camera's
+part comes from the depth buffer. An object's own motion has to be told,
+because immediate-mode drawing has no identity across frames to look a
+previous transform up by:
+
+```go
+gr.DrawMeshMoved(ship, shipMat, at(now), at(before))
+```
+
+`DrawMeshMoved`, `DrawSkinnedMoved`, `DrawModelMoved` and
+`DrawModelAnimatedMoved` each take the transform the draw had last
+frame; the two model forms take a `MaterialOverride` after it, as
+`DrawModelWith` does, and nil draws the file's own materials. Plain `DrawMesh` says the mesh did not move, which is what a
+static scene wants and what costs nothing: a frame where nothing moved
+draws nothing into the velocity buffer. A moving mesh drawn through
+`DrawMesh` still resolves, because the neighbourhood clamp will not let
+the history stray far from the pixels around it, but it softens while it
+moves. A skinned mesh carries its model matrix's motion and not its
+pose's, so a character walking across the screen reprojects and an arm
+swinging in place does not.
+
+### Depth of field, motion blur and god rays
+
+`FocusDistance` is how far in front of the camera the image is sharp, in
+world units; zero turns depth of field off. `FocusRange` is how far
+either side of it stays sharp before the blur grows, and how far past
+that the blur reaches its full width; zero means a quarter of the focus
+distance. `BokehRadius` is that full width in pixels of a 1080-high
+frame (zero means 12) and `BokehSamples` how many taps the disc gathers
+(zero means 16). A wide bokeh wants more of them: the disc is the same
+in every pixel, so too few taps over a large radius leave a visible
+pattern on fine detail. Turning the disc per pixel would break that into
+noise, but it scatters the texture fetches and costs about three times
+as much, so raising `BokehSamples` is the better trade.
+
+`MotionBlur` smears each pixel back along the way it moved since the last
+frame, 0 to 1; zero is off, and `MotionSamples` is how many taps it takes
+(zero means 8). It reads the same velocity buffer, so an object blurs
+along its own path only when it was drawn with one of the `Moved` calls;
+the camera's motion always works.
+
+`GodRays` is the strength of the shafts the directional light throws past
+an occluder. Each pixel walks towards the sun's place on screen through
+the depth buffer, gathering the steps where the sky shows through:
+`GodRayDecay` is how fast a shaft fades along its length (zero means
+0.96), `GodRayDensity` how far towards the sun the walk goes (zero means
+0.6) and `GodRaySamples` how many steps it takes (zero means 32). The
+pass is skipped when the sun is beside or behind the camera, and an
+orthographic camera has no sun position to walk towards, so it gets none.
+
+### The lens
+
+Four settings model the camera rather than the scene, and all four happen
+inside the composite, so together they cost about as much as a fifth of
+the bloom.
+
+`Aberration` splits the red and blue channels apart towards the edge of
+the frame; 1 is about three pixels at the edge of a 1080-wide frame and
+0.5 is a subtle fringe. `Distortion` bends the image about the centre,
+positive for barrel and negative for pincushion. `Ghosts` draws the
+bright pass mirrored through the centre a few times over, the reflections
+a lens makes of a bright light, and needs `Bloom` above zero because that
+is the image it reads. `Grain` adds per-pixel noise that moves each
+frame; 0.05 is subtle. Every one of them is off at zero.
+
+```go
+p := gfx.DefaultPost()
+p.TemporalAA, p.TemporalBlend = true, 0.1
+p.FocusDistance, p.FocusRange, p.BokehRadius = 12, 4, 16
+p.MotionBlur = 0.5
+p.GodRays = 0.8
+p.Aberration, p.Distortion, p.Grain = 0.6, 0.15, 0.03
+gr.SetPost(p)
+```
+
+Roughly, at 1280 by 720 on an RTX 4090, over a frame that costs 40
+microseconds with none of them on: the lens effects together 3, bloom
+and FXAA 14 each, god rays 20, motion blur 24, ambient occlusion 32,
+temporal anti-aliasing 35 and depth of field 42. `BenchmarkPost` in the
+`gfx` package measures them; the numbers are best of five over a scene
+of two dozen instanced cubes, so they are the passes' own cost rather
+than a game's, and they move by a few microseconds between runs.
 
 ## Render textures
 
@@ -913,6 +1049,39 @@ the texture, with its own camera and its own lighting. It renders before
 the main frame, so the result can be drawn in the same frame.
 `RenderTexture.Texture()` is the texture to draw with, `SetView` sets its
 2D coordinate space, and `Read` copies the pixels back.
+
+`RenderTextureOptions` also chooses what the surface is made of.
+`Format` picks the colour format: `ColorScreen` matches the window, eight
+bits a channel with sRGB encoding, and is the default; `ColorHDR` is
+sixteen-bit floating point RGBA, so values above 1 survive into whatever
+reads the texture; `ColorMask` is one eight-bit channel, for a mask, a
+height field or a coverage buffer. `NoDepth` leaves out the depth buffer
+of the surface's own pass, which nothing tests against, and saves the
+memory; a 3D scene drawn into it still works, because the scene has a
+depth buffer of its own. `Samples` multisamples the surface itself, so
+every edge drawn into it, 2D paths and triangles included, is resolved
+from that many coverage samples; it is separate from
+`PostSettings.Samples`, which multisamples the 3D scene behind the
+composite, here as on screen.
+
+`Read` decodes whatever format the surface was made with: a `ColorHDR`
+surface comes back encoded the way the screen is, so values above 1 clip,
+and a `ColorMask` surface comes back as grey. `ReadDepth` returns the
+depth the last 3D scene left, one float a pixel from the top-left corner,
+0 at the near plane and 1 at the far plane. Both wait for the GPU and
+copy the whole image to the host, so they belong in tools, tests and
+one-off queries rather than in a frame.
+
+```go
+// A mask for a fog-of-war lookup: one channel, no depth, cheap to sample.
+mask, err := gr.NewRenderTextureOptions(256, 256, gfx.RenderTextureOptions{
+	Format: gfx.ColorMask, NoDepth: true,
+})
+// A portrait with smooth edges on its own vector frame.
+portrait, err := gr.NewRenderTextureOptions(512, 512, gfx.RenderTextureOptions{
+	Samples: 4,
+})
+```
 
 ```go
 // A minimap: the same world from straight above, drawn as a sprite.
@@ -990,8 +1159,9 @@ shadowed spot light is another pass and every shadowed point light is
 six; lights, which are per-fragment work over the part of the view their
 range reaches; transmission, which copies the scene before
 drawing transmissive meshes; post, where ambient occlusion and bloom are
-full-screen passes a zero turns off; and render textures, which are
-whole extra frames.
+full-screen passes a zero turns off; multisampling, which multiplies the
+scene's colour and depth bandwidth by its sample count; and render
+textures, which are whole extra frames.
 
 Transparency sorts by distance to the camera per draw, not per triangle,
 so two blended meshes that interpenetrate pick an order and keep it, and

@@ -199,10 +199,10 @@ type Material struct {
 	// the strength by its red channel and IridescenceThicknessImage
 	// places the thickness between the two by its green channel; each is
 	// -1 when the file gives none.
-	IridescenceFactor       float32
-	IridescenceIOR          float32
-	IridescenceThicknessMin float32
-	IridescenceThicknessMax float32
+	IridescenceFactor         float32
+	IridescenceIOR            float32
+	IridescenceThicknessMin   float32
+	IridescenceThicknessMax   float32
 	IridescenceImage          int
 	IridescenceThicknessImage int
 

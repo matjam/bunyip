@@ -9,16 +9,29 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	stream       stream2D
-	draws        []meshDraw
-	order        []int32  // draws in draw order, as indices into draws
-	keys         []uint64 // each draw's packed sort key, the sort's working set
-	shaderIDs    idTable  // dense ids for the sort key
-	uniformIDs   idTable
-	setIDs       idTable
-	meshIDs      idTable
-	shadowVis    []bool // draws that reach the shadow map being recorded
-	cascadeMats  [shadowCascades]lin.Mat4
+	stream      stream2D
+	draws       []meshDraw
+	order       []int32  // draws in draw order, as indices into draws
+	keys        []uint64 // each draw's packed sort key, the sort's working set
+	shaderIDs   idTable  // dense ids for the sort key
+	uniformIDs  idTable
+	setIDs      idTable
+	meshIDs     idTable
+	shadowVis   []bool // draws that reach the shadow map being recorded
+	cascadeMats [shadowCascades]lin.Mat4
+	// jitter is this frame's sub-pixel projection offset in clip units,
+	// zero unless temporal anti-aliasing is on, and projJ, viewProjJ and
+	// invViewProjJ are the matrices the scene pass rasterises with once it
+	// is applied. prevViewProj is the previous frame's view-projection
+	// without the jitter, which the velocity and resolve passes measure
+	// motion against; hasPrevVP says a previous frame exists.
+	jitter       lin.Vec2
+	projJ        lin.Mat4
+	viewProjJ    lin.Mat4
+	invViewProjJ lin.Mat4
+	prevViewProj lin.Mat4
+	hasPrevVP    bool
+	hasMoved     bool    // some draw this frame carries a previous transform
 	depthClamp   bool    // the shadow pipelines clamp depth rather than clip
 	hasCasters   bool    // casterAlong holds a value
 	casterAlong  float32 // how far the furthest caster is against the light
@@ -39,6 +52,10 @@ type drawQueue struct {
 	joints       []lin.Mat4 // joint matrices for skinned draws this frame
 	jointBuf     *render.StorageSets
 	clear        Color
+	// out is the attachment set of the pass this queue's composite and 2D
+	// stream land in: the zero value for the screen, a render texture's
+	// own colour format, depth and sample count otherwise.
+	out          outKey
 	viewW        float32
 	viewH        float32
 	pixelW       float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)
@@ -72,6 +89,7 @@ type drawQueue struct {
 	skyCached    skyKey       // the sky whose harmonics are in skySH
 	skySH        [9]lin.Vec4
 	lines        lineStream         // debug lines drawn over the 3D scene
+	parts        particleStream     // instanced particles, 2D and 3D
 	probes       []*ReflectionProbe // this frame's reflection probes
 	grid         *LightProbeGrid    // this frame's irradiance grid, nil for none
 }
@@ -81,6 +99,7 @@ func (q *drawQueue) reset() {
 	q.draws = q.draws[:0]
 	q.decals = q.decals[:0]
 	q.lines.reset()
+	q.parts.reset()
 	q.points = q.points[:0]
 	q.probes = q.probes[:0]
 	q.grid = nil
@@ -109,6 +128,7 @@ func (q *drawQueue) destroy() {
 	q.stream.destroy()
 	q.inst.destroy()
 	q.lines.destroy()
+	q.parts.destroy()
 	if q.shadowTex != nil {
 		q.shadowTex.Destroy()
 		q.shadowTex = nil

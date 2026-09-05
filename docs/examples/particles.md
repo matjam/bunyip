@@ -1,14 +1,15 @@
 ---
 title: Particles
 example: particles
-summary: a campfire of fire and smoke, rain, sparks on click and confetti on Space, with a panel that retunes the fire while it burns
+summary: a campfire of fire and smoke, instanced rain, sparks on click and confetti on Space, with a panel that retunes the fire while it burns
 ---
 
 This program is a tour of the [particle](../pkg/particle.html) package.
-Four systems run at once: a campfire of fire and smoke, rain falling from
-a line above the screen, sparks fired where the mouse is clicked, and a
-confetti burst on Space. A panel of sliders changes the fire's emission
-rate and gravity while it is burning.
+Four systems run at once: a campfire of fire and smoke, thousands of
+raindrops falling from a line above the screen as one instanced draw,
+sparks fired where the mouse is clicked, and a confetti burst on Space.
+A panel of sliders changes the fire's emission rate and gravity while it
+is burning.
 
 The particle package is a 2D effects layer over the sprite drawing in
 [gfx](../pkg/gfx.html). An `Emitter` is a plain value describing what to
@@ -20,6 +21,13 @@ emitters already filled in, and a program changes the fields it cares
 about. The panel comes from [ui](../pkg/ui.html); see
 [the interface guide](../guides/ui.html) for that half.
 
+The rain is the exception: it runs on a `GPUSystem`, which takes the same
+`Emitter` but keeps its particles in parallel arrays and draws the whole
+storm as one instanced call rather than a sprite each. Its emitter is
+also `Stateless`, so nothing at all is kept between frames: every drop is
+a closed form of the seed, its index in the stream and the clock. Pass
+`-drops 200000` and the storm still draws in one call.
+
 Run it:
 
 ```bash
@@ -27,9 +35,9 @@ go run ./examples/particles -seconds 3 -shot out.png
 ```
 
 The flags are `-seconds N` to quit after that long, `-shot file.png` to
-write a screenshot halfway through the run, and `-headless` to render
-without a window. Escape quits, a left click throws sparks, and Space
-pops confetti.
+write a screenshot halfway through the run, `-headless` to render
+without a window, and `-drops N` for the size of the instanced storm.
+Escape quits, a left click throws sparks, and Space pops confetti.
 
 ## Package and state
 
@@ -63,14 +71,17 @@ import (
 type game struct {
 	seconds float64
 	shot    string
+	drops   int
 
-	font     *gfx.Font
-	ui       *ui.Context
-	soft     *gfx.Texture
-	fireE    particle.Emitter
-	fire     *particle.System
-	smoke    *particle.System
-	rain     *particle.System
+	font  *gfx.Font
+	ui    *ui.Context
+	soft  *gfx.Texture
+	fireE particle.Emitter
+	fire  *particle.System
+	smoke *particle.System
+	// The rain is a GPUSystem rather than a System: tens of thousands of
+	// drops as one instanced draw call rather than one sprite each.
+	rain     *particle.GPUSystem
 	sparks   *particle.System
 	bursts   []*particle.System // confetti pops, dropped once Finished
 	fireRate float32
@@ -137,11 +148,17 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	smoke.Layer = 1
 	g.smoke = particle.New(smoke)
 
+	// Rain through the instanced path. Stateless means no per-particle
+	// state is kept at all: every drop is a closed form of the seed, its
+	// index and the clock, so the storm is already falling at time zero
+	// with no Prewarm and costs the same memory at any size.
 	rain := particle.Rain()
 	rain.Position = lin.V2(-40, -20)
 	rain.Shape = particle.Line(lin.V2(ctx.Width+80, 0))
-	rain.Prewarm = 2
-	g.rain = particle.New(rain)
+	rain.Stateless = true
+	rain.Max = g.drops
+	rain.Rate = float32(g.drops) / 1.6 // the rate that fills Max over a lifetime
+	g.rain = particle.NewGPU(rain)
 
 	sparks := particle.Sparks()
 	sparks.Burst = 0 // only on click
@@ -286,7 +303,8 @@ game's own text.
 	for _, b := range g.bursts {
 		alive += b.Alive()
 	}
-	gr.DebugText(12, ctx.Height-28, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
+	gr.DebugText(12, ctx.Height-46, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
+	gr.DebugText(12, ctx.Height-28, fmt.Sprintf("%d of them are stateless rain, drawn as one instanced call.", g.rain.Alive()))
 ```
 
 ## Draw: the panel
@@ -335,9 +353,10 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	headless := flag.Bool("headless", false, "render without a window, for screenshots")
+	drops := flag.Int("drops", 3000, "raindrops in the instanced storm; try 200000")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
-		&game{seconds: *seconds, shot: *shot})
+		&game{seconds: *seconds, shot: *shot, drops: max(*drops, 1)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "particles:", err)
 		os.Exit(1)

@@ -885,7 +885,15 @@ func (g *Graphics) DrawModelAnimated(m *Model, t Transform, p *AnimPlayer) {
 // so a posed character can be drawn in a team colour or with one part
 // swapped. A nil override draws the file's materials.
 func (g *Graphics) DrawModelAnimatedWith(m *Model, t Transform, p *AnimPlayer, override MaterialOverride) {
-	world := t.Matrix()
+	g.DrawModelAnimatedMoved(m, t, t, p, override)
+}
+
+// DrawModelAnimatedMoved is DrawModelAnimatedWith for a model that
+// moved: prev is the transform it was drawn with last frame, which the
+// velocity buffer carries for temporal anti-aliasing and motion blur.
+// The pose's own motion is not carried; see DrawSkinnedMoved.
+func (g *Graphics) DrawModelAnimatedMoved(m *Model, t, prev Transform, p *AnimPlayer, override MaterialOverride) {
+	world, was := t.Matrix(), prev.Matrix()
 	for _, mm := range m.morphs {
 		if w := p.MorphWeights(mm.node); w != nil {
 			_ = mm.set(w)
@@ -898,10 +906,13 @@ func (g *Graphics) DrawModelAnimatedWith(m *Model, t Transform, p *AnimPlayer, o
 		d := meshDraw{morph: m.morphOf[part.Mesh], morphSet: set}
 		if part.Mesh.skinned && part.skin >= 0 {
 			joints = p.jointMatrices(part.skin, joints[:0])
-			g.drawSkinned(part.Mesh, mat, world, joints, d)
+			g.drawSkinned(part.Mesh, mat, world, was, joints, d)
 			continue
 		}
-		d.mesh, d.mat, d.model = part.Mesh, mat, world.Mul(p.NodeMatrix(part.node))
+		node := p.NodeMatrix(part.node)
+		d.mesh, d.mat = part.Mesh, mat
+		d.model, d.prev = world.Mul(node), was.Mul(node)
+		d.moved = d.prev != d.model
 		g.queueMesh(d)
 	}
 }

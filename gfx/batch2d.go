@@ -44,11 +44,23 @@ type item2D struct {
 	first, count int32
 	layer        int32
 	key          float32 // order within the layer; equal keys keep submission order
+	// breaks says an instanced particle batch was submitted just before
+	// this run, so it must start a draw of its own however well it
+	// matches the one before: the batch is recorded between them.
+	breaks bool
 }
 
 type draw2D struct {
 	state        state2D
 	first, count uint32
+	// layer is the layer of the run's first item, which is its lowest
+	// because items are in layer order by the time draws are built.
+	// seq is that item's offset in the stream as submitted, which orders
+	// it against everything else submitted in the same layer. flush2D
+	// uses the pair to interleave instanced particles, which carry the
+	// same two numbers.
+	layer int32
+	seq   int32
 }
 
 // stream2D collects a queue's 2D vertices for a frame and turns them into
@@ -69,6 +81,10 @@ type stream2D struct {
 	projs      []lin.Mat4 // projections referenced this frame, at stable addresses
 	sorted     bool
 	keyed      bool // some item has a sort key, so layers need an inner sort
+	// breakRun stops the next run merging into the last one, which the
+	// instanced particle path sets so a batch can be recorded between
+	// two sprite draws that would otherwise become one.
+	breakRun bool
 }
 
 const initialVertexCapacity = 6 * 4096
@@ -102,14 +118,19 @@ func (s *stream2D) proj(m lin.Mat4) *lin.Mat4 {
 func (s *stream2D) add(st state2D, layer int32, key float32, verts []vertex2D) {
 	first := int32(len(s.verts))
 	s.verts = append(s.verts, verts...)
-	if n := len(s.items); n > 0 {
+	// A run that would merge across an instanced particle batch has to
+	// start afresh instead, or the batch could not be recorded between
+	// the two halves and would draw under both.
+	breaks := s.breakRun
+	s.breakRun = false
+	if n := len(s.items); !breaks && n > 0 {
 		last := &s.items[n-1]
 		if last.state == st && last.layer == layer && last.key == key && last.first+last.count == first {
 			last.count += int32(len(verts))
 			return
 		}
 	}
-	s.items = append(s.items, item2D{state: st, first: first, count: int32(len(verts)), layer: layer, key: key})
+	s.items = append(s.items, item2D{state: st, first: first, count: int32(len(verts)), layer: layer, key: key, breaks: breaks})
 	if layer != 0 {
 		s.sorted = false
 	}
@@ -127,6 +148,7 @@ func (s *stream2D) reset() {
 	s.projs = s.projs[:0]
 	s.sorted = true
 	s.keyed = false
+	s.breakRun = false
 }
 
 // maxLayerSpread is how many layers wide a frame may be before the
@@ -216,10 +238,10 @@ func (s *stream2D) build() {
 		s.ordered = s.verts
 		for i := range s.items {
 			it := &s.items[i]
-			if n := len(s.draws); n > 0 && s.draws[n-1].state == it.state {
+			if n := len(s.draws); n > 0 && !it.breaks && s.draws[n-1].state == it.state {
 				s.draws[n-1].count += uint32(it.count)
 			} else {
-				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count)})
+				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count), layer: it.layer, seq: it.first})
 			}
 		}
 		return
@@ -227,10 +249,10 @@ func (s *stream2D) build() {
 	s.orderedBuf = s.orderedBuf[:0]
 	for i := range s.items {
 		it := &s.items[i]
-		if n := len(s.draws); n > 0 && s.draws[n-1].state == it.state {
+		if n := len(s.draws); n > 0 && !it.breaks && s.draws[n-1].state == it.state {
 			s.draws[n-1].count += uint32(it.count)
 		} else {
-			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count)})
+			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count), layer: it.layer, seq: it.first})
 		}
 		s.orderedBuf = append(s.orderedBuf, s.verts[it.first:it.first+it.count]...)
 	}

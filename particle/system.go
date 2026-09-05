@@ -191,9 +191,12 @@ func (s *System) emit() bool {
 
 // spawnOffset picks a birth point in the emitter's shape, relative to
 // the system's position.
-func (s *System) spawnOffset() lin.Vec2 {
-	sh := &s.e.Shape
-	r := s.rand
+func (s *System) spawnOffset() lin.Vec2 { return spawnOffset(&s.e.Shape, s.rand) }
+
+// spawnOffset picks a birth point in a shape, relative to the system's
+// position. Both the CPU and the instanced system draw from it, so it
+// takes the shape and the stream rather than a system.
+func spawnOffset(sh *Shape, r *rng.Rand) lin.Vec2 {
 	switch sh.Kind {
 	case ShapeCircle:
 		a := r.Float() * 2 * math.Pi

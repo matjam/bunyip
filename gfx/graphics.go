@@ -36,6 +36,7 @@ type Graphics struct {
 	lastStats    FrameStats         // the last finished frame's counts
 	meshes       meshPass
 	post         postPass
+	particles    particlePass
 	white        *Texture
 	frame        *render.Frame
 	frameNo      uint64
@@ -45,13 +46,17 @@ type Graphics struct {
 	subFrames    []subFrame
 	// retire holds what each frame slot destroyed or replaced, freed at
 	// that slot's next begin, once its fence has been waited on.
-	retire        [render.FramesInFlight][]func()
-	scratch       []vertex2D
-	pathSubs      []subpath        // flattened sub-paths, reused by FillPath and StrokePath
-	pathFill      filler           // likewise the scanline filler
-	pathStroke    stroker          // and the stroke expander
-	linePipe      *render.Pipeline // debug lines over the 3D scene
-	dbgFont       *Font            // the built-in font, made on first use
+	retire     [render.FramesInFlight][]func()
+	scratch    []vertex2D
+	pathSubs   []subpath  // flattened sub-paths, reused by FillPath and StrokePath
+	pathFill   filler     // likewise the scanline filler
+	pathStroke stroker    // and the stroke expander
+	linePipe   *pipeCache // debug lines over the 3D scene, per sample count
+	// sceneOut is the attachment set of the HDR pass being recorded: the
+	// pipelines drawn into it are built per sample count, and one queue
+	// is recorded at a time.
+	sceneOut      outKey
+	dbgFont       *Font // the built-in font, made on first use
 	dbgFontFailed bool
 	occ           occlusionBuffer // the software occlusion depth buffer, reused every frame
 	rec           recordScratch   // long-lived arguments for the recording commands
@@ -95,17 +100,34 @@ func (g *Graphics) mainExtent() vk.VkExtent2D {
 // rebuildMain sizes the main scene targets to the viewport when it changed.
 func (g *Graphics) rebuildMain() error {
 	ext := g.mainExtent()
-	if g.post.main != nil && g.post.main.extent == ext {
+	samples := g.sceneSamples()
+	if g.post.main != nil && g.post.main.extent == ext && g.post.main.samples == samples {
 		return nil
 	}
-	if err := g.r.Device.WaitIdle(); err != nil {
-		return err
-	}
-	if g.post.main != nil {
-		g.post.main.destroy(g)
+	if old := g.post.main; old != nil {
+		g.post.main = nil
+		g.deferDestroy(func() { old.destroy(g) })
 	}
 	var err error
-	g.post.main, err = g.newSceneTargets(ext)
+	g.post.main, err = g.newSceneTargets(ext, samples)
+	return err
+}
+
+// rebuildScene gives a render texture scene targets at the sample count
+// the post settings now ask for. It runs at the start of a frame's
+// rendering, where no pass is open yet and the old targets can go on the
+// retire list rather than costing a wait.
+func (g *Graphics) rebuildScene(rt *RenderTexture) error {
+	samples := g.sceneSamples()
+	if rt.scene != nil && rt.scene.samples == samples {
+		return nil
+	}
+	if old := rt.scene; old != nil {
+		rt.scene = nil
+		g.deferDestroy(func() { old.destroy(g) })
+	}
+	var err error
+	rt.scene, err = g.newSceneTargets(vk.VkExtent2D{Width: uint32(rt.Width), Height: uint32(rt.Height)}, samples)
 	return err
 }
 
@@ -469,14 +491,19 @@ type FrameStats struct {
 	LightsDropped int
 	// Waits counts the times the frame stopped and waited for the GPU to
 	// go idle. Uploads and destroys inside a frame go through the staging
-	// arena and the retire ring, so a running game reports zero; a
-	// nonzero count means something stalled the whole pipeline, such as a
-	// vertex stream outgrowing its buffer or a Texture.Read.
+	// arena and the retire ring, and every per-frame buffer grows through
+	// the retire ring too, so a running game reports zero; a nonzero
+	// count means something stalled the whole pipeline, such as a
+	// Texture.Read or a resource destroyed outside a frame.
 	Waits int
 	// Lights counts the point and spot lights the frame kept, out of
 	// MaxLights, whatever part of the view each one reaches. The
 	// directional light is not counted: every frame has one.
 	Lights int
+	// Particles counts the instances drawn by DrawParticles and
+	// DrawParticles3D. Each batch is one draw call however many
+	// instances it holds, counted in Draws2D or Draws3D.
+	Particles int
 	// ProbesDropped counts reflection probes added past MaxProbes, which
 	// a frame keeps none of.
 	ProbesDropped int
@@ -559,10 +586,18 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	}
 	// The 2D shadow maps are built and uploaded before any pass is
 	// recorded, so every lit draw in the frame samples the same maps.
+	// This is also where a changed sample count takes effect, for the
+	// same reason: no pass is open yet.
 	for _, sf := range g.subFrames {
+		if err := g.rebuildScene(sf.rt); err != nil {
+			return nil, err
+		}
 		if err := g.buildShadows2D(sf.queue); err != nil {
 			return nil, err
 		}
+	}
+	if err := g.rebuildMain(); err != nil {
+		return nil, err
 	}
 	if err := g.buildShadows2D(g.main); err != nil {
 		return nil, err
@@ -593,16 +628,38 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 // the 2D stream, into target (a render texture) or the swapchain when nil.
 func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, target *render.Target) error {
 	cb := fr.CB
-	has3D := len(q.draws) > 0 || len(q.batches) > 0 || q.light.Background || len(q.lines.items) > 0
-	bloom := has3D && g.post.settings.Bloom > 0
-	ao := has3D && g.post.settings.AmbientOcclusion > 0
+	s := g.post.settings
+	has3D := len(q.draws) > 0 || len(q.batches) > 0 || q.light.Background || len(q.lines.items) > 0 || len(q.parts.scene) > 0
+	// A frame with nothing 3D in it can still go through the composite,
+	// so bloom, the grade, the LUT and the lens effects reach a 2D game.
+	// A render texture keeps the direct path whatever Post2D says: the
+	// composite writes an opaque image, and a render texture's alpha is
+	// what a game draws it back with.
+	flat := !has3D && s.Post2D && target == nil && len(q.stream.items) > 0
+	bloom := (has3D || flat) && s.Bloom > 0
+	ao := has3D && s.AmbientOcclusion > 0
+	rays := false
 	if has3D {
 		if err := g.renderScene(fr, q, t); err != nil {
 			return err
 		}
+		if err := g.postChain(cb, q, t); err != nil {
+			return err
+		}
+		if s.GodRays > 0 {
+			if sun, ok := sunScreen(q); ok {
+				if err := t.needRays(g); err != nil {
+					return err
+				}
+				g.timestamps.Begin(cb, "godrays")
+				g.renderRays(cb, q, t, sun)
+				g.timestamps.End(cb)
+				rays = true
+			}
+		}
 		if bloom {
 			g.timestamps.Begin(cb, "bloom")
-			g.renderBloom(cb, t)
+			g.renderBloom(cb, t, t.hdrSet)
 			g.timestamps.End(cb)
 		}
 		if ao {
@@ -612,25 +669,61 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 		}
 	}
 	clear := q.clear.premultiplied()
-	aa := has3D && !g.post.settings.NoAntiAlias && target == nil
-	if aa {
-		// Composite into the LDR image, then resolve with FXAA on screen.
-		g.timestamps.Begin(cb, "composite")
-		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
-		g.composite(cb, t, bloom, ao)
-		render.EndTargetPass(cb, t.ldr)
-		g.timestamps.End(cb)
-	}
 	vp := vk.VkRect2D{Extent: g.r.Swapchain.Extent}
 	switch {
 	case target != nil:
-		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
 		vp.Extent = target.Extent
+	case g.viewport.Extent.Width > 0:
+		vp = g.viewport
+	}
+	if flat {
+		// The 2D stream draws into the LDR image and the composite reads
+		// it back, so no 2D pipeline needs an HDR-format variant.
+		g.timestamps.Begin(cb, "2d")
+		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
+		err := g.flush2D(fr, q, vk.VkRect2D{Extent: t.extent})
+		render.EndTargetPass(cb, t.ldr)
+		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
+		if bloom {
+			g.timestamps.Begin(cb, "bloom")
+			g.renderBloom(cb, t, t.ldrSet)
+			g.timestamps.End(cb)
+		}
+	}
+	// Temporal anti-aliasing has already resolved the edges, so FXAA
+	// would only soften them again.
+	aa := (has3D || flat) && !s.NoAntiAlias && !(has3D && s.TemporalAA) && target == nil
+	aaSet := t.ldrSet
+	if aa {
+		// Composite into an LDR image, then resolve with FXAA on screen.
+		dst := t.ldr
+		if flat {
+			if err := t.needLDR2(g); err != nil {
+				return err
+			}
+			dst, aaSet = t.ldr2, t.ldr2Set
+		}
+		// The LDR images are always single-sample in the swapchain's
+		// format, so the composite into one takes the zero output key.
+		g.timestamps.Begin(cb, "composite")
+		render.BeginTargetPass(cb, render.PassDesc{Target: dst, ClearColor: clear, ClearDepth: 1})
+		err := g.composite(cb, t, outKey{}, bloom, ao, rays, flat)
+		render.EndTargetPass(cb, dst)
+		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
+	}
+	switch {
+	case target != nil:
+		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
 	case g.viewport.Extent.Width > 0:
 		// A fixed view inside the window: black outside the viewport, the
 		// clear colour within it.
 		g.r.BeginSwapchainPass(fr, [4]float32{0, 0, 0, 1})
-		vp = g.viewport
 		render.SetViewportRect(cb, vp)
 		render.SetScissorRect(cb, vp)
 		render.ClearRect(cb, vp, clear)
@@ -640,21 +733,31 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	switch {
 	case aa:
 		g.timestamps.Begin(cb, "antialias")
-		g.antiAlias(cb, t)
+		g.antiAlias(cb, t, aaSet)
 		g.timestamps.End(cb)
-	case has3D:
+	case has3D || flat:
 		g.timestamps.Begin(cb, "composite")
-		g.composite(cb, t, bloom, ao)
+		err := g.composite(cb, t, q.out, bloom, ao, rays, flat)
 		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
 	}
-	g.timestamps.Begin(cb, "2d")
-	err := g.flush2D(fr, q, vp)
-	g.timestamps.End(cb)
-	if err != nil {
-		return err
+	if !flat { // a 2D post frame has already drawn its stream
+		g.timestamps.Begin(cb, "2d")
+		err := g.flush2D(fr, q, vp)
+		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
 	}
 	if target != nil {
 		render.EndTargetPass(cb, target)
+	}
+	if has3D {
+		// What the next frame reprojects against, without the jitter.
+		aspect := float32(t.extent.Width) / float32(t.extent.Height)
+		q.prevViewProj, q.hasPrevVP = q.camera.ViewProj(aspect), true
 	}
 	return nil
 }
@@ -677,7 +780,17 @@ type recordScratch struct {
 // flush2D records the queue's 2D stream: one draw per run of equal state.
 func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error {
 	st := &q.stream
+	if err := g.prepareParticles(q, fr.Slot); err != nil {
+		return err
+	}
 	if len(st.items) == 0 {
+		// Instanced particles can still be the only 2D drawing there is.
+		if len(q.parts.flat) > 0 {
+			render.SetViewportRect(fr.CB, vp)
+			g.particles.push = push2D{frame: lin.V4(g.time, q.viewW, q.viewH, float32(vp.Extent.Width)/q.viewW)}
+			_, err := g.drawFlatParticles(fr.CB, q, 0, draw2D{}, true, vp)
+			return err
+		}
 		return nil
 	}
 	st.build()
@@ -697,7 +810,26 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	boundUniform := int32(-2)
 	scaleX, scaleY := float32(vp.Extent.Width)/q.viewW, float32(vp.Extent.Height)/q.viewH
 	rec.push = push2D{frame: lin.V4(g.time, q.viewW, q.viewH, scaleX)}
+	g.particles.push = push2D{frame: rec.push.frame}
+	part := 0 // the next instanced particle batch to record
 	for _, d := range st.draws {
+		if part < len(q.parts.flat) {
+			// Particles submitted before this run, by layer and then by
+			// order, go under it. They bind their own pipeline and
+			// buffer, so what was bound for the stream has to be bound
+			// again afterwards.
+			next, err := g.drawFlatParticles(cb, q, part, d, false, vp)
+			if err != nil {
+				return err
+			}
+			if next != part {
+				part = next
+				bound, boundProj, boundUniform = nil, nil, -2
+				boundClip = lin.Rect{} // the particles restored the full scissor
+				rec.offset = 0
+				vk.CmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &rec.offset)
+			}
+		}
 		s := d.state
 		if s.clip != boundClip {
 			boundClip = s.clip
@@ -707,7 +839,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 				render.SetScissorRect(cb, pixelRect(vp, s.clip, scaleX, scaleY))
 			}
 		}
-		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend})
+		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend, out: q.out})
 		if err != nil {
 			return err
 		}
@@ -731,6 +863,10 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
 		vk.CmdDraw(cb, d.count, 1, d.first, 0)
 	}
+	// Then whatever was submitted after the last sprite run.
+	if _, err := g.drawFlatParticles(cb, q, part, draw2D{}, true, vp); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -749,9 +885,8 @@ func (g *Graphics) destroy() {
 		g.dbgFont.Destroy()
 		g.dbgFont = nil
 	}
-	if g.linePipe != nil {
-		g.linePipe.Destroy()
-	}
+	g.linePipe.destroy()
+	g.particles.destroy()
 	g.post.destroy(g)
 	g.meshes.destroy(g)
 	if g.white != nil {

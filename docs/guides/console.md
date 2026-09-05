@@ -174,8 +174,9 @@ time by pass, the profile scopes `Context.Profile` recorded, the 2D and
 
 The engine times each pass on the GPU with timestamp queries: the shadow
 atlas, the opaque scene, the screen-space reflections, the blended
-scene, the decals, bloom, ambient occlusion, the composite, the
-anti-aliasing resolve and the 2D stream. A pass that runs for a render
+scene, the decals, the motion vectors, the temporal resolve, motion
+blur, depth of field, the light shafts, bloom, ambient occlusion, the
+composite, the anti-aliasing resolve and the 2D stream. A pass that runs for a render
 texture as well as for the screen is summed into one figure, and a pass
 a frame does not run is left out, so the list says what that frame
 actually cost. Work outside the frame, such as a `BakeProbe` call, is

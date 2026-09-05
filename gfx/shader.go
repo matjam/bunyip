@@ -38,6 +38,18 @@ func (b Blend) String() string {
 	return fmt.Sprintf("Blend(%d)", int(b))
 }
 
+// ParseBlend reads a blend mode written the way String spells it, so a
+// mode can be named in an asset file or on a console line. It reports
+// false for anything else, leaving the caller to keep its default.
+func ParseBlend(s string) (Blend, bool) {
+	for b := Blend(0); b < blendCount; b++ {
+		if b.String() == s {
+			return b, true
+		}
+	}
+	return BlendAlpha, false
+}
+
 func (b Blend) factors() *render.BlendFactors {
 	over := vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
 	f := func(sc, dc vk.VkBlendFactor, op vk.VkBlendOp) *render.BlendFactors {
@@ -154,12 +166,18 @@ type pipeKey struct {
 	stencilTest StencilTest
 	stencilOp   StencilOp
 	stencilRef  uint8
+	// out is the pass's attachment set. A mesh shader uses its sample
+	// count, since the scene may be multisampled; a sprite shader uses
+	// all of it, since a render texture chooses its own colour format,
+	// depth and samples. The shadow pass and the order-independent pass
+	// are always the zero value: both are single-sample.
+	out outKey
 }
 
-// meshKey is the pipeline variant a material needs. It takes a pointer
-// because Material is large and this sits in the draw loop.
-func meshKey(mat *Material, skinned, shell bool) pipeKey {
-	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0}
+// meshKey is the pipeline variant a material needs in a pass. It takes a
+// pointer because Material is large and this sits in the draw loop.
+func meshKey(mat *Material, skinned, shell bool, out outKey) pipeKey {
+	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0, out: out}
 	if !key.stencil {
 		key.stencilTest, key.stencilOp, key.stencilRef = mat.Stencil, mat.StencilWrite, mat.StencilRef
 	}
@@ -289,6 +307,7 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 				Write: key.stencilOp != StencilKeep, Pass: key.stencilOp.vkOp(),
 			}
 		}
+		desc.Samples = key.out.samples
 		if key.oit {
 			// The order-independent pass writes two attachments: the
 			// weighted colour adds into the accumulation image, and the
@@ -304,14 +323,14 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 		}
 	} else {
 		bindings, attrs := vertex2DLayout()
-		desc = render.PipelineDesc{
+		desc = key.out.apply(render.PipelineDesc{
 			Vert: g.spriteVert(), Frag: s.frag,
 			ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
 			Bindings: bindings, Attributes: attrs,
 			Blend: true, Factors: key.blend.factors(),
 			PushConstantSize: push2DSize,
 			SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout, g.uniforms.Layout},
-		}
+		})
 	}
 	p, err := g.r.Device.NewPipeline(desc)
 	if err != nil {

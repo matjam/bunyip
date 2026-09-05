@@ -110,22 +110,24 @@ type meshPass struct {
 	// thickness map, the scene copy, the transmission map, and the
 	// iridescence, anisotropy, specular and fur maps) and the shared
 	// sampler array, which is immutable in the layout.
-	materials    *render.DescriptorSets
-	matSets      map[materialKey]vk.VkDescriptorSet
-	lastMatKey   materialKey // the key materialSet last resolved, to skip hashing matSets
-	lastMatSet   vk.VkDescriptorSet
-	lastMatOK    bool
-	flatNormal   *Texture
-	flatTangent  *Texture // the anisotropy map's default: along the tangent, full strength
-	black        *Texture
-	blackCube    *render.Image    // stands in for the environment when none is set
-	skyPipe      *render.Pipeline // an image environment as the background
-	skyParamPipe *render.Pipeline // the procedural sky as the background
-	outlinePipe  *render.Pipeline // solid shell where the stencil is clear
-	xrayPipe     *render.Pipeline // solid tint where depth says hidden
-	decalPipe    *render.Pipeline // set up by the post pass, which owns the depth sampler layout
-	decalMesh    *Mesh            // a unit cube
-	quad         *Mesh            // the billboard quad, made on first use
+	materials   *render.DescriptorSets
+	matSets     map[materialKey]vk.VkDescriptorSet
+	lastMatKey  materialKey // the key materialSet last resolved, to skip hashing matSets
+	lastMatSet  vk.VkDescriptorSet
+	lastMatOK   bool
+	flatNormal  *Texture
+	flatTangent *Texture // the anisotropy map's default: along the tangent, full strength
+	black       *Texture
+	blackCube   *render.Image // stands in for the environment when none is set
+	// These five draw into the scene's HDR pass, so each is built once
+	// per sample count the post settings ask for.
+	skyPipe      *pipeCache // an image environment as the background
+	skyParamPipe *pipeCache // the procedural sky as the background
+	outlinePipe  *pipeCache // solid shell where the stencil is clear
+	xrayPipe     *pipeCache // solid tint where depth says hidden
+	decalPipe    *pipeCache // set up by the post pass, which owns the depth sampler layout
+	decalMesh    *Mesh      // a unit cube
+	quad         *Mesh      // the billboard quad, made on first use
 }
 
 // decal is a texture projected onto the scene inside a box.
@@ -326,7 +328,7 @@ func (g *Graphics) initMeshPass() error {
 	if mp.blackCube, err = dev.NewCubemapImage(1, vk.VK_FORMAT_R16G16B16A16_SFLOAT, 8, [][6][]byte{blackFace}); err != nil {
 		return err
 	}
-	if mp.skyPipe, err = dev.NewPipeline(render.PipelineDesc{
+	if mp.skyPipe, err = newPipeCache(dev, render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.SkyFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push2DSize,
@@ -334,7 +336,7 @@ func (g *Graphics) initMeshPass() error {
 	}); err != nil {
 		return err
 	}
-	if mp.skyParamPipe, err = dev.NewPipeline(render.PipelineDesc{
+	if mp.skyParamPipe, err = newPipeCache(dev, render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.SkyParamFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push2DSize,
@@ -359,14 +361,14 @@ func (g *Graphics) initMeshPass() error {
 		PushConstantSize: uint32(unsafe.Sizeof(solidPush{})),
 		SetLayouts:       []vk.VkDescriptorSetLayout{layout.Layout},
 	}
-	if mp.outlinePipe, err = dev.NewPipeline(solid); err != nil {
+	if mp.outlinePipe, err = newPipeCache(dev, solid); err != nil {
 		return err
 	}
 	xray := solid
 	xray.Stencil = nil
 	xray.DepthCompare = vk.VK_COMPARE_OP_GREATER
 	xray.Blend = true
-	if mp.xrayPipe, err = dev.NewPipeline(xray); err != nil {
+	if mp.xrayPipe, err = newPipeCache(dev, xray); err != nil {
 		return err
 	}
 	cv, ci := CubeMesh()
@@ -465,20 +467,30 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 		{Location: 3, Binding: 0, Format: vk.VK_FORMAT_R32G32_SFLOAT, Offset: 32},
 		{Location: 4, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UNORM, Offset: 40},
 	}
-	// The instance stream is eighteen vec4s at locations 5 to 16 and 19 to
-	// 24; 17 and 18 are a skinned mesh's joints and weights. The last
-	// three of the eighteen are the morph block, which ends with a pair of
+	// The lit pass reads fifteen vec4s of the instance record at locations
+	// 5 to 16 and 19 to 21; 17 and 18 are a skinned mesh's joints and
+	// weights. It skips the three rows of the previous frame's model
+	// matrix that follow, which only the velocity programs read, and picks
+	// the morph block up after them at 22 to 24, ending with a pair of
 	// packed words at 25 rather than a vec4.
-	for i := range 18 {
+	const f32x4 = vk.VK_FORMAT_R32G32B32A32_SFLOAT
+	for i := range 15 {
 		loc := 5 + i
 		if i >= 12 {
 			loc += 2
 		}
-		attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: uint32(loc), Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: uint32(16 * i)})
+		attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: uint32(loc), Binding: 1, Format: f32x4, Offset: uint32(16 * i)})
 	}
-	attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: 25, Binding: 1, Format: vk.VK_FORMAT_R32G32_UINT, Offset: 16 * 18})
+	for i := range 3 { // the morph block, after the previous model matrix
+		attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: uint32(22 + i), Binding: 1, Format: f32x4, Offset: uint32(morphInstanceOffset + 16*i)})
+	}
+	attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: 25, Binding: 1, Format: vk.VK_FORMAT_R32G32_UINT, Offset: morphInstanceOffset + 48})
 	return bindings, attrs
 }
+
+// morphInstanceOffset is where the morph block starts in a meshInstance:
+// fifteen material vec4s and the previous frame's three model rows.
+const morphInstanceOffset = 16 * 18
 
 // SetCamera sets the camera for this frame's meshes.
 func (g *Graphics) SetCamera(c Camera) { g.cur.camera, g.cur.hasCam = c, true }
@@ -491,6 +503,57 @@ func (q *drawQueue) ensureCamera() {
 	if !q.hasCam {
 		q.camera, q.hasCam = Camera{Position: lin.V3(0, 0, 5)}, true
 	}
+}
+
+// jitterFrame picks the sub-pixel offset temporal anti-aliasing needs and
+// resolves the matrices this frame's passes rasterise with. The offset
+// walks a Halton sequence, so successive frames sample a different point
+// inside each pixel and the resolve averages them into an edge. With
+// anti-aliasing off the offset is zero and the matrices are the camera's
+// own.
+func (q *drawQueue) jitterFrame(extent vk.VkExtent2D, frame uint64, on bool) {
+	q.ensureCamera()
+	q.jitter = lin.Vec2{}
+	if on && extent.Width > 0 && extent.Height > 0 {
+		i := frame%8 + 1
+		q.jitter = lin.V2((halton(i, 2)-0.5)*2/float32(extent.Width), (halton(i, 3)-0.5)*2/float32(extent.Height))
+	}
+	aspect := float32(extent.Width) / float32(extent.Height)
+	q.projJ = jitterProjection(q.camera.Projection(aspect), q.jitter)
+	q.viewProjJ = q.projJ.Mul(q.camera.viewMatrix())
+	q.invViewProjJ = q.viewProjJ.Inverse()
+	if !q.hasPrevVP {
+		// The first frame has nothing behind it. Measuring against this
+		// frame's own projection makes the camera's part of the motion
+		// zero, which leaves an object's own motion correct.
+		q.prevViewProj = q.camera.Projection(aspect).Mul(q.camera.viewMatrix())
+	}
+}
+
+// halton is the i'th value of the Halton sequence in the given base, in
+// 0 to 1. It fills the pixel evenly however many frames are averaged.
+func halton(i, base uint64) float32 {
+	f, r := 1.0, 0.0
+	for i > 0 {
+		f /= float64(base)
+		r += f * float64(i%base)
+		i /= base
+	}
+	return float32(r)
+}
+
+// jitterProjection adds a clip-space translation to a projection, so the
+// image moves by a fraction of a pixel without the frustum's shape or the
+// depths changing.
+func jitterProjection(p lin.Mat4, j lin.Vec2) lin.Mat4 {
+	if j == (lin.Vec2{}) {
+		return p
+	}
+	for c := range 4 {
+		p[c*4+0] += j.X * p[c*4+3]
+		p[c*4+1] += j.Y * p[c*4+3]
+	}
+	return p
 }
 
 // SetLight sets the directional light, ambient term and shadow settings.
@@ -644,6 +707,17 @@ func (q *drawQueue) pointShadows() (lights []int, mats []lin.Mat4) {
 // materials draw after everything opaque, farthest first.
 func (g *Graphics) DrawMesh(m *Mesh, mat Material, model lin.Mat4) {
 	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model})
+}
+
+// DrawMeshMoved is DrawMesh for a mesh that moved: prev is the model
+// matrix it was drawn with last frame. The velocity buffer carries the
+// difference, so temporal anti-aliasing reprojects the mesh instead of
+// smearing it and motion blur smears it along its own path. Drawing
+// through DrawMesh says the mesh did not move, which is what a static
+// scene wants; the camera's own motion is reconstructed from depth
+// either way.
+func (g *Graphics) DrawMeshMoved(m *Mesh, mat Material, model, prev lin.Mat4) {
+	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, prev: prev, moved: prev != model})
 }
 
 // queueMesh fills a draw's defaults, captures its shader's uniforms, and
@@ -956,7 +1030,7 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 	mats, splits, radii := q.cascades(aspect)
 	q.cascadeMats = mats
 	u := frameUniforms{
-		viewProj:      q.camera.ViewProj(aspect),
+		viewProj:      q.viewProjJ,
 		view:          q.camera.viewMatrix(),
 		lightViewProj: mats,
 		camPos:        q.camera.Position.Vec4(1),
@@ -1015,7 +1089,7 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 		u.sh = q.skySH
 		u.env = lin.V4(1, 0, 2, 0)
 	}
-	u.invViewProj = u.viewProj.Inverse()
+	u.invViewProj = q.invViewProjJ
 	if err := q.writeGrid(slot); err != nil {
 		return err
 	}
@@ -1086,7 +1160,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	g.expandBatches(q, frustum, viewProj, occluding)
 	culled, occluded, tests := 0, 0, 0
 	q.depthClamp = g.r.Device.DepthClamp()
-	q.hasCasters, q.casterAlong = false, 0
+	q.hasCasters, q.casterAlong, q.hasMoved = false, 0, false
 	lightDir := q.light.Direction.Norm()
 	// The order-independent pass needs a device that blends its two
 	// attachments differently and a shader with the program that writes
@@ -1189,11 +1263,22 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			filmThick = 400
 		}
 		mm := d.model
+		pm := d.prev
+		if !d.moved {
+			pm = mm
+		} else {
+			q.hasMoved = true
+		}
 		in := meshInstance{
 			model: [3]lin.Vec4{
 				lin.V4(mm.At(0, 0), mm.At(0, 1), mm.At(0, 2), mm.At(0, 3)),
 				lin.V4(mm.At(1, 0), mm.At(1, 1), mm.At(1, 2), mm.At(1, 3)),
 				lin.V4(mm.At(2, 0), mm.At(2, 1), mm.At(2, 2), mm.At(2, 3)),
+			},
+			prevModel: [3]lin.Vec4{
+				lin.V4(pm.At(0, 0), pm.At(0, 1), pm.At(0, 2), pm.At(0, 3)),
+				lin.V4(pm.At(1, 0), pm.At(1, 1), pm.At(1, 2), pm.At(1, 3)),
+				lin.V4(pm.At(2, 0), pm.At(2, 1), pm.At(2, 2), pm.At(2, 3)),
 			},
 			baseColor: [4]float32{m.BaseColor.R, m.BaseColor.G, m.BaseColor.B, m.BaseColor.A},
 			material:  [4]float32{orOne(m.Metallic, m.MetalRoughTexture != nil), m.Roughness, m.Emissive, flags},
@@ -1300,15 +1385,22 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			continue
 		}
 		d := draws.at(i)
+		// The lit pass draws into the scene target, at its sample count.
+		// The shadow atlas and the order-independent transparency images
+		// are always single-sample.
+		out := g.sceneOut
+		if cascade != nil || oit {
+			out = outKey{}
+		}
 		run := 1
 		if !d.skinned {
-			runKey := meshKey(&d.mat, false, d.shell > 0)
+			runKey := meshKey(&d.mat, false, d.shell > 0, out)
 			for i+run < n {
 				e := draws.at(i + run)
 				if mask != nil && !mask[i+run] {
 					break
 				}
-				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0) != runKey {
+				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0, out) != runKey {
 					break
 				}
 				if e.morphSet != d.morphSet { // a different model's deltas
@@ -1317,7 +1409,7 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 				run++
 			}
 		}
-		key := meshKey(&d.mat, d.skinned, d.shell > 0)
+		key := meshKey(&d.mat, d.skinned, d.shell > 0, out)
 		key.oit = oit
 		if cascade != nil {
 			key = pipeKey{shadow: true, skinned: d.skinned}
@@ -1376,6 +1468,15 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	mp := &g.meshes
 	cb := fr.CB
 	aspect := float32(t.extent.Width) / float32(t.extent.Height)
+	// Every pipeline recorded into the HDR pass below needs the target's
+	// sample count. The shadow atlas stays single-sample, so its draws
+	// use the zero key.
+	g.sceneOut = outKey{samples: sampleKey(t.samples)}
+	// The matrices every pass after this one rasterises and reprojects
+	// with. A probe bake runs outside a frame and wants an exact face, so
+	// it takes no jitter and needs no motion vectors.
+	presenting := g.frame != nil
+	q.jitterFrame(t.extent, g.frameNo, presenting && g.post.settings.TemporalAA)
 	// The draws are prepared first: the cascades' near planes need the
 	// caster bounds, and the shadow pass culls against every light.
 	opaque, oit, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
@@ -1432,12 +1533,16 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		// evaluated from the frame block.
 		render.SetViewport(cb, t.extent)
 		rec := &g.rec
-		rec.push = push2D{proj: q.camera.ViewProj(aspect).Inverse()}
-		pipe := mp.skyParamPipe
+		rec.push = push2D{proj: q.invViewProjJ}
+		cache := mp.skyParamPipe
 		rec.set = q.uniforms.Sets[fr.Slot]
 		if env := q.light.Environment; env != nil && env.cube != nil {
-			pipe, rec.set = mp.skyPipe, env.set
+			cache, rec.set = mp.skyPipe, env.set
 			rec.push.frame = lin.V4(env.scale, 0, 0, 0)
+		}
+		pipe, err := cache.at(g.sceneOut)
+		if err != nil {
+			return err
 		}
 		vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
@@ -1447,8 +1552,11 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err := g.drawRuns(cb, fr, q, seen, 0, nil, nil, false); err != nil {
 		return err
 	}
-	g.drawSolid(cb, fr, q, seen, 0, t.extent)
+	err = g.drawSolid(cb, fr, q, seen, 0, t.extent)
 	g.timestamps.End(cb)
+	if err != nil {
+		return err
+	}
 	reflections := g.reflections(seen)
 	if reflections || transmissive(seenBlended) {
 		// Glass reads what is behind it and a reflection ray reads what the
@@ -1458,8 +1566,11 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
 		if reflections {
 			g.timestamps.Begin(cb, "reflections")
-			g.drawReflections(cb, fr, q, t)
+			err := g.drawReflections(cb, fr, q, t)
 			g.timestamps.End(cb)
+			if err != nil {
+				return err
+			}
 		}
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
@@ -1482,52 +1593,79 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.EndTargetPassDesc(cb, pass)
 		g.timestamps.End(cb)
 		g.timestamps.Begin(cb, "transparency resolve")
+		oitPipe, err := g.post.oit.at(g.sceneOut)
+		if err != nil {
+			return err
+		}
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 		render.SetViewport(cb, t.extent)
-		g.post.fullscreen(cb, g.post.oit, t.oitSet, postPush{})
+		g.post.fullscreen(cb, oitPipe, t.oitSet, postPush{})
 		g.timestamps.End(cb)
 	}
 	g.timestamps.Begin(cb, "blended")
 	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()+oit.len()), nil, nil, false); err != nil {
 		return err
 	}
-	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {
+	if err := g.drawDebugLines(cb, fr, q); err != nil {
 		return err
 	}
 	g.timestamps.End(cb)
 	render.EndTargetPass(cb, t.hdr)
 	if len(q.decals) > 0 {
 		g.timestamps.Begin(cb, "decals")
-		g.drawDecals(cb, fr, q, t)
+		err := g.drawDecals(cb, fr, q, t)
+		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
+	}
+	// The motion vectors go in over the finished depth buffer, so a
+	// moved mesh hidden behind something else writes nothing. Particles
+	// write no depth, so they come after.
+	if s := g.post.settings; presenting && (s.TemporalAA || s.MotionBlur > 0) {
+		if err := t.needVelocity(g); err != nil {
+			return err
+		}
+		g.timestamps.Begin(cb, "velocity")
+		g.renderVelocity(cb, fr, q, t, seen)
 		g.timestamps.End(cb)
 	}
-	return nil
+	// Instanced particles last, over the finished scene: they read the
+	// depth image rather than testing against it, which is what lets
+	// them fade softly into the geometry behind them.
+	if err := g.prepareParticles(q, fr.Slot); err != nil {
+		return err
+	}
+	return g.drawSceneParticles(cb, q, t, aspect)
 }
 
 // drawSolid draws the outline shells and x-ray tints of draws that ask
 // for them, after the opaque pass has marked the stencil. Skinned meshes
 // are skipped: the solid vertex program does not skin.
-func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, extent vk.VkExtent2D) {
+func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, extent vk.VkExtent2D) error {
 	if draws.len() == 0 {
-		return
+		return nil
 	}
 	mp := &g.meshes
 	rec := &g.rec
 	rec.offset = 0
 	for _, pass := range []struct {
-		pipe    *render.Pipeline
+		cache   *pipeCache
 		outline bool
 	}{{mp.outlinePipe, true}, {mp.xrayPipe, false}} {
-		bound := false
+		var pipe *render.Pipeline
 		for i := range draws.len() {
 			d := draws.at(i)
 			if d.skinned || (pass.outline && d.mat.Outline <= 0) || (!pass.outline && d.mat.XRay == (Color{})) {
 				continue
 			}
-			if !bound {
-				bound = true
-				vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Handle)
-				vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pass.pipe.Layout, 0, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+			if pipe == nil {
+				var err error
+				if pipe, err = pass.cache.at(g.sceneOut); err != nil {
+					return err
+				}
+				vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+				vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
 				vk.CmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &rec.offset)
 			}
 			rec.solid = solidPush{params: lin.V4(0, float32(extent.Width), float32(extent.Height), 0)}
@@ -1542,23 +1680,30 @@ func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQue
 				c := d.mat.XRay.premultiplied()
 				rec.solid.color = lin.V4(c[0], c[1], c[2], c[3])
 			}
-			vk.CmdPushConstants(cb, pass.pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.solid)), unsafe.Pointer(&rec.solid))
+			vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.solid)), unsafe.Pointer(&rec.solid))
 			vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
 			vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
 			vk.CmdDrawIndexed(cb, d.mesh.IndexCount, 1, 0, 0, first+uint32(i))
 		}
 	}
+	return nil
 }
 
 // drawDecals projects the queue's decals onto the finished opaque scene,
 // reading the depth image and blending over the colour.
-func (g *Graphics) drawDecals(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets) {
+func (g *Graphics) drawDecals(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets) error {
 	mp := &g.meshes
+	// The decals draw over the multisampled colour and resolve with it,
+	// and read the depth the scene pass already resolved.
+	pipe, err := mp.decalPipe.at(g.sceneOut)
+	if err != nil {
+		return err
+	}
 	pass := render.PassDesc{Target: t.hdr, LoadColor: true, NoDepth: true}
 	render.BeginTargetPass(cb, pass)
-	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Handle)
-	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 0, 1, &t.depthSet, 0, nil)
-	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &t.depthSet, 0, nil)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
 	rec := &g.rec
 	rec.offset = 0
 	vk.CmdBindVertexBuffers(cb, 0, 1, &mp.decalMesh.vbuf.Handle, &rec.offset)
@@ -1569,12 +1714,13 @@ func (g *Graphics) drawDecals(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQu
 		for r := range 3 {
 			rec.decal.invBox[r] = lin.V4(inv.At(r, 0), inv.At(r, 1), inv.At(r, 2), inv.At(r, 3))
 		}
-		vk.CmdPushConstants(cb, mp.decalPipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.decal)), unsafe.Pointer(&rec.decal))
+		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.decal)), unsafe.Pointer(&rec.decal))
 		rec.set = d.tex.set
-		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, mp.decalPipe.Layout, 2, 1, &rec.set, 0, nil)
+		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 2, 1, &rec.set, 0, nil)
 		vk.CmdDrawIndexed(cb, mp.decalMesh.IndexCount, 1, 0, 0, 0)
 	}
 	render.EndTargetPassDesc(cb, pass)
+	return nil
 }
 
 func (mp *meshPass) destroy(g *Graphics) {
@@ -1582,10 +1728,8 @@ func (mp *meshPass) destroy(g *Graphics) {
 	if mp.defaultShader != nil {
 		mp.defaultShader.Destroy()
 	}
-	for _, p := range []*render.Pipeline{mp.skyPipe, mp.skyParamPipe, mp.outlinePipe, mp.xrayPipe, mp.decalPipe} {
-		if p != nil {
-			p.Destroy()
-		}
+	for _, c := range []*pipeCache{mp.skyPipe, mp.skyParamPipe, mp.outlinePipe, mp.xrayPipe, mp.decalPipe} {
+		c.destroy()
 	}
 	if mp.decalMesh != nil {
 		mp.decalMesh.Destroy()

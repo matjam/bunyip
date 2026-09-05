@@ -29,6 +29,8 @@ type Device struct {
 	// do not.
 	independentBlend bool
 	waits            uint64 // times the device or its queue was waited on
+	frameNo          uint64 // frames begun, for the retire ring
+	retired          []deferred
 }
 
 // NewDevice picks a GPU able to present to surface and creates the logical
@@ -123,7 +125,8 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 
 // WaitIdle blocks until the device has finished all submitted work. It
 // stalls the GPU, so it belongs in setup and teardown rather than in a
-// frame; Waits counts every such stall.
+// frame; Waits counts every such stall. Prefer Retire for an object a
+// recorded frame may still reference.
 func (d *Device) WaitIdle() error {
 	d.waits++
 	return vk.Check("vkDeviceWaitIdle", vk.VkDeviceWaitIdle(d.Handle))
@@ -146,6 +149,7 @@ func (d *Device) Destroy() {
 		return
 	}
 	_ = d.WaitIdle()
+	d.flushRetired()
 	d.alloc.destroy()
 	vk.VkDestroyCommandPool(d.Handle, d.pool, nil)
 	vk.VkDestroyDevice(d.Handle, nil)
@@ -165,6 +169,33 @@ func (d *Device) IndependentBlend() bool { return d.independentBlend }
 
 // Limits exposes the physical device limits.
 func (d *Device) Limits() *vk.VkPhysicalDeviceLimits { return &d.gpu.props.Limits }
+
+// MaxSamples is the highest sample count the device supports for colour
+// and depth attachments together, one of 1, 2, 4, 8, 16, 32 or 64. It is
+// never below 1: every device supports single-sample rendering.
+func (d *Device) MaxSamples() int {
+	limits := d.Limits()
+	counts := limits.FramebufferColorSampleCounts & limits.FramebufferDepthSampleCounts & limits.FramebufferStencilSampleCounts
+	best := 1
+	for n := 2; n <= 64; n *= 2 {
+		if counts&vk.VkSampleCountFlags(n) != 0 {
+			best = n
+		}
+	}
+	return best
+}
+
+// SampleCount turns a requested sample count into the flag bit for it,
+// rounded down to a power of two the device supports. Zero and one both
+// mean no multisampling.
+func (d *Device) SampleCount(n int) vk.VkSampleCountFlagBits {
+	n = min(n, d.MaxSamples())
+	count := 1
+	for c := 2; c <= n; c *= 2 {
+		count = c
+	}
+	return vk.VkSampleCountFlagBits(count)
+}
 
 // Physical exposes the physical device handle for surface queries.
 func (d *Device) Physical() vk.VkPhysicalDevice { return d.gpu.handle }

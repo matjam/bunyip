@@ -219,7 +219,9 @@ func (g *Graphics) newBaker(size int, scene func()) (*baker, error) {
 	extent := vk.VkExtent2D{Width: uint32(size), Height: uint32(size)}
 	b := &baker{g: g, size: size, stats: g.stats}
 	var err error
-	if b.t, err = g.newSceneTargets(extent); err != nil {
+	// A bake renders small faces that are then blurred into an irradiance
+	// map, so it stays single-sample whatever the post settings ask for.
+	if b.t, err = g.newSceneTargets(extent, vk.VK_SAMPLE_COUNT_1_BIT); err != nil {
 		return nil, err
 	}
 	if b.q, err = g.newQueue(float32(size), float32(size)); err != nil {

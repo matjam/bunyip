@@ -24,7 +24,9 @@ import (
 // mesh pass, whose frame block it reads.
 func (g *Graphics) initReflections() error {
 	p := &g.post
-	pipe, err := g.r.Device.NewPipeline(render.PipelineDesc{
+	// The pass draws into the scene's own colour attachment, so it is
+	// built once per sample count the post settings ask for.
+	cache, err := newPipeCache(g.r.Device, render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.SSRFrag, ColorFormat: hdrFormat,
 		Blend:            true, // premultiplied: the ray's colour replaces its share of the surface
 		PushConstantSize: uint32(unsafe.Sizeof(postPush{})),
@@ -33,7 +35,7 @@ func (g *Graphics) initReflections() error {
 	if err != nil {
 		return err
 	}
-	p.reflect = pipe
+	p.reflect = cache
 	return nil
 }
 
@@ -68,14 +70,22 @@ func (g *Graphics) reflections(seen drawList) bool {
 // drawReflections traces the reflections over the finished opaque scene,
 // reading the scene copy and the depth image and blending into the HDR
 // colour. It runs in its own pass without the depth attachment, so the
-// shader can sample the depth image the opaque pass wrote.
-func (g *Graphics) drawReflections(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets) {
+// shader can sample the depth image the opaque pass wrote. With a
+// multisampled scene it traces the resolved image, so every sample of a
+// pixel takes the same reflection; the edge itself is still resolved from
+// the coverage the opaque draws left.
+func (g *Graphics) drawReflections(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets) error {
 	p := &g.post
+	pipe, err := p.reflect.at(g.sceneOut)
+	if err != nil {
+		return err
+	}
 	pass := render.PassDesc{Target: t.hdr, LoadColor: true, NoDepth: true}
 	render.BeginTargetPass(cb, pass)
-	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.reflect.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
-	p.fullscreen(cb, p.reflect, t.reflectSet, postPush{
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
+	p.fullscreen(cb, pipe, t.reflectSet, postPush{
 		a: [4]float32{1 / float32(t.extent.Width), 1 / float32(t.extent.Height), 0, 0},
 	})
 	render.EndTargetPassDesc(cb, pass)
+	return nil
 }

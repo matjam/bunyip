@@ -158,6 +158,9 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
 		return nil, false, deviceLostOr(err)
 	}
+	// The slot's fence covers the frame submitted FramesInFlight frames
+	// ago, so anything retired then is now free to destroy.
+	d.nextFrame()
 	sc.index = 0
 	if r.Swapchain.Handle == 0 {
 		// Headless: one image per frame slot, paced by the slot's fence.
@@ -215,8 +218,15 @@ func (r *Renderer) BeginSwapchainPass(fr *Frame, clear [4]float32) {
 		ImageView:   r.depth.AttachView,
 		ImageLayout: depthLayout(r.DepthFormat),
 		LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
-		StoreOp:     vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-		ClearValue:  depthClear,
+		// Nothing reads this depth image after the pass, so discarding it
+		// would be the natural choice. It is stored instead because a
+		// clear-and-discard depth attachment in a pass that records no
+		// draw takes a driver fast path that keeps the sample count of the
+		// pass before it: after a multisampled scene pass that faults the
+		// GPU with a depth-target size violation. Storing a depth buffer
+		// that was only cleared costs almost nothing.
+		StoreOp:    vk.VK_ATTACHMENT_STORE_OP_STORE,
+		ClearValue: depthClear,
 	}
 	sc.stencil = sc.depth
 	sc.color = vk.VkRenderingAttachmentInfo{

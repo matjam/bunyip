@@ -51,7 +51,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `internal/hook/` | The boundary between the engine loop and `gfx`, `input` and `audio`. Each of those packages keeps its plumbing (frame begin and end, resize, the event feed, the audio pull) on unexported methods, wraps the public value in an unexported driver implementing a `hook` interface, and registers a constructor from `init`. `run.go` builds all three through `hook` and hands the game the values `Game()` returns. |
 | `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface, audio output and microphone input. `*_darwin.go` is the reference; Windows and Linux mirror it. Linux has two window backends behind one `App` and `Window`: Wayland in `wayland_linux.go`, its hand-built protocol tables in `wayland_proto_linux.go` and its listener callbacks in `wayland_listen_linux.go`, and X11 in `x11_linux.go`. `app_linux.go` holds the shared structs, chooses the backend in `NewApp` and forwards every method to the live one. |
 | `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-tex` (compresses images to KTX2 with their mip chains), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
-| `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless, and each has a walkthrough in `docs/examples/`. |
+| `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless and compares each frame against `examples/testdata/<name>.png`, and each has a walkthrough in `docs/examples/`. |
 | `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services, the debug console), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
 | `docs/examples/` | One walkthrough per example, `<name>.md`, with front matter (`title`, `example`, `summary`) and a screenshot `<name>.png` beside it. The body quotes the whole program in source order, verbatim, with a section explaining each part. `cmd/bunyip-docs` renders these as the Example programs group; the examples are not rendered as packages. |
 
@@ -73,8 +73,58 @@ resolves, culls, sorts and uploads as an instance stream, in three
 groups: opaque, order-independent translucent, and sorted translucent.
 `renderScene` runs the shadow atlas pass, the HDR pass (sky, opaque, the
 order-independent transparency pass and its resolve, sorted blended,
-debug lines), decals, then the post pass composites. Colours are linear
-and non-premultiplied in the API, premultiplied in the 2D stream.
+debug lines), decals and the velocity pass, then the post chain and the
+composite. Colours are linear and non-premultiplied in the API,
+premultiplied in the 2D stream.
+
+**The post chain.** `postChain` in `gfx/posteffects.go` runs the effects
+that read the scene and its depth, each through `chainPass`: a
+fullscreen pass from `t.hdr` into `t.pong`, copied back over `t.hdr`.
+Every pass therefore has one input set to keep and the composite always
+finds its scene in `t.hdr`. The optional images (velocity, history,
+pong, rays, the second LDR image) are made by the `need*` methods the
+first time a setting asks for them and freed with the target set, so a
+game that turns none of them on pays nothing. The composite reads four
+samplers (scene, bloom, occlusion, rays) plus the LUT, with a set per
+combination of bloom and rays in `sceneTargets.finals`.
+
+**Multisampling.** `PostSettings.Samples` (1, 2, 4 or 8, clamped by
+`Device.SampleCount`) multisamples the HDR scene pass. A `render.Target`
+then holds `MSColor` and `MSDepth` beside `Color` and `Depth`, renders
+into the multisampled pair and resolves into the single-sample pair as
+the pass ends: colour by averaging, depth by taking sample zero, both
+declared on the attachment rather than as a separate command. Everything
+downstream (ambient occlusion, decals, reflections, the transmission
+snapshot, `RenderTexture.ReadDepth`) reads the single-sample images and
+needs no cases of its own. The shadow atlas and every post pass stay
+single-sample, and so does the order-independent transparency pass: its
+accumulation and revealage images are its own, and `PassDesc.Depth`
+lends it the resolved scene depth to test against, so only its edges are
+unsmoothed. A pipeline must match its pass's attachments, so
+`PipelineDesc.Samples` carries the count, `pipeKey.out` carries an
+`outKey` (colour format, whether there is depth, sample count), and the
+fixed pipelines are built per output through `pipeCache` in
+`gfx/pipes.go`. The window's own format at one sample is the zero
+`outKey`, so a plain render texture shares the screen's pipelines.
+Changing the sample count rebuilds the scene targets at the start of the
+next frame's rendering, in `Graphics.end`, where no pass is open.
+
+**Instanced particles** (`gfx/particles.go`) are their own path, not the
+sprite stream. `ParticleQuad` is exactly the GPU instance layout, so a
+slice of them uploads as a memcpy and the fragment program does the
+premultiply; the quad's six vertices come from `gl_VertexIndex`, so
+there is no vertex buffer. `DrawParticles` records a batch into the
+queue and `flush2D` interleaves the batches with the 2D stream by layer
+and then by call order, which is why `draw2D` carries the layer and the
+submission offset of its first item and why `item2D` carries `breaks`:
+two sprite runs with a batch between them must not merge into one draw.
+`DrawParticles3D` records into `parts.scene`, which `renderScene` draws
+after decals in a `NoDepth` pass over `t.hdr`, sampling `t.depthSet` and
+doing the depth test in the fragment program, which is what gives the
+soft fade. Its push block is its own 128 bytes carrying the camera
+basis, so the shared `Frame` block is untouched. That pass writes the
+scene's colour attachment, so its pipeline is built per sample count
+through `pipeCache` like the sky and the decals.
 
 **Descriptor sets for meshes.** Set 0 is the material: seventeen
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
@@ -117,14 +167,16 @@ which is the budget the seventeen images and the atlas spend from: a new
 material texture costs an image and no sampler. The shadow maps still
 share one atlas image so the shadow pass costs one binding.
 
-**The instance stream** (`meshInstance` in `gfx/mesh.go`) is eighteen
-`vec4`s at vertex attribute locations 5 to 16 and 19 to 24, then a
-`uvec2` of packed morph target numbers at 25; 17 and 18 are a skinned
-mesh's joints and weights (`meshVertexLayout` and `skinVertexLayout`).
-Adding a field means adding it at the end of the struct, at the next
-free location, and to the declarations in `vert_common.glsl` and the
-varyings the postludes in `gfx/shaders/shaders.go` write and
-`prelude_mesh.glsl` reads.
+**The instance stream** (`meshInstance` in `gfx/mesh.go`) is fifteen
+material `vec4`s at vertex attribute locations 5 to 16 and 19 to 21,
+then the previous frame's three model rows, which only the velocity
+programs declare, then the morph block at 22 to 24 and a `uvec2` of
+packed morph target numbers at 25; 17 and 18 are a skinned mesh's joints
+and weights (`meshVertexLayout`, `skinVertexLayout` and
+`velocityVertexLayout`, which all read the one stride). Adding a field
+means adding it at the end of the struct, at the next free location, and
+to the declarations in `vert_common.glsl` and the varyings the postludes
+in `gfx/shaders/shaders.go` write and `prelude_mesh.glsl` reads.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
 in seven GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
@@ -198,6 +250,8 @@ go test -fuzz=Fuzz ./gltf/                  # likewise audio, audio/tracker, til
 go generate ./gfx/shaders/ ./examples/shaders/
 go run ./examples/terrain -seconds 3 -shot /tmp/terrain.png
 BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
+CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update          # rerecord the golden images
+CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update -docs    # and the walkthrough screenshots
 go run ./cmd/bunyip-docs -out site
 go run ./cmd/bunyip-tex -v -format bc7 art/hero.png      # also bc1, bc3, bc4, bc5
 go run ./cmd/bunyip-tex -format bc5 -linear -outdir build art/normals/*.png
@@ -227,7 +281,21 @@ render pass, so text tests draw one frame.
   on hardware; a feature that cannot be implemented there gets a no-op
   with a comment saying so, not a stub that appears to work.
 - Every example must run headless to a screenshot; `examples_test.go`
-  checks it.
+  checks it. It also compares the frame against a stored image in
+  `examples/testdata/<name>.png`, downscaled to 320 wide: a mean
+  absolute difference over the whole frame, which is loose enough to
+  absorb a measured millisecond figure changing digits, and a much
+  tighter comparison of both frames blurred to 40 wide, which is what
+  catches a widget moving. A failure writes `got.png`, `want.png` and
+  `diff.png` to a temporary directory it names. The runs are made
+  reproducible by `BUNYIP_FIXED_CLOCK=1` (`Config.FixedClock`), which
+  makes the clock count frames instead of reading the wall clock, so an
+  example must seed its own random numbers from a flag rather than the
+  clock. After a deliberate change to an example, rerecord with
+  `CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update`, and
+  add `-docs` to rewrite the 640-wide walkthrough screenshots from the
+  same run. An example whose picture cannot be the same twice goes in
+  `noGolden` in the test with the reason.
 - **Changing an example means updating its walkthrough.** Every directory
   under `examples/` with a `main.go` has `docs/examples/<name>.md`, and
   the test in `cmd/bunyip-docs` checks that every fenced `go` block is a
@@ -266,6 +334,14 @@ render pass, so text tests draw one frame.
   output storage; copy in and out (see `gfx/text.go`).
 - The render-target colour images need `TRANSFER_DST` because
   `ClearColorForSampling` clears them before their first pass.
+- `BeginSwapchainPass` stores its depth attachment rather than
+  discarding it, though nothing reads it. A depth attachment that is
+  cleared and discarded in a pass that records no draw takes a driver
+  fast path that keeps the sample count of the pass before it, and after
+  a multisampled scene pass that faults the GPU with a depth-target size
+  violation. A frame that only updates a render texture is exactly that
+  shape, and `internal/render/multisample_test.go` pins it. Storing a
+  depth buffer that was only cleared costs almost nothing.
 - Uploads inside a frame (`NewMesh`, `Mesh.Update`, `UpdateSkinned`,
   `NewTexture`, `Texture.Write`, `NewEnvironment`) copy through the
   per-slot staging arena (`render.Staging`, taken with
@@ -280,6 +356,16 @@ render pass, so text tests draw one frame.
   `destroyed`) until the retire runs, so draws already queued still
   draw. `FrameStats.Waits` counts the stalls a frame caused; a running
   game reports zero.
+- `internal/render` has a retire ring of its own for objects `gfx`
+  cannot reach: `Device.Retire` records a closure against the device's
+  frame counter and `BeginFrame` runs the closures `FramesInFlight`
+  frames old, where the slot's fence has just been waited on.
+  `DynamicUniforms.grow` and `StorageSets.resize` use it: growing
+  allocates a fresh descriptor pool, sets and buffers, swaps them in and
+  retires the old pool, so a frame in flight keeps reading exactly what
+  it bound and growth costs no `WaitIdle`. A descriptor set is only safe
+  to rewrite in place when no submitted frame holds it; allocate a new
+  one instead.
 - Culling bounds a static mesh by its vertices, a skinned mesh by the
   union of its per-joint boxes under the pose (computed at load in
   `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
@@ -331,12 +417,14 @@ render pass, so text tests draw one frame.
   `TestAtmosphereBlocksMatch` compares the two shaders and
   `TestAtmosphereMatchesGo` renders the sky and checks it against
   `Sky.radiance`.
-- The instance stream is eighteen `vec4`s at locations 5 to 16 and 19 to
-  24, plus a pair of packed words at 25; a skinned mesh's joints and
-  weights sit at 17 and 18 (`vert_skin.glsl` and `skinVertexLayout`).
-  The twelfth carries the draw's reflection probe index plus one and
-  whether the draw is opaque, and the last three plus the packed pair
-  are the morph block.
+- The instance stream is fifteen `vec4`s at locations 5 to 16 and 19 to
+  21, so a skinned mesh's joints and weights sit at 17 and 18
+  (`vert_skin.glsl` and `skinVertexLayout`). The twelfth carries the
+  draw's reflection probe index plus one and whether the draw is opaque.
+  Three more `vec4`s follow them in the stride, the previous frame's
+  model matrix, which only the velocity programs declare, and the morph
+  block picks up after those at 22 to 24 plus a pair of packed words at
+  25 (`morphInstanceOffset`).
 - An opaque draw writes its screen-space reflection weight into the HDR
   alpha channel, which nothing else reads, and the reflection pass reads
   it back from the scene copy. A blended draw keeps its real alpha, which
@@ -359,6 +447,39 @@ render pass, so text tests draw one frame.
 - `prepareDraws` runs before `writeUniforms`: the cascades need the
   caster bounds it resolves, and the shadow pass culls each draw against
   each cascade and spot light before recording it.
+- `renderScene` calls `q.jitterFrame` before anything else, which fills
+  `q.projJ`, `q.viewProjJ` and `q.invViewProjJ` with the sub-pixel
+  offset temporal anti-aliasing needs (zero when it is off). It has to
+  be there rather than in `renderQueue`, because a probe bake calls
+  `renderScene` on its own command buffer; a bake takes no jitter and
+  writes no motion vectors, which `g.frame != nil` tells it. Everything
+  that rasterises the HDR pass or reads the depth buffer afterwards uses
+  those and not `Camera.Projection`: the Frame block, the sky, the debug
+  lines, SSAO, the velocity pass and the reprojection matrices. The
+  cascades, the culling frustum and `gfx/pick.go` stay unjittered.
+  `q.prevViewProj` is the previous frame's unjittered view-projection,
+  set at the end of `renderQueue` and used by everything that reprojects.
+  The clustered light lookup is deliberately left alone: `clusterAt` in
+  `prelude_mesh.glsl` reads `gl_FragCoord` and `vViewDepth`, and
+  `vViewDepth` comes from the unjittered view matrix, so the only effect
+  of the jitter there is that a fragment within half a pixel of a tile
+  edge can land in the neighbouring tile. Tiles are tens of pixels
+  across, so it is ignored.
+- The velocity image holds the object's own motion only, in texture
+  coordinates: `ndc(prevViewProj * currentWorld) - ndc(prevViewProj *
+  previousWorld)`. A draw the game did not mark as moved writes nothing,
+  and the resolve passes reconstruct the camera's part from depth and
+  add it. The velocity programs are standalone (`velocity.vert`,
+  `velocity_skin.vert`, `velocity.frag`), take their matrices in a
+  128-byte push block rather than the Frame block, and declare their own
+  vertex layout (`velocityVertexLayout`), so the Frame block and the
+  mesh preludes are untouched. The instance stream carries `prevModel`
+  in the three vec4s past `gi`, which no other program declares.
+- A 2D frame that goes through the post pass (`PostSettings.Post2D`)
+  draws its stream into `t.ldr`, the swapchain-format image, and the
+  composite reads it from there through `final2DSet`. That is why no 2D
+  pipeline needs an HDR-format variant. The composite's `pc.d.y` flag
+  skips exposure and tone mapping in that mode.
 - Immediate-mode identity comes from the label plus the enclosing
   containers plus call order; overlays (menus, modals, drag ghosts) are
   drawn deferred at `end`, and overlays may add overlays, so that list

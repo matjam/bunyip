@@ -46,10 +46,10 @@ func runsOf(l drawList) int {
 		d := l.at(i)
 		run := 1
 		if !d.skinned {
-			key := meshKey(&d.mat, false, d.shell > 0)
+			key := meshKey(&d.mat, false, d.shell > 0, outKey{})
 			for i+run < l.len() {
 				e := l.at(i + run)
-				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0) != key {
+				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0, outKey{}) != key {
 					break
 				}
 				run++
