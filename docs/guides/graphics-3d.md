@@ -268,7 +268,8 @@ Transparency has three modes, and they do different things.
 `AlphaCutoff` discards fragments below a threshold in both the lit and
 the shadow pass, giving hard edges and real shadows, which is what
 leaves, fences and grass need. `Blend` draws the material after the
-opaque scene, sorted back to front, for smoke and water. `Transmission`
+opaque scene, sorted back to front, for smoke and water, or without
+sorting at all under `PostSettings.OrderIndependent`. `Transmission`
 is refractive glass, below. Alongside them, `DoubleSided` turns off
 back-face culling and lights back faces with a flipped normal, which a
 single-quad leaf needs; `Unlit` shows the base colour and emissive as
@@ -667,9 +668,20 @@ whole extra frames.
 Transparency sorts by distance to the camera per draw, not per triangle,
 so two blended meshes that interpenetrate pick an order and keep it, and
 a large one sorted by its origin can land on the wrong side of a small
-one. Prefer `AlphaCutoff` where hard edges are acceptable, keep blended
-geometry convex and small, and use `NoDepthWrite` for additive effects
-where order does not matter.
+one. `PostSettings.OrderIndependent` is the way out: it accumulates every
+translucent fragment with a weight that favours the nearer one and
+resolves them in one pass, so a crossing looks right on both sides
+without any sorting at all. It costs two images the size of the frame and
+one pass, and it is an approximation: a scene of many overlapping layers
+comes out slightly flatter than compositing them in order would. Where it
+is off, prefer `AlphaCutoff` where hard edges are acceptable, keep
+blended geometry convex and small, and use `NoDepthWrite` for additive
+effects where order does not matter.
+
+`Transmission` keeps the sorted path either way, because refraction reads
+the scene behind the surface and so has to be drawn after it. A frame can
+have both: the order-independent pass runs first and the transmissive
+draws follow it in order, seeing what it resolved.
 
 Meshes, models, textures, environments, render textures, shaders and
 fonts all hold GPU memory and all have `Destroy`. Call it from `Init`,

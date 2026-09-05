@@ -150,7 +150,8 @@ kerning and ligatures cross the style changes inside it.
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, an atmospheric sky with aerial perspective, frustum culling
+ground fog, an atmospheric sky with aerial perspective, order-independent
+transparency, frustum culling
 with a public `Frustum`, bounds that follow a skinned pose and
 `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, levels of detail, spot lights
@@ -178,7 +179,10 @@ in.
   neither casts a shaft.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
 - Depth of field, motion blur and lens effects.
-- Order-independent transparency; blended draws are sorted per mesh.
+- Order-independent transparency is the weighted blended approximation
+  (`PostSettings.OrderIndependent`), so a deep stack of layers comes out
+  flatter than compositing them in order would, and transmissive draws
+  stay sorted. Per-pixel lists or depth peeling would be exact.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back.
 - Culling is per draw and by bounding sphere. There is no bounding

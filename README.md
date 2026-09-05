@@ -37,7 +37,7 @@ window.
   glass; glTF models with skeletal animation, blend spaces, IK and morph
   targets; cascaded shadows, spot lights with shadows, a procedural sky
   with atmospheric scattering and aerial perspective or image-based
-  lighting, fog; instancing, frustum
+  lighting, fog; order-independent transparency; instancing, frustum
   culling and levels of detail; billboards, decals, outlines and x-ray;
   dynamic meshes and terrain; SSAO, bloom, FXAA, tone mapping and colour
   grading; render textures and picking.
@@ -169,7 +169,7 @@ whole program and explains it section by section:
 | Command | Shows |
 |---|---|
 | `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites, and a lit brick floor where a moving lamp throws shadows from three crates |
-| `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
+| `go run ./examples/viewer [-model file.glb] [-sorted]` | lit 3D scene or a glTF model, orbit camera, crossed translucent panes composited order-independently, sprite overlay |
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |

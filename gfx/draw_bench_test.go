@@ -210,7 +210,7 @@ func BenchmarkPrepareDraws_5000(b *testing.B) {
 	q.draws = make([]meshDraw, len(src))
 	for b.Loop() {
 		copy(q.draws, src)
-		if _, _, err := g.prepareDraws(q, 0, scene, 1); err != nil {
+		if _, _, _, err := g.prepareDraws(q, 0, scene, 1); err != nil {
 			b.Fatalf("prepareDraws: %v", err)
 		}
 	}
