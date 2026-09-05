@@ -823,7 +823,8 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		env = nil
 	}
 	occluding := g.rasteriseOccluders(q, viewProj)
-	culled, occluded := 0, 0
+	g.expandBatches(q, frustum, viewProj, occluding)
+	culled, occluded, tests := 0, 0, 0
 	q.depthClamp = g.r.Device.DepthClamp()
 	q.hasCasters, q.casterAlong = false, 0
 	lightDir := q.light.Direction.Norm()
@@ -835,6 +836,9 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		d.centre, d.radius, d.cullable = q.drawBounds(d)
 		d.depth = -view.MulPoint(d.centre).Z
 		d.blended = d.mat.blended()
+		if d.cullable {
+			tests++
+		}
 		d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
 		if occluding && d.cullable && !d.culled && g.occ.hides(viewProj, d.centre, d.radius) {
 			d.culled, occluded = true, occluded+1
@@ -850,6 +854,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	}
 	g.stats.Culled += culled
 	g.stats.Occluded += occluded
+	g.stats.CullTests += tests
 	all := q.sortDraws()
 	q.inst.reset()
 	for k := range all.len() {

@@ -508,6 +508,33 @@ gr.AddOccluder3DAt(g.wallBox, g.wallAt)   // a coarse box, not the wall's own me
 gr.DrawMeshAt(g.wall, stone, g.wallAt)
 ```
 
+Both tests are per draw, so a level of ten thousand rocks, crates and
+lamp posts still costs ten thousand of them. `NewStaticBatch(items)`
+takes a slice of `BatchItem` (a mesh, a material and a model matrix, as
+`DrawMesh` takes) and builds a bounding volume hierarchy over them once;
+`DrawBatch(batch)` then tests the hierarchy rather than the items and
+queues only what survives. A subtree behind the camera or behind an
+occluder is rejected at one node, so the ten thousand cost a few dozen
+box tests, and `FrameStats.CullTests` counts them. The items that come
+through are ordinary draws, instanced, sorted, lit and shadowed like any
+others. Ten thousand cubes along a strip most of which is behind the
+camera fall from 220 microseconds of culling a frame to under two.
+
+A batch is for geometry that never moves: the hierarchy is built from
+the models given and is not rebuilt, so anything that moves belongs in
+`DrawMesh`. It does not own its meshes or textures, which are destroyed
+as usual, and `Len` and `Bounds` report what it holds.
+
+```go
+var items []gfx.BatchItem
+for _, p := range level.Props {
+	items = append(items, gfx.BatchItem{Mesh: p.Mesh, Material: p.Mat, Model: p.At.Matrix()})
+}
+g.props = ctx.Gfx.NewStaticBatch(items) // once, at load
+
+gr.DrawBatch(g.props) // every frame
+```
+
 `NewLOD(meshes, distances)` takes meshes from finest to coarsest and the
 camera distances at which each hands over to the next, so three meshes
 take two distances. A nil last mesh draws nothing beyond the last
@@ -622,8 +649,9 @@ gr.DebugText3D(scout.Position, "scout")
 `FrameStats`: `Draws3D` is mesh draw calls after instancing across all
 passes, `Instances` is mesh instances in the main pass, `ShadowDraws` is
 the instances recorded into the shadow maps, `Culled` is the draws
-skipped as out of view and `Occluded` how many of those an occluder hid
-rather than the frustum, `Lights` and `LightsDropped` are the point and
+skipped as out of view, `Occluded` how many of those an occluder hid
+rather than the frustum and `CullTests` how many bounding volumes were
+tested to decide, `Lights` and `LightsDropped` are the point and
 spot lights the frame kept and threw away, `Draws2D` and `Vertices2D`
 cover the sprite stream, and `Waits` counts the times the frame stopped
 for the GPU to go idle, which a running game keeps at zero. The F3

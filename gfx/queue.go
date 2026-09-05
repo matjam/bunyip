@@ -56,6 +56,9 @@ type drawQueue struct {
 	// meshOccluders are the meshes AddOccluder3D marked as blocking the
 	// camera's view, rasterised into the software occlusion buffer.
 	meshOccluders []meshOccluder
+	// batches are the static batches DrawBatch queued, expanded into
+	// draws once the frustum and the occluders are known.
+	batches []*StaticBatch
 	shadowTex    *Texture     // the polar shadow maps, one row per light
 	shadowPix    []byte       // the strip's pixels, filled each frame
 	shadowDist   []float32    // one light's distances, reused across lights
@@ -88,6 +91,7 @@ func (q *drawQueue) reset() {
 	q.occluders = q.occluders[:0]
 	q.occluderRuns = q.occluderRuns[:0]
 	q.meshOccluders = q.meshOccluders[:0]
+	q.batches = q.batches[:0]
 	q.xform = lin.Identity2()
 	q.xforms = q.xforms[:0]
 }

@@ -153,7 +153,8 @@ Billboards and 3D text, debug frustums and 3D debug text, distance and
 ground fog, frustum culling with a public `Frustum`, bounds that follow
 a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, software occlusion culling from
-`AddOccluder3D`, levels of detail, spot lights
+`AddOccluder3D`, a static bounding volume hierarchy behind
+`NewStaticBatch`, levels of detail, spot lights
 with shadows, per-light culling in the shadow pass, thirty-two lights a
 frame, heightfield and primitive meshes, dynamic mesh updates, colour
 grading LUTs, and nearest or repeating sampling for render textures are
@@ -180,11 +181,12 @@ in.
 - Order-independent transparency; blended draws are sorted per mesh.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back.
-- Culling is per draw and by bounding sphere. There is no bounding
-  volume hierarchy or spatial index, so a frame still pays a frustum
-  test for every draw it queues, and a draw whose shape leaves its
-  geometry needs `Mesh.SetBounds` or `Shader.VertexBounds` to say where
-  it went.
+- Culling a draw that was queued on its own is by bounding sphere and
+  costs one test each; only the geometry a game puts in a
+  `NewStaticBatch` is behind a hierarchy, and the hierarchy is built
+  once, so nothing that moves can go in one. A draw whose shape leaves
+  its geometry still needs `Mesh.SetBounds` or `Shader.VertexBounds` to
+  say where it went.
 
 ## Materials and lighting
 

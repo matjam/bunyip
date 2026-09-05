@@ -239,6 +239,10 @@ render pass, so text tests draw one frame.
   near plane and the four sides first, so screen coordinates stay in the
   buffer and the fixed-point edge functions cannot overflow. An occluded
   draw is `culled` like any other, so it still casts shadows.
+- `DrawBatch` does not queue anything: it puts the `StaticBatch` on the
+  queue, and `prepareDraws` walks its hierarchy (`gfx/batch.go`) into
+  `q.draws` once the frustum and the occlusion buffer are known. That is
+  why `renderQueue`'s `has3D` counts queued batches as well as draws.
 - The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
   class, then depth for blended draws or dense shader, uniform, material
   set and mesh ids for opaque ones, and the draw's index in the low

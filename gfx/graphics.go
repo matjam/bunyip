@@ -431,6 +431,10 @@ type FrameStats struct {
 	// software occlusion buffer found behind an occluder, which is a
 	// subset of Culled. It is zero in a frame with no AddOccluder3D.
 	Occluded int
+	// CullTests counts the bounding volume tests culling ran: one per
+	// queued draw, plus one per hierarchy node a static batch visited.
+	// A batch shows up as far fewer tests than it holds items.
+	CullTests int
 	// ShadowDraws counts the mesh instances recorded into the shadow maps,
 	// summed over the cascades and the shadowed spot lights. A caster is
 	// only recorded into the maps its bounds reach, so this falls as
@@ -545,7 +549,7 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 // the 2D stream, into target (a render texture) or the swapchain when nil.
 func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, target *render.Target) error {
 	cb := fr.CB
-	has3D := len(q.draws) > 0 || q.light.Background || len(q.lines.items) > 0
+	has3D := len(q.draws) > 0 || len(q.batches) > 0 || q.light.Background || len(q.lines.items) > 0
 	bloom := has3D && g.post.settings.Bloom > 0
 	ao := has3D && g.post.settings.AmbientOcclusion > 0
 	if has3D {
