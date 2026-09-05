@@ -116,7 +116,17 @@ func cubeDir(face int, u, v float32) lin.Vec3 {
 	return lin.V3(-u, -v, -1)
 }
 
+// radianceSampler is the radiance arriving from a direction, y up: an
+// equirectangular panorama, or the six faces a probe bake captured.
+type radianceSampler func(d lin.Vec3) (r, g, b float32)
+
 func (g *Graphics) newEnvironment(src *radianceMap, opts EnvironmentOptions) (*Environment, error) {
+	return g.newEnvironmentFrom(src.sample, opts)
+}
+
+// newEnvironmentFrom prefilters any radiance sampler into a cube map with
+// one level per roughness and projects its irradiance onto harmonics.
+func (g *Graphics) newEnvironmentFrom(sample radianceSampler, opts EnvironmentOptions) (*Environment, error) {
 	size := opts.Size
 	if size <= 0 {
 		size = 128
@@ -141,9 +151,9 @@ func (g *Graphics) newEnvironment(src *radianceMap, opts EnvironmentOptions) (*E
 					n := cubeDir(face, u, v).Norm()
 					var r, gg, b float32
 					if level == 0 {
-						r, gg, b = src.sample(n)
+						r, gg, b = sample(n)
 					} else {
-						r, gg, b = prefilter(src, n, roughness)
+						r, gg, b = prefilter(sample, n, roughness)
 					}
 					i := (y*side + x) * 8
 					putF16(pix[i:], r)
@@ -159,7 +169,7 @@ func (g *Graphics) newEnvironment(src *radianceMap, opts EnvironmentOptions) (*E
 	if env.cube, err = g.uploadCubemap(uint32(size), vk.VK_FORMAT_R16G16B16A16_SFLOAT, 8, faces); err != nil {
 		return nil, err
 	}
-	env.sh = irradianceSH(src)
+	env.sh = shProject(sample, 128, 64)
 	if env.set, err = g.descriptors.AllocateMany(g.cubeBindings(env.cube)); err != nil {
 		env.cube.Destroy()
 		return nil, err
@@ -204,9 +214,9 @@ func (g *Graphics) cubeBindings(cube *render.Image) []render.SamplerBinding {
 	return bindings
 }
 
-// prefilter convolves the panorama with the GGX lobe around n for a
+// prefilter convolves the radiance with the GGX lobe around n for a
 // roughness, by importance sampling.
-func prefilter(src *radianceMap, n lin.Vec3, roughness float32) (r, g, b float32) {
+func prefilter(sample radianceSampler, n lin.Vec3, roughness float32) (r, g, b float32) {
 	const samples = 64
 	a := roughness * roughness
 	up := lin.V3(0, 0, 1)
@@ -229,7 +239,7 @@ func prefilter(src *radianceMap, n lin.Vec3, roughness float32) (r, g, b float32
 		if nl <= 0 {
 			continue
 		}
-		sr, sg, sb := src.sample(l)
+		sr, sg, sb := sample(l)
 		r += sr * nl
 		g += sg * nl
 		b += sb * nl
@@ -313,6 +323,31 @@ func putF16(dst []byte, f float32) {
 		h = sign | uint16(exp<<10) | uint16(mant>>13)
 	}
 	dst[0], dst[1] = byte(h), byte(h>>8)
+}
+
+// getF16 reads a half float written little-endian, the form a bake reads
+// the scene image back in.
+func getF16(src []byte) float32 {
+	h := uint16(src[0]) | uint16(src[1])<<8
+	sign := uint32(h&0x8000) << 16
+	exp := int((h >> 10) & 0x1f)
+	mant := uint32(h & 0x3ff)
+	switch {
+	case exp == 0:
+		if mant == 0 {
+			return math.Float32frombits(sign)
+		}
+		// Subnormal: shift the mantissa up until it is normal again.
+		e := -1
+		for mant&0x400 == 0 {
+			mant <<= 1
+			e++
+		}
+		return math.Float32frombits(sign | uint32(112-e)<<23 | (mant&0x3ff)<<13)
+	case exp == 31:
+		return math.Float32frombits(sign | 0x7f800000 | mant<<13)
+	}
+	return math.Float32frombits(sign | uint32(exp+112)<<23 | mant<<13)
 }
 
 // Destroy frees the environment. Called inside a frame it costs no wait:

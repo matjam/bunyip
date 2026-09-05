@@ -176,8 +176,25 @@ in.
   sets retired with the old buffers would remove it.
 - Terrain splat maps and heightfield LOD as built-ins; a game does both
   with `HeightfieldMesh`, a mesh shader and `LOD` today.
-- Global illumination beyond one environment map: light probes, baked
-  lightmaps, reflection probes per area, screen-space reflections.
+- Baked lightmaps: light arriving at a surface, stored per texel on the
+  second UV set rather than sampled on a lattice. `LightProbeGrid` bakes
+  irradiance at points and `ReflectionProbe` reflections in a volume, so
+  a room's bounce light and reflections are there, but neither resolves
+  the shadow of a chair leg on the floor beneath it.
+- Two reflection probes are never blended over the space between them:
+  one cube map is bound per draw, so the deepest containing probe wins
+  and `ReflectionProbe.Margin` fades its reflection towards the frame's
+  average environment at the volume's edge. Blending would need a second
+  cube binding in the material set.
+- A probe bake reads the scene back to the host and prefilters it on the
+  CPU, so a probe of any size costs a stall and a fraction of a second.
+  Prefiltering on the GPU would make probes cheap enough to refresh as a
+  scene changes.
+- Screen-space reflections trace against the depth buffer with normals
+  reconstructed from it, so a surface reflects as flat as its triangles,
+  and what is off screen or hidden falls back to the probe or the
+  environment. There is no temporal accumulation, so a rough surface's
+  rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
 - Volumetrics: god rays, and atmospheric scattering for the sky rather
   than the parametric gradient. Fog is a per-pixel fade, not a medium.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
@@ -319,21 +336,47 @@ near enough to send.
 ## Tooling and workflow
 
 `bunyip.FlyCamera` is the debug camera, `Config.LogFile` writes the log
-and a panic's stack trace to a file for crash reports, and shader hot
-reload is `Shader.Reload` behind an `asset.Watcher`. `Config.Console`
+and a panic's stack trace to a file for crash reports, and hot reload is
+`asset.Reloader`: it watches the loose files a game loaded through it
+and swaps them into the objects the game holds, a texture's image
+through `gfx.Texture.Replace` and a shader's pipelines through
+`Shader.Reload`, so a material's textures follow the files without any
+bookkeeping. `bunyip-tex` and `gfx/ktx2` are the texture pipeline:
+images compress to BC1, BC3, BC4, BC5 or BC7 with their mip chains built
+offline in linear light, into KTX2 files that `asset.Texture` and
+`gfx.NewCompressedTexture` upload block for block, falling back to a
+software decode where a device cannot sample the format.
+`Config.Console`
 turns on the in-game console: commands, variables, key bindings, the
 log, and panels for the frame timings and profile scopes, the live
 post-processing settings and GPU resources, a world's entities,
 components, resources and systems, the physics simulation, the mixer,
-the input devices and a game's own services.
+the input devices and a game's own services. Every pass is timed on the
+GPU with timestamp queries read back without waiting, reported by
+`gfx.FrameStats.GPU` and `GPUFrameMS` and by `bunyip.Stats`, graphed and
+listed by the engine panel and totalled by the F3 overlay.
 
-- A frame profiler with GPU timestamps. The console's engine panel
-  graphs the CPU side (update, draw, present) and shows the `Profile`
-  scopes, but nothing times the passes on the GPU.
-- An asset pipeline that converts textures to compressed GPU formats
-  (BC, ASTC) and generates mip chains offline.
-- Material hot reload as a built-in; a game reloads a material's
-  textures through the watcher today.
+- Nothing times the parts of a pass, only the pass: a slow shader inside
+  the opaque pass shows as a slow opaque pass. Splitting it further
+  would mean timestamps between draw runs, which is a query pair per run.
+- ASTC is carried but not encoded. `gfx/ktx2` writes BC1, BC3, BC4, BC5
+  and BC7, and a KTX2 file that already holds ASTC parses and uploads on
+  a device that samples it, but nothing here produces ASTC or decodes it,
+  so there is no software fallback for one. Mobile is where ASTC matters
+  and mobile needs a second graphics backend first.
+- BC7 is written in two of its eight modes, one subset over RGBA and two
+  subsets over RGB, and the decoder reads back the same two. A file from
+  another tool uploads whatever modes it uses, but the software fallback
+  for a device without BC7 cannot expand one that uses the other six.
+- BC6H, for high dynamic range images, is neither written nor read;
+  environment maps load from Radiance `.hdr` instead.
+- Models and environments are not hot reloaded. A reloaded glTF file
+  gives back different meshes, a different skeleton and different clips,
+  which every `AnimPlayer`, mesh pointer and node index a game holds
+  refers to; an `Environment` is a prefiltered cube map, which a probe
+  bake also owns, so swapping the panorama behind one means rebuilding
+  every level of it. `Reloader` leaves both to the game rather than
+  swapping under it.
 
 ## Quality and process
 
