@@ -91,6 +91,7 @@ func TestMorphDrawSnapshotsRendered(t *testing.T) {
 			name := map[bool]string{false: "plain/", true: "skinned/"}[skinned] + tc.name
 			t.Run(name, func(t *testing.T) {
 				g := newHeadless(t, 192, 96)
+				enableGeometryReadback(t)
 				g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
 				load := func() *Model {
 					m, err := g.LoadModel(morphSnapshotDoc(skinned))
@@ -139,13 +140,18 @@ func TestMorphDrawSnapshotsRendered(t *testing.T) {
 						}
 					})
 				}
-				want, got := render(false), render(true)
+				want := render(false)
+				independent := append([]*Mesh(nil), snapshots...)
+				got := render(true)
 				if diff := imageDiff(want, got); diff != 0 {
 					t.Errorf("shared morph instances differ from independent models in %d pixels", diff)
 					morphImageDiagnostic(t, "independent", want)
 					morphImageDiagnostic(t, "shared", got)
+					for i, mesh := range independent {
+						morphBufferDiagnostic(t, "independent", i, mesh)
+					}
 					for i, mesh := range snapshots {
-						morphBufferDiagnostic(t, i, mesh)
+						morphBufferDiagnostic(t, "shared", i, mesh)
 					}
 				}
 			})
@@ -160,6 +166,7 @@ func TestMorphUploadContext(t *testing.T) {
 	for _, skinned := range []bool{false, true} {
 		t.Run(map[bool]string{false: "plain", true: "skinned"}[skinned], func(t *testing.T) {
 			g := newHeadless(t, 96, 96)
+			enableGeometryReadback(t)
 			g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
 			load := func() *Model {
 				m, err := g.LoadModel(morphSnapshotDoc(skinned))
@@ -200,8 +207,8 @@ func TestMorphUploadContext(t *testing.T) {
 				t.Errorf("frame upload differs from setup upload in %d pixels", diff)
 				morphImageDiagnostic(t, "setup", want)
 				morphImageDiagnostic(t, "frame", got)
-				morphBufferDiagnostic(t, 0, before.morphs[0].mesh)
-				morphBufferDiagnostic(t, 1, during.morphs[0].mesh)
+				morphBufferDiagnostic(t, "setup", 0, before.morphs[0].mesh)
+				morphBufferDiagnostic(t, "frame", 1, during.morphs[0].mesh)
 			}
 		})
 	}
@@ -219,16 +226,9 @@ func morphImageDiagnostic(t *testing.T, label string, img *image.RGBA) {
 	t.Logf("%s PNG base64: %s", label, base64.StdEncoding.EncodeToString(data.Bytes()))
 }
 
-func morphBufferDiagnostic(t *testing.T, draw int, m *Mesh) {
+func morphBufferDiagnostic(t *testing.T, label string, draw int, m *Mesh) {
 	t.Helper()
-	// Unified-memory devices may expose a mapped view. Bytes returns nil
-	// for every buffer without host-visible mapped memory. The screenshot
-	// has already waited for the frame before this diagnostic reads it.
-	data := m.vbuf.Bytes()
-	if data == nil {
-		t.Logf("draw %d vertex buffer has no host mapping", draw)
-		return
-	}
+	data := readGeometryBuffer(t, m.g, m.vbuf)
 	stride := vertexSize
 	if m.skinned {
 		stride = skinVertexSize
@@ -239,11 +239,26 @@ func morphBufferDiagnostic(t *testing.T, draw int, m *Mesh) {
 			offset := i*stride + component*4
 			got := math.Float32frombits(binary.LittleEndian.Uint32(data[offset : offset+4]))
 			if got != want {
+				if mismatches == 0 {
+					t.Logf("%s draw %d first vertex mismatch: vertex=%d component=%d got=%g want=%g", label, draw, i, component, got, want)
+				}
 				mismatches++
 			}
 		}
 	}
-	t.Logf("draw %d GPU vertex position/normal mismatches: %d of %d", draw, mismatches, len(m.verts)*6)
+	t.Logf("%s draw %d GPU vertex position/normal mismatches: %d of %d", label, draw, mismatches, len(m.verts)*6)
+	data = readGeometryBuffer(t, m.g, m.ibuf)
+	mismatches = 0
+	for i, want := range m.indices {
+		got := binary.LittleEndian.Uint32(data[i*4 : i*4+4])
+		if got != want {
+			if mismatches == 0 {
+				t.Logf("%s draw %d first index mismatch: index=%d got=%d want=%d", label, draw, i, got, want)
+			}
+			mismatches++
+		}
+	}
+	t.Logf("%s draw %d GPU index mismatches: %d of %d", label, draw, mismatches, len(m.indices))
 }
 
 func TestMorphDrawSnapshotsAllocateNothingOnGPU(t *testing.T) {
