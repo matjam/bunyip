@@ -466,9 +466,12 @@ walkthrough screenshots from the same run.
   hand in practice. The test can write them (`-update -docs`), but it
   writes what a 1.5 second run draws, which is not always the moment
   that shows an example best, so they are not regenerated wholesale.
-- The comparison runs on one machine's GPU. The tolerances are set for a
-  frame redrawn on the same driver; a different driver may need them
-  loosened, and nothing yet records a golden per driver.
+- The comparison runs only on the GPU the goldens were recorded on,
+  named in `examples/testdata/gpu.txt`; on any other device the examples
+  test checks that each example runs and draws something and reports
+  the difference without failing. Nothing yet records a golden per
+  driver, so a rendering regression that only shows on another driver
+  passes there.
 - `examples/assets` has no stored image: it counts its runs in a save
   file, draws the count, and rewrites its own images on disk as it goes,
   so its frame is never the same twice. It is still run and checked for

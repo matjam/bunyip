@@ -11,6 +11,12 @@
 //
 // and add -docs to rewrite the 640-wide walkthrough screenshots in
 // docs/examples from the same run.
+//
+// A frame is compared only on the GPU the images were recorded on, whose
+// name -update writes to testdata/gpu.txt: drivers differ by more than
+// the tolerances allow, so on any other device the test still checks
+// that every example runs and draws something, reports the difference,
+// and does not fail on it.
 package examples
 
 import (
@@ -22,11 +28,38 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	xdraw "golang.org/x/image/draw"
 )
+
+// gpuFile names the GPU the golden images were recorded on.
+const gpuFile = "testdata/gpu.txt"
+
+// gpuLine is the renderer's device line in an example's log, as the
+// default text handler prints it and as a handler that quotes messages
+// prints it.
+var gpuLine = regexp.MustCompile(`device created"? gpu="([^"]*)"`)
+
+// gpuOf reads the GPU's name out of an example's log output.
+func gpuOf(out []byte) string {
+	if m := gpuLine.FindSubmatch(out); m != nil {
+		return string(m[1])
+	}
+	return ""
+}
+
+// recordedGPU is the name in testdata/gpu.txt, or "" when there is none.
+func recordedGPU() string {
+	b, err := os.ReadFile(gpuFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
 
 var (
 	update = flag.Bool("update", false, "rewrite the golden images in testdata from this run")
@@ -123,7 +156,13 @@ func TestExamplesRun(t *testing.T) {
 				return
 			}
 			got := scaleTo(img, goldenWidth)
+			gpu := gpuOf(out)
 			if *update {
+				if gpu != "" {
+					if err := os.WriteFile(gpuFile, []byte(gpu+"\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if err := writePNG(filepath.Join(goldenDir, name+".png"), got); err != nil {
 					t.Fatal(err)
 				}
@@ -132,6 +171,12 @@ func TestExamplesRun(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				return
+			}
+			if want := recordedGPU(); want != "" && gpu != want {
+				// Another driver draws the same scene a little differently
+				// everywhere, which the tolerances were never set for.
+				t.Logf("%s: drawn on %q, the goldens were recorded on %q; the frame is not blank and is not compared", name, gpu, want)
 				return
 			}
 			compare(t, name, got)
