@@ -39,8 +39,9 @@
 // camera's Frustum (a skinned mesh by the boxes of its joints under the
 // pose, and a mesh whose shape leaves its geometry by Mesh.SetBounds or
 // Shader.VertexBounds), sorted for blending and lit by SetLight's
-// directional light with cascaded shadows, AddPointLight and
-// AddSpotLight, the procedural Sky or an Environment map, and Fog.
+// directional light with cascaded shadows, AddPoint and AddSpot, whose
+// lights cast shadows of their own, the procedural Sky or an
+// Environment map, and Fog.
 // DrawLOD picks a mesh by distance. DrawBillboard and DrawText3D put
 // camera-facing quads and labels in the scene, and DrawDecal projects a
 // texture onto geometry. SetPost sets exposure, bloom, ambient

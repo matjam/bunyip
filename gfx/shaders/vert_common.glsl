@@ -39,8 +39,9 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 sunColor;     // rgb the drawn disc's radiance
     vec4 fog;          // rgb the fog colour, w = exponential density
     vec4 fogRange;     // x start, y end of linear fog; z height, w falloff of ground fog
-    mat4 spotViewProj[4]; // shadowed spot lights' projections
-    vec4 spotInfo[32];    // x = a light's shadow map index or -1, y = range
+    mat4 spotViewProj[4];  // shadowed spot lights' projections
+    vec4 spotInfo[32];     // x = a light's spot map index or -1, y = range, z = its cube map slot or -1
+    mat4 pointViewProj[24]; // four shadowed point lights, six faces each
 } frame;
 
 // Per-instance stream: the model matrix's rows, base colour, material

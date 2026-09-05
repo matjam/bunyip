@@ -253,7 +253,7 @@ void main() {
 // Shadow-pass vertex main: position from the light, plus what the
 // depth fragment needs for alpha cutouts.
 const shadowVertPostlude = `
-layout(push_constant) uniform PC { int cascade; } pc;
+layout(push_constant) uniform PC { int map; } pc; // the shadow map being drawn
 
 layout(location = 0) out vec2 vUV;
 layout(location = 1) flat out vec3 vCutout; // x base alpha, y cutoff, z albedo sampler
@@ -262,7 +262,11 @@ void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
     vertex(v);
     mat4 m = model()SKIN;
-    mat4 lightProj = pc.cascade < 3 ? frame.lightViewProj[pc.cascade] : frame.spotViewProj[pc.cascade - 3];
+    // The maps run cascades, then spot maps, then cube faces.
+    mat4 lightProj;
+    if (pc.map < 3) lightProj = frame.lightViewProj[pc.map];
+    else if (pc.map < 7) lightProj = frame.spotViewProj[pc.map - 3];
+    else lightProj = frame.pointViewProj[pc.map - 7];
     gl_Position = lightProj * m * vec4(v.position, 1.0);
     vUV = uvTransform(v.uv);
     vCutout = vec3(iBaseColor.a * v.color.a, iExtra.y, float(texSampler(0)));

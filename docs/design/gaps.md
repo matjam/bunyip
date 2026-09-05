@@ -152,14 +152,15 @@ kerning and ligatures cross the style changes inside it.
 Billboards and 3D text, debug frustums and 3D debug text, distance and
 ground fog, frustum culling with a public `Frustum`, bounds that follow
 a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
-meshes culling cannot bound on its own, levels of detail, spot lights
-with shadows, per-light culling in the shadow pass, thirty-two lights a
-frame, heightfield and primitive meshes, dynamic mesh updates, colour
-grading LUTs, and nearest or repeating sampling for render textures are
-in.
+meshes culling cannot bound on its own, levels of detail, spot and point
+lights with shadows, per-light culling in the shadow pass, thirty-two
+lights a frame, heightfield and primitive meshes, dynamic mesh updates,
+colour grading LUTs, and nearest or repeating sampling for render
+textures are in.
 
-- Point light shadows (cube maps); the directional light and up to four
-  spot lights a frame cast shadows.
+- Soft shadows beyond the fixed nine-tap filter: no contact hardening,
+  and a cube face's filter is clamped inside the face, so a point light's
+  shadow hardens over the seam between faces.
 - Occlusion culling, and impostors (billboards baked from a model).
 - Clustered lighting for hundreds of lights; a frame keeps its first
   thirty-two and `FrameStats.LightsDropped` counts the rest.

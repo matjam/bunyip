@@ -35,9 +35,9 @@ window.
   game-written fragment shaders.
 - 3D: physically based materials with clearcoat, sheen, subsurface and
   glass; glTF models with skeletal animation, blend spaces, IK and morph
-  targets; cascaded shadows, spot lights with shadows, a procedural sky
-  or image-based lighting, fog; instancing, frustum culling and levels of
-  detail; billboards, decals, outlines and x-ray; dynamic meshes and
+  targets; cascaded shadows, spot and point lights with shadows, a
+  procedural sky or image-based lighting, fog; instancing, frustum
+  culling and levels of detail; billboards, decals, outlines and x-ray; dynamic meshes and
   terrain; SSAO, bloom, FXAA, tone mapping and colour grading; render
   textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels

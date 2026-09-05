@@ -61,14 +61,18 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 sunColor;     // rgb the drawn disc's radiance
     vec4 fog;          // rgb the fog colour, w = exponential density
     vec4 fogRange;     // x start, y end of linear fog; z height, w falloff of ground fog
-    mat4 spotViewProj[4]; // shadowed spot lights' projections
-    vec4 spotInfo[32];    // x = a light's shadow map index or -1, y = range
+    mat4 spotViewProj[4];  // shadowed spot lights' projections
+    vec4 spotInfo[32];     // x = a light's spot map index or -1, y = range, z = its cube map slot or -1
+    mat4 pointViewProj[24]; // four shadowed point lights, six faces each
 } frame;
 
-// One 4096 atlas holds every shadow map: the three cascades of 2048 in
-// three quadrants and four spot maps of 1024 in the fourth.
+// One atlas holds every shadow map: the three cascades of 2048 in three
+// quadrants of the square top, four spot maps of 1024 in the fourth, and
+// the cube faces of 512 in the strip below, eight to a row. shadowRegion
+// in gfx/mesh_draw.go lays out the same rectangles.
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowAtlas;
-const float SHADOW_ATLAS = 4096.0;
+const vec2 SHADOW_ATLAS = vec2(4096.0, 6144.0);
+const float POINT_FACE = 512.0;
 
 #define UNIFORMS layout(set = 4, binding = 0)
 
@@ -179,11 +183,11 @@ vec3 perturbNormal(vec3 n, vec3 pos, vec2 uv) {
 }
 
 // sampleAtlas takes nine comparisons around a point of one map in the
-// atlas: origin and scale place the map's 0..1 in the atlas.
-float sampleAtlas(vec2 origin, float scale, vec3 uvz) {
+// atlas: origin and size are the map's rectangle in atlas pixels.
+float sampleAtlas(vec2 origin, float size, vec3 uvz) {
     float lit = 0.0;
-    vec2 base = origin + uvz.xy * scale;
-    float texel = 1.0 / SHADOW_ATLAS;
+    vec2 base = (origin + uvz.xy * size) / SHADOW_ATLAS;
+    vec2 texel = 1.0 / SHADOW_ATLAS;
     for (int y = -1; y <= 1; y++)
         for (int x = -1; x <= 1; x++) {
             lit += texture(shadowAtlas, vec3(base + vec2(x, y) * texel, uvz.z));
@@ -191,8 +195,8 @@ float sampleAtlas(vec2 origin, float scale, vec3 uvz) {
     return lit / 9.0;
 }
 
-float sampleCascade(int c, vec3 uvz, vec2 texel) {
-    return sampleAtlas(vec2(float(c % 2), float(c / 2)) * 0.5, 0.5, uvz);
+float sampleCascade(int c, vec3 uvz) {
+    return sampleAtlas(vec2(float(c % 2), float(c / 2)) * 2048.0, 2048.0, uvz);
 }
 
 // shadowFactor is 1 where the directional light reaches, 0 in shadow.
@@ -213,12 +217,11 @@ float shadowFactor(vec3 n, vec3 l) {
     vec2 uv = p.xy * 0.5 + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z > 1.0) return 1.0;
     float bias = texelWorld / (4.0 * radius); // one texel in depth units
-    float texel = 1.0 / frame.params.x;
-    return sampleCascade(c, vec3(uv, p.z - bias), vec2(texel));
+    return sampleCascade(c, vec3(uv, p.z - bias));
 }
 
 float sampleSpot(int k, vec3 uvz) {
-    return sampleAtlas(vec2(0.5 + float(k % 2) * 0.25, 0.5 + float(k / 2) * 0.25), 0.25, uvz);
+    return sampleAtlas(vec2(2048.0 + float(k % 2) * 1024.0, 2048.0 + float(k / 2) * 1024.0), 1024.0, uvz);
 }
 
 // spotShadowFactor is 1 where spot light i reaches the surface, 0 in
@@ -237,6 +240,46 @@ float spotShadowFactor(int k, vec3 n, vec3 l, float dist, float cosOuter) {
     vec2 uv = p.xy * 0.5 + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z > 1.0) return 1.0;
     return sampleSpot(k, vec3(uv, p.z - 0.0005));
+}
+
+// pointFace picks which face of a cube map a direction falls on, in the
+// order pointFaces lists them in gfx/mesh_draw.go: +x, -x, +y, -y, +z, -z.
+int pointFace(vec3 d) {
+    vec3 a = abs(d);
+    if (a.x >= a.y && a.x >= a.z) return d.x > 0.0 ? 0 : 1;
+    if (a.y >= a.z) return d.y > 0.0 ? 2 : 3;
+    return d.z > 0.0 ? 4 : 5;
+}
+
+// samplePoint reads one face of point light slot's cube map. The face is
+// rendered a little wider than ninety degrees, so clamping the lookup
+// half a filter kernel inside the face keeps the nine comparisons off
+// the neighbouring face's pixels.
+float samplePoint(int slot, int face, vec3 uvz) {
+    int tile = slot * 6 + face;
+    vec2 origin = vec2(float(tile % 8) * POINT_FACE, 4096.0 + float(tile / 8) * POINT_FACE);
+    float edge = 1.5 / POINT_FACE;
+    return sampleAtlas(origin, POINT_FACE, vec3(clamp(uvz.xy, edge, 1.0 - edge), uvz.z));
+}
+
+// pointShadowFactor is 1 where the point light in cube map slot reaches
+// the surface, 0 in its shadow; l points from the surface to the light
+// and dist is how far away it is. The bias is a texel of the face at
+// this distance, which grows with it.
+float pointShadowFactor(int slot, vec3 n, vec3 l, float dist) {
+    int face = pointFace(-l);
+    // Normal-offset by one texel of the face at this distance: a face
+    // covers ninety degrees across POINT_FACE pixels.
+    float texelWorld = 2.0 * dist / POINT_FACE;
+    float NoL = clamp(dot(n, l), 0.0, 1.0);
+    float slope = sqrt(1.0 - NoL * NoL) / max(NoL, 0.05);
+    vec3 pos = vWorldPos + n * texelWorld * (1.0 + slope);
+    vec4 sp = frame.pointViewProj[slot * 6 + face] * vec4(pos, 1.0);
+    if (sp.w <= 0.0) return 1.0;
+    vec3 p = sp.xyz / sp.w;
+    vec2 uv = p.xy * 0.5 + 0.5;
+    if (p.z > 1.0) return 1.0;
+    return samplePoint(slot, face, vec3(uv, p.z - 0.0015));
 }
 
 float D_GGX(float NoH, float a2) {
@@ -373,6 +416,9 @@ vec3 light(Surface s) {
             att *= smoothstep(cone, max(frame.pointColor[i].w, cone + 1e-3), cd);
             int k = int(frame.spotInfo[i].x);
             if (k >= 0 && att > 0.0) att *= spotShadowFactor(k, n, d / dist, dist, cone);
+        } else {
+            int slot = int(frame.spotInfo[i].z);
+            if (slot >= 0 && att > 0.0) att *= pointShadowFactor(slot, n, d / dist, dist);
         }
         color += lobes(s, n, v, d / dist, frame.pointColor[i].rgb * att);
     }

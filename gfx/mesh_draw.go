@@ -13,16 +13,26 @@ import (
 )
 
 const (
-	hdrFormat      = vk.VK_FORMAT_R16G16B16A16_SFLOAT
-	shadowMapSize  = 2048
-	shadowCascades = 3
-	maxPointLights = 32
-	maxSpotShadows = 4    // spot lights with shadow maps in one frame
-	spotShadowSize = 1024 // pixels across a spot light's shadow map
-	// shadowAtlasSize is one depth image holding the three cascades and
-	// the spot maps, so every shadow costs one binding rather than one
-	// each.
-	shadowAtlasSize = 4096
+	hdrFormat       = vk.VK_FORMAT_R16G16B16A16_SFLOAT
+	shadowMapSize   = 2048
+	shadowCascades  = 3
+	maxPointLights  = 32
+	maxSpotShadows  = 4    // spot lights with shadow maps in one frame
+	spotShadowSize  = 1024 // pixels across a spot light's shadow map
+	maxPointShadows = 4    // point lights with cube shadow maps in one frame
+	pointFaceSize   = 512  // pixels across one face of a point light's cube
+	// pointFaceBase is the first map index of the cube faces, after the
+	// cascades and the spot maps.
+	pointFaceBase = shadowCascades + maxSpotShadows
+	// shadowAtlasW and shadowAtlasH are one depth image holding every
+	// shadow map, so every shadow costs one binding rather than one each:
+	// the three cascades and the spot maps in the square top, the cube
+	// faces in the strip below it, eight to a row.
+	shadowAtlasW = 4096
+	shadowAtlasH = 6144
+	// pointFacesPerRow is how many cube faces fit across the strip; the
+	// strip holds 32 and four lights use 24.
+	pointFacesPerRow = shadowAtlasW / pointFaceSize
 	// matImages is how many sampled images the material set holds:
 	// five material textures, four shader images, the environment cube,
 	// the thickness map, the scene copy for transmission and the
@@ -55,13 +65,22 @@ func samplerIndex(linear, repeat bool) uint32 {
 }
 
 // shadowRegion is where a shadow map lives in the atlas: cascades in
-// three quadrants, the spot maps sharing the fourth.
+// three quadrants of the square top, the spot maps sharing the fourth,
+// and each point light's six cube faces in the strip below, in slot
+// order. The fragment prelude computes the same rectangles.
 func shadowRegion(index int) vk.VkRect2D {
 	if index < shadowCascades {
 		return vk.VkRect2D{Offset: vk.VkOffset2D{X: int32(index%2) * shadowMapSize, Y: int32(index/2) * shadowMapSize}, Extent: vk.VkExtent2D{Width: shadowMapSize, Height: shadowMapSize}}
 	}
-	k := index - shadowCascades
-	return vk.VkRect2D{Offset: vk.VkOffset2D{X: shadowMapSize + int32(k%2)*spotShadowSize, Y: shadowMapSize + int32(k/2)*spotShadowSize}, Extent: vk.VkExtent2D{Width: spotShadowSize, Height: spotShadowSize}}
+	if index < pointFaceBase {
+		k := index - shadowCascades
+		return vk.VkRect2D{Offset: vk.VkOffset2D{X: shadowMapSize + int32(k%2)*spotShadowSize, Y: shadowMapSize + int32(k/2)*spotShadowSize}, Extent: vk.VkExtent2D{Width: spotShadowSize, Height: spotShadowSize}}
+	}
+	k := index - pointFaceBase
+	return vk.VkRect2D{
+		Offset: vk.VkOffset2D{X: int32(k%pointFacesPerRow) * pointFaceSize, Y: 2*shadowMapSize + int32(k/pointFacesPerRow)*pointFaceSize},
+		Extent: vk.VkExtent2D{Width: pointFaceSize, Height: pointFaceSize},
+	}
 }
 
 // meshPass owns the 3D pipelines, targets and per-frame uniforms.
@@ -70,6 +89,7 @@ type meshPass struct {
 	jointLayout   *render.StorageSets
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
 	shadowAtlas   *render.Target      // every shadow map, see shadowRegion
+	shadowFormat  vk.VkFormat         // the atlas's depth format, which the shadow pipelines render to
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
@@ -175,7 +195,10 @@ type frameUniforms struct {
 	fog           lin.Vec4                 // fog colour, w = exponential density
 	fogRange      lin.Vec4                 // linear start, end; ground fog height, falloff
 	spotViewProj  [maxSpotShadows]lin.Mat4 // each shadowed spot light's projection
-	spotInfo      [maxPointLights]lin.Vec4 // x = shadow map index or -1, y = range
+	spotInfo      [maxPointLights]lin.Vec4 // x = spot map index or -1, y = range, z = cube map slot or -1
+	// pointViewProj holds the six face projections of each shadowed
+	// point light, slot by slot, in the order of pointFaces.
+	pointViewProj [maxPointShadows * 6]lin.Mat4
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -285,7 +308,11 @@ func (g *Graphics) initMeshPass() error {
 	if mp.shadowDesc, err = dev.NewImmutableSamplerDescriptors(1, 4, mp.shadowSamp); err != nil {
 		return err
 	}
-	if mp.shadowAtlas, err = dev.NewTarget(vk.VkExtent2D{Width: shadowAtlasSize, Height: shadowAtlasSize}, vk.VK_FORMAT_UNDEFINED, g.r.DepthFormat); err != nil {
+	// The atlas is only rendered to and sampled, so it takes a depth
+	// format without a stencil aspect where the device has one, which
+	// halves what the strip of cube faces costs.
+	mp.shadowFormat = dev.ShadowFormat(g.r.DepthFormat)
+	if mp.shadowAtlas, err = dev.NewTarget(vk.VkExtent2D{Width: shadowAtlasW, Height: shadowAtlasH}, vk.VK_FORMAT_UNDEFINED, mp.shadowFormat); err != nil {
 		return err
 	}
 	atlasDepth := mp.shadowAtlas.Depth
@@ -340,11 +367,11 @@ func (mp *meshPass) shadowPipelineDesc(skinned bool) render.PipelineDesc {
 	}
 	return render.PipelineDesc{
 		Frag:    shaders.ShadowFrag,
-		NoColor: true, DepthFormat: g.r.DepthFormat,
+		NoColor: true, DepthFormat: mp.shadowFormat,
 		Bindings: bindings, Attributes: attrs,
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
 		DepthBias: 1.5, DepthSlopeBias: 2.0, DepthClamp: true,
-		PushConstantSize: 4, // cascade index
+		PushConstantSize: 4, // the shadow map index: cascade, spot map or cube face
 		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout},
 	}
 }
@@ -389,11 +416,31 @@ func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 // flashes, glowing ore. A frame keeps its first 32 point and spot lights
 // (MaxLights); add the nearest ones first when a scene has more.
 func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
+	g.AddPoint(PointLight{Position: pos, Color: c, Range: rng})
+}
+
+// PointLight is a light shining from a point in every direction for
+// AddPoint, with the option of a shadow map: a lamp in a room, a fire
+// under a bridge. The first four shadowed point lights a frame get cube
+// maps (MaxPointShadows), the rest shine without; add the nearest first.
+type PointLight struct {
+	Position lin.Vec3
+	Color    Color
+	Range    float32 // fades to nothing this far away
+	Shadows  bool    // render a cube shadow map for this light
+}
+
+// MaxPointShadows is how many point lights cast shadows in one frame.
+// Each one costs six depth passes, one for each face of its cube.
+const MaxPointShadows = maxPointShadows
+
+// AddPoint adds a point light for this frame.
+func (g *Graphics) AddPoint(p PointLight) {
 	if len(g.cur.points) >= maxPointLights {
 		g.stats.LightsDropped++
 		return
 	}
-	g.cur.points = append(g.cur.points, pointLight{pos: pos, color: c, rng: rng})
+	g.cur.points = append(g.cur.points, pointLight{pos: p.Position, color: p.Color, rng: p.Range, shadow: p.Shadows})
 	g.stats.Lights++
 }
 
@@ -466,6 +513,39 @@ func (q *drawQueue) spotShadows() (lights []int, mats []lin.Mat4) {
 		proj := lin.Perspective(min(p.outer*1.1, lin.Radians(170)), 1, 0.05, rng)
 		lights = append(lights, i)
 		mats = append(mats, proj.Mul(lin.LookAt(p.pos, p.pos.Add(p.dir), up)))
+	}
+	return lights, mats
+}
+
+// pointFaces are the six directions of a cube shadow map and the up
+// axis each one looks with, in the order the fragment prelude picks a
+// face from the light-to-fragment direction: +x, -x, +y, -y, +z, -z.
+var pointFaces = [6]struct{ dir, up lin.Vec3 }{
+	{lin.V3(1, 0, 0), lin.V3(0, -1, 0)},
+	{lin.V3(-1, 0, 0), lin.V3(0, -1, 0)},
+	{lin.V3(0, 1, 0), lin.V3(0, 0, 1)},
+	{lin.V3(0, -1, 0), lin.V3(0, 0, -1)},
+	{lin.V3(0, 0, 1), lin.V3(0, -1, 0)},
+	{lin.V3(0, 0, -1), lin.V3(0, -1, 0)},
+}
+
+// pointShadows lists the point lights that get cube maps this frame, in
+// slot order, and the six face projections of each, slot by slot. Each
+// face looks along its axis with a field of view a little over ninety
+// degrees, so the fragment prelude can clamp its filter kernel inside
+// the face and still cover the whole ninety-degree cone.
+func (q *drawQueue) pointShadows() (lights []int, mats []lin.Mat4) {
+	for i, p := range q.points {
+		if p.spot || !p.shadow || len(lights) >= maxPointShadows {
+			continue
+		}
+		rng := max(p.rng, 0.5)
+		fov := 2 * float32(math.Atan(float64(1+4.0/pointFaceSize)))
+		proj := lin.Perspective(fov, 1, 0.05, rng)
+		lights = append(lights, i)
+		for _, f := range pointFaces {
+			mats = append(mats, proj.Mul(lin.LookAt(p.pos, p.pos.Add(f.dir), f.up)))
+		}
 	}
 	return lights, mats
 }
@@ -765,7 +845,7 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
 		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 2)
 		u.spotDir[i] = lin.V4(0, 0, 0, -2)
-		u.spotInfo[i] = lin.V4(-1, p.rng, 0, 0)
+		u.spotInfo[i] = lin.V4(-1, p.rng, -1, 0)
 		if p.spot {
 			u.pointColor[i].W = p.cosInner
 			u.spotDir[i] = p.dir.Vec4(p.cosOuter)
@@ -775,6 +855,11 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	for k, i := range lights {
 		u.spotViewProj[k] = spotMats[k]
 		u.spotInfo[i].X = float32(k)
+	}
+	points, pointMats := q.pointShadows()
+	copy(u.pointViewProj[:], pointMats)
+	for k, i := range points {
+		u.spotInfo[i].Z = float32(k)
 	}
 	if f := l.Fog; f.End > f.Start || f.Density > 0 {
 		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
@@ -1037,10 +1122,13 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	}
 	seen, seenBlended := opaque.slice(0, q.visOpaque), blended.slice(0, q.visBlended)
 	// Every shadow map is a region of one atlas: the cascades, then the
-	// spot maps, each drawn with its own viewport. The vertex program
-	// picks the projection by index, spot lights past the cascades.
+	// spot maps, then each shadowed point light's six cube faces, each
+	// drawn with its own viewport. The vertex program picks the
+	// projection by index, spot maps past the cascades and cube faces
+	// past those.
 	spotLights, spotMats := q.spotShadows()
-	if q.light.Shadows || len(spotLights) > 0 {
+	pointLights, pointMats := q.pointShadows()
+	if q.light.Shadows || len(spotLights) > 0 || len(pointLights) > 0 {
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadowAtlas, ClearDepth: 1})
 		var maps []int
 		if q.light.Shadows {
@@ -1049,12 +1137,15 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		for k := range spotLights {
 			maps = append(maps, shadowCascades+k)
 		}
+		for k := range len(pointLights) * 6 {
+			maps = append(maps, pointFaceBase+k)
+		}
 		for _, index := range maps {
 			region := shadowRegion(index)
 			render.SetViewportRect(cb, region)
 			render.SetScissorRect(cb, region)
 			pc := int32(index)
-			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc, q.shadowMask(opaque, index, spotMats)); err != nil {
+			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc, q.shadowMask(opaque, index, spotMats, pointMats)); err != nil {
 				return err
 			}
 		}

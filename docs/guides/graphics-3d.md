@@ -325,17 +325,22 @@ far above the cascades, a bridge over a street or a cloud over a field,
 still casts into them: the shadow pipelines clamp depth rather than clip
 at the cascade's near plane.
 
-Each caster is recorded only into the cascades and spot maps its bounds
-reach, so a scene spread over a large map pays for the maps a mesh can
-land in rather than for all seven. `FrameStats.ShadowDraws` counts the
-instances that went into the shadow atlas this frame.
+Each caster is recorded only into the cascades, spot maps and cube faces
+its bounds reach, so a scene spread over a large map pays for the maps a
+mesh can land in rather than for all thirty-one.
+`FrameStats.ShadowDraws` counts the instances that went into the shadow
+atlas this frame.
 
 `AddPointLight(pos, color, range)` shines in every direction from a
 point, fading to nothing at `range`, for torches, muzzle flashes and
 glowing ore. `AddSpotLight(pos, dir, color, range, inner, outer)` shines
 in a cone, full inside the inner angle and fading to nothing at the
-outer. `AddSpot` takes a `SpotLight` value instead, and with `Shadows`
-set that light casts shadows from its own depth map.
+outer. `AddSpot` takes a `SpotLight` value instead, and `AddPoint` a
+`PointLight`; with `Shadows` set, either casts shadows from its own
+depth map. A shadowed spot light renders one map; a shadowed point light
+renders the six faces of a cube, so it costs six depth passes and is the
+most expensive light there is. Give it to the lamp the player stands
+under, not to every torch on the wall.
 
 ```go
 gr.SetLight(gfx.Light{Direction: lin.V3(-0.4, -0.7, -0.35),
@@ -349,16 +354,18 @@ for i, f := range g.fires {
 gr.AddSpot(gfx.SpotLight{Position: towerTop, Direction: beam, Range: 60,
 	Color:      gfx.Color{R: 9, G: 8.5, B: 6, A: 1},
 	InnerAngle: lin.Radians(14), OuterAngle: lin.Radians(28), Shadows: true})
+gr.AddPoint(gfx.PointLight{Position: lampPos, Range: 14,
+	Color: gfx.Color{R: 6, G: 5.4, B: 4, A: 1}, Shadows: true})
 ```
 
 Plan around the limits. A frame keeps its first `MaxLights` (32) point
-and spot lights and gives shadow maps to the first
-`MaxSpotShadows` (4) that ask; the rest shine without. Sort by distance
-to the camera and add the nearest first; `FrameStats.LightsDropped`
-counts the lights a frame refused, so a scene can tell when it went
-over. Point lights never cast shadows.
-All the cascades and spot maps share one depth atlas, so shadows cost one
-texture binding however many lights cast them.
+and spot lights, gives shadow maps to the first `MaxSpotShadows` (4)
+spot lights that ask and cube maps to the first `MaxPointShadows` (4)
+point lights; the rest shine without. Sort by distance to the camera and
+add the nearest first; `FrameStats.LightsDropped` counts the lights a
+frame refused, so a scene can tell when it went over. The cascades, the
+spot maps and the cube faces all share one depth atlas, so shadows cost
+one texture binding however many lights cast them.
 
 For image-based lighting, `NewEnvironment` turns an equirectangular
 panorama into a light probe and `NewEnvironmentHDR` does the same for a
