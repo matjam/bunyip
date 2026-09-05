@@ -817,6 +817,32 @@ func (a *wlApp) onModifiers(depressed, latched, locked, group uint32) {
 		}
 	}
 	a.mods = mods
+	// Wayland sends modifiers after the key event that changed them, and
+	// also permits updates without keyboard focus (for pointer input).
+	w := a.kbFocus
+	if w == nil {
+		w = a.focus
+	}
+	e := Event{Kind: EventModifiers, Mods: mods}
+	if w != nil {
+		e.Window = w.out
+	}
+	a.push(e)
+}
+
+func (a *wlApp) onKeyboardLeave(w *wlWindow) {
+	if a.kbFocus == w {
+		a.kbFocus = nil
+		a.mods = 0
+		if a.xkbState != nil {
+			a.l.xkbStateUpdateMask(a.xkbState, 0, 0, 0, 0, 0, 0)
+		}
+		// Leave resets the keyboard's logical state. A configure may have
+		// already reported focus loss, so explicitly clear modifiers too.
+		a.push(Event{Kind: EventModifiers, Window: w.out})
+	}
+	a.repeatWindow, a.repeatKey = nil, 0
+	w.setFocused(false)
 }
 
 // onKey turns one wl_keyboard.key event into events. code is the evdev key

@@ -176,7 +176,8 @@ func (s *State) KeyReleased(k Key) bool {
 	return s.released[k]
 }
 
-// Mods returns the modifier keys currently held.
+// Mods returns the active modifiers, including Caps Lock and Num Lock.
+// Modifier changes are reported even when no key is pressed or released.
 func (s *State) Mods() Mods { return s.mods }
 
 // Mouse returns the pointer position in view units.
@@ -257,6 +258,9 @@ func (s *State) feedKey(k Key, down, repeat bool, mods Mods) {
 	s.down[k] = false
 	s.released[k], s.frame.released[k] = true, true
 }
+
+// feedModifiers replaces modifier state without changing keys or text.
+func (s *State) feedModifiers(mods Mods) { s.mods = mods }
 
 // feedChar records a typed character.
 func (s *State) feedChar(r rune) {

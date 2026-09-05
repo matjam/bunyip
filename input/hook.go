@@ -19,6 +19,8 @@ func (d driver) FeedKey(key uint8, down, repeat bool, mods uint8) {
 	d.s.feedKey(Key(key), down, repeat, Mods(mods))
 }
 
+func (d driver) FeedModifiers(mods uint8) { d.s.feedModifiers(Mods(mods)) }
+
 func (d driver) FeedMouseButton(button uint8, down bool, x, y float32) {
 	d.s.feedMouseButton(MouseButton(button), down, x, y)
 }

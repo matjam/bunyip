@@ -34,6 +34,7 @@ package ktx2
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 )
 
 // identifier is the twelve bytes every KTX2 file starts with.
@@ -71,6 +72,12 @@ func (f *File) LevelSize(level int) (w, h int) {
 	return w, h
 }
 
+// maxMipLevels includes level zero and stops when both dimensions reach
+// one. Texel dimensions, rather than rounded block counts, set the limit.
+func (f *File) maxMipLevels() int {
+	return bits.Len(uint(max(f.Width, f.Height)))
+}
+
 // Parse reads a KTX2 file. It rejects the features this package does not
 // carry: array layers, cube faces, depth beyond one and
 // supercompression.
@@ -104,10 +111,11 @@ func Parse(data []byte) (*File, error) {
 	f.Width, f.Height = int(width), int(height)
 	// A levelCount of zero means the file wants the levels generated,
 	// which this package does not do, so it reads as the one level given.
-	n := int(max(levels, 1))
-	if n > 32 {
-		return nil, fmt.Errorf("ktx2: %d mip levels", n)
+	levels = max(levels, 1)
+	if limit := f.maxMipLevels(); levels > uint32(limit) {
+		return nil, fmt.Errorf("ktx2: %d mip levels exceed %d for %dx%d", levels, limit, width, height)
 	}
+	n := int(levels)
 	index := headerSize
 	if len(data) < index+n*24 {
 		return nil, fmt.Errorf("ktx2: the level index runs past the end of the file")
@@ -136,6 +144,9 @@ func (f *File) Bytes() ([]byte, error) {
 	}
 	if f.Width <= 0 || f.Height <= 0 {
 		return nil, fmt.Errorf("ktx2: a %dx%d image", f.Width, f.Height)
+	}
+	if limit := f.maxMipLevels(); len(f.Levels) > limit {
+		return nil, fmt.Errorf("ktx2: %d mip levels exceed %d for %dx%d", len(f.Levels), limit, f.Width, f.Height)
 	}
 	if f.Format.BlockBytes() == 0 {
 		return nil, fmt.Errorf("ktx2: format %s cannot be written", f.Format)

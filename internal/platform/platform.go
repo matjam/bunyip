@@ -57,6 +57,7 @@ const (
 	EventMouseLeave           // the pointer left the content area
 	EventWake                 // App.Wake was called from another goroutine
 	EventVisible              // Visible says whether the window became visible or hidden
+	EventModifiers            // Mods: modifier state changed independently of a key event
 )
 
 // CursorShape names a system cursor.
@@ -114,7 +115,7 @@ var eventNames = [...]string{
 	EventKeyDown: "KeyDown", EventKeyUp: "KeyUp", EventChar: "Char", EventCompose: "Compose", EventMouseMove: "MouseMove",
 	EventMouseDown: "MouseDown", EventMouseUp: "MouseUp", EventScroll: "Scroll",
 	EventMouseEnter: "MouseEnter", EventMouseLeave: "MouseLeave", EventWake: "Wake",
-	EventVisible: "Visible",
+	EventVisible: "Visible", EventModifiers: "Modifiers",
 }
 
 func (k EventKind) String() string {

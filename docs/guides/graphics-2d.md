@@ -165,6 +165,10 @@ search through its two-subset partitions, and `-v` reports each file's
 size and its peak signal-to-noise ratio so a choice of format can be
 judged rather than guessed at. Nothing is compressed or downsampled
 while the game runs: the blocks and the levels go straight to the GPU.
+KTX2 reading and writing reject mip chains longer than the dimensions
+permit: `floor(log2(max(width, height))) + 1` levels at most. Partial
+chains remain valid, and a header requesting generated levels is read
+as its supplied base level.
 
 A device that cannot sample the format, which some MoltenVK
 configurations cannot for the BC formats, decodes level 0 on the

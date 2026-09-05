@@ -58,6 +58,8 @@ const (
 type Input interface {
 	// FeedKey records a key going down or up.
 	FeedKey(key uint8, down, repeat bool, mods uint8)
+	// FeedModifiers replaces the modifier state without creating a key edge.
+	FeedModifiers(mods uint8)
 	// FeedChar records a typed character.
 	FeedChar(r rune)
 	// FeedComposition records the input method's uncommitted text.

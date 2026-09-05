@@ -197,11 +197,7 @@ func wlInitCallbacks() {
 		if w == nil {
 			return
 		}
-		if a.kbFocus == w {
-			a.kbFocus = nil
-		}
-		a.repeatKey = 0
-		w.setFocused(false)
+		a.onKeyboardLeave(w)
 	})
 	cbKeyboardKey = purego.NewCallback(func(data, proxy unsafe.Pointer, serial, time, key, state uint32) {
 		if a := wlCurrent; a != nil {

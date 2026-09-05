@@ -504,6 +504,8 @@ func (l *loop) handleEvents(events []platform.Event) {
 			in.FeedKey(uint8(e.Key), true, e.Repeat, uint8(e.Mods))
 		case platform.EventKeyUp:
 			in.FeedKey(uint8(e.Key), false, false, uint8(e.Mods))
+		case platform.EventModifiers:
+			in.FeedModifiers(uint8(e.Mods))
 		case platform.EventChar:
 			in.FeedChar(e.Rune)
 		case platform.EventCompose:

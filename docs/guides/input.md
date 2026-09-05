@@ -24,6 +24,9 @@ pass it to `AppendKeysDown`.
 `Chars` is the text typed this update with the keyboard layout and
 modifiers applied, which is what a text field reads; `Composition` is
 the input method's text in progress.
+On Wayland, compositor modifier notifications update `Mods` independently
+of key events, so modifier releases and lock changes are visible without
+waiting for another key press.
 
 Keys are named by physical position. `KeyW` is the key in W's place on a
 US keyboard whatever it prints, which is what movement bindings need.
