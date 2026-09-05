@@ -319,14 +319,28 @@ weights[smile] = 0.8
 player.SetMorphWeights(face, weights)
 ```
 
-Blending runs on the CPU: when a node's weights change, the mesh's rest
-vertices plus each target with a non-zero weight are summed and the
-result uploaded, one pass over the vertices per active target and one
-upload per changed mesh per frame. Unchanged weights cost nothing. That
-is fine for faces and props with a few thousand vertices; a crowd of
-morphing characters needs a GPU path, which the engine does not have
-yet. Each instance of a morphing mesh gets its own copy on load, so two
-characters with the same face can show different expressions.
+Blending runs in the vertex shader while no more than
+`gfx.MaxGPUMorphTargets` (eight) of a mesh's targets carry a weight at
+once. A model's target deltas go into a storage buffer when it loads,
+and a draw names the open ones with their weights in its instance
+record, so a face driven every frame uploads nothing at all and costs a
+few reads a vertex. A mesh with twenty targets is fine so long as no
+more than eight are open together.
+
+Past that cap the blend falls back to the processor for that mesh: the
+rest vertices plus each open target are summed and the result uploaded,
+one pass over the vertices per open target and one upload each time the
+weights change. It is correct at any count and slower at every one, so
+keep the open targets few. Each instance of a morphing mesh gets its own
+copy of the geometry on load, so two characters with the same face can
+show different expressions whichever path they take.
+
+Two things follow from the shader doing the work. `Mesh.Vertices` gives
+the geometry as uploaded, which is the rest pose while the shader
+blends, so picking and physics against a morphed mesh see the shape
+before its targets. And culling bounds the mesh by that same rest
+geometry, so a target that moves vertices a long way wants
+`Mesh.SetBounds` to say how far.
 
 ## Where the values come from
 

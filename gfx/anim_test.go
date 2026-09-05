@@ -318,8 +318,14 @@ func TestMorphTargets(t *testing.T) {
 			if err := model.SetMorphWeights(0, []float32{0.5}); err != nil {
 				t.Fatal(err)
 			}
-			if !nearf(apex().Y, 1.5) || model.MorphWeights(0)[0] != 0.5 {
-				t.Fatalf("half lift apex %v weights %v", apex(), model.MorphWeights(0))
+			// One target is well inside MaxGPUMorphTargets, so the blend
+			// runs in the vertex shader and the uploaded geometry stays at
+			// the rest pose. The weights in force are still reported.
+			if apex().Y != 1 {
+				t.Fatalf("the shader blends this pose, so the uploaded apex should stay at rest: %v", apex())
+			}
+			if model.MorphWeights(0)[0] != 0.5 {
+				t.Fatalf("weights %v", model.MorphWeights(0))
 			}
 			if model.SetMorphWeights(3, nil) == nil {
 				t.Fatal("node without targets should error")
@@ -329,6 +335,32 @@ func TestMorphTargets(t *testing.T) {
 			if w := p.MorphWeights(0); len(w) != 1 || w[0] != 0 {
 				t.Fatalf("rest weights %v", w)
 			}
+			// The lift has to reach the pixels: render the triangle at no
+			// weight and at full weight and check its apex climbed.
+			height := func(w float32) int {
+				p.SetMorphWeights(0, []float32{w})
+				p.Advance(0)
+				img := frames(t, g, func() {
+					g.SetCamera(Camera{Position: lin.V3(0.3, 0.7, 3), Target: lin.V3(0.3, 0.7, 0)})
+					g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: Color{4, 4, 4, 1}})
+					g.DrawModelAnimated(model, Transform{}, p)
+				})
+				top := 32
+				for y := range 32 {
+					for x := range 32 {
+						if i := img.PixOffset(x, y); img.Pix[i] > 40 {
+							top = min(top, y)
+						}
+					}
+				}
+				return top
+			}
+			rest, lifted := height(0), height(1)
+			if rest == 32 || lifted >= rest {
+				t.Fatalf("the drawn apex is at row %d at rest and row %d lifted, want it higher up the frame", rest, lifted)
+			}
+			p.SetMorphWeights(0, []float32{0})
+			p.Advance(0)
 			p.Play("lift", false)
 			p.Advance(1)
 			if w := p.MorphWeights(0); !nearf(w[0], 1) {
@@ -348,8 +380,8 @@ func TestMorphTargets(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if !nearf(apex().Y, 2) {
-				t.Fatalf("drawn apex %v want y=2", apex())
+			if w := model.MorphWeights(0); !nearf(w[0], 1) {
+				t.Fatalf("the player's weight did not reach the model: %v", w)
 			}
 			// A held weight survives Advance while no clip animates it.
 			p.Stop()

@@ -311,6 +311,7 @@ layout(location = 17) flat out vec4 vFur;
 
 void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
+    morph(v);
     vertex(v);
     mat4 m = model()SKIN;
     vec4 world = m * vec4(v.position, 1.0);
@@ -348,6 +349,7 @@ layout(location = 1) flat out vec3 vCutout; // x base alpha, y cutoff, z albedo 
 
 void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
+    morph(v);
     vertex(v);
     mat4 m = model()SKIN;
     // The maps run cascades, then spot maps, then cube faces.

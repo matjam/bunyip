@@ -36,7 +36,8 @@ window.
 - 3D: physically based materials with clearcoat, sheen, subsurface,
   glass, iridescence, anisotropy, specular tinting and fur as shells;
   glTF models with skeletal animation, blend spaces, IK and morph
-  targets, whose materials any part can override; cascaded shadows, spot
+  targets blended in the vertex shader, whose materials any part can
+  override; cascaded shadows, spot
   and point lights with shadows, clustered lighting for a thousand lights
   a frame, a procedural sky with atmospheric scattering and aerial
   perspective or image-based lighting from OpenEXR, Radiance or ordinary

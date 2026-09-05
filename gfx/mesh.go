@@ -481,6 +481,12 @@ type meshDraw struct {
 	shell      float32
 	jointBase  int // first joint matrix in the queue's joint list
 	jointCount int // how many joint matrices the draw's pose uses
+	// morph is the mesh's morph targets and the weights this draw blends
+	// them by in the vertex shader, nil when it has none or the pose was
+	// blended on the processor; morphSet is its model's delta buffer, or
+	// zero for the empty set the mesh pass keeps.
+	morph    *morphMesh
+	morphSet vk.VkDescriptorSet
 	// centre and radius are the draw's world bounding sphere, resolved by
 	// prepareDraws; cullable is false for a shader that may move a vertex
 	// anywhere. The shadow pass tests the sphere against each light.
@@ -517,9 +523,18 @@ type meshInstance struct {
 	spec [4]float32 // specular colour, specular strength
 	irid [4]float32 // iridescence strength, film ior, thickness minimum and maximum in nm
 	fur  [4]float32 // anisotropy strength, its rotation; a shell's offset in world units and its height
+	// morph names the draw's morph targets in its model's delta buffer: x
+	// the first element of the mesh's block, y the vertices in a target, z
+	// how many of morphW and morphIdx are in use. A zero z is a draw with
+	// no morph targets, or one the processor blended instead.
+	morph [4]float32
+	// morphW is the weight of each active target and morphIdx its number,
+	// four target numbers packed a byte apiece into each word.
+	morphW   [8]float32
+	morphIdx [2]uint32
 }
 
-const meshInstanceSize = 240
+const meshInstanceSize = 296
 
 // blended reports whether a material draws after the opaque scene. The
 // receiver is a pointer because Material is large and this sits in the

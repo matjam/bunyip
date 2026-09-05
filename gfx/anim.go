@@ -888,17 +888,20 @@ func (g *Graphics) DrawModelAnimatedWith(m *Model, t Transform, p *AnimPlayer, o
 	world := t.Matrix()
 	for _, mm := range m.morphs {
 		if w := p.MorphWeights(mm.node); w != nil {
-			_ = mm.apply(w)
+			_ = mm.set(w)
 		}
 	}
+	set := m.morphSet()
 	var joints []lin.Mat4
 	for i, part := range m.Parts {
 		mat := override.apply(i, part)
+		d := meshDraw{morph: m.morphOf[part.Mesh], morphSet: set}
 		if part.Mesh.skinned && part.skin >= 0 {
 			joints = p.jointMatrices(part.skin, joints[:0])
-			g.DrawSkinned(part.Mesh, mat, world, joints)
+			g.drawSkinned(part.Mesh, mat, world, joints, d)
 			continue
 		}
-		g.DrawMesh(part.Mesh, mat, world.Mul(p.NodeMatrix(part.node)))
+		d.mesh, d.mat, d.model = part.Mesh, mat, world.Mul(p.NodeMatrix(part.node))
+		g.queueMesh(d)
 	}
 }

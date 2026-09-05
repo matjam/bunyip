@@ -92,6 +92,13 @@ func shadowRegion(index int) vk.VkRect2D {
 type meshPass struct {
 	defaultShader *Shader // the standard material, whose pipelines are its variants
 	jointLayout   *render.StorageSets
+	// morphDesc is set 5, one storage buffer of morph target deltas. A
+	// model with targets owns a buffer and a set; morphNone is the empty
+	// one every other draw binds, because the vertex prelude names the
+	// buffer whether or not the draw reads it.
+	morphDesc *render.DescriptorSets
+	morphNone vk.VkDescriptorSet
+	morphZero *render.Buffer
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
 	shadowAtlas   *render.Target      // every shadow map, see shadowRegion
 	shadowFormat  vk.VkFormat         // the atlas's depth format, which the shadow pipelines render to
@@ -269,6 +276,25 @@ func (g *Graphics) initMeshPass() error {
 	if mp.jointLayout, err = dev.NewStorageSets(64, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
 		return err
 	}
+	// Six bound sets: the material, the frame, the shadow atlas, the joint
+	// matrices, a game shader's uniforms and the morph deltas. Every
+	// desktop driver and MoltenVK allow at least eight.
+	if n := dev.Limits().MaxBoundDescriptorSets; n < 6 {
+		return fmt.Errorf("gfx: this GPU binds only %d descriptor sets and the mesh pipelines need 6", n)
+	}
+	if mp.morphDesc, err = dev.NewDescriptors([]render.DescriptorBinding{
+		{Type: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, Stages: vk.VK_SHADER_STAGE_VERTEX_BIT},
+	}, 64); err != nil {
+		return err
+	}
+	// A draw with no morph targets still binds set 5, so there is one
+	// buffer of a single element that means nothing.
+	if mp.morphZero, err = dev.NewDeviceLocalBuffer(make([]byte, 16), vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT); err != nil {
+		return err
+	}
+	if mp.morphNone, err = mp.morphDesc.AllocateBuffer(mp.morphZero, 16); err != nil {
+		return err
+	}
 	// Set 0 keeps its images and its samplers apart: thirteen sampled
 	// images, then one array of four samplers baked into the layout that
 	// a shader indexes per texture slot. Sampling an array of samplers by
@@ -399,7 +425,7 @@ func (mp *meshPass) pipelineDesc(skinned bool) render.PipelineDesc {
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		Bindings: bindings, Attributes: attrs,
 		CullMode: vk.VK_CULL_MODE_BACK_BIT, DepthTest: true, DepthWrite: true,
-		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout},
+		SetLayouts: []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout, mp.morphDesc.Layout},
 	}
 }
 
@@ -422,7 +448,7 @@ func (mp *meshPass) shadowPipelineDesc(skinned bool) render.PipelineDesc {
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
 		DepthBias: 1.5, DepthSlopeBias: 2.0, DepthClamp: true,
 		PushConstantSize: 4, // the shadow map index: cascade, spot map or cube face
-		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout},
+		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout, mp.morphDesc.Layout},
 	}
 }
 
@@ -439,15 +465,18 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 		{Location: 3, Binding: 0, Format: vk.VK_FORMAT_R32G32_SFLOAT, Offset: 32},
 		{Location: 4, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UNORM, Offset: 40},
 	}
-	// The instance stream is fifteen vec4s at locations 5 to 16 and 19 to
-	// 21; 17 and 18 are a skinned mesh's joints and weights.
-	for i := range 15 {
+	// The instance stream is eighteen vec4s at locations 5 to 16 and 19 to
+	// 24; 17 and 18 are a skinned mesh's joints and weights. The last
+	// three of the eighteen are the morph block, which ends with a pair of
+	// packed words at 25 rather than a vec4.
+	for i := range 18 {
 		loc := 5 + i
 		if i >= 12 {
 			loc += 2
 		}
 		attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: uint32(loc), Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: uint32(16 * i)})
 	}
+	attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: 25, Binding: 1, Format: vk.VK_FORMAT_R32G32_UINT, Offset: 16 * 18})
 	return bindings, attrs
 }
 
@@ -1160,7 +1189,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			filmThick = 400
 		}
 		mm := d.model
-		q.inst.add(meshInstance{
+		in := meshInstance{
 			model: [3]lin.Vec4{
 				lin.V4(mm.At(0, 0), mm.At(0, 1), mm.At(0, 2), mm.At(0, 3)),
 				lin.V4(mm.At(1, 0), mm.At(1, 1), mm.At(1, 2), mm.At(1, 3)),
@@ -1178,7 +1207,9 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			spec:      [4]float32{specColor.R, specColor.G, specColor.B, specular},
 			irid:      [4]float32{m.Iridescence, filmIOR, m.IridescenceThicknessMin, filmThick},
 			fur:       [4]float32{m.Anisotropy, m.AnisotropyRotation, d.shell * shellLength(m), d.shell},
-		})
+		}
+		d.morph.instance(&in)
+		q.inst.add(in)
 	}
 	if err := q.inst.upload(g, slot); err != nil {
 		return drawList{}, drawList{}, drawList{}, err
@@ -1262,6 +1293,7 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 	vk.CmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &rec.offset)
 	var bound *render.Pipeline
 	boundUniform := int32(-2)
+	boundMorph := vk.VkDescriptorSet(0)
 	for i := 0; i < n; {
 		if mask != nil && !mask[i] { // this draw misses the shadow map
 			i++
@@ -1279,6 +1311,9 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0) != runKey {
 					break
 				}
+				if e.morphSet != d.morphSet { // a different model's deltas
+					break
+				}
 				run++
 			}
 		}
@@ -1293,7 +1328,7 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		}
 		if p != bound {
 			bound = p
-			boundUniform = -2
+			boundUniform, boundMorph = -2, 0
 			vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
 			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
 			if cascade != nil {
@@ -1307,6 +1342,14 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			}
 		}
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &d.set, 0, nil)
+		// The vertex prelude names the morph deltas whether or not the
+		// draw reads them, so set 5 is always bound: the draw's model's
+		// buffer, or the one element that means nothing.
+		if morph := orSet(d.morphSet, g.meshes.morphNone); morph != boundMorph {
+			boundMorph = morph
+			rec.morph = morph
+			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 5, 1, &rec.morph, 0, nil)
+		}
 		if d.uniform >= 0 && d.uniform != boundUniform {
 			// Shader uniforms serve the vertex hook in the shadow pass too.
 			boundUniform = d.uniform
@@ -1579,5 +1622,11 @@ func (mp *meshPass) destroy(g *Graphics) {
 	}
 	if mp.jointLayout != nil {
 		mp.jointLayout.Destroy()
+	}
+	if mp.morphDesc != nil {
+		mp.morphDesc.Destroy()
+	}
+	if mp.morphZero != nil {
+		mp.morphZero.Destroy()
 	}
 }

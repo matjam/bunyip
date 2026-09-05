@@ -255,12 +255,19 @@ to metallic-roughness as a file is read.
 
 Animation events, root motion, layers with masks (override and
 additive), two-bone IK and look-at through node overrides, morph
-targets from glTF (blended on the CPU and uploaded when weights change),
-and blend spaces and trees as data (phase-synchronised so feet do not
-slide) are in.
+targets from glTF (blended in the vertex shader up to eight open at
+once, on the processor past that), and blend spaces and trees as data
+(phase-synchronised so feet do not slide) are in.
 
-- GPU morph targets. The CPU blend is fine for a few characters with a
-  few thousand vertices each.
+- A morph target's deltas are stored dense, six floats per vertex per
+  target whether or not the target moves that vertex, so a face with
+  many targets that each touch a few vertices costs far more device
+  memory than its sparse accessors did on disk.
+- A mesh blending its morph targets in the shader keeps its rest
+  geometry, so `Mesh.Vertices` (and picking and physics through it) and
+  the bounds culling uses are of the shape before the targets. A game
+  that picks against a morphed face has to allow for that or set the
+  bounds by hand.
 - Aseprite tilemap layers and tilesets, which `ParseAseprite` skips, and
   the blend modes past normal, which it draws as normal. Layers, groups,
   cels, tags, slices, palettes and the three colour modes read.

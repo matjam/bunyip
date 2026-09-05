@@ -5,7 +5,9 @@
 // it back to idle; and three robot arms from a generated glTF model show
 // a skeletal clip with an animation event, two-bone IK reaching for a
 // moving target, and a 1D blend space mixing a slow swing into a fast
-// one by a slider. Escape quits.
+// one by a slider. A sphere above them carries three morph targets
+// blended in the vertex shader, driven by two sliders and a sine, which
+// costs no upload however often the weights change. Escape quits.
 package main
 
 import (
@@ -66,6 +68,12 @@ type game struct {
 	stride *gfx.AnimPlayer
 	blend  *anim.Blend
 	pace   float32
+
+	// A sphere with three morph targets, driven straight from sliders and
+	// a sine. Up to gfx.MaxGPUMorphTargets open at once blend in the
+	// vertex shader, so changing them every frame uploads nothing.
+	face  *gfx.Model
+	faceW [3]float32
 
 	sprites  *ecs.Query2[gfx.Sprite, sprite2D]
 	meshes   *ecs.Query2[gfx.Transform, mesh3D]
@@ -186,6 +194,16 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}})
 	g.pace = 0.5
 
+	// Morph targets: a sphere with three blend shapes, driven straight
+	// from the sliders below and a sine. Three is well inside
+	// gfx.MaxGPUMorphTargets, so the blend happens in the vertex shader
+	// and moving a slider uploads nothing at all.
+	if g.face, err = ctx.Gfx.LoadModel(faceDocument()); err != nil {
+		return err
+	}
+	g.face.Parts[0].Material = gfx.Material{BaseColor: gfx.RGB(230, 180, 150), Roughness: 0.55}
+	g.faceW = [3]float32{0.4, 0, 0.3}
+
 	w.AddSystem("anim", anim.System)
 	// When a one-shot clip finishes, fade the hero back to idle.
 	w.AddSystem("return", func(w *ecs.World, dt float64) {
@@ -210,6 +228,7 @@ func (g *game) say(s string) {
 }
 
 func (g *game) Shutdown(ctx *bunyip.Context) {
+	g.face.Destroy()
 	g.arms.Destroy()
 	g.cube.Destroy()
 	g.sphere.Destroy()
@@ -237,6 +256,12 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	g.reach.Advance(ctx.Delta * float64(g.speed))
 	g.blend.Set("pace", g.pace)
 	g.blend.Advance(g.stride, ctx.Delta*float64(g.speed))
+	// The snout breathes on its own so a screenshot catches it moving.
+	// New weights every update cost nothing: the shader blends them.
+	g.faceW[2] = 0.3 + 0.3*float32(math.Sin(float64(t)*1.6))
+	if err := g.face.SetMorphWeights(0, g.faceW[:]); err != nil {
+		return err
+	}
 	g.yaw += float32(ctx.Delta) * 0.2
 	return nil
 }
@@ -256,6 +281,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr.DrawModelAnimated(g.arms, gfx.At(0, -0.5, -2.4), g.stride)
 	gr.DrawMesh(g.sphere, gfx.Material{BaseColor: gfx.RGB(120, 220, 140), Emissive: 0.4},
 		lin.Translate(g.target.Add(lin.V3(2.2, -0.5, 0))).Mul(lin.Scale(lin.V3(0.08, 0.08, 0.08))))
+	// The morph target sphere, blended by the sliders every frame.
+	gr.DrawModel(g.face, lin.Translate(lin.V3(0, 2.4, 0)).Mul(lin.Scale(lin.V3(0.7, 0.7, 0.7))))
 	// 2D entities draw at their offset plus the animated position.
 	gr.ScreenSpace()
 	g.sprites.Each(func(e ecs.Entity, s *gfx.Sprite, d *sprite2D) {
@@ -270,7 +297,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	})
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Animation", ui.Rect{X: 12, Y: ctx.Height - 292, W: 300, H: 280}, func() {
+		u.Panel("Animation", ui.Rect{X: 12, Y: ctx.Height - 392, W: 300, H: 380}, func() {
 			u.Label("Hero clip: " + anim.PlayerOf(w, g.hero).Clip.Name)
 			u.Row(3, func() {
 				if u.Button("Idle") {
@@ -286,6 +313,12 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			u.Slider("Speed", &g.speed, 0, 3)
 			u.Slider("Back arm pace (swing to stride)", &g.pace, 0, 1)
 			u.Checkbox("Right arm reaches by IK", &g.ikOn)
+			// Three morph targets, blended in the vertex shader: the
+			// sliders move every frame and upload nothing.
+			names := g.face.MorphTargets(0)
+			for i := range g.faceW[:2] {
+				u.Slider("Morph "+names[i], &g.faceW[i], 0, 1)
+			}
 			for _, l := range g.log {
 				u.Label(l)
 			}
@@ -331,6 +364,43 @@ func walkerSheet() image.Image {
 		}
 	}
 	return img
+}
+
+// faceDocument builds a sphere with three morph targets as a glTF
+// document in memory: one pulls its crown into a point, one squashes it
+// wide and one pushes a snout out of the front. A file's blend shapes
+// arrive the same way through gltf.Load.
+func faceDocument() *gltf.Document {
+	sv, si := gfx.SphereMesh(16, 32)
+	prim := gltf.Primitive{Indices: si, Material: -1}
+	for _, v := range sv {
+		prim.Positions = append(prim.Positions, v.Pos)
+		prim.Normals = append(prim.Normals, v.Normal)
+		prim.UVs = append(prim.UVs, v.UV)
+	}
+	// Each target is a delta per vertex, weighted by how much of the
+	// shape it belongs to, so the three blend smoothly against each other.
+	shape := func(delta func(p lin.Vec3) lin.Vec3) gltf.MorphTarget {
+		t := gltf.MorphTarget{Positions: make([]lin.Vec3, len(sv)), Normals: make([]lin.Vec3, len(sv))}
+		for i, v := range sv {
+			t.Positions[i] = delta(v.Pos)
+			// The normal follows the stretch: a rough approximation, which
+			// is all a blend shape's normals ever are.
+			t.Normals[i] = delta(v.Normal).Mul(0.5)
+		}
+		return t
+	}
+	prim.Targets = []gltf.MorphTarget{
+		shape(func(p lin.Vec3) lin.Vec3 { return lin.V3(-p.X*0.6, max(p.Y, 0)*1.2, -p.Z*0.6) }),
+		shape(func(p lin.Vec3) lin.Vec3 { return lin.V3(p.X*0.5, -p.Y*0.45, p.Z*0.5) }),
+		shape(func(p lin.Vec3) lin.Vec3 { return lin.V3(0, 0, max(p.Z, 0)*0.9) }),
+	}
+	return &gltf.Document{
+		Meshes: []gltf.Mesh{{Name: "face", TargetNames: []string{"point", "squash", "snout"},
+			Primitives: []gltf.Primitive{prim}}},
+		Nodes:     []gltf.Node{{Name: "face", Parent: -1, Rotation: lin.QuatIdentity(), Scale: lin.V3(1, 1, 1), Mesh: 0, Skin: -1}},
+		Instances: []gltf.Instance{{Name: "face", Mesh: 0, Node: 0, Skin: -1, World: lin.Identity()}},
+	}
 }
 
 // armDocument builds a two-bone arm as a glTF document in memory: a box

@@ -101,8 +101,15 @@ func skinVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 // DrawSkinned draws a skinned mesh with explicit joint matrices (one per
 // joint, already multiplied by the inverse bind matrices).
 func (g *Graphics) DrawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []lin.Mat4) {
+	g.drawSkinned(m, mat, model, joints, meshDraw{})
+}
+
+// drawSkinned is DrawSkinned with the morph fields of a draw filled in,
+// which is the path an animated model takes.
+func (g *Graphics) drawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []lin.Mat4, d meshDraw) {
 	if !m.skinned || len(joints) == 0 {
-		g.DrawMesh(m, mat, model)
+		d.mesh, d.mat, d.model = m, mat, model
+		g.queueMesh(d)
 		return
 	}
 	if mat.BaseColor == (Color{}) {
@@ -114,5 +121,7 @@ func (g *Graphics) DrawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []l
 	q := g.cur
 	base := len(q.joints)
 	q.joints = append(q.joints, joints...)
-	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, jointBase: base, jointCount: len(joints), skinned: true})
+	d.mesh, d.mat, d.model = m, mat, model
+	d.jointBase, d.jointCount, d.skinned = base, len(joints), true
+	g.queueMesh(d)
 }

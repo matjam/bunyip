@@ -668,6 +668,7 @@ type recordScratch struct {
 	solid   solidPush          // the outline and x-ray block
 	decal   decalPush          // the decal block
 	set     vk.VkDescriptorSet // the run's material set
+	morph   vk.VkDescriptorSet // the run's morph target deltas
 	dyn     uint32             // the run's dynamic uniform offset
 	cascade int32              // the shadow pass's cascade index
 	offset  vk.VkDeviceSize    // always zero: the vertex buffer bind offset

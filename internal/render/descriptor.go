@@ -160,6 +160,30 @@ func (ds *DescriptorSets) AllocateMany(bindings []SamplerBinding) (vk.VkDescript
 	return set, nil
 }
 
+// AllocateBuffer makes a set whose one binding is the whole of a buffer,
+// for a layout of a single storage buffer made with NewDescriptors. It is
+// what data that never changes after it is uploaded is bound through:
+// one set per buffer, freed with the buffer, rather than one per frame in
+// flight.
+func (ds *DescriptorSets) AllocateBuffer(buf *Buffer, size vk.VkDeviceSize) (vk.VkDescriptorSet, error) {
+	set, err := ds.allocate(ds.pools[len(ds.pools)-1])
+	if poolFull(err) {
+		if err = ds.addPool(); err == nil {
+			set, err = ds.allocate(ds.pools[len(ds.pools)-1])
+		}
+	}
+	if err != nil {
+		return 0, err
+	}
+	info := vk.VkDescriptorBufferInfo{Buffer: buf.Handle, Range: size}
+	write := vk.VkWriteDescriptorSet{
+		SType: vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, DstSet: set, DescriptorCount: 1,
+		DescriptorType: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, PBufferInfo: &info,
+	}
+	vk.VkUpdateDescriptorSets(ds.dev.Handle, 1, &write, 0, nil)
+	return set, nil
+}
+
 func (ds *DescriptorSets) allocate(pool vk.VkDescriptorPool) (vk.VkDescriptorSet, error) {
 	info := vk.VkDescriptorSetAllocateInfo{
 		SType:              vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,

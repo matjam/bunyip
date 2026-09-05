@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/matjam/bunyip/gltf"
+	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -22,12 +23,18 @@ type Model struct {
 	clips    []gltf.Animation
 	order    []int // node indices, parents before children
 	morphs   []*morphMesh
+	// morphOf finds a part's morph targets when it is drawn, so a draw
+	// carries the weights the vertex shader blends with.
+	morphOf map[*Mesh]*morphMesh
+	// morphs' deltas and the descriptor set the draws bind for them.
+	morphBuf *morphStore
 	g        *Graphics
 }
 
-// morphMesh is a primitive with morph targets: the rest geometry stays on
-// the CPU and a weighted blend of the targets is uploaded when the
-// weights change.
+// morphMesh is a primitive with morph targets. Its rest geometry stays
+// on the CPU, and its deltas go into the model's morph buffer as well, so
+// a pose of up to MaxGPUMorphTargets open targets blends in the vertex
+// shader and one with more blends here and is uploaded.
 type morphMesh struct {
 	mesh    *Mesh
 	node    int
@@ -37,7 +44,16 @@ type morphMesh struct {
 	skin    []SkinVertex // rest vertices of a skinned mesh
 	indices []uint32
 	rest    []float32 // the file's default weights
-	weights []float32 // the weights last uploaded
+	weights []float32 // the weights the uploaded geometry was blended with
+	current []float32 // the weights the mesh is drawn with, whichever path
+	// gpuBase is where the mesh's deltas start in the model's morph
+	// buffer, or -1 when they are not there at all.
+	gpuBase int
+	// active is the targets the next draw blends in the shader, empty
+	// when the pose went through the processor instead, and blended says
+	// the uploaded geometry is such a blend rather than the rest pose.
+	active  []morphWeight
+	blended bool
 }
 
 // apply blends the targets by the weights and uploads the result when
@@ -175,12 +191,13 @@ func (m *Model) MorphTargets(node int) []string {
 	return nil
 }
 
-// MorphWeights returns the morph target weights the node's mesh was last
-// uploaded with; nil when the node has no morph targets.
+// MorphWeights returns the morph target weights the node's mesh is drawn
+// with, whether they blend in the vertex shader or on the processor; nil
+// when the node has no morph targets. The slice is the model's own.
 func (m *Model) MorphWeights(node int) []float32 {
 	for _, mm := range m.morphs {
 		if mm.node == node {
-			return mm.weights
+			return mm.current
 		}
 	}
 	return nil
@@ -189,10 +206,10 @@ func (m *Model) MorphWeights(node int) []float32 {
 // SetMorphWeights blends the node's morph targets by the weights (one per
 // target, 0 for none and 1 for the full shape) and uploads the result:
 // a facial expression, a wind-bent plant. A player's weights channels do
-// the same through DrawModelAnimated. Blending runs on the CPU and
-// costs one pass over the mesh's vertices per target with a non-zero
-// weight, plus the upload, each time the weights change; unchanged
-// weights cost nothing.
+// the same through DrawModelAnimated. Up to MaxGPUMorphTargets open at
+// once blend in the vertex shader and cost nothing to change; past that
+// the blend runs here, one pass over the mesh's vertices per open target
+// plus an upload, each time the weights change.
 func (m *Model) SetMorphWeights(node int, weights []float32) error {
 	found := false
 	for _, mm := range m.morphs {
@@ -200,7 +217,7 @@ func (m *Model) SetMorphWeights(node int, weights []float32) error {
 			continue
 		}
 		found = true
-		if err := mm.apply(weights); err != nil {
+		if err := mm.set(weights); err != nil {
 			return err
 		}
 	}
@@ -240,7 +257,8 @@ func (o MaterialOverride) apply(i int, part ModelPart) Material {
 
 // LoadModel uploads a parsed glTF document.
 func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
-	m := &Model{nodes: doc.Nodes, skins: doc.Skins, clips: doc.Animations, g: g}
+	m := &Model{nodes: doc.Nodes, skins: doc.Skins, clips: doc.Animations, g: g,
+		morphOf: map[*Mesh]*morphMesh{}, morphBuf: &morphStore{g: g}}
 	m.Min, m.Max = doc.Bounds()
 	m.order = topoOrder(doc.Nodes)
 	// glTF keeps thickness in a texture's green channel; the material
@@ -287,7 +305,7 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				}
 				var mm *morphMesh
 				if len(p.Targets) > 0 {
-					mm = &morphMesh{node: inst.Node, targets: p.Targets, indices: p.Indices, names: make([]string, len(p.Targets))}
+					mm = &morphMesh{node: inst.Node, targets: p.Targets, indices: p.Indices, names: make([]string, len(p.Targets)), gpuBase: -1}
 					copy(mm.names, src.TargetNames)
 				}
 				if p.Skinned() && inst.Skin >= 0 {
@@ -319,10 +337,18 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				if mm != nil {
 					mm.mesh = mesh
 					m.morphs = append(m.morphs, mm)
+					m.morphOf[mesh] = mm
+					// The deltas go on the device as well as staying here,
+					// so a pose of few open targets blends in the shader and
+					// one of many still blends here. A file with more targets
+					// than a byte can name keeps the processor's path alone.
+					if len(mm.targets) <= 256 {
+						mm.gpuBase = m.morphBuf.reserve(mm)
+					}
 					// The upload is the rest geometry: every weight zero.
 					mm.rest = m.restWeights(inst.Node, src)
 					mm.weights = make([]float32, len(mm.rest))
-					if err := mm.apply(mm.rest); err != nil {
+					if err := mm.set(mm.rest); err != nil {
 						m.Destroy()
 						return nil, err
 					}
@@ -410,6 +436,12 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 			}
 			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Name: name, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})
 		}
+	}
+	// Every morph mesh's deltas are on the device from here, so a pose of
+	// few open targets blends in the vertex shader instead of here.
+	if err := m.morphBuf.upload(); err != nil {
+		m.Destroy()
+		return nil, err
 	}
 	g.track(m, Resource{Kind: ResourceModel, Parts: len(m.Parts)})
 	return m, nil
@@ -613,8 +645,18 @@ func (g *Graphics) DrawModel(m *Model, world lin.Mat4) {
 //	})
 func (g *Graphics) DrawModelWith(m *Model, world lin.Mat4, override MaterialOverride) {
 	for i, p := range m.Parts {
-		g.DrawMesh(p.Mesh, override.apply(i, p), world.Mul(p.World))
+		g.queueMesh(meshDraw{mesh: p.Mesh, mat: override.apply(i, p), model: world.Mul(p.World), morph: m.morphOf[p.Mesh], morphSet: m.morphSet()})
 	}
+}
+
+// morphSet is the descriptor set a draw of this model binds for its
+// morph target deltas, zero when the model has none, which leaves the
+// draw with the empty set every other draw binds.
+func (m *Model) morphSet() vk.VkDescriptorSet {
+	if m == nil || m.morphBuf == nil {
+		return 0
+	}
+	return m.morphBuf.set
 }
 
 // Destroy frees the model's meshes and textures.
@@ -628,5 +670,7 @@ func (m *Model) Destroy() {
 	for _, t := range m.textures {
 		t.Destroy()
 	}
+	m.morphBuf.destroy()
 	m.meshes, m.textures, m.Parts, m.morphs = nil, nil, nil, nil
+	clear(m.morphOf)
 }

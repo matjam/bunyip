@@ -61,6 +61,28 @@ layout(location = 19) in vec4 iSpec;    // specular colour, w specular strength
 layout(location = 20) in vec4 iIrid;    // iridescence strength, film ior, thickness min and max in nm
 layout(location = 21) in vec4 iFur;     // anisotropy strength, its rotation; shell offset and shell height
 
+// Morph targets. The mesh's target deltas live in one storage buffer per
+// model, six floats to a vertex of a target (position then normal), and
+// this draw names up to eight of them with the weight each carries. A
+// draw whose model has no targets, or that the engine blended on the
+// processor instead, sets the count to zero and never reads the buffer.
+layout(location = 22) in vec4 iMorph;     // x base element, y vertices per target, z active targets
+layout(location = 23) in vec4 iMorphW0;   // the weights of the first four active targets
+layout(location = 24) in vec4 iMorphW1;   // and of the next four
+layout(location = 25) in uvec2 iMorphIdx; // their target numbers, four bytes to a word
+
+layout(std430, set = 5, binding = 0) readonly buffer Morph { float morphDeltas[]; };
+
+// MORPH_STRIDE is the floats one vertex of one target takes: a position
+// delta then a normal delta.
+const uint MORPH_STRIDE = 6u;
+
+// morphWeight is the weight of the k'th active target of this draw.
+float morphWeight(int k) { return k < 4 ? iMorphW0[k] : iMorphW1[k - 4]; }
+
+// morphTarget is which of the mesh's targets the k'th active one is.
+uint morphTarget(int k) { return ((k < 4 ? iMorphIdx.x : iMorphIdx.y) >> uint(8 * (k & 3))) & 0xFFu; }
+
 // The material's textures and the shader's images are visible here too,
 // for displacement maps. Set 0 keeps images and samplers apart, and the
 // names are macros pairing each image with the sampler its texture asked
@@ -167,6 +189,22 @@ mat4 model() {
 // uvTransform maps a texture coordinate through the material's transform.
 vec2 uvTransform(vec2 uv) {
     return vec2(iUVT0.x * uv.x + iUVT0.y * uv.y + iUVT0.z, iUVT0.w * uv.x + iUVT1.x * uv.y + iUVT1.y);
+}
+
+// morph adds this vertex's share of every active target, before skinning
+// and before the game's own vertex hook, so both see the morphed shape.
+void morph(inout VertexData v) {
+    int n = int(iMorph.z);
+    if (n == 0) return;
+    uint base = uint(iMorph.x);
+    uint count = uint(iMorph.y);
+    for (int k = 0; k < n; k++) {
+        float w = morphWeight(k);
+        uint at = base + (morphTarget(k) * count + uint(gl_VertexIndex)) * MORPH_STRIDE;
+        v.position += w * vec3(morphDeltas[at], morphDeltas[at + 1u], morphDeltas[at + 2u]);
+        v.normal += w * vec3(morphDeltas[at + 3u], morphDeltas[at + 4u], morphDeltas[at + 5u]);
+    }
+    v.normal = normalize(v.normal);
 }
 
 // Fragment-stage helpers, stubbed so shader code that calls them still

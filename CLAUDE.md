@@ -106,20 +106,25 @@ storage buffers at bindings 2 to 4 (`Device.NewFrameSets`, sized by
 without a wait). The queue's own sets are bound and the mesh pass's
 layout is what the pipelines are built against, so both are made the
 same way. Set 2 is the shadow atlas, the one comparison sampler.
-Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal allows sixteen samplers a stage,
+Set 3 is joint matrices. Set 4 is a game shader's uniform block. Set 5 is
+one model's morph target deltas, bound by every mesh draw because the
+vertex prelude names the buffer whether or not the draw reads it; six
+bound sets is inside every desktop driver's and MoltenVK's limit, which
+`initMeshPass` checks. Metal allows sixteen samplers a stage,
 which the four plus the shadow atlas's stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
 which is the budget the seventeen images and the atlas spend from: a new
 material texture costs an image and no sampler. The shadow maps still
 share one atlas image so the shadow pass costs one binding.
 
-**The instance stream** (`meshInstance` in `gfx/mesh.go`) is fifteen
-`vec4`s at vertex attribute locations 5 to 16 and 19 to 21; 17 and 18
-are a skinned mesh's joints and weights (`meshVertexLayout` and
-`skinVertexLayout`). Adding a field means adding it at the end of the
-struct, at the next free location, and to the declarations in
-`vert_common.glsl` and the varyings the postludes in
-`gfx/shaders/shaders.go` write and `prelude_mesh.glsl` reads.
+**The instance stream** (`meshInstance` in `gfx/mesh.go`) is eighteen
+`vec4`s at vertex attribute locations 5 to 16 and 19 to 24, then a
+`uvec2` of packed morph target numbers at 25; 17 and 18 are a skinned
+mesh's joints and weights (`meshVertexLayout` and `skinVertexLayout`).
+Adding a field means adding it at the end of the struct, at the next
+free location, and to the declarations in `vert_common.glsl` and the
+varyings the postludes in `gfx/shaders/shaders.go` write and
+`prelude_mesh.glsl` reads.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
 in seven GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
@@ -280,6 +285,17 @@ render pass, so text tests draw one frame.
   `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
   `Shader.VertexBounds`, whose zero means the draw is never culled.
   `Mesh.SetBounds` overrides the box and survives `Update`.
+- Morph targets blend in the vertex shader (`gfx/morph.go`,
+  `morph()` in `vert_common.glsl`, called before the game's `vertex`
+  hook and before skinning). A model uploads every one of its meshes'
+  deltas into one storage buffer at load, six floats a vertex a target,
+  and binds it as set 5; a draw names up to `MaxGPUMorphTargets` open
+  targets with their weights in the instance stream. Every mesh draw
+  binds set 5, because the prelude names the buffer whether or not the
+  draw reads it, so `meshPass.morphNone` is the empty one. A pose with
+  more open targets than the cap falls back to the blend on the
+  processor, which uploads, and switching back puts the rest pose up
+  again first.
 - Occlusion culling (`gfx/occlude.go`) runs after the frustum test in
   `prepareDraws`. `AddOccluder3D` meshes are rasterised into a CPU depth
   buffer (256 by 144 by default) holding the nearest occluder depth per
@@ -315,10 +331,12 @@ render pass, so text tests draw one frame.
   `TestAtmosphereBlocksMatch` compares the two shaders and
   `TestAtmosphereMatchesGo` renders the sky and checks it against
   `Sky.radiance`.
-- The instance stream is twelve `vec4`s at locations 5 to 16, so a
-  skinned mesh's joints and weights sit at 17 and 18 (`vert_skin.glsl`
-  and `skinVertexLayout`). The twelfth carries the draw's reflection
-  probe index plus one and whether the draw is opaque.
+- The instance stream is eighteen `vec4`s at locations 5 to 16 and 19 to
+  24, plus a pair of packed words at 25; a skinned mesh's joints and
+  weights sit at 17 and 18 (`vert_skin.glsl` and `skinVertexLayout`).
+  The twelfth carries the draw's reflection probe index plus one and
+  whether the draw is opaque, and the last three plus the packed pair
+  are the morph block.
 - An opaque draw writes its screen-space reflection weight into the HDR
   alpha channel, which nothing else reads, and the reflection pass reads
   it back from the scene copy. A blended draw keeps its real alpha, which
