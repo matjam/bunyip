@@ -6,21 +6,25 @@ import "github.com/matjam/bunyip/internal/vk"
 // binding 0, plus one buffer and set per frame in flight so that a frame's
 // data can be written while the previous frame still reads its own. With
 // NewUniformStorageSets the same set carries a storage buffer at binding
-// 1, for a per-frame array too large for a uniform block.
+// 1, for a per-frame array too large for a uniform block, and with
+// NewFrameSets more of them at bindings 2 and up, each fixed at its size.
 type UniformSets struct {
 	Layout  vk.VkDescriptorSetLayout
 	Sets    [FramesInFlight]vk.VkDescriptorSet
 	Buffers [FramesInFlight]*Buffer
 	storage [FramesInFlight]*Buffer
 	stored  vk.VkDeviceSize // the storage buffers' size, 0 when there are none
-	pool    vk.VkDescriptorPool
-	dev     *Device
+	// fixed holds the buffers of bindings 2 and up, one per frame in
+	// flight for each, at the sizes they were made with.
+	fixed [][FramesInFlight]*Buffer
+	pool  vk.VkDescriptorPool
+	dev   *Device
 }
 
 // NewUniformSets creates the layout, pool, buffers and sets for size bytes
 // of uniform data visible to stages.
 func (d *Device) NewUniformSets(size vk.VkDeviceSize, stages vk.VkShaderStageFlags) (*UniformSets, error) {
-	return d.newUniformSets(size, 0, stages)
+	return d.newUniformSets(size, 0, nil, stages)
 }
 
 // NewUniformStorageSets is NewUniformSets with a storage buffer at binding
@@ -28,10 +32,19 @@ func (d *Device) NewUniformSets(size vk.VkDeviceSize, stages vk.VkShaderStageFla
 // WriteStorage. Use it for a per-frame array a uniform block cannot hold,
 // such as an irradiance grid.
 func (d *Device) NewUniformStorageSets(size, storageSize vk.VkDeviceSize, stages vk.VkShaderStageFlags) (*UniformSets, error) {
-	return d.newUniformSets(size, max(storageSize, 16), stages)
+	return d.newUniformSets(size, max(storageSize, 16), nil, stages)
 }
 
-func (d *Device) newUniformSets(size, storageSize vk.VkDeviceSize, stages vk.VkShaderStageFlags) (*UniformSets, error) {
+// NewFrameSets is NewUniformStorageSets with a storage buffer at each of
+// bindings 2 and up, one for every size in fixed. Those buffers keep the
+// size they are made with, so WriteFixed never grows one and a frame
+// writes them without waiting for the device. Use them for a per-frame
+// array whose size is a constant, such as a cluster grid's tables.
+func (d *Device) NewFrameSets(size, storageSize vk.VkDeviceSize, fixed []vk.VkDeviceSize, stages vk.VkShaderStageFlags) (*UniformSets, error) {
+	return d.newUniformSets(size, max(storageSize, 16), fixed, stages)
+}
+
+func (d *Device) newUniformSets(size, storageSize vk.VkDeviceSize, fixed []vk.VkDeviceSize, stages vk.VkShaderStageFlags) (*UniformSets, error) {
 	u := &UniformSets{dev: d}
 	bindings := []vk.VkDescriptorSetLayoutBinding{{
 		Binding: 0, DescriptorType: vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DescriptorCount: 1, StageFlags: stages,
@@ -41,7 +54,14 @@ func (d *Device) newUniformSets(size, storageSize vk.VkDeviceSize, stages vk.VkS
 		bindings = append(bindings, vk.VkDescriptorSetLayoutBinding{
 			Binding: 1, DescriptorType: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DescriptorCount: 1, StageFlags: stages,
 		})
-		poolSizes = append(poolSizes, vk.VkDescriptorPoolSize{Type: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DescriptorCount: FramesInFlight})
+	}
+	for i := range fixed {
+		bindings = append(bindings, vk.VkDescriptorSetLayoutBinding{
+			Binding: uint32(i + 2), DescriptorType: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DescriptorCount: 1, StageFlags: stages,
+		})
+	}
+	if n := len(bindings) - 1; n > 0 {
+		poolSizes = append(poolSizes, vk.VkDescriptorPoolSize{Type: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DescriptorCount: FramesInFlight * uint32(n)})
 	}
 	layoutInfo := vk.VkDescriptorSetLayoutCreateInfo{
 		SType:        vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -82,6 +102,24 @@ func (d *Device) newUniformSets(size, storageSize vk.VkDeviceSize, stages vk.VkS
 		if err := u.resizeStorage(storageSize); err != nil {
 			u.Destroy()
 			return nil, err
+		}
+	}
+	u.fixed = make([][FramesInFlight]*Buffer, len(fixed))
+	for k, size := range fixed {
+		for i := range FramesInFlight {
+			buf, err := d.NewBuffer(size, vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+				vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+			if err != nil {
+				u.Destroy()
+				return nil, err
+			}
+			u.fixed[k][i] = buf
+			bufInfo := vk.VkDescriptorBufferInfo{Buffer: buf.Handle, Range: size}
+			write := vk.VkWriteDescriptorSet{
+				SType: vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, DstSet: u.Sets[i], DstBinding: uint32(k + 2), DescriptorCount: 1,
+				DescriptorType: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, PBufferInfo: &bufInfo,
+			}
+			vk.VkUpdateDescriptorSets(d.Handle, 1, &write, 0, nil)
 		}
 	}
 	return u, nil
@@ -140,6 +178,16 @@ func (u *UniformSets) WriteStorage(slot int, data []byte) error {
 	return u.storage[slot].Write(0, data)
 }
 
+// WriteFixed stores data at the start of the slot's buffer for one of the
+// fixed storage bindings, counting from zero at binding 2. Data longer
+// than the buffer is an error, since those buffers never grow.
+func (u *UniformSets) WriteFixed(slot, binding int, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	return u.fixed[binding][slot].Write(0, data)
+}
+
 func (u *UniformSets) Destroy() {
 	for i := range u.Buffers {
 		if u.Buffers[i] != nil {
@@ -151,6 +199,14 @@ func (u *UniformSets) Destroy() {
 			u.storage[i] = nil
 		}
 	}
+	for _, bufs := range u.fixed {
+		for _, b := range bufs {
+			if b != nil {
+				b.Destroy()
+			}
+		}
+	}
+	u.fixed = nil
 	if u.pool != 0 {
 		vk.VkDestroyDescriptorPool(u.dev.Handle, u.pool, nil)
 		u.pool = 0

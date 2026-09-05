@@ -23,9 +23,6 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 params;
     vec4 splits;
     vec4 radii;
-    vec4 pointPos[32];
-    vec4 pointColor[32];
-    vec4 spotDir[32];
     vec4 sh[9];
     vec4 env;
     mat4 invViewProj;
@@ -36,7 +33,8 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 fog;
     vec4 fogRange;
     mat4 spotViewProj[4];
-    vec4 spotInfo[32];
+    mat4 pointViewProj[24];
+    vec4 cluster;
     vec4 probePos[8];
     vec4 probeMin[8];
     vec4 probeMax[8];

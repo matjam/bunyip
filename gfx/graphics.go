@@ -455,9 +455,10 @@ type FrameStats struct {
 	// A batch shows up as far fewer tests than it holds items.
 	CullTests int
 	// ShadowDraws counts the mesh instances recorded into the shadow maps,
-	// summed over the cascades and the shadowed spot lights. A caster is
-	// only recorded into the maps its bounds reach, so this falls as
-	// lights and casters spread out.
+	// summed over the cascades, the shadowed spot lights and the cube
+	// faces of the shadowed point lights. A caster is only recorded into
+	// the maps its bounds reach, so this falls as lights and casters
+	// spread out.
 	ShadowDraws int
 	// Culled2D counts sprites outside the 2D camera's view that were
 	// dropped before reaching the vertex stream.
@@ -473,8 +474,8 @@ type FrameStats struct {
 	// vertex stream outgrowing its buffer or a Texture.Read.
 	Waits int
 	// Lights counts the point and spot lights the frame kept, out of
-	// MaxLights. The directional light is not counted: every frame has
-	// one.
+	// MaxLights, whatever part of the view each one reaches. The
+	// directional light is not counted: every frame has one.
 	Lights int
 	// ProbesDropped counts reflection probes added past MaxProbes, which
 	// a frame keeps none of.
