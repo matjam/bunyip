@@ -117,9 +117,13 @@ gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
 corners keep their size, so a 24 by 24 png draws a panel or a speech
 bubble at any size. Set `Tile` to repeat the edges and centre instead of
 stretching them. `NewBlankTexture` and `Texture.Write` replace a
-texture's pixels, streamed without waiting for the GPU, so a painting
-tool or a video can change one every frame; `Texture.Read` copies
-pixels back.
+rectangle of a texture's pixels, streamed without waiting for the GPU,
+so a painting tool or a video can change one every frame;
+`Texture.Read` copies pixels back. `Texture.Replace` swaps the whole
+image, at a new size if need be, and keeps the `*Texture` the game
+holds, so every material and sprite that names it draws the new picture;
+it is what `asset.Reloader` calls when a texture's file changes on
+disk.
 
 ```go
 ns := gfx.NineSlice{Tex: g.panel, Left: 8, Top: 8, Right: 8, Bottom: 8}

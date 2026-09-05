@@ -314,8 +314,12 @@ near enough to send.
 ## Tooling and workflow
 
 `bunyip.FlyCamera` is the debug camera, `Config.LogFile` writes the log
-and a panic's stack trace to a file for crash reports, and shader hot
-reload is `Shader.Reload` behind an `asset.Watcher`. `Config.Console`
+and a panic's stack trace to a file for crash reports, and hot reload is
+`asset.Reloader`: it watches the loose files a game loaded through it
+and swaps them into the objects the game holds, a texture's image
+through `gfx.Texture.Replace` and a shader's pipelines through
+`Shader.Reload`, so a material's textures follow the files without any
+bookkeeping. `Config.Console`
 turns on the in-game console: commands, variables, key bindings, the
 log, and panels for the frame timings and profile scopes, the live
 post-processing settings and GPU resources, a world's entities,
@@ -330,8 +334,10 @@ listed by the engine panel and totalled by the F3 overlay.
   would mean timestamps between draw runs, which is a query pair per run.
 - An asset pipeline that converts textures to compressed GPU formats
   (BC, ASTC) and generates mip chains offline.
-- Material hot reload as a built-in; a game reloads a material's
-  textures through the watcher today.
+- Models are not hot reloaded. A reloaded glTF file gives back different
+  meshes, a different skeleton and different clips, which every
+  `AnimPlayer`, mesh pointer and node index a game holds refers to, so
+  `Reloader` leaves it to the game rather than swapping under it.
 
 ## Quality and process
 

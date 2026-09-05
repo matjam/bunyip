@@ -53,7 +53,8 @@ window.
   bodies and 2D fluids on the same colliders; celestial mechanics for
   any star system.
 - Services: assets and pack files with background loading and hot
-  reload, saves and settings, translation with plural rules, seeded
+  reload that swaps a changed texture or shader into the objects a game
+  already holds, saves and settings, translation with plural rules, seeded
   random numbers, timers and cutscene sequences, tweens, grids with
   pathfinding and field of view, and networking over TCP (with TLS) and
   UDP (with reliable channels, prediction and interpolation helpers).
@@ -117,7 +118,7 @@ with it.
 | `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps, shape casts and signed distance to a placed shape |
 | `phys/soft` | cloth, volumetric soft bodies and 2D fluids as particles: extended position-based dynamics, distance, bending, volume and density constraints, shape matching, wind, mesh helpers; collides with the static and kinematic `phys` colliders |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
-| `asset` | files from directories and pack files, one-call loaders, async loading, hot reload |
+| `asset` | files from directories and pack files, one-call loaders, async loading, hot reload of textures and shaders in place |
 | `save` | JSON saves and settings in the platform's data directory |
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
 | `timer`, `tween` | game-time timers and step sequences for cutscenes; eased value animation |

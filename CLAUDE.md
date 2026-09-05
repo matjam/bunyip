@@ -261,6 +261,13 @@ render pass, so text tests draw one frame.
   `endUpdate` clears and the frame set that `endFrame` clears, which
   Draw reads. Nothing copies one into the other, so a frame that runs
   no update still reports each edge once.
+- `Texture.Replace` keeps the `*Texture` a game holds and swaps what is
+  behind it, which is how `asset.Reloader` reloads a material's
+  textures. The same size goes through `Write`; a different size takes a
+  fresh image, so the cached material and image descriptor sets that
+  name the old view are dropped through `forgetTexture` and the old
+  image is retired. Anything that caches a descriptor set built from
+  `Texture.img.View` has to be dropped there too.
 - `NewTexture` and `Texture.Write` premultiply translucent texels in
   linear light before uploading to an sRGB image (`linearPremultiply`);
   Go's `image.RGBA` premultiplies in sRGB space, which an sRGB sampler

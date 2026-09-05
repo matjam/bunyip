@@ -44,6 +44,17 @@ func Texture(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gf
 	return tex, nil
 }
 
+// replaceTexture decodes a texture file and swaps its pixels into a
+// texture the game already holds, so every material and sprite that
+// names that texture draws the new image. Reloader uses it.
+func replaceTexture(tex *gfx.Texture, name string, data []byte) error {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("asset %s: %w", name, err)
+	}
+	return tex.Replace(img)
+}
+
 // Atlas reads a TexturePacker or Aseprite JSON atlas, loads the image it
 // names from the same directory, uploads it and binds the frames: one
 // call where a game would otherwise parse, load and bind by hand.

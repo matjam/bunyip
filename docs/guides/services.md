@@ -23,8 +23,9 @@ directory), `asset.Font`, `asset.SDFFont`, `asset.Sound`, `asset.Music`,
 same files), `asset.Tracker`, and `asset.Scene` and `asset.Prefab` for
 the ECS documents described in the
 [ECS guide](ecs.html). A `Loader` decodes on worker
-goroutines behind a progress counter, for loading screens, and a
-`Watcher` reports loose files that changed on disk, for hot reload.
+goroutines behind a progress counter, for loading screens, a `Watcher`
+reports loose files that changed on disk, and a `Reloader` swaps those
+files' textures and shaders in place while the game runs.
 `bunyip-pack` builds pack files.
 
 ```go
@@ -66,6 +67,74 @@ if level.Ready() {
 	g.level, err = level.Get()
 }
 ```
+
+### Hot reload
+
+A `Reloader` keeps what a game loaded in step with the files it came
+from, so a texture repainted in an art tool or a shader recompiled with
+`bunyip-shader` appears the moment it is saved. Load through it instead
+of the package's loaders and call `Reload` once a frame:
+
+```go
+func (g *game) Init(ctx *bunyip.Context) error {
+	g.rel = asset.NewReloader(ctx.Gfx, g.fs, 0) // 0 means poll twice a second
+	var err error
+	if g.hero, err = g.rel.Texture("sprites/hero.png", gfx.TextureOptions{}); err != nil {
+		return err
+	}
+	g.water, err = g.rel.Shader("shaders/water.spv")
+	return err
+}
+
+func (g *game) Update(ctx *bunyip.Context) error {
+	names, err := g.rel.Reload()
+	if err != nil {
+		ctx.Log.Warn("reload failed", "err", err) // the old asset stays
+	}
+	for _, n := range names {
+		ctx.Log.Info("reloaded", "asset", n)
+	}
+	...
+}
+```
+
+Everything it loads keeps the pointer it handed back, which is what
+makes a material reload work without bookkeeping: the texture's image is
+swapped in place, so every `gfx.Material`, sprite and shader image slot
+that names it draws the new pixels, even when the new image is a
+different size. A shader's pipelines are rebuilt behind
+`gfx.Shader.Reload`, keeping its images and uniforms, so every draw
+through it runs the new program. Both cost no GPU wait inside a frame:
+the image and the pipelines the old frames may still be drawing from go
+on the retire ring.
+
+`Reloader.Watch` covers anything the package has no loader for, such as
+a level or a table of tuning values:
+
+```go
+g.rel.Watch("levels/1.json", func(data []byte) error {
+	lv, err := parseLevel(data)
+	if err != nil {
+		return err
+	}
+	g.level = lv
+	return nil
+})
+```
+
+Only loose files change, so a name that resolves into a pack file or an
+`embed.FS` is loaded once and never watched: a shipped game pays for the
+polling goroutine and nothing else, and the same code runs in both
+builds. A file that fails to decode keeps the asset the game already has
+and reports the error, so a half-written save does not take the game
+down with it, and the next write is tried again. `Watcher` is the layer
+under all this for a game that would rather reload by hand.
+
+Models are not reloaded. Swapping a glTF file's contents gives back
+different meshes, a different skeleton and different animation clips,
+and every `gfx.AnimPlayer`, mesh pointer and node index the game holds
+refers to the old ones; a game that wants it loads the model again and
+rebinds what pointed at it.
 
 ## Saves and settings
 

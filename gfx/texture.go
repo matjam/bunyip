@@ -20,6 +20,7 @@ type Texture struct {
 	repeat        bool
 	external      bool // image owned elsewhere (render textures)
 	data          bool // sampled without gamma decoding; pixels upload as given
+	mipmapped     bool // a full mip chain was asked for, so Replace makes one again
 	destroyed     bool // Destroy was called; the image lives until the frame retires it
 	g             *Graphics
 }
@@ -44,22 +45,36 @@ func (g *Graphics) NewTexture(src image.Image, opts TextureOptions) (*Texture, e
 	if b.Dx() <= 0 || b.Dy() <= 0 {
 		return nil, fmt.Errorf("gfx: texture has empty bounds %v", b)
 	}
+	t, err := g.newTexture(b.Dx(), b.Dy(), texelsOf(src, opts.Data), opts)
+	if err == nil {
+		g.trackTexture(t, opts)
+	}
+	return t, err
+}
+
+// asRGBA returns src as a tightly packed RGBA image, converting it when
+// it is not one already. The caller's image is never written to.
+func asRGBA(src image.Image) *image.RGBA {
+	b := src.Bounds()
 	rgba, ok := src.(*image.RGBA)
 	if !ok || rgba.Stride != b.Dx()*4 {
 		rgba = image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
 		draw.Draw(rgba, rgba.Bounds(), src, b.Min, draw.Src)
 	}
+	return rgba
+}
+
+// texelsOf returns the bytes to upload for an image: RGBA as it stands
+// for data textures, and premultiplied in linear light for colour ones.
+func texelsOf(src image.Image, data bool) []byte {
+	rgba := asRGBA(src)
 	pix := rgba.Pix
-	if !opts.Data && needsLinearPremultiply(pix) {
+	if !data && needsLinearPremultiply(pix) {
 		// The caller's image is left as it is.
 		pix = append([]byte(nil), pix...)
 		linearPremultiply(pix)
 	}
-	t, err := g.newTexture(b.Dx(), b.Dy(), pix, opts)
-	if err == nil {
-		g.trackTexture(t, opts)
-	}
-	return t, err
+	return pix
 }
 
 // trackTexture records a texture in the live resource list.
@@ -118,7 +133,77 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		img.Destroy()
 		return nil, err
 	}
-	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat, data: opts.Data, g: g}, nil
+	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat,
+		data: opts.Data, mipmapped: opts.Linear && !opts.NoMipmaps, g: g}, nil
+}
+
+// Replace swaps the texture's pixels for another image, keeping the
+// *Texture the game holds valid: every sprite, material and shader slot
+// that names it draws the new image without being told. Use it to
+// reload a texture whose file changed on disk; asset.Reloader calls it
+// for you. The image may be a different size, and the filtering, edge
+// handling, colour handling and mip choice the texture was made with
+// are kept. Inside a frame it costs no wait, and the old image is freed
+// once the frames that may still draw from it have finished. A render
+// texture's image belongs to the render texture, so replacing one is an
+// error.
+func (t *Texture) Replace(src image.Image) error {
+	if t.img == nil || t.destroyed {
+		return fmt.Errorf("gfx: replace a destroyed texture")
+	}
+	if t.external {
+		return fmt.Errorf("gfx: a render texture's image cannot be replaced")
+	}
+	b := src.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return fmt.Errorf("gfx: texture has empty bounds %v", b)
+	}
+	if b.Dx() == t.Width && b.Dy() == t.Height {
+		// The same size keeps the image, so nothing that names the
+		// texture has to be rebuilt.
+		return t.Write(0, 0, src)
+	}
+	return t.replaceTexels(b.Dx(), b.Dy(), texelsOf(src, t.data), t.format())
+}
+
+// format is the image format the texture's colour handling asks for.
+func (t *Texture) format() vk.VkFormat {
+	if t.data {
+		return vk.VK_FORMAT_R8G8B8A8_UNORM
+	}
+	return vk.VK_FORMAT_R8G8B8A8_SRGB
+}
+
+// replaceTexels gives the texture a fresh image of a new size and
+// retires the old one. The descriptor sets that named the old image go
+// with it, so the next draw builds them again from the new view.
+func (t *Texture) replaceTexels(w, h int, pix []byte, format vk.VkFormat) error {
+	g := t.g
+	mips := t.mipmapped && w > 1 && h > 1
+	img, err := g.uploadTexture(vk.VkExtent2D{Width: uint32(w), Height: uint32(h)}, format, pix, mips)
+	if err != nil {
+		return err
+	}
+	set, err := g.textureSet(img.View, g.sampler(!t.nearest, t.repeat))
+	if err != nil {
+		img.Destroy()
+		return err
+	}
+	old, oldSet, oldAlt := t.img, t.set, t.altSet
+	// The cached material and image sets name the old view, so they leave
+	// the caches now; freeing them is deferred with everything else.
+	g.forgetTexture(t)
+	t.img, t.set, t.altSet = img, set, 0
+	t.Width, t.Height = w, h
+	g.track(t, Resource{Kind: ResourceTexture, Width: w, Height: h, Bytes: textureBytes(w, h, mips)})
+	g.deferDestroy(func() {
+		g.descriptors.Free(oldSet)
+		if oldAlt != 0 {
+			g.descriptors.Free(oldAlt)
+		}
+		old.Destroy()
+	})
+	return nil
 }
 
 // uploadTexture creates a sampled image and fills it. Inside a frame the
