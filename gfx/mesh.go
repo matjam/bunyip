@@ -52,13 +52,19 @@ func (v Vertex) gpu() gpuVertex {
 // glTF Model. Meshes that change, such as voxel chunks and procedural
 // terrain, take new geometry through Update.
 type Mesh struct {
-	IndexCount uint32
-	Min, Max   lin.Vec3 // axis-aligned bounds in mesh space
-	vbuf, ibuf *render.Buffer
-	verts      []Vertex // kept for picking
-	indices    []uint32
-	skinned    bool
-	g          *Graphics
+	IndexCount  uint32
+	Min, Max    lin.Vec3 // axis-aligned bounds in mesh space
+	vbuf, ibuf  *render.Buffer
+	verts       []Vertex // kept for picking
+	indices     []uint32
+	skinned     bool
+	destroyed   bool // Destroy was called; the buffers live until the frame retires them
+	boundsFixed bool // Min and Max came from SetBounds, not from the vertices
+	// jointMin and jointMax are one box per joint of a skinned mesh, over
+	// the vertices weighted to it, so a pose's bounds are their union
+	// under its joint matrices.
+	jointMin, jointMax []lin.Vec3
+	g                  *Graphics
 }
 
 // Vertices returns the mesh's vertices as uploaded, for picking and
@@ -78,7 +84,7 @@ func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
 	if m.skinned {
 		return fmt.Errorf("gfx: a skinned mesh cannot be updated")
 	}
-	if m.vbuf == nil {
+	if m.vbuf == nil || m.destroyed {
 		return fmt.Errorf("gfx: update of a destroyed mesh")
 	}
 	if len(verts) == 0 {
@@ -92,10 +98,29 @@ func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
 	if err != nil {
 		return err
 	}
-	m.g.retireBuffers(m.vbuf, m.ibuf)
+	m.retire()
 	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
-	m.IndexCount, m.Min, m.Max, m.verts, m.indices = fresh.IndexCount, fresh.Min, fresh.Max, fresh.verts, fresh.indices
+	m.IndexCount, m.verts, m.indices = fresh.IndexCount, fresh.verts, fresh.indices
+	if !m.boundsFixed {
+		m.Min, m.Max = fresh.Min, fresh.Max
+	}
+	m.g.trackMesh(m, vertexSize)
 	return nil
+}
+
+// retire hands the mesh's current buffers to the frame slot's retire
+// list, so draws already queued keep drawing them. The mesh keeps
+// pointing at them until then; Update overwrites the fields with the
+// fresh buffers, and Destroy leaves them for the retire to clear.
+func (m *Mesh) retire() {
+	vbuf, ibuf := m.vbuf, m.ibuf
+	m.g.deferDestroy(func() {
+		vbuf.Destroy()
+		ibuf.Destroy()
+		if m.vbuf == vbuf {
+			m.vbuf, m.ibuf = nil, nil
+		}
+	})
 }
 
 // boundingSphere is the mesh's bounds under a model matrix as a sphere:
@@ -120,7 +145,18 @@ func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
 	for i, v := range verts {
 		packed[i] = v.gpu()
 	}
-	return g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
+	m, err := g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
+	if err == nil {
+		g.trackMesh(m, vertexSize)
+	}
+	return m, err
+}
+
+// trackMesh records a mesh in the live resource list, with the size one
+// of its vertices takes on the GPU.
+func (g *Graphics) trackMesh(m *Mesh, stride int) {
+	g.track(m, Resource{Kind: ResourceMesh, Vertices: len(m.verts), Indices: len(m.indices),
+		Bytes: len(m.verts)*stride + len(m.indices)*4})
 }
 
 // newMesh uploads the GPU vertex bytes (plain or skinned layout) and keeps
@@ -140,25 +176,49 @@ func (g *Graphics) newMesh(verts []Vertex, indices []uint32, vdata []byte) (*Mes
 		m.Max = lin.V3(max(m.Max.X, v.Pos.X), max(m.Max.Y, v.Pos.Y), max(m.Max.Z, v.Pos.Z))
 	}
 	var err error
-	if m.vbuf, err = g.r.Device.NewDeviceLocalBuffer(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
+	if m.vbuf, err = g.uploadGeometry(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
 		return nil, err
 	}
 	idata := unsafe.Slice((*byte)(unsafe.Pointer(&indices[0])), len(indices)*4)
-	if m.ibuf, err = g.r.Device.NewDeviceLocalBuffer(idata, vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT); err != nil {
+	if m.ibuf, err = g.uploadGeometry(idata, vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT); err != nil {
 		m.vbuf.Destroy()
 		return nil, err
 	}
 	return m, nil
 }
 
-// Destroy frees the mesh; it must not be in use by a frame in flight.
-func (m *Mesh) Destroy() {
-	if m.vbuf != nil {
-		_ = m.vbuf.Dev().WaitIdle()
-		m.vbuf.Destroy()
-		m.ibuf.Destroy()
-		m.vbuf, m.ibuf = nil, nil
+// uploadGeometry puts vertex or index bytes in device-local memory.
+// Inside a frame the copy is recorded into the frame's command buffer
+// from the staging arena, with a barrier so a draw later in the same
+// frame reads the new data; outside one it goes through a one-shot
+// submission that waits.
+func (g *Graphics) uploadGeometry(data []byte, usage vk.VkBufferUsageFlags) (*render.Buffer, error) {
+	if g.frame == nil {
+		return g.r.Device.NewDeviceLocalBuffer(data, usage)
 	}
+	buf, err := g.r.Device.NewDeviceBuffer(vk.VkDeviceSize(len(data)), usage)
+	if err != nil {
+		return nil, err
+	}
+	staging, offset, err := g.stage(data)
+	if err != nil {
+		buf.Destroy()
+		return nil, err
+	}
+	render.RecordBufferUpload(g.frame.CB, buf, staging, offset, vk.VkDeviceSize(len(data)))
+	return buf, nil
+}
+
+// Destroy frees the mesh. Called inside a frame it costs no wait: the
+// buffers go on the frame slot's retire list and are freed once that
+// frame has finished, so draws already queued this frame still draw.
+func (m *Mesh) Destroy() {
+	if m.vbuf == nil || m.destroyed {
+		return
+	}
+	m.destroyed = true
+	m.g.forget(m)
+	m.retire()
 }
 
 // Material is how a mesh is shaded, in the metallic-roughness model. Every
@@ -338,17 +398,27 @@ type Fog struct {
 }
 
 type meshDraw struct {
-	mesh      *Mesh
-	mat       Material
-	model     lin.Mat4
-	set       vk.VkDescriptorSet
-	shader    *Shader // never nil once queued
-	uniform   int32   // arena offset of the shader's uniforms, -1 for none
-	depth     float32 // view-space distance for transparency sorting
-	blended   bool    // mat.blended(), resolved once by prepareDraws for the sort
-	culled    bool    // outside the camera's view; drawn only into shadows
-	skinned   bool
-	jointBase int // first joint matrix in the queue's joint list
+	mesh  *Mesh
+	mat   Material
+	model lin.Mat4
+	set   vk.VkDescriptorSet
+	// samplers packs the sampler index of each of the material set's
+	// eleven texture slots, two bits apiece, for the instance stream.
+	samplers   float32
+	shader     *Shader // never nil once queued
+	uniform    int32   // arena offset of the shader's uniforms, -1 for none
+	depth      float32 // view-space distance for transparency sorting
+	blended    bool    // mat.blended(), resolved once by prepareDraws for the sort
+	culled     bool    // outside the camera's view; drawn only into shadows
+	skinned    bool
+	jointBase  int // first joint matrix in the queue's joint list
+	jointCount int // how many joint matrices the draw's pose uses
+	// centre and radius are the draw's world bounding sphere, resolved by
+	// prepareDraws; cullable is false for a shader that may move a vertex
+	// anywhere. The shadow pass tests the sphere against each light.
+	centre   lin.Vec3
+	radius   float32
+	cullable bool
 }
 
 // meshInstance is the per-instance vertex stream: see pbr.vert.
@@ -361,7 +431,12 @@ type meshInstance struct {
 	uvT1      [4]float32 // texture transform e, f; clearcoat, clearcoat roughness
 	sheen     [4]float32 // sheen colour, sheen roughness
 	volume    [4]float32 // transmission, ior, thickness, attenuation distance
-	atten     [4]float32 // attenuation colour
+	// atten is the attenuation colour, with the material set's packed
+	// sampler indices in w: two bits per texture slot, in the order the
+	// set binds them. Every instance of a draw shares set 0, so the
+	// index a shader reads from here is the same across the draw, which
+	// is what indexing the sampler array needs.
+	atten [4]float32
 }
 
 const meshInstanceSize = 176

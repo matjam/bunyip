@@ -64,26 +64,15 @@ type lineStream struct {
 
 func (s *lineStream) reset() { s.items = s.items[:0] }
 
-func (s *lineStream) upload(dev *render.Device, slot int) error {
+func (s *lineStream) upload(g *Graphics, slot int) error {
 	s.slot = slot
 	if len(s.items) > s.capacity {
-		if err := dev.WaitIdle(); err != nil {
-			return err
-		}
 		newCap := max(s.capacity*2, 4096)
 		for newCap < len(s.items) {
 			newCap *= 2
 		}
-		for i := range s.buffers {
-			if s.buffers[i] != nil {
-				s.buffers[i].Destroy()
-			}
-			buf, err := dev.NewBuffer(vk.VkDeviceSize(newCap*lineVertexSize), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-			if err != nil {
-				return err
-			}
-			s.buffers[i] = buf
+		if err := g.growStream(&s.buffers, vk.VkDeviceSize(newCap*lineVertexSize)); err != nil {
+			return err
 		}
 		s.capacity = newCap
 	}
@@ -204,7 +193,7 @@ func (g *Graphics) drawDebugLines(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 	if len(q.lines.items) == 0 {
 		return nil
 	}
-	if err := q.lines.upload(g.r.Device, fr.Slot); err != nil {
+	if err := q.lines.upload(g, fr.Slot); err != nil {
 		return err
 	}
 	rec := &g.rec

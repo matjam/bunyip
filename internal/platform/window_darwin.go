@@ -21,6 +21,10 @@ type Window struct {
 	closed   bool
 	captured bool
 
+	miniaturized bool
+	occluded     bool
+	visible      bool
+
 	cursorHidden bool
 	cursorImage  objc.ID // the custom NSCursor in use, kept alive; 0 for a system shape
 	shape        CursorShape
@@ -41,7 +45,10 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	if win == 0 {
 		return nil, fmt.Errorf("platform: NSWindow init failed")
 	}
-	w := &Window{app: a, nsWindow: win}
+	// The window is ordered front below, so it starts visible; AppKit
+	// reports a change through the delegate's miniaturise and occlusion
+	// notifications.
+	w := &Window{app: a, nsWindow: win, visible: true}
 	win.Send(c.sel.setTitle, c.nsString(cfg.Title))
 	win.Send(c.sel.setRestorable, false)
 	win.Send(c.sel.setAcceptsMouseMovedEvents, true)
@@ -88,6 +95,29 @@ func (w *Window) PixelSize() (int, int) { return w.pixelW, w.pixelH }
 
 // Scale is pixels per point.
 func (w *Window) Scale() float64 { return w.scale }
+
+// selOcclusionState reads NSWindow.occlusionState, and
+// nsWindowOcclusionStateVisible is the bit that says any part of the
+// window is on screen.
+var selOcclusionState = objc.RegisterName("occlusionState")
+
+const nsWindowOcclusionStateVisible = 1 << 1
+
+// updateVisible reports a change in whether the window can be seen. It is
+// hidden while it is in the Dock (miniaturised) or wholly covered by other
+// windows, which is what lets a game stop drawing.
+func (w *Window) updateVisible() {
+	visible := !w.miniaturized && !w.occluded
+	if visible == w.visible {
+		return
+	}
+	w.visible = visible
+	w.app.push(Event{Kind: EventVisible, Window: w, Visible: visible})
+}
+
+// Visible reports whether the window can be seen: false while it is
+// miniaturised or wholly covered by other windows.
+func (w *Window) Visible() bool { return w.visible }
 
 // Closed reports whether Close has run.
 func (w *Window) Closed() bool { return w.closed }

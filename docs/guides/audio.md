@@ -27,10 +27,13 @@ and a priority. The voice can be adjusted while it runs: `SetVolume`,
 `FadeTo`, `FadeOut`, `SetPitch`, `SetPaused`, `SetLowPass`,
 `SetPosition`, `SetOcclusion`, `SetMute`, `SetSolo`.
 
-Gains ramp across each block, so changes never click. `Voice.Position`
-and `Seek` read and move the playhead, `Sound.Duration` is its length,
-and `Voice.OnDone` runs a callback when the voice ends, for chaining
-clips.
+Gains ramp across each block, so changes never click. `Stop`, `StopAll`
+and a voice that loses its slot ramp to silence over about a
+millisecond, so cutting a sound off mid-cycle is inaudible; the voice
+leaves `Playing` at once and the mixer spends that millisecond fading
+what is left. `Voice.Position` and `Seek` read and move the playhead,
+`Sound.Duration` is its length, and `Voice.OnDone` runs a callback when
+the voice ends, for chaining clips.
 
 ```go
 pcm, err := audio.Decode(data) // WAV, Ogg Vorbis or MP3 bytes
@@ -160,6 +163,39 @@ torch := ctx.Audio.Play(g.fire, audio.PlayOptions{
 torch.SetPosition(lin.V3(6, 1, -8)) // when the source moves
 ```
 
+### Binaural rendering
+
+By default a positional voice is panned between the two channels by a
+constant-power law. `SetSpatial(audio.SpatialSettings{Binaural: true})`
+renders it through a head model instead, which is worth having when the
+player wears headphones. Each voice then gets:
+
+- an interaural time difference, from Woodworth's formula for the path
+  around a sphere, so the far ear hears it up to about 0.66 ms later;
+- an interaural level difference, the far ear down by up to 6 dB;
+- a head shadow, a one-pole low-pass on each ear whose cutoff falls from
+  22 kHz to 1.5 kHz as the source moves to the far side;
+- an elevation cue, a shelf at 4 kHz that lifts the high band for a
+  source above the listener and drops it for one below.
+
+This is a parametric head model, not a measured head-related transfer
+function: it has no ear shape, so it does not tell front from back, and
+it is the same head for every player. `HeadRadius` sets that head's size
+in metres; the default of 0.0875 is an average adult, and larger heads
+give a wider time difference. Everything is interpolated across each
+block, so moving sources and a moving listener glide. The zero
+`SpatialSettings` restore panning, and voices that are not positional
+are unaffected either way.
+
+```go
+// A settings screen's headphones switch.
+ctx.Audio.SetSpatial(audio.SpatialSettings{Binaural: g.headphones})
+```
+
+The cost is a delay line and three one-pole filters per positional
+voice, and the signal collapses to mono before the ears, so a stereo
+clip loses its own width when it is spatialised.
+
 ### Doppler
 
 To turn the Doppler effect on, call `SetDoppler(1)`. A positional sound
@@ -210,6 +246,9 @@ for _, s := range g.sources {
 and all-pass network; voices feed it through their `Reverb` send, and the
 tail is mixed on top of the dry output. `ReverbSettings` has a room size,
 damping, stereo width and wet level, and its zero value is no reverb.
+Every field runs from 0 to 1; a larger room size is clamped, because
+above about 1.07 the comb feedback reaches one and the tail grows
+without end instead of dying away.
 
 ```go
 ctx.Audio.SetReverb(audio.ReverbSettings{RoomSize: 0.7, Damping: 0.4, Wet: 0.3})
@@ -276,6 +315,54 @@ ctx.Audio.Play(g.explosion, audio.PlayOptions{Priority: 50})
 ctx.Audio.Play(g.step, audio.PlayOptions{Priority: 0, Volume: 0.3})
 n := ctx.Audio.Playing() // for the debug overlay
 ```
+
+## Microphone input
+
+`OpenCapture` records from the machine's default input, the one the
+desktop is set to. It hands back a `Capture` whose `Read` copies
+whatever the device has recorded since the last call and returns at
+once, so the game loop calls it every update and never waits for the
+device. `Level` is the root mean square of the block that arrived most
+recently, which is what a meter draws, and `Close` releases the device.
+
+`CaptureOptions` take a rate and a channel count, defaulting to the
+mixer's rate and mono, and `Buffer` sets how many seconds the ring holds
+before the oldest samples are dropped; the default is half a second.
+`Dropped` counts what was lost that way, so a rising count means the
+game is not reading often enough.
+
+```go
+if g.mic, err = ctx.Audio.OpenCapture(audio.CaptureOptions{}); err != nil {
+	return err // no device, no permission, or a headless run
+}
+...
+// In Update, every frame.
+for {
+	n := g.mic.Read(g.buf)
+	if n == 0 {
+		break
+	}
+	g.pushToVoiceChat(g.buf[:n])
+}
+g.meter = g.mic.Level()
+```
+
+Capture is separate from the mixer: nothing recorded is played back
+unless the game plays it, which avoids a feedback loop by default. A
+headless run and `Config.NoAudio` have no device at all, so `OpenCapture`
+returns `ErrNoDevice` there rather than reaching the hardware behind the
+game's back. On macOS the operating system asks the player for
+microphone access the first time a game records, and a sandboxed
+application needs the audio-input entitlement. `go run ./examples/audio
+-mic` records and draws a level meter.
+
+## Looking inside the mixer
+
+`Voices` returns a snapshot of what is playing, one `VoiceInfo` per
+voice with its bus, gain, pan, pitch, playhead and position, and `Buses`
+returns every bus in the order it was made. Both are for a mixing panel
+or a test rather than for the game's own logic; the [debug
+console](console.html) shows them.
 
 ## Tracker music
 

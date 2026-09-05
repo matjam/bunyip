@@ -156,7 +156,7 @@ func (g *Graphics) newEnvironment(src *radianceMap, opts EnvironmentOptions) (*E
 		}
 	}
 	var err error
-	if env.cube, err = g.r.Device.NewCubemapImage(uint32(size), vk.VK_FORMAT_R16G16B16A16_SFLOAT, 8, faces); err != nil {
+	if env.cube, err = g.uploadCubemap(uint32(size), vk.VK_FORMAT_R16G16B16A16_SFLOAT, 8, faces); err != nil {
 		return nil, err
 	}
 	env.sh = irradianceSH(src)
@@ -164,7 +164,34 @@ func (g *Graphics) newEnvironment(src *radianceMap, opts EnvironmentOptions) (*E
 		env.cube.Destroy()
 		return nil, err
 	}
+	// Six faces of half-float RGBA, plus a third again for the mip chain.
+	g.track(env, Resource{Kind: ResourceEnvironment, Width: size, Height: size, Bytes: 6 * size * size * 8 * 4 / 3})
 	return env, nil
+}
+
+// uploadCubemap creates a cube map and fills it. Inside a frame the copy
+// is recorded into the frame's command buffer from the staging arena,
+// before any pass; outside one it goes through a one-shot submission
+// that waits.
+func (g *Graphics) uploadCubemap(size uint32, format vk.VkFormat, texelBytes int, faces [][6][]byte) (*render.Image, error) {
+	if g.frame == nil {
+		return g.r.Device.NewCubemapImage(size, format, texelBytes, faces)
+	}
+	data, err := render.CubemapData(size, texelBytes, faces)
+	if err != nil {
+		return nil, err
+	}
+	cube, err := g.r.Device.NewCubemapImageEmpty(size, format, uint32(len(faces)))
+	if err != nil {
+		return nil, err
+	}
+	staging, offset, err := g.stage(data)
+	if err != nil {
+		cube.Destroy()
+		return nil, err
+	}
+	render.RecordCubemapUpload(g.frame.CB, cube, texelBytes, staging, offset)
+	return cube, nil
 }
 
 // cubeBindings is a cube map at binding 0 with white in the other slots.
@@ -288,14 +315,19 @@ func putF16(dst []byte, f float32) {
 	dst[0], dst[1] = byte(h), byte(h>>8)
 }
 
-// Destroy frees the environment. It must not be in use by a frame in flight.
+// Destroy frees the environment. Called inside a frame it costs no wait:
+// the cube map and its descriptor set go on the frame slot's retire list
+// and are freed once that frame has finished.
 func (env *Environment) Destroy() {
 	if env == nil || env.cube == nil {
 		return
 	}
-	_ = env.g.r.Device.WaitIdle()
-	env.g.forgetEnvironment(env)
-	env.g.descriptors.Free(env.set)
-	env.cube.Destroy()
-	env.cube = nil
+	g, cube, set := env.g, env.cube, env.set
+	env.cube, env.set = nil, 0
+	g.forget(env)
+	g.forgetEnvironment(env)
+	g.deferDestroy(func() {
+		g.descriptors.Free(set)
+		cube.Destroy()
+	})
 }

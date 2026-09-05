@@ -3,6 +3,8 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"image"
+	"image/draw"
 	"os"
 	"strings"
 	"structs"
@@ -38,6 +40,7 @@ const (
 	outputVersionCap     = 4
 	shmVersionCap        = 1
 	wmBaseVersionCap     = 7
+	dataDeviceVersionCap = 3 // wl_data_source.set_actions
 )
 
 // evdev button codes, from input-event-codes.h.
@@ -168,6 +171,26 @@ type wlApp struct {
 	decorManager   unsafe.Pointer
 	relPointerMgr  unsafe.Pointer
 	ptrConstraints unsafe.Pointer
+	dataMgr        unsafe.Pointer
+	dataMgrVer     uint32
+	fracScaleMgr   unsafe.Pointer
+	viewporter     unsafe.Pointer
+	iconMgr        unsafe.Pointer
+
+	// The clipboard. dataDevice is the seat's; clipSource is the source
+	// this process offered and clipText what it offers, so a read of our
+	// own selection needs no pipe. selection is the offer the compositor
+	// last handed over and offerMimes the types each live offer carries;
+	// newOffer holds an offer the compositor has made but not yet used.
+	dataDevice unsafe.Pointer
+	clipSource unsafe.Pointer
+	clipText   string
+	selection  unsafe.Pointer
+	newOffer   unsafe.Pointer
+	offerMimes map[unsafe.Pointer][]string
+	// lastSerial is the most recent serial from a key or button, which is
+	// what wl_data_device.set_selection has to quote.
+	lastSerial uint32
 
 	keyboard unsafe.Pointer
 	pointer  unsafe.Pointer
@@ -220,9 +243,17 @@ type wlWindow struct {
 	pendW, pendH  int // the size the last xdg_toplevel.configure asked for
 	defW, defH    int // the size Config asked for, used when the compositor leaves it to us
 
-	scale          int // buffer scale in force
+	scale          int // integer buffer scale in force
 	preferredScale int // wl_surface.preferred_buffer_scale, or zero
 	onOutputs      map[unsafe.Pointer]bool
+
+	// Fractional scale. fracScale is wp_fractional_scale_v1's preferred
+	// scale in 120ths, or zero where the compositor does not offer the
+	// protocol; the viewport is what maps the buffer back onto the
+	// window's logical size.
+	fracScale int
+	fracObj   unsafe.Pointer
+	viewport  unsafe.Pointer
 
 	configured bool
 	closed     bool
@@ -230,6 +261,8 @@ type wlWindow struct {
 	fullscreen, pendFullscreen bool
 	maximized, pendMaximized   bool
 	activated, pendActivated   bool
+	pendSuspended              bool
+	visible                    bool // false only while the compositor suspends the window
 
 	resizable              bool
 	minW, minH, maxW, maxH int
@@ -241,6 +274,9 @@ type wlWindow struct {
 	shape         CursorShape
 	cursorSurface unsafe.Pointer
 	cursorScale   int
+
+	icon       unsafe.Pointer // the xdg_toplevel_icon_v1 in force, or nil
+	iconBuffer unsafe.Pointer // the shm buffer it holds, kept alive with it
 
 	captured     bool
 	lockedPtr    unsafe.Pointer
@@ -315,7 +351,7 @@ func loadWayland() (*wllib, map[string]*wlInterface, error) {
 	for _, name := range []string{
 		"wl_display", "wl_registry", "wl_callback", "wl_compositor", "wl_surface", "wl_region",
 		"wl_seat", "wl_keyboard", "wl_pointer", "wl_output", "wl_shm", "wl_shm_pool", "wl_buffer",
-		"wl_data_device_manager",
+		"wl_data_device_manager", "wl_data_device", "wl_data_source", "wl_data_offer",
 	} {
 		sym, err := purego.Dlsym(lib, name+"_interface")
 		if err != nil {
@@ -416,7 +452,7 @@ func (l *wllib) marshal(proxy unsafe.Pointer, opcode uint32, iface *wlInterface,
 	case 6:
 		return l.marshal6(proxy, opcode, ip, v, flags, args[0], args[1], args[2], args[3], args[4], args[5])
 	}
-	panic("platform: too many Wayland request arguments")
+	panic(fmt.Sprintf("platform: request %d has %d arguments, more than marshal sends", opcode, len(args)))
 }
 
 // send is marshal for a request that creates nothing.
@@ -473,8 +509,8 @@ func newWaylandApp(out *App) (*wlApp, error) {
 	a := &wlApp{
 		out: out, l: l, display: display, iface: table,
 		outputs: map[unsafe.Pointer]*wlOutput{}, owner: map[unsafe.Pointer]*wlWindow{},
-		listeners: map[unsafe.Pointer]unsafe.Pointer{},
-		wakeR:     -1, wakeW: -1,
+		listeners: map[unsafe.Pointer]unsafe.Pointer{}, offerMimes: map[unsafe.Pointer][]string{},
+		wakeR: -1, wakeW: -1,
 	}
 	wlCurrent = a
 	wlInitCallbacks()
@@ -501,6 +537,19 @@ func newWaylandApp(out *App) (*wlApp, error) {
 	if a.compositor == nil || a.wmBase == nil {
 		a.close()
 		return nil, fmt.Errorf("platform: the compositor has no %s", missingGlobal(a))
+	}
+	// The seat and the data device manager arrive as globals in whichever
+	// order the compositor lists them, so the clipboard's data device is
+	// made once both are in hand. A third round trip brings the selection
+	// the compositor is already holding.
+	if a.dataMgr != nil && a.seat != nil {
+		iface := table["wl_data_device"]
+		a.dataDevice = l.marshal(a.dataMgr, opDataDeviceManagerGetDevice, iface, 0, 0, uintptr(a.seat))
+		a.listen(a.dataDevice, iface, []uintptr{
+			cbDataDeviceDataOffer, cbDataDeviceEnter, cbDataDeviceLeave,
+			cbDataDeviceMotion, cbDataDeviceDrop, cbDataDeviceSelection,
+		})
+		l.roundtrip(display)
 	}
 	return a, nil
 }
@@ -538,6 +587,20 @@ func (a *wlApp) bind(name uint32, iface *wlInterface, version uint32) unsafe.Poi
 // close tears the connection down.
 func (a *wlApp) close() {
 	l := a.l
+	a.destroySource()
+	a.dropOffer(a.selection)
+	a.dropOffer(a.newOffer)
+	if a.dataDevice != nil {
+		// release is the destructor from version two; an older device is
+		// only destroyed locally, which is all its version allows.
+		if a.dataMgrVer >= 2 {
+			l.marshal(a.dataDevice, opDataDeviceRelease, nil, wlMarshalFlagDestroy)
+		} else {
+			l.destroy(a.dataDevice)
+		}
+		a.freeListener(a.dataDevice)
+		a.dataDevice = nil
+	}
 	if a.xkbState != nil {
 		l.xkbStateUnref(a.xkbState)
 	}
@@ -565,7 +628,7 @@ func (a *wlApp) close() {
 	}
 }
 
-func (a *wlApp) push(e Event) { a.out.pending = append(a.out.pending, e) }
+func (a *wlApp) push(e Event) { a.out.push(e) }
 
 // --- registry ---
 
@@ -595,9 +658,24 @@ func (a *wlApp) onGlobal(name uint32, ifaceName string, version uint32) {
 		iface := a.iface["xdg_wm_base"]
 		a.wmBase = a.bind(name, iface, a.bindVersion(version, iface, wmBaseVersionCap))
 		a.listen(a.wmBase, iface, []uintptr{cbWMBasePing})
+	case "wl_data_device_manager":
+		iface := a.iface["wl_data_device_manager"]
+		a.dataMgrVer = a.bindVersion(version, iface, dataDeviceVersionCap)
+		a.dataMgr = a.bind(name, iface, a.dataMgrVer)
 	case "zxdg_decoration_manager_v1":
 		iface := a.iface["zxdg_decoration_manager_v1"]
 		a.decorManager = a.bind(name, iface, 1)
+	case "xdg_toplevel_icon_manager_v1":
+		iface := a.iface["xdg_toplevel_icon_manager_v1"]
+		a.iconMgr = a.bind(name, iface, 1)
+		// The manager lists the icon sizes it likes and says when the
+		// list ends; the layer sends whatever image the game gave it, so
+		// neither event needs a handler.
+		a.listen(a.iconMgr, iface, nil)
+	case "wp_fractional_scale_manager_v1":
+		a.fracScaleMgr = a.bind(name, a.iface["wp_fractional_scale_manager_v1"], 1)
+	case "wp_viewporter":
+		a.viewporter = a.bind(name, a.iface["wp_viewporter"], 1)
 	case "zwp_relative_pointer_manager_v1":
 		a.relPointerMgr = a.bind(name, a.iface["zwp_relative_pointer_manager_v1"], 1)
 	case "zwp_pointer_constraints_v1":
@@ -957,7 +1035,7 @@ func (a *wlApp) newWindow(out *Window, cfg Config) (*wlWindow, error) {
 		app: a, out: out,
 		width: cfg.Width, height: cfg.Height, defW: cfg.Width, defH: cfg.Height,
 		scale: 1, resizable: cfg.Resizable, onOutputs: map[unsafe.Pointer]bool{},
-		cursorScale: 1,
+		cursorScale: 1, visible: true,
 	}
 	w.surface = l.marshal(a.compositor, opCompositorCreateSurface, a.iface["wl_surface"], 0, 0)
 	if w.surface == nil {
@@ -968,6 +1046,14 @@ func (a *wlApp) newWindow(out *Window, cfg Config) (*wlWindow, error) {
 	a.listen(w.surface, a.iface["wl_surface"], []uintptr{
 		cbSurfaceEnter, cbSurfaceLeave, cbSurfacePreferredScale, cbSurfacePreferredTransform,
 	})
+	// A fractional scale is only useful with a viewport to map the buffer
+	// back onto the window's logical size, so both or neither.
+	if a.fracScaleMgr != nil && a.viewporter != nil {
+		w.viewport = l.marshal(a.viewporter, opViewporterGetViewport, a.iface["wp_viewport"], 0, 0, uintptr(w.surface))
+		w.fracObj = l.marshal(a.fracScaleMgr, opFractionalScaleMgrGet, a.iface["wp_fractional_scale_v1"], 0, 0, uintptr(w.surface))
+		a.owner[w.fracObj] = w
+		a.listen(w.fracObj, a.iface["wp_fractional_scale_v1"], []uintptr{cbFractionalScale})
+	}
 	w.xdgSurface = l.marshal(a.wmBase, opXdgWMBaseGetXdgSurface, a.iface["xdg_surface"], 0, 0, uintptr(w.surface))
 	a.owner[w.xdgSurface] = w
 	a.listen(w.xdgSurface, a.iface["xdg_surface"], []uintptr{cbXdgSurfaceConfigure})
@@ -1005,8 +1091,7 @@ func (a *wlApp) newWindow(out *Window, cfg Config) (*wlWindow, error) {
 		w.destroy()
 		return nil, fmt.Errorf("platform: the compositor never configured the window")
 	}
-	a.push(Event{Kind: EventResize, Window: out, Width: w.width, Height: w.height,
-		PixelW: w.width * w.scale, PixelH: w.height * w.scale, Scale: float64(w.scale)})
+	w.pushResize()
 	return w, nil
 }
 
@@ -1049,7 +1134,7 @@ func (w *wlWindow) applySizeLimits(minW, minH, maxW, maxH int) {
 // carries the serial to acknowledge.
 func (w *wlWindow) onToplevelConfigure(width, height int32, states *wlArray) {
 	w.pendW, w.pendH = int(width), int(height)
-	w.pendFullscreen, w.pendMaximized, w.pendActivated = false, false, false
+	w.pendFullscreen, w.pendMaximized, w.pendActivated, w.pendSuspended = false, false, false, false
 	for _, s := range states.u32s() {
 		switch s {
 		case xdgToplevelStateFullscreen:
@@ -1058,6 +1143,8 @@ func (w *wlWindow) onToplevelConfigure(width, height int32, states *wlArray) {
 			w.pendMaximized = true
 		case xdgToplevelStateActivated:
 			w.pendActivated = true
+		case xdgToplevelStateSuspended:
+			w.pendSuspended = true
 		}
 	}
 }
@@ -1083,8 +1170,10 @@ func (w *wlWindow) onSurfaceConfigure(serial uint32) {
 	}
 	sizeChanged := width != w.width || height != w.height
 	w.width, w.height = width, height
+	w.applyViewport()
 	w.fullscreen, w.maximized = w.pendFullscreen, w.pendMaximized
 	w.setFocused(w.pendActivated)
+	w.setVisible(!w.pendSuspended)
 	first := !w.configured
 	w.configured = true
 	if sizeChanged && !first {
@@ -1106,16 +1195,98 @@ func (w *wlWindow) setFocused(on bool) {
 	w.app.push(Event{Kind: EventFocus, Window: w.out, Focused: on})
 }
 
+// setVisible reports a change in whether the window can be seen. The
+// compositor says so with the suspended state of xdg_toplevel version
+// six, which it sends when the window is minimised or wholly covered; a
+// compositor that offers an earlier version never sends it, so the window
+// stays visible.
+func (w *wlWindow) setVisible(on bool) {
+	if on == w.visible {
+		return
+	}
+	w.visible = on
+	w.app.push(Event{Kind: EventVisible, Window: w.out, Visible: on})
+}
+
 // pushResize reports the content and framebuffer size.
 func (w *wlWindow) pushResize() {
+	pw, ph := w.pixelSize()
 	w.app.push(Event{Kind: EventResize, Window: w.out, Width: w.width, Height: w.height,
-		PixelW: w.width * w.scale, PixelH: w.height * w.scale, Scale: float64(w.scale)})
+		PixelW: pw, PixelH: ph, Scale: w.scaleFactor()})
+}
+
+// pixelSize is the buffer size in pixels: the window's logical size times
+// the fractional scale where the compositor sends one, and times the
+// integer buffer scale otherwise.
+func (w *wlWindow) pixelSize() (int, int) {
+	if w.fracScale > 0 {
+		return scale120(w.width, w.fracScale), scale120(w.height, w.fracScale)
+	}
+	return w.width * w.scale, w.height * w.scale
+}
+
+// scaleFactor is pixels per point, fractional where the compositor sends
+// a fractional scale.
+func (w *wlWindow) scaleFactor() float64 {
+	if w.fracScale > 0 {
+		return float64(w.fracScale) / 120
+	}
+	return float64(w.scale)
+}
+
+// scale120 multiplies a length by a scale counted in 120ths, rounding to
+// the nearest pixel, which is what the fractional scale protocol asks
+// for.
+func scale120(n, scale int) int { return (n*scale + 60) / 120 }
+
+// pointerScale is the buffer scale the cursor is drawn at. A fractional
+// scale rounds up, because a cursor buffer's scale is a whole number and
+// too large is sharper than too small.
+func (w *wlWindow) pointerScale() int {
+	if w.fracScale > 0 {
+		return max((w.fracScale+119)/120, 1)
+	}
+	return w.scale
+}
+
+// onFractionalScale takes the scale the compositor prefers, in 120ths.
+// The buffer is sized by it and the viewport maps the buffer back onto
+// the window's logical size, so the integer buffer scale goes to one.
+func (w *wlWindow) onFractionalScale(scale uint32) {
+	if scale == 0 || int(scale) == w.fracScale {
+		return
+	}
+	w.fracScale = int(scale)
+	if w.scale != 1 {
+		w.scale = 1
+		if w.app.compositorVer >= 3 {
+			w.app.l.send(w.surface, opSurfaceSetBufferScale, 1)
+		}
+	}
+	w.applyViewport()
+	w.applyCursor()
+	if w.configured {
+		w.pushResize()
+	}
+}
+
+// applyViewport tells the compositor that the buffer covers the window's
+// logical size however many pixels it holds, which is what lets the
+// buffer be a fractional multiple of that size.
+func (w *wlWindow) applyViewport() {
+	if w.viewport == nil || w.fracScale == 0 {
+		return
+	}
+	w.app.l.send(w.viewport, opViewportSetDestination, uintptr(int32(w.width)), uintptr(int32(w.height)))
 }
 
 // refreshScale recomputes the buffer scale from the outputs the surface is
 // on, or from wl_surface.preferred_buffer_scale where the compositor sends
 // it, and tells the compositor what the buffer scale now is.
 func (w *wlWindow) refreshScale() {
+	if w.fracScale > 0 {
+		return // the viewport carries the scale and the buffer scale stays one
+	}
 	scale := w.preferredScale
 	if scale == 0 {
 		scale = 1
@@ -1144,6 +1315,7 @@ func (w *wlWindow) refreshScale() {
 func (w *wlWindow) destroy() {
 	a, l := w.app, w.app.l
 	w.setCaptured(false)
+	w.dropIcon()
 	if w.cursorSurface != nil {
 		l.marshal(w.cursorSurface, opSurfaceDestroy, nil, wlMarshalFlagDestroy)
 		w.cursorSurface = nil
@@ -1155,6 +1327,8 @@ func (w *wlWindow) destroy() {
 		proxy  unsafe.Pointer
 		opcode uint32
 	}{
+		{w.fracObj, opFractionalScaleDestroy},
+		{w.viewport, opViewportDestroy},
 		{w.decoration, opXdgDecorationDestroy},
 		{w.xdgToplevel, opXdgToplevelDestroy},
 		{w.xdgSurface, opXdgSurfaceDestroy},
@@ -1190,9 +1364,154 @@ func (w *wlWindow) destroy() {
 	if a.repeatWindow == w {
 		a.repeatWindow, a.repeatKey = nil, 0
 	}
+	w.fracObj, w.viewport = nil, nil
 	w.decoration, w.xdgToplevel, w.xdgSurface, w.surface = nil, nil, nil, nil
 	w.closed = true
 	l.flush(a.display)
+}
+
+// --- the window icon ---
+
+// shmFormatARGB8888 is wl_shm's premultiplied 32-bit format, which on a
+// little-endian machine is blue, green, red then alpha in memory.
+const shmFormatARGB8888 = 0
+
+// setIcon hands the compositor an icon through xdg-toplevel-icon-v1. A
+// compositor without the protocol keeps the icon from the desktop entry
+// whose name matches the app id, which is all a client can do there, so
+// this does nothing.
+func (w *wlWindow) setIcon(img image.Image) {
+	a, l := w.app, w.app.l
+	if a.iconMgr == nil || a.shm == nil || w.xdgToplevel == nil {
+		return
+	}
+	w.dropIcon()
+	if img == nil {
+		l.send(a.iconMgr, opToplevelIconMgrSetIcon, uintptr(w.xdgToplevel), 0)
+		w.commitIcon()
+		return
+	}
+	// The protocol requires a square buffer and raises invalid_buffer on
+	// anything else, which would disconnect the client; a non-square icon
+	// is legal on X11 and Windows, so pad it here.
+	buf := a.shmBuffer(squareIcon(img))
+	if buf == nil {
+		return
+	}
+	icon := l.marshal(a.iconMgr, opToplevelIconMgrCreateIcon, a.iface["xdg_toplevel_icon_v1"], 0, 0)
+	if icon == nil {
+		l.marshal(buf, opBufferDestroy, nil, wlMarshalFlagDestroy)
+		return
+	}
+	// One buffer at scale one. The image is sent as the game gave it,
+	// rather than resampled to each size the compositor listed, because
+	// the compositor scales an icon it does not have at the size it wants.
+	l.send(icon, opToplevelIconAddBuffer, uintptr(buf), 1)
+	l.send(a.iconMgr, opToplevelIconMgrSetIcon, uintptr(w.xdgToplevel), uintptr(icon))
+	w.icon, w.iconBuffer = icon, buf
+	w.commitIcon()
+}
+
+// commitIcon applies a set_icon. The request is double-buffered on the
+// toplevel's surface, so without a commit the icon changes only at the
+// next frame the game draws, and never at all while it is hidden.
+func (w *wlWindow) commitIcon() {
+	l := w.app.l
+	l.send(w.surface, opSurfaceCommit)
+	l.flush(w.app.display)
+}
+
+// squareIcon pads an image out to a square with transparent edges,
+// centred, because xdg-toplevel-icon-v1 takes square buffers only. An
+// image that is already square is returned as it is.
+func squareIcon(img image.Image) image.Image {
+	b := img.Bounds()
+	width, height := b.Dx(), b.Dy()
+	if width == height || width <= 0 || height <= 0 {
+		return img
+	}
+	side := max(width, height)
+	out := image.NewNRGBA(image.Rect(0, 0, side, side))
+	at := image.Pt((side-width)/2, (side-height)/2)
+	draw.Draw(out, image.Rectangle{Min: at, Max: at.Add(image.Pt(width, height))}, img, b.Min, draw.Src)
+	return out
+}
+
+// dropIcon releases the icon in force. Both the icon and its buffer are
+// kept until the icon is replaced, because the compositor reads them for
+// as long as the toplevel wears it.
+func (w *wlWindow) dropIcon() {
+	l := w.app.l
+	if w.icon != nil {
+		l.marshal(w.icon, opToplevelIconDestroy, nil, wlMarshalFlagDestroy)
+		w.icon = nil
+	}
+	if w.iconBuffer != nil {
+		l.marshal(w.iconBuffer, opBufferDestroy, nil, wlMarshalFlagDestroy)
+		w.iconBuffer = nil
+	}
+}
+
+// shmBuffer copies an image into shared memory the compositor can read
+// and returns the wl_buffer over it, or nil where the memory could not be
+// made. The caller owns the buffer and destroys it.
+func (a *wlApp) shmBuffer(img image.Image) unsafe.Pointer {
+	b := img.Bounds()
+	width, height := b.Dx(), b.Dy()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	// image.RGBA is premultiplied, which is what the format wants; only
+	// the channel order changes.
+	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
+	pix := make([]byte, len(rgba.Pix))
+	for i := 0; i+3 < len(pix); i += 4 {
+		pix[i], pix[i+1], pix[i+2], pix[i+3] = rgba.Pix[i+2], rgba.Pix[i+1], rgba.Pix[i], rgba.Pix[i+3]
+	}
+	f, err := shmFile(len(pix))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	if _, err := f.Write(pix); err != nil {
+		return nil
+	}
+	l := a.l
+	pool := l.marshal(a.shm, opShmCreatePool, a.iface["wl_shm_pool"], 0, 0,
+		uintptr(f.Fd()), uintptr(int32(len(pix))))
+	if pool == nil {
+		return nil
+	}
+	// create_buffer takes the new id and the offset into the pool, both
+	// zero here, then the size, the stride and the format.
+	buf := l.marshal(pool, opShmPoolCreateBuf, a.iface["wl_buffer"], 0, 0, 0,
+		uintptr(int32(width)), uintptr(int32(height)), uintptr(int32(width*4)), uintptr(uint32(shmFormatARGB8888)))
+	// The pool can go as soon as the buffer exists, and the file has to
+	// reach the compositor before this process closes its descriptor.
+	l.marshal(pool, opShmPoolDestroy, nil, wlMarshalFlagDestroy)
+	a.flushDisplay()
+	return buf
+}
+
+// shmFile makes a file the compositor can map. It goes in
+// XDG_RUNTIME_DIR, where the socket already is, and is unlinked at once,
+// so it lives only as long as the two descriptors do.
+func shmFile(size int) (*os.File, error) {
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	f, err := os.CreateTemp(dir, "bunyip-shm-")
+	if err != nil {
+		return nil, err
+	}
+	os.Remove(f.Name())
+	if err := f.Truncate(int64(size)); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // --- cursor ---
@@ -1252,7 +1571,8 @@ func (w *wlWindow) applyCursor() {
 		l.send(a.pointer, opPointerSetCursor, uintptr(a.enterSerial), 0, 0, 0)
 		return
 	}
-	theme := a.loadCursorTheme(w.scale)
+	scale := w.pointerScale()
+	theme := a.loadCursorTheme(scale)
 	if theme == nil {
 		return
 	}
@@ -1276,15 +1596,15 @@ func (w *wlWindow) applyCursor() {
 	if w.cursorSurface == nil {
 		w.cursorSurface = l.marshal(a.compositor, opCompositorCreateSurface, a.iface["wl_surface"], 0, 0)
 	}
-	if a.compositorVer >= 3 && w.cursorScale != w.scale {
-		l.send(w.cursorSurface, opSurfaceSetBufferScale, uintptr(int32(w.scale)))
-		w.cursorScale = w.scale
+	if a.compositorVer >= 3 && w.cursorScale != scale {
+		l.send(w.cursorSurface, opSurfaceSetBufferScale, uintptr(int32(scale)))
+		w.cursorScale = scale
 	}
 	l.send(w.cursorSurface, opSurfaceAttach, uintptr(buf), 0, 0)
 	l.send(w.cursorSurface, opSurfaceDamage, 0, 0, uintptr(int32(img.Width)), uintptr(int32(img.Height)))
 	l.send(w.cursorSurface, opSurfaceCommit)
 	l.send(a.pointer, opPointerSetCursor, uintptr(a.enterSerial), uintptr(w.cursorSurface),
-		uintptr(int32(img.HotspotX)/int32(w.scale)), uintptr(int32(img.HotspotY)/int32(w.scale)))
+		uintptr(int32(img.HotspotX)/int32(scale)), uintptr(int32(img.HotspotY)/int32(scale)))
 }
 
 // setCaptured locks the pointer to the window and switches motion to
@@ -1346,7 +1666,7 @@ func (w *wlWindow) setFullscreen(on bool) {
 // an event, a Wake or a due key repeat.
 func (a *wlApp) poll(wait bool) []Event {
 	l := a.l
-	a.out.pending = a.out.pending[:0]
+	a.out.startPoll()
 	a.pumpRepeats(time.Now())
 	if l.dispatchPending(a.display) < 0 {
 		return a.closeAll()
@@ -1428,6 +1748,241 @@ func (a *wlApp) closeAll() []Event {
 		}
 	}
 	return a.out.pending
+}
+
+// --- the clipboard ---
+//
+// A Wayland selection is a live offer from whichever client owns it: the
+// compositor names the types on offer and a reader asks for one over a
+// pipe the owner writes into. Only the focused client is told what the
+// selection holds, which is why a read outside focus finds nothing.
+
+// clipMimes are the types this process offers when it owns the
+// selection, best first. Everything is UTF-8, whatever the type is
+// called, because the older names have no encoding of their own.
+var clipMimes = []string{"text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT"}
+
+// pickTextMime chooses the type to ask an offer for: the best of the ones
+// this layer names, or any other text type the owner offers.
+func pickTextMime(offered []string) string {
+	for _, want := range clipMimes {
+		for _, have := range offered {
+			if have == want {
+				return have
+			}
+		}
+	}
+	for _, have := range offered {
+		if strings.HasPrefix(have, "text/") {
+			return have
+		}
+	}
+	return ""
+}
+
+// clipboard reads the selection the compositor is holding. It returns
+// what this process put there without a round trip, and empty text when
+// the selection holds nothing this layer can read or the owner does not
+// write in time.
+func (a *wlApp) clipboard() (string, error) {
+	if a.dataDevice == nil {
+		return "", ErrNoClipboard
+	}
+	if a.clipSource != nil {
+		return a.clipText, nil
+	}
+	if a.selection == nil {
+		return "", nil
+	}
+	mime := pickTextMime(a.offerMimes[a.selection])
+	if mime == "" {
+		return "", nil
+	}
+	var fds [2]int
+	if err := syscall.Pipe2(fds[:], syscall.O_CLOEXEC); err != nil {
+		return "", fmt.Errorf("platform: clipboard pipe: %w", err)
+	}
+	l := a.l
+	c := l.cstring(mime)
+	l.send(a.selection, opDataOfferReceive, uintptr(unsafe.Pointer(c)), uintptr(fds[1]))
+	l.cfree(unsafe.Pointer(c))
+	// The owner is handed the write end only once the request reaches the
+	// compositor, and the read below ends at end of file only once every
+	// copy of that end is closed, so flush first and close ours second.
+	a.flushDisplay()
+	syscall.Close(fds[1])
+	// Only the read end is made non-blocking, so that the read below can
+	// wait on the display as well; the owner writes into a pipe that
+	// behaves as it expects.
+	if err := syscall.SetNonblock(fds[0], true); err != nil {
+		syscall.Close(fds[0])
+		return "", fmt.Errorf("platform: clipboard pipe: %w", err)
+	}
+	defer syscall.Close(fds[0])
+	// A read that stops early keeps what it has: a truncated paste is
+	// better than none, and an owner that says nothing gives none.
+	return string(a.readOffer(fds[0], time.Now().Add(clipboardWait))), nil
+}
+
+// readOffer reads the pipe the selection's owner writes into, until the
+// owner closes it or the deadline passes. It waits on the display as well
+// as the pipe and dispatches what arrives, because a compositor that goes
+// unanswered for a second may take the window for hung, and because the
+// owner is sometimes this process, whose source cannot write until its
+// send event is dispatched. Events that arrive are queued for the next
+// Poll rather than added to the slice the last one returned.
+func (a *wlApp) readOffer(fd int, deadline time.Time) []byte {
+	l := a.l
+	a.out.deferQueue = true
+	defer func() { a.out.deferQueue = false }()
+	var out []byte
+	buf := make([]byte, 4096)
+	for {
+		for {
+			n, err := syscall.Read(fd, buf)
+			if n > 0 {
+				out = append(out, buf[:n]...)
+				continue
+			}
+			if err == syscall.EINTR {
+				continue
+			}
+			if err != syscall.EAGAIN {
+				return out // end of file, or a pipe that broke
+			}
+			break
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return out
+		}
+		if l.dispatchPending(a.display) < 0 {
+			return out
+		}
+		// prepare_read reserves the connection so the read below races no
+		// other reader; it fails while the queue still holds events.
+		for l.prepareRead(a.display) != 0 {
+			if l.dispatchPending(a.display) < 0 {
+				return out
+			}
+		}
+		if !a.flushDisplay() {
+			l.cancelRead(a.display)
+			return out
+		}
+		fds := [2]pollFD{{Fd: l.getFD(a.display), Events: pollIn}, {Fd: int32(fd), Events: pollIn}}
+		n := l.poll(&fds[0], 2, int32(left/time.Millisecond)+1)
+		if n <= 0 || fds[0].Revents&pollIn == 0 {
+			l.cancelRead(a.display)
+		} else if l.readEvents(a.display) < 0 {
+			return out
+		}
+		if n < 0 || l.dispatchPending(a.display) < 0 {
+			return out
+		}
+	}
+}
+
+// setClipboard offers the text as the selection. The compositor keeps the
+// offer alive until another client takes the selection or this one goes
+// away, and asks for the text over a pipe whenever someone pastes.
+func (a *wlApp) setClipboard(text string) error {
+	if a.dataDevice == nil {
+		return ErrNoClipboard
+	}
+	if a.lastSerial == 0 {
+		// set_selection has to quote the serial of an input event, and a
+		// window that has never been touched has none to quote. A
+		// compositor that checks would drop the request in silence.
+		return ErrNoInputYet
+	}
+	l := a.l
+	a.destroySource()
+	src := l.marshal(a.dataMgr, opDataDeviceManagerCreateSource, a.iface["wl_data_source"], 0, 0)
+	if src == nil {
+		return ErrNoClipboard
+	}
+	a.clipSource, a.clipText = src, text
+	a.listen(src, a.iface["wl_data_source"], []uintptr{
+		cbDataSourceTarget, cbDataSourceSend, cbDataSourceCancelled,
+		cbDataSourceDndDrop, cbDataSourceDndFinished, cbDataSourceAction,
+	})
+	for _, m := range clipMimes {
+		c := l.cstring(m)
+		l.send(src, opDataSourceOffer, uintptr(unsafe.Pointer(c)))
+		l.cfree(unsafe.Pointer(c))
+	}
+	l.send(a.dataDevice, opDataDeviceSetSelection, uintptr(src), uintptr(a.lastSerial))
+	a.flushDisplay()
+	return nil
+}
+
+// writeClipboard hands the text to a client that asked for it. The write
+// runs on another goroutine because a pipe blocks once it is full, and
+// the event loop cannot wait for whoever is reading.
+func (a *wlApp) writeClipboard(fd int) {
+	text := a.clipText
+	go func() {
+		f := os.NewFile(uintptr(fd), "wayland-clipboard")
+		defer f.Close()
+		f.WriteString(text) // the reader may leave early, which is not an error here
+	}()
+}
+
+// destroySource drops the selection this process offered.
+func (a *wlApp) destroySource() {
+	if a.clipSource == nil {
+		return
+	}
+	a.l.marshal(a.clipSource, opDataSourceDestroy, nil, wlMarshalFlagDestroy)
+	a.freeListener(a.clipSource)
+	a.clipSource, a.clipText = nil, ""
+}
+
+// onDataOffer records a new offer from the compositor and starts
+// collecting the types it carries. It is not the selection until a
+// selection event says so, and an offer that never becomes one, such as
+// a drag this layer does not handle, is dropped when the next arrives.
+func (a *wlApp) onDataOffer(offer unsafe.Pointer) {
+	if offer == nil {
+		return
+	}
+	a.dropOffer(a.newOffer)
+	a.newOffer = offer
+	a.offerMimes[offer] = nil
+	a.listen(offer, a.iface["wl_data_offer"], []uintptr{cbDataOfferOffer, cbDataOfferSourceActions, cbDataOfferAction})
+}
+
+// onSelection takes the offer the compositor says is the selection, or
+// nothing when the selection was cleared.
+func (a *wlApp) onSelection(offer unsafe.Pointer) {
+	// An announced offer that turns out not to be the selection is this
+	// layer's to destroy, and a cleared selection leaves one behind every
+	// time; without this its proxy and listener live to the next offer.
+	if a.newOffer != nil && a.newOffer != offer {
+		a.dropOffer(a.newOffer)
+	}
+	a.newOffer = nil
+	if a.selection != nil && a.selection != offer {
+		a.dropOffer(a.selection)
+	}
+	a.selection = offer
+}
+
+// dropOffer destroys an offer this layer will not read.
+func (a *wlApp) dropOffer(offer unsafe.Pointer) {
+	if offer == nil {
+		return
+	}
+	if a.selection == offer {
+		a.selection = nil
+	}
+	if a.newOffer == offer {
+		a.newOffer = nil
+	}
+	delete(a.offerMimes, offer)
+	a.l.marshal(offer, opDataOfferDestroy, nil, wlMarshalFlagDestroy)
+	a.freeListener(offer)
 }
 
 // wake writes to the pipe Poll waits on. Safe from any goroutine.

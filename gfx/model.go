@@ -22,6 +22,7 @@ type Model struct {
 	clips    []gltf.Animation
 	order    []int // node indices, parents before children
 	morphs   []*morphMesh
+	g        *Graphics
 }
 
 // morphMesh is a primitive with morph targets: the rest geometry stays on
@@ -220,7 +221,7 @@ type ModelPart struct {
 
 // LoadModel uploads a parsed glTF document.
 func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
-	m := &Model{nodes: doc.Nodes, skins: doc.Skins, clips: doc.Animations}
+	m := &Model{nodes: doc.Nodes, skins: doc.Skins, clips: doc.Animations, g: g}
 	m.Min, m.Max = doc.Bounds()
 	m.order = topoOrder(doc.Nodes)
 	// glTF keeps thickness in a texture's green channel; the material
@@ -349,6 +350,7 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})
 		}
 	}
+	g.track(m, Resource{Kind: ResourceModel, Parts: len(m.Parts)})
 	return m, nil
 }
 
@@ -416,6 +418,9 @@ func (g *Graphics) DrawModel(m *Model, world lin.Mat4) {
 
 // Destroy frees the model's meshes and textures.
 func (m *Model) Destroy() {
+	if m.g != nil {
+		m.g.forget(m)
+	}
 	for _, mesh := range m.meshes {
 		mesh.Destroy()
 	}

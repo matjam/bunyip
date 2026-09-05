@@ -1,9 +1,10 @@
 // Command text shows shaped text: kerning and ligatures from HarfBuzz,
 // Arabic joining and right-to-left order, mixed-direction lines, a
-// fallback font behind the main one, Unicode line wrapping, vertical
-// text, and scalable distance-field text. Pass -font with a TTF that has
-// Arabic and Hebrew glyphs; on macOS Arial is found automatically.
-// Escape quits.
+// fallback font behind the main one, Unicode line wrapping, hyphenation
+// in the text's own language, colour glyphs from a system emoji font,
+// vertical text, and scalable distance-field text. Pass -font with a TTF
+// that has Arabic and Hebrew glyphs; on macOS Arial is found
+// automatically. Escape quits.
 package main
 
 import (
@@ -40,9 +41,18 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if data, err := os.ReadFile(g.fontPath); err == nil {
 		g.world = data
 	}
-	// A bitmap emoji font as a further fallback draws emoji in colour.
-	if data, err := os.ReadFile("/System/Library/Fonts/Apple Color Emoji.ttc"); err == nil {
-		g.emoji = data
+	// An emoji font as a further fallback draws emoji in colour, whether
+	// it holds bitmap strikes, COLR layers or SVG documents.
+	for _, path := range []string{
+		"/System/Library/Fonts/Apple Color Emoji.ttc",
+		"/usr/share/fonts/noto/NotoColorEmoji.ttf",
+		"/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+		"C:\\Windows\\Fonts\\seguiemj.ttf",
+	} {
+		if data, err := os.ReadFile(path); err == nil {
+			g.emoji = data
+			break
+		}
 	}
 	var err error
 	opts := gfx.FontOptions{}
@@ -106,10 +116,11 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		y += 40
 	}
 
-	gr.DrawText(g.body, "Wrapped by the Unicode rules, justified in 420 units, hyphenated:", 40, y, dim)
+	gr.DrawText(g.body, "Wrapped by the Unicode rules, justified in 420 units, hyphenated in en-GB:", 40, y, dim)
 	y += 28
 	para := "Bunyip shapes text with HarfBuzz through go-text, so marks land on their bases, scripts that join do so, and lines break where they should, in any language the font covers, with extraordinarily long words hyphenated."
-	popts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify, Hyphenate: gfx.EnglishHyphenator()}
+	// AutoHyphenate picks the patterns for the language the text is in.
+	popts := gfx.TextOptions{Width: 420, Align: gfx.AlignJustify, Language: "en-GB", AutoHyphenate: true}
 	gr.DrawTextBlock(g.body, para, 40, y, popts, white)
 	_, ph := g.body.Measure(para, popts)
 	gr.StrokeRect(40, y-4, 420, ph+8, 1, gfx.RGB(70, 75, 95))
@@ -129,9 +140,9 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	}
 	y += 30
 	if g.emoji != nil {
-		gr.DrawText(g.body, "Colour emoji from the system font: \U0001F600 \U0001F389 \U0001F680", 40, y, white)
+		gr.DrawText(g.body, "Colour glyphs from the system emoji font: \U0001F600 \U0001F389 \U0001F680", 40, y, white)
 	} else {
-		gr.DrawText(g.body, "No bitmap emoji font found; a fallback with sbix or CBDT strikes draws emoji in colour.", 40, y, dim)
+		gr.DrawText(g.body, "No emoji font found; a fallback with strikes, COLR layers or SVG glyphs draws emoji in colour.", 40, y, dim)
 	}
 	y += 40
 

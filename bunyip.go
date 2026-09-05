@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/matjam/bunyip/audio"
+	"github.com/matjam/bunyip/console"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/internal/platform"
@@ -68,6 +69,15 @@ type Config struct {
 	// another window; frames still draw. Off by default: a server, a
 	// music player or a game with real-time multiplayer keeps running.
 	PauseUnfocused bool
+	// PauseHidden stops updates and silences the mixer while the window
+	// cannot be seen, in the same way PauseUnfocused does for focus. A
+	// window is hidden while it is minimised, and while it is wholly
+	// covered by other windows on the platforms that report that. Off by
+	// default, and a headless run is always visible. With both settings
+	// on the game is paused while either is true, and the loop writes the
+	// mixer only when that changes, so a mixer the game paused itself
+	// stays paused.
+	PauseHidden bool
 
 	// DrawBudget is the number of draw calls (2D and 3D together) a
 	// frame should stay under; the debug overlay warns when a frame goes
@@ -107,6 +117,14 @@ type Config struct {
 	// Go's profiler there.
 	Debug bool
 	Pprof string
+
+	// Console builds the debug console, puts it on Context.Console and
+	// tees the log through it. The game draws it: call ctx.Console.Draw
+	// last in Draw, so it sits above the game's own interface. It starts
+	// closed and costs nothing until it is opened. ConsoleKey is the key
+	// that opens it; zero means the backquote key.
+	Console    bool
+	ConsoleKey input.Key
 
 	recovering bool // set by Run when rebuilding after a device loss
 }
@@ -162,6 +180,27 @@ type Context struct {
 	// Audio always exists; without an output device it mixes into silence.
 	Audio *audio.Mixer
 
+	// Console is the debug console, set when Config.Console is on and nil
+	// otherwise. Draw it last in the game's Draw, and ask Open whether it
+	// has the keyboard:
+	//
+	//	func (g *game) Update(ctx *bunyip.Context) error {
+	//		if ctx.Console.Open() {
+	//			return nil // the console is taking the keys
+	//		}
+	//		...
+	//	}
+	//
+	//	func (g *game) Draw(ctx *bunyip.Context) error {
+	//		// ... the game's drawing ...
+	//		return ctx.Console.Draw(ctx)
+	//	}
+	//
+	// Register commands and variables and attach worlds from Init. A lost
+	// GPU device rebuilds the console with the rest of the engine and
+	// runs Init again, so what Init registers comes back.
+	Console *console.Console
+
 	// Clear is the frame's background colour; set it whenever you like.
 	Clear gfx.Color
 
@@ -188,15 +227,18 @@ type Context struct {
 	// Stats holds the previous frame's timings.
 	Stats Stats
 
-	scopes   []Scope
-	app      clipboardWaker
-	quit     bool
-	redraw   bool
-	shot     string
-	win      windowControl
-	focused  bool
-	closeReq bool
-	cursor   Cursor
+	scopes    []Scope
+	timeScale float64
+	budget    int
+	app       clipboardWaker
+	quit      bool
+	redraw    bool
+	shot      string
+	win       windowControl
+	focused   bool
+	visible   bool
+	closeReq  bool
+	cursor    Cursor
 }
 
 // waker is what the context needs from the platform app.
@@ -306,6 +348,15 @@ func (c *Context) SetCursor(shape Cursor) {
 // Focused reports whether the window has keyboard focus.
 func (c *Context) Focused() bool { return c.focused }
 
+// Visible reports whether the window can be seen. It is false while the
+// window is minimised, and while it is wholly covered by other windows on
+// the platforms that report that; Windows reports only minimising, and a
+// Wayland compositor older than xdg_toplevel version six reports nothing,
+// so the window stays visible there. A headless run is always visible.
+// Config.PauseHidden stops updates and silences the mixer while it is
+// false.
+func (c *Context) Visible() bool { return c.visible }
+
 // CloseRequested reports that the user asked to close the window since
 // the last Update. With Config.HandleClose the loop keeps running and the
 // game decides: save, ask, then Quit. Without it the loop quits on its
@@ -313,10 +364,16 @@ func (c *Context) Focused() bool { return c.focused }
 func (c *Context) CloseRequested() bool { return c.closeReq }
 
 // Clipboard returns the system clipboard's text, empty when it holds
-// none. Linux under X11 has no clipboard yet and returns an error.
+// none. Under X11 the read waits about a second for whoever owns the
+// selection to answer and returns empty text if nobody does. A Wayland
+// compositor without wl_data_device_manager returns an error.
 func (c *Context) Clipboard() (string, error) { return c.app.Clipboard() }
 
-// SetClipboard puts text on the system clipboard.
+// SetClipboard puts text on the system clipboard. On Linux the text is
+// handed over when another program asks for it, so it stays on the
+// clipboard only while the game runs. Under Wayland it returns an error
+// until the window has had input, because the compositor changes the
+// selection only in answer to a key, a button or the pointer arriving.
 func (c *Context) SetClipboard(text string) error { return c.app.SetClipboard(text) }
 
 // SetTextInputRect tells the operating system's input method where text
@@ -342,6 +399,39 @@ func (c *Context) CursorCaptured() bool { return c.win.CursorCaptured() }
 
 // Quit ends the loop after the current callback.
 func (c *Context) Quit() { c.quit = true }
+
+// SetTimeScale changes how fast game time runs: 0.5 is slow motion, 2 is
+// double speed, 0 freezes the simulation. It scales Delta, which every
+// system and animation steps by, and leaves the update rate and Time
+// alone, so the loop keeps its fixed step and the clock keeps real time.
+// Negative values are clamped to zero. The default is 1.
+func (c *Context) SetTimeScale(scale float64) { c.timeScale = max(scale, 0) }
+
+// TimeScale is how fast game time is running; 1 is real time.
+func (c *Context) TimeScale() float64 { return c.timeScale }
+
+// ConsoleFrame reports the state the debug console draws from. The
+// console calls it; a game passes its context to Console.Draw and never
+// calls this itself.
+func (c *Context) ConsoleFrame() console.Frame {
+	f := console.Frame{
+		Gfx: c.Gfx, Input: c.Input, Audio: c.Audio, Log: c.Log, Clipboard: c,
+		Width: c.Width, Height: c.Height, Delta: c.Delta, Time: c.Time, FrameCount: c.Frame,
+		Stats: console.Stats{
+			FPS: c.Stats.FPS, FrameMS: c.Stats.FrameMS, UpdateMS: c.Stats.UpdateMS,
+			DrawMS: c.Stats.DrawMS, PresentMS: c.Stats.PresentMS, Updates: c.Stats.Updates,
+			DrawBudget: c.budget,
+		},
+		Screenshot:   c.Screenshot,
+		Quit:         c.Quit,
+		SetTimeScale: c.SetTimeScale,
+		TimeScale:    c.TimeScale,
+	}
+	for _, s := range c.Stats.Scopes {
+		f.Stats.Scopes = append(f.Stats.Scopes, console.Scope{Name: s.Name, MS: s.MS})
+	}
+	return f
+}
 
 // RequestRedraw asks a turn-based loop to draw again without waiting for
 // input, for animations that span turns. Real-time loops always redraw.

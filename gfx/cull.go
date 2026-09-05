@@ -53,13 +53,27 @@ func (g *Graphics) Frustum() Frustum {
 
 // ContainsSphere reports whether any of a sphere lies inside the frustum.
 func (f Frustum) ContainsSphere(centre lin.Vec3, radius float32) bool {
-	for _, p := range f.planes {
+	return f.containsSphere(centre, radius, false)
+}
+
+// containsSphere is ContainsSphere with the option of ignoring the near
+// plane, for a shadow volume whose pipelines clamp depth: a caster in
+// front of the near plane still writes its depth, so it must not be
+// culled.
+func (f Frustum) containsSphere(centre lin.Vec3, radius float32, ignoreNear bool) bool {
+	for i, p := range f.planes {
+		if ignoreNear && i == nearPlane {
+			continue
+		}
 		if p.Vec3().Dot(centre)+p.W < -radius {
 			return false
 		}
 	}
 	return true
 }
+
+// nearPlane is where FrustumOf puts the near plane in planes.
+const nearPlane = 4
 
 // ContainsPoint reports whether a point lies inside the frustum.
 func (f Frustum) ContainsPoint(p lin.Vec3) bool { return f.ContainsSphere(p, 0) }

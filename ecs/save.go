@@ -31,8 +31,9 @@ func init() {
 // prefab files. The name is what the file holds, so choose one that
 // stays stable when the type moves or is renamed. Registering the same
 // type under the same name again does nothing; binding a name or a type
-// that is already bound to something else panics. gfx.Transform and
-// gfx.Transform2 are registered under those names by default.
+// that is already bound to something else panics. gfx.Transform,
+// gfx.Transform2 and ecs.Name are registered under those names by
+// default.
 func Register[T any](name string) {
 	t := typeOf[T]()
 	if t == nil || t.Kind() == reflect.Pointer {

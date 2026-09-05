@@ -27,6 +27,13 @@
 // components. A Prefab is a template of components (and child prefabs)
 // that spawns independent copies. Clone and CloneTree copy an entity
 // that already exists.
+//
+// A Scene is a JSON document of entities to spawn as a unit: a level, a
+// room, a squad. Instantiate spawns a copy and returns a SceneInstance
+// that finds its entities by name and despawns them again, so several
+// copies live side by side; ExportScene captures live entities back into
+// a document. A scene entity may reference a prefab from a
+// PrefabLibrary and override its components.
 package ecs
 
 import (
@@ -171,6 +178,7 @@ type World struct {
 type system struct {
 	name string
 	fn   func(w *World, dt float64)
+	off  bool // turned off with SetSystemEnabled; Update skips it
 }
 
 // NewWorld makes an empty world.
@@ -462,9 +470,12 @@ func Has[T any](w *World, e Entity) bool {
 	return ok
 }
 
+// typeOf is T's reflect.Type. It goes through a nil pointer rather than
+// a value of T, because putting a value in an interface copies it onto
+// the heap, and a large resource looked up every frame would allocate
+// its own size each time.
 func typeOf[T any]() reflect.Type {
-	var z T
-	return reflect.TypeOf(z)
+	return reflect.TypeOf((*T)(nil)).Elem()
 }
 
 // upgrade replaces reflect-backed columns for T with typed ones so
@@ -514,6 +525,18 @@ func (w *World) ComponentValues(e Entity) []any {
 		out[i] = c.getAny(int(m.row))
 	}
 	return out
+}
+
+// SetComponent attaches a component given as a value, replacing the one
+// the entity carries of that type. It is what an editor or a debug panel
+// writes an edited component back through, where the type is known only
+// at run time; game code that knows the type calls Add. The value must
+// not be a pointer, and nothing happens if the entity is gone.
+func (w *World) SetComponent(e Entity, v any) {
+	if !w.Alive(e) {
+		return
+	}
+	w.setComponents(e, []any{v})
 }
 
 // setComponents attaches several components given as any values with

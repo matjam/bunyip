@@ -3,8 +3,9 @@
 This is the design as it was written before the work was done. It is
 kept as a record of the reasoning. Some details changed as the code
 landed: mesh shaders now use five descriptor sets with the uniform block
-in set 4, and colour matrices and bitmap emoji, listed as out of scope
-here, were added later. The [2D graphics](../guides/graphics-2d.md) and
+in set 4, and colour matrices and colour glyphs (bitmap strikes, COLR
+layers and SVG documents), listed as out of scope here, were added
+later. The [2D graphics](../guides/graphics-2d.md) and
 [shaders](../guides/shaders.md) guides describe what shipped.
 
 This document specifies three additions to `gfx`: fragment shaders

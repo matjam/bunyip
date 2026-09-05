@@ -12,19 +12,30 @@
 // directional light, up to eight point lights, image-based or hemisphere
 // ambient, plus clearcoat, sheen and subsurface lobes when a material
 // asks for them.
-layout(set = 0, binding = 0) uniform sampler2D albedoTex;
-layout(set = 0, binding = 1) uniform sampler2D metalRoughTex; // G roughness, B metallic (glTF)
-layout(set = 0, binding = 2) uniform sampler2D normalTex;
-layout(set = 0, binding = 3) uniform sampler2D emissiveTex;
-layout(set = 0, binding = 4) uniform sampler2D occlusionTex; // R: baked ambient occlusion
-layout(set = 0, binding = 5) uniform sampler2D image0;
-layout(set = 0, binding = 6) uniform sampler2D image1;
-layout(set = 0, binding = 7) uniform sampler2D image2;
-layout(set = 0, binding = 8) uniform sampler2D image3;
-layout(set = 0, binding = 9) uniform samplerCube envMap;     // prefiltered environment, one level per roughness
-layout(set = 0, binding = 10) uniform sampler2D thicknessTex; // R: 1 thick, 0 thin, for subsurface
-layout(set = 0, binding = 11) uniform sampler2D sceneTex;     // the opaque scene, blurred down its mips, for transmission
-layout(set = 0, binding = 12) uniform sampler2D transmissionTex; // R scales the transmission factor
+// Set 0 keeps images and samplers apart: thirteen sampled images and one
+// array of four samplers shared by every material (linear repeat, linear
+// clamp, nearest repeat, nearest clamp). A texture's own filtering and
+// edge handling pick its sampler, and the index rides in the instance
+// stream, so a new material texture costs an image and no sampler. The
+// names below are macros that pair the two, so texture(albedoTex, uv)
+// and texture(image0, uv) read as they always have.
+layout(set = 0, binding = 0) uniform texture2D tAlbedo;
+layout(set = 0, binding = 1) uniform texture2D tMetalRough; // G roughness, B metallic (glTF)
+layout(set = 0, binding = 2) uniform texture2D tNormal;
+layout(set = 0, binding = 3) uniform texture2D tEmissive;
+layout(set = 0, binding = 4) uniform texture2D tOcclusion; // R: baked ambient occlusion
+layout(set = 0, binding = 5) uniform texture2D tImage0;
+layout(set = 0, binding = 6) uniform texture2D tImage1;
+layout(set = 0, binding = 7) uniform texture2D tImage2;
+layout(set = 0, binding = 8) uniform texture2D tImage3;
+layout(set = 0, binding = 9) uniform textureCube tEnv;     // prefiltered environment, one level per roughness
+layout(set = 0, binding = 10) uniform texture2D tThickness; // R: 1 thick, 0 thin, for subsurface
+layout(set = 0, binding = 11) uniform texture2D tScene;     // the opaque scene, blurred down its mips, for transmission
+layout(set = 0, binding = 12) uniform texture2D tTransmission; // R scales the transmission factor
+layout(set = 0, binding = 13) uniform sampler samplers[4];
+
+// LINEAR_CLAMP is the sampler the engine's own images always use.
+const int LINEAR_CLAMP = 1;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -74,8 +85,28 @@ layout(location = 9) flat in vec4 vUVT0;     // texture transform a, b, c, d
 layout(location = 10) flat in vec4 vUVT1;    // texture transform e, f; z clearcoat, w clearcoat roughness
 layout(location = 11) flat in vec4 vSheen;   // sheen colour, w sheen roughness
 layout(location = 12) flat in vec4 vVolume;  // x transmission, y ior, z thickness, w attenuation distance
-layout(location = 13) flat in vec4 vAtten;   // attenuation colour
+layout(location = 13) flat in vec4 vAtten;   // attenuation colour, w = packed sampler indices
 layout(location = 0) out vec4 outColor;
+
+// texSampler is the sampler for one of the material set's texture slots,
+// two bits apiece in the packed index the instance stream carries. Every
+// instance of a draw shares set 0, so the value is the same across the
+// draw, which is what indexing the sampler array needs.
+int texSampler(int slot) { return (int(vAtten.w) >> (2 * slot)) & 3; }
+
+#define albedoTex sampler2D(tAlbedo, samplers[texSampler(0)])
+#define metalRoughTex sampler2D(tMetalRough, samplers[texSampler(1)])
+#define normalTex sampler2D(tNormal, samplers[texSampler(2)])
+#define emissiveTex sampler2D(tEmissive, samplers[texSampler(3)])
+#define occlusionTex sampler2D(tOcclusion, samplers[texSampler(4)])
+#define image0 sampler2D(tImage0, samplers[texSampler(5)])
+#define image1 sampler2D(tImage1, samplers[texSampler(6)])
+#define image2 sampler2D(tImage2, samplers[texSampler(7)])
+#define image3 sampler2D(tImage3, samplers[texSampler(8)])
+#define thicknessTex sampler2D(tThickness, samplers[texSampler(9)])
+#define transmissionTex sampler2D(tTransmission, samplers[texSampler(10)])
+#define envMap samplerCube(tEnv, samplers[LINEAR_CLAMP])
+#define sceneTex sampler2D(tScene, samplers[LINEAR_CLAMP])
 
 // Surface is what the lighting sees. surface() may change any field:
 // albedo and alpha (linear, not premultiplied), normal (world space),

@@ -178,6 +178,84 @@ func TestSleep(t *testing.T) {
 	}
 }
 
+// stackSleepTime builds a stack of n boxes on a static floor at the
+// default solver quality and returns when they were all asleep, or -1.
+func stackSleepTime(n int, seconds float64) float64 {
+	w := ecs.NewWorld()
+	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5})
+	w.AddSystem("phys", System3)
+	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(10, 0.5, 10)}})
+	var stack []ecs.Entity
+	for i := range n {
+		stack = append(stack, w.SpawnWith(gfx.At(0, 1+float32(i)*1.01, 0), Dynamic3(1),
+			Collider3{Shape: Box3{Half: lin.V3(0.5, 0.5, 0.5)}}))
+	}
+	for t := 0.0; t < seconds; t += step {
+		w.Update(step)
+		all := true
+		for _, e := range stack {
+			if b, _ := ecs.Get[Body3](w, e); !b.Asleep() {
+				all = false
+			}
+		}
+		if all {
+			return t
+		}
+	}
+	return -1
+}
+
+// TestStackSleepsAtDefaults settles stacks of boxes at Substeps 4 and
+// Iterations 8. The position correction adds a separating speed of the
+// same order as the sleep threshold, so without the relax pass that
+// takes it back out a stack never rests below the threshold.
+func TestStackSleepsAtDefaults(t *testing.T) {
+	if at := stackSleepTime(4, 5); at < 0 || at > 2 {
+		t.Errorf("four boxes at the defaults slept at %.2fs, want within 2s", at)
+	}
+	if at := stackSleepTime(8, 5); at < 0 || at > 3 {
+		t.Errorf("eight boxes at the defaults slept at %.2fs, want within 3s", at)
+	}
+	// 2D at the defaults settles as well.
+	w := ecs.NewWorld()
+	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10), SleepTime: 0.5})
+	w.AddSystem("phys", System2)
+	w.SpawnWith(gfx.At2(0, 0), Collider2{Shape: Box2{HalfW: 10, HalfH: 0.5}})
+	var stack []ecs.Entity
+	for i := range 4 {
+		stack = append(stack, w.SpawnWith(gfx.At2(0, 1+float32(i)*1.01), Dynamic2(1),
+			Collider2{Shape: Box2{HalfW: 0.5, HalfH: 0.5}}))
+	}
+	run(w, 2)
+	for i, e := range stack {
+		if b, _ := ecs.Get[Body2](w, e); !b.Asleep() {
+			t.Errorf("2D stack box %d did not sleep within 2s", i)
+		}
+	}
+}
+
+// TestSlowSliderStaysAwake keeps a body moving at 0.2 units per second
+// out of the sleep state: the relax pass must not stop a body that is
+// genuinely moving.
+func TestSlowSliderStaysAwake(t *testing.T) {
+	w := ecs.NewWorld()
+	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5})
+	w.AddSystem("phys", System3)
+	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(50, 0.5, 10)}})
+	slider := Dynamic3(1)
+	slider.Friction = 0 // ice: nothing slows it down
+	slider.Vel = lin.V3(0.2, 0, 0)
+	e := w.SpawnWith(gfx.At(-8, 1, 0), slider, Collider3{Shape: Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
+	run(w, 5)
+	b, _ := ecs.Get[Body3](w, e)
+	if b.Asleep() {
+		t.Error("a body sliding at 0.2 units per second went to sleep")
+	}
+	if !near(b.Vel.X, 0.2, 0.02) {
+		t.Errorf("the slider should keep its speed: %v", b.Vel)
+	}
+}
+
 // TestJoints3D swings a pendulum on a distance joint, hangs a chain of
 // hinges, welds two boxes and bounces a spring.
 func TestJoints3D(t *testing.T) {

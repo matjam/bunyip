@@ -41,13 +41,20 @@ func eachCollider2(w *ecs.World, lo, hi lin.Vec2, mask uint32, triggers bool, fn
 // the collider, Normal pointing from the collider back toward the shape
 // and Distance the penetration depth. Triggers are included.
 func OverlapShape2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32) []Hit2 {
-	return overlapShape2(w, s, pos, rot, mask, true, ecs.None)
+	return OverlapShape2Into(nil, w, s, pos, rot, mask)
 }
 
-func overlapShape2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32, triggers bool, exclude ecs.Entity) []Hit2 {
+// OverlapShape2Into appends every collider the shape overlaps to out and
+// returns out. Pass the previous result truncated with [:0] to reuse its
+// storage; pass nil for a fresh slice. A game that overlaps every frame
+// then allocates nothing.
+func OverlapShape2Into(out []Hit2, w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32) []Hit2 {
+	return overlapShape2(out, w, s, pos, rot, mask, true, ecs.None)
+}
+
+func overlapShape2(out []Hit2, w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32, triggers bool, exclude ecs.Entity) []Hit2 {
 	lo, hi := s.bounds(pos, rot)
 	st := stateOf2(w)
-	var out []Hit2
 	eachCollider2(w, lo, hi, mask, triggers, func(p placed2) {
 		if p.e == exclude {
 			return
@@ -97,16 +104,27 @@ func shapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec
 	ext := hi.Sub(lo)
 	minHalfA := min(ext.X, ext.Y) / 2
 	st := stateOf2(w)
+	// Order the candidates along the sweep. Marching a shape along its
+	// path is the expensive part, so finding the nearest collider first
+	// and cutting every later march short at that distance is what makes
+	// a long cast affordable.
+	cands := gatherColliders2(st.qcands[:0], w, slo, shi, mask, false, exclude)
+	for i := range cands {
+		cands[i].enter = sweepEnter2(lo, hi, delta, cands[i].p.lo, cands[i].p.hi)
+	}
+	slices.SortFunc(cands, func(a, b candidate2) int { return cmp.Compare(a.enter, b.enter) })
+	st.qcands = cands
 	best := Hit2{Distance: float32(math.Inf(1))}
 	found := false
-	eachCollider2(w, slo, shi, mask, false, func(p placed2) {
-		if p.e == exclude {
-			return
+	for ci := range cands {
+		if cands[ci].enter > best.Distance {
+			break
 		}
+		p := &cands[ci].p
 		cext := p.hi.Sub(p.lo)
 		t, cs, ok := marchSweep2(&st.qs, s, pos, rot, delta, minHalfA, p.c.Shape, p.pos, p.rot, min(cext.X, cext.Y)/2, best.Distance)
 		if !ok {
-			return
+			continue
 		}
 		deepest := cs[0]
 		for _, c := range cs[1:] {
@@ -115,8 +133,41 @@ func shapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec
 			}
 		}
 		best, found = Hit2{Entity: p.e, Point: deepest.point, Normal: deepest.normal.Neg(), Distance: t}, true
-	})
+	}
 	return best, found
+}
+
+// candidate2 is one collider a query still has to test, with how far
+// along a sweep its bounds are first reached so the nearest are tried
+// first and the rest fall away as the best hit shortens.
+type candidate2 struct {
+	p     placed2
+	enter float32
+}
+
+// gatherColliders2 appends every collider whose bounds overlap the box
+// to dst, skipping triggers unless asked, the excluded entity and
+// colliders the mask leaves out. Passing back a slice a previous call
+// filled reuses its storage.
+func gatherColliders2(dst []candidate2, w *ecs.World, lo, hi lin.Vec2, mask uint32, triggers bool, exclude ecs.Entity) []candidate2 {
+	eachCollider2(w, lo, hi, mask, triggers, func(p placed2) {
+		if p.e != exclude {
+			dst = append(dst, candidate2{p: p})
+		}
+	})
+	return dst
+}
+
+// sweepEnter2 is the earliest fraction of delta at which a moving box
+// first overlaps a still one: zero when they already overlap, and
+// infinity when they never do.
+func sweepEnter2(lo, hi, delta, olo, ohi lin.Vec2) float32 {
+	enter, exit := float32(0), float32(1)
+	if !slabSweep(lo.X, hi.X, delta.X, olo.X, ohi.X, &enter, &exit) ||
+		!slabSweep(lo.Y, hi.Y, delta.Y, olo.Y, ohi.Y, &enter, &exit) {
+		return float32(math.Inf(1))
+	}
+	return enter
 }
 
 // marchSweep2 moves a shape along delta in steps smaller than the

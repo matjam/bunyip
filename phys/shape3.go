@@ -499,7 +499,7 @@ func rayShape3(r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.
 		}
 		return best, bestN, found
 	}
-	if c, ok := placeConvex(s, pos, rot); ok {
+	if c, _, ok := placeConvex(nil, s, pos, rot); ok {
 		return rayConvex(r, &c)
 	}
 	return 0, lin.Vec3{}, false

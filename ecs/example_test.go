@@ -115,6 +115,54 @@ func ExampleWorld_Save() {
 	// 1 2
 }
 
+func ExampleWorld_Instantiate() {
+	// Register names once, at start-up; a scene file holds these.
+	ecs.Register[Position]("Position")
+	ecs.Register[Health]("Health")
+
+	// A camp of two: the guard's Leader field points at the chief, which
+	// the document writes as the chief's number in the entity list.
+	doc := []byte(`{
+	  "version": 1,
+	  "name": "west camp",
+	  "properties": {"music": "wind.ogg"},
+	  "entities": [
+	    {"name": "camp", "components": {"gfx.Transform": {"Position": {"X": 40}}}},
+	    {"name": "chief", "parent": 1, "prefab": "orc", "components": {"Health": {"HP": 40}}},
+	    {"parent": 1, "prefab": "orc", "components": {"gfx.Transform": {"Position": {"X": 2}}}}
+	  ]
+	}`)
+	scene, err := ecs.ParseScene(doc)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	w := ecs.NewWorld()
+	ecs.SetResource(w, ecs.PrefabLibrary{"orc": ecs.NewPrefab(Health{8}, gfx.Transform{})})
+
+	// Two copies of the camp, the second a hundred units east.
+	west, err := w.Instantiate(scene)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if _, err := w.Instantiate(scene, ecs.InstantiateOptions{Offset: lin.V3(100, 0, 0)}); err != nil {
+		fmt.Println(err)
+		return
+	}
+	chief, _ := west.Entity("chief")
+	h, _ := ecs.Get[Health](w, chief)
+	fmt.Println(scene.Properties["music"], h.HP, w.Count())
+
+	// Removing one copy takes its entities and leaves the other whole.
+	west.Despawn(w)
+	fmt.Println(w.Count())
+	// Output:
+	// wind.ogg 40 6
+	// 3
+}
+
 func ExampleCommands() {
 	w := ecs.NewWorld()
 	w.SpawnWith(Health{3})

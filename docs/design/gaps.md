@@ -15,11 +15,10 @@ take bytes, buses, embedded assets and one-call loaders, debug drawing,
 the fixed view, headless runs, the window controls, atlas formats with
 named frames, tweens over any value, engine plumbing hidden behind an
 internal hook package, and the naming and zero-value conventions stated
-in each package's comment.
-
-- The Linux clipboard: X11 selections need a request loop the platform
-  layer does not run yet, and Wayland needs `wl_data_device` with a pipe
-  to read an offer from. macOS and Windows have it.
+in each package's comment. The clipboard now works on every platform:
+macOS and Windows through the system clipboard, X11 by owning the
+CLIPBOARD selection and answering requests for it (INCR included), and
+Wayland through `wl_data_device` with a pipe.
 
 ## Platforms and window
 
@@ -29,12 +28,19 @@ in each package's comment.
 - Windows has been cross-compiled and vetted but never run on a real
   machine. The Linux window layer has: both the Wayland and X11 backends
   have opened windows, presented frames and delivered input on a Linux
-  desktop. Linux audio and gamepads remain unexercised.
-- What the Wayland layer does not do yet: the clipboard through
-  `wl_data_device`, text input through `zwp_text_input_v3`, fractional
-  scale through `wp_fractional_scale_v1` and `wp_viewporter` (the buffer
-  scale is an integer today), and the window icon through
-  `xdg-toplevel-icon-v1`. Without `zxdg_decoration_manager_v1` the window
+  desktop. Linux audio and gamepads remain unexercised, and so do the
+  clipboard, X11 detectable key repeat, Wayland fractional scale and the
+  Wayland window icon, which were written against the protocols and
+  compile but have not been driven by hand.
+- What the Wayland layer does not do yet: text input through
+  `zwp_text_input_v3`. Fractional scale is in, through
+  `wp_fractional_scale_v1` and `wp_viewporter`, with the integer buffer
+  scale as the fallback where a compositor lacks them, and the window
+  icon through `xdg-toplevel-icon-v1`, which is a no-op where a
+  compositor lacks it. Drag and drop is not handled, so a drag offer is
+  dropped rather than read; the clipboard side of `wl_data_device` is in.
+  Without
+  `zxdg_decoration_manager_v1` the window
   has no title bar, because drawing one client-side is not written.
   libwayland 1.20 or later is required, for `wl_proxy_marshal_flags`.
 - Window position, always-on-top and custom cursor images work on macOS
@@ -47,21 +53,15 @@ in each package's comment.
 - Multiple windows.
 - Windows IME, X input methods and Wayland `zwp_text_input_v3`; only
   macOS composes text natively.
-- X11 key repeat: X delivers a repeat as a release and press pair, and
-  the layer forwards both without marking the press as a repeat, so a
-  held key releases every repeat on X11. Detectable auto-repeat through
-  XKB would fix it; Wayland, Windows and macOS mark repeats.
 - App bundling for Windows and Linux (installers, AppImage); code
   signing.
 
 ## Game loop
 
-`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall, and
+`Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall,
 `PauseUnfocused` stops updates and the mixer while another window has
-focus.
-
-- Pausing when the window is hidden or minimised but still focused; the
-  platform layers do not report visibility yet.
+focus, and `PauseHidden` does the same while the window cannot be seen;
+every platform layer reports visibility and `ctx.Visible` reads it.
 
 ## Input
 
@@ -80,77 +80,94 @@ events are in.
 
 Streaming texture writes, colour matrices, flips and per-draw
 filtering, gradients, dashed strokes, text on paths, indexed draws, the
-`particle` package, lit sprites, tilemap flips and animations,
-autotiling (blob, edge, dual-grid and Wang rules in `grid/autotile`,
-template expansion, Tiled terrain sets), the
-`tiled` importer in both of Tiled's file forms, TexturePacker and
-Aseprite atlases with `asset.Atlas` to load one and
+`particle` package, lit sprites with shadows cast from occluder
+outlines, tilemap flips and animations, autotiling (blob, edge,
+dual-grid and Wang rules in `grid/autotile`, template expansion, Tiled
+terrain sets, and square, hexagonal and isometric layouts), the `tiled`
+importer in both of Tiled's file forms with every layer encoding it
+writes (CSV, base64 plain, zlib, gzip and zstd), TexturePacker and
+Aseprite JSON atlases with `asset.Atlas` to load one, Aseprite's own
+binary files through `ParseAseprite` and `asset.Aseprite`,
 `Atlas.Animation` to play a tag at its own timings, sprite culling
-against the 2D camera, a sort key within a layer (`SetSortKey`),
-camera follow, clamp and shake on `Camera2D`, tiled nine-slices,
+against the 2D camera by the sprite's own corners and under the
+transform stack, a sort key within a layer (`SetSortKey`), camera
+follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
 
-- 2D shadows cast by occluders from the point lights; lit sprites take
-  light from every direction today.
-- Autotiling on hexagonal and isometric neighbourhoods; the rules in
-  `grid/autotile` assume a square grid.
+- 2D shadows are cast by the occluder outlines a frame adds, not by the
+  sprites themselves: nothing derives an occluder from a sprite's alpha,
+  and an occluder blocks a light whatever height the light is at.
+- Hexagonal Wang sets match the six sides of a hexagon. A set that
+  paints its six vertices instead has nowhere to put them: the eight
+  direction slots hold the sides, and the mapper computes a corner
+  colour from the cells around it only on a square or isometric layout.
+- Tiled's "staggered" orientation, which is an isometric map on the
+  staggered grid a hexagonal map uses. `Map.Layout` gives it `Square`,
+  which matches the wrong cells; only orthogonal, isometric and
+  hexagonal maps have a layout that fits.
 - Post-processing on a 2D-only frame. Bloom, ambient occlusion,
   vignette, the LUT and FXAA all run in the composite pass, which
   `renderQueue` skips when the frame has no 3D draws, no background and
   no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
   `RenderTexture` and blits it with its own sprite shader instead.
-- Sprite culling tests the circle around each sprite against the 2D
-  camera's view, so it is conservative for long thin sprites, and it is
-  skipped under a 2D transform stack.
 - GPU-instanced particles for very large counts; the system is CPU
   simulated and drawn through the sprite stream, which is fine for
   thousands.
 - A particle editor in the gallery.
-- Tiled's zstd-compressed layers, which would need a new dependency for
-  a pure-Go decoder; CSV, base64, zlib and gzip layers load.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.
 
 ## Text
 
-Bitmap colour emoji, letter spacing, justification, text on a path,
-rich text with links and hyphenation are in.
+Colour glyphs from COLR layers, SVG documents and bitmap strikes, letter
+spacing, justification, text on a path, rich text with links and
+hyphenation are in. A glyph first drawn in a
+frame appears in that frame: the atlas upload is recorded into the frame
+before the render pass. Hyphenation patterns for thirteen languages ship
+with the engine and `AutoHyphenate` picks one from the text's
+`Language`. Rich text shapes each stretch of one face as a whole, so
+kerning and ligatures cross the style changes inside it.
 
-- COLR and SVG colour glyphs; only bitmap strikes (sbix, CBDT) draw in
-  colour, which covers Apple's and Google's emoji fonts.
-- Hyphenation patterns beyond American English; `ParseTeXPatterns`
-  loads any TeX pattern file a game ships.
-- Rich text shapes each word on its own, so ligatures and kerning do not
-  cross a style change, and a glyph first drawn in a frame appears from
-  the next frame.
+- Rich text breaks lines at spaces and newlines rather than by the
+  Unicode rules, and does not hyphenate.
+- Parts of the colour glyph formats. In COLR, the variation deltas of
+  the variable paint tables are not applied, the four non-separable
+  blend modes (hue, saturation, colour and luminosity) composite as
+  source over, and a layer that asks for the text colour draws white,
+  since a colour glyph is drawn untinted. In SVG, strokes, clipping
+  paths, masks, filters, patterns, images, text, style sheets and
+  animation are not drawn, the even-odd fill rule draws as non-zero, a
+  gradient does not inherit from another through `href`, and a group's
+  opacity applies to each of its shapes rather than to the group as one.
+  A
+  distance-field font draws a colour glyph as its outline.
+- Hyphenation patterns for languages outside the shipped set, which are
+  Danish, Dutch, English (American and British), Finnish, French,
+  German, Italian, Norwegian, Polish, Portuguese, Russian, Spanish and
+  Swedish; `ParseTeXPatterns` loads any other TeX pattern file a game
+  ships.
 
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, frustum culling with a public `Frustum`, levels of detail,
-spot lights with shadows, thirty-two lights a frame, heightfield and
-primitive meshes, dynamic mesh updates, colour grading LUTs, and
-nearest or repeating sampling for render textures are in.
+ground fog, frustum culling with a public `Frustum`, bounds that follow
+a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
+meshes culling cannot bound on its own, levels of detail, spot lights
+with shadows, per-light culling in the shadow pass, thirty-two lights a
+frame, heightfield and primitive meshes, dynamic mesh updates, colour
+grading LUTs, and nearest or repeating sampling for render textures are
+in.
 
 - Point light shadows (cube maps); the directional light and up to four
   spot lights a frame cast shadows.
 - Occlusion culling, and impostors (billboards baked from a model).
 - Clustered lighting for hundreds of lights; a frame keeps its first
   thirty-two and `FrameStats.LightsDropped` counts the rest.
-- Per-light culling in the shadow pass: every opaque draw is rendered
-  into every cascade and every shadowed spot light's map, up to seven
-  times, whether or not it can fall inside that map.
-- The 3D draw sort compares whole draw records; at several thousand
-  draws it is around a millisecond a frame. A packed sort key would cut
-  it.
-- A cascade's near plane sits one slice radius above the slice, so a
-  caster far above it (a bridge over cascade zero) casts no shadow into
-  that cascade; depth clamping on the shadow pipelines would fix it.
-- Mesh and texture uploads go through a one-shot command buffer that
-  waits for the queue, and every `Destroy` waits for the device, so a
-  `Mesh.Update` every frame (a morph target animation) leaves no
-  overlap between CPU and GPU. A per-slot retire ring, freed at the
-  frame's fence, is the shape of the fix.
+- The shader uniform arena and the joint storage buffer still wait for
+  the device when they grow, because growing rewrites descriptor sets a
+  frame in flight may have bound. Both double, so it happens a handful
+  of times at most, and `FrameStats.Waits` counts it; new descriptor
+  sets retired with the old buffers would remove it.
 - Terrain splat maps and heightfield LOD as built-ins; a game does both
   with `HeightfieldMesh`, a mesh shader and `LOD` today.
 - Global illumination beyond one environment map: light probes, baked
@@ -162,10 +179,11 @@ nearest or repeating sampling for render textures are in.
 - Order-independent transparency; blended draws are sorted per mesh.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back.
-- Culling uses each mesh's bind-pose bounds (doubled for skinned meshes)
-  and skips meshes whose shader moves vertices. A shader that moves
-  vertices far, or an animation that leaves the bind-pose bounds by more
-  than double, can still be culled when it should not be.
+- Culling is per draw and by bounding sphere. There is no bounding
+  volume hierarchy or spatial index, so a frame still pays a frustum
+  test for every draw it queues, and a draw whose shape leaves its
+  geometry needs `Mesh.SetBounds` or `Shader.VertexBounds` to say where
+  it went.
 
 ## Materials and lighting
 
@@ -196,24 +214,28 @@ slide) are in.
   few thousand vertices each.
 - Sparse accessors in glTF, which Blender writes for morph targets, are
   read as dense; a file that relies on them loads with zero deltas.
-- Sprite animation authoring from Aseprite or similar, beyond the atlas
-  frame tags `ParseAtlas` reads.
+- Aseprite tilemap layers and tilesets, which `ParseAseprite` skips, and
+  the blend modes past normal, which it draws as normal. Layers, groups,
+  cels, tags, slices, palettes and the three colour modes read.
 
 ## Audio
 
 Reverb zones and per-bus reverb, occlusion, mute and solo on voices and
-buses, Doppler, click-free pausing, and tracker seek, position and
-per-channel mute and solo are in.
+buses, Doppler, binaural rendering, click-free pausing and stopping,
+microphone capture, and tracker seek, position and per-channel mute and
+solo are in.
 
-- Hardware or platform mixing (spatialiser plugins, HRTF); the mixer is
-  a Go loop.
-- Microphone input.
-- `Voice.Stop`, `StopAll` and voice stealing cut the signal at once
-  rather than fading it out over a millisecond, so a stopped voice can
-  click; pausing fades.
-- A reverb `RoomSize` above about 1.07 has comb feedback at or above
-  one and runs away to NaN, which the output clamp passes through.
-- The Windows and Linux audio layers are untested on hardware.
+- Measured head-related transfer functions. The binaural mode is a
+  parametric head model, so it cannot tell front from back and is the
+  same head for every player; loading a SOFA file of measured responses
+  and convolving per ear would fix both.
+- Hardware or platform mixing (spatialiser plugins); the mixer is a Go
+  loop.
+- Choosing which input or output device to use, and being told when the
+  machine's default changes; both directions open the default device and
+  keep it.
+- The Windows audio layer, and macOS capture, are untested on hardware.
+  Linux output and capture run on real hardware.
 
 ## User interface
 
@@ -231,31 +253,46 @@ lists, and an accessibility tree are in.
 
 Capsules, convex hulls, triangle meshes, compounds, 2D capsules, edges
 and chains, overlap, shape-cast, nearest and raycast-all queries,
-distance, hinge, revolute, ball, spring and fixed joints with limits and
-motors, ragdolls, continuous collision for fast bodies (against static
+distance, hinge, revolute, ball, prismatic, wheel, spring and fixed
+joints with limits, motors and springs,
+ragdolls, continuous collision for fast bodies (against static
 geometry and between two moving bodies), sleeping, and character
 controllers are in; the physics-lab example draws colliders and
-contacts with the 3D debug lines.
+contacts with the 3D debug lines. Cloth, volumetric soft bodies and 2D
+fluids are in `phys/soft`, on the same colliders, with the softbody
+example. Casts, sweeps and character moves take their candidates from
+the sorted sweep and allocate nothing once their buffers have grown.
 
-- Soft bodies, cloth simulation and fluids.
-- Continuous collision, shape casts and the character controller build
-  their convex parts afresh per query, several hundred allocations a
-  step with a hundred fast bodies over a large static set, and scan
-  every entry rather than the sorted sweep.
-- Prismatic (slider) joints and 2D wheel joints; a distance joint with a
-  spring covers most suspensions.
-- A stack of four boxes at the default solver quality jitters just above
-  the sleep threshold; raise `Substeps` and `Iterations` for stacks that
-  should sleep.
+- Soft bodies do not push rigid bodies back: a cloth or a jelly reads
+  the static and kinematic colliders and never writes an impulse to a
+  dynamic one, so a crate cannot be knocked over by a falling jelly.
+- Cloth has no self-collision, so a sheet folded onto itself passes
+  through. A fluid particle and a cloth particle do not meet either;
+  the three soft components only collide with the `phys` colliders.
+- Soft bodies are a surface of particles with one volume constraint,
+  not a tetrahedral mesh, so a body squashed hard can invert a face,
+  and stiffness is uniform rather than a material with a Poisson ratio.
+- Fluids are 2D only. There is no 3D fluid, and no surface meshing or
+  screen-space rendering for the 2D one: a game draws the particles.
+- `phys.SignedDistance2` and `SignedDistance3` cover spheres, boxes,
+  capsules, circles, polygons and compounds of those. Convex hulls,
+  triangle meshes, edges and chains have no signed distance, so soft
+  bodies pass through them.
+- A stack whose boxes are turned relative to each other keeps creeping
+  into place at the default solver quality, so it sleeps late or not at
+  all; an aligned stack settles within a second or two.
 
 ## Entities, data and scripting
 
-World saves and loads, prefabs with children, cloning, the `locale`
-package (string tables, placeholders, plural rules, fallbacks) and
-`timer.Sequence` for cutscene-style sequencing are in.
+World saves and loads, prefabs with children, cloning, the `ecs.Scene`
+document format with `Instantiate`, `ExportScene`, prefab libraries and
+`asset.Scene`, the `locale` package (string tables, placeholders, plural
+rules, fallbacks) and `timer.Sequence` for cutscene-style sequencing are
+in.
 
-- A scene format and a scene editor; a prefab's JSON is the data format
-  for now.
+- A scene editor. The format and the API are what one would read and
+  write; placing entities is still a matter of editing JSON or building
+  the scene in code and calling `ExportScene`.
 - Scripting for game logic in something other than Go (Lua or similar),
   or hot code reload.
 - Right-to-left layout of the interface; the text itself shapes
@@ -278,10 +315,16 @@ near enough to send.
 
 `bunyip.FlyCamera` is the debug camera, `Config.LogFile` writes the log
 and a panic's stack trace to a file for crash reports, and shader hot
-reload is `Shader.Reload` behind an `asset.Watcher`.
+reload is `Shader.Reload` behind an `asset.Watcher`. `Config.Console`
+turns on the in-game console: commands, variables, key bindings, the
+log, and panels for the frame timings and profile scopes, the live
+post-processing settings and GPU resources, a world's entities,
+components, resources and systems, the physics simulation, the mixer,
+the input devices and a game's own services.
 
-- An in-engine console, and a frame profiler with GPU timestamps (CPU
-  scopes exist).
+- A frame profiler with GPU timestamps. The console's engine panel
+  graphs the CPU side (update, draw, present) and shows the `Profile`
+  scopes, but nothing times the passes on the GPU.
 - An asset pipeline that converts textures to compressed GPU formats
   (BC, ASTC) and generates mip chains offline.
 - Material hot reload as a built-in; a game reloads a material's
@@ -295,9 +338,13 @@ reload is `Shader.Reload` behind an `asset.Watcher`.
 - Screenshot comparison for the examples. `examples/examples_test.go`
   runs each one headless (`BUNYIP_HEADLESS=1`) and checks that it drew
   something, but not what.
+- Regenerating the example screenshots in `docs/examples/` is manual.
+  The test in `cmd/bunyip-docs` catches a walkthrough whose excerpts have
+  drifted from the source, but nothing notices when a committed
+  screenshot no longer shows what the example draws.
 - Longer fuzzing campaigns. Every parser (glTF, the sound decoders, the
-  tracker loaders, HDR, atlases, rich text, Tiled maps and tilesets in
-  both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
+  tracker loaders, HDR, atlases, Aseprite files, rich text, Tiled maps
+  and tilesets in both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
   package; the first runs found two third-party decoder panics, now
   turned into errors, and an unchecked accessor bound in the glTF
   reader.

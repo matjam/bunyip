@@ -18,7 +18,8 @@ func parseXML(data []byte, resolve Resolver) (*Map, error) {
 	}
 	m := &Map{
 		Width: x.Width, Height: x.Height, TileWidth: x.TileWidth, TileHeight: x.TileHeight,
-		Orientation: x.Orientation, Infinite: x.Infinite, Properties: xmlProperties(x.Properties),
+		Orientation: x.Orientation, StaggerAxis: x.StaggerAxis, StaggerIndex: x.StaggerIndex,
+		HexSideLength: x.HexSideLength, Infinite: x.Infinite, Properties: xmlProperties(x.Properties),
 	}
 	if x.BackgroundColor != "" {
 		if c, ok := ParseColor(x.BackgroundColor); ok {
@@ -345,6 +346,9 @@ type xmlMap struct {
 	TileWidth       int              `xml:"tilewidth,attr"`
 	TileHeight      int              `xml:"tileheight,attr"`
 	Orientation     string           `xml:"orientation,attr"`
+	StaggerAxis     string           `xml:"staggeraxis,attr"`
+	StaggerIndex    string           `xml:"staggerindex,attr"`
+	HexSideLength   int              `xml:"hexsidelength,attr"`
 	BackgroundColor string           `xml:"backgroundcolor,attr"`
 	Infinite        bool             `xml:"infinite,attr"`
 	Properties      *xmlPropertyList `xml:"properties"`

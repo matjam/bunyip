@@ -10,6 +10,7 @@ import (
 
 	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/audio/tracker"
+	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
 )
@@ -63,6 +64,27 @@ func Atlas(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.
 		return nil, err
 	}
 	return d.Bind(tex), nil
+}
+
+// Aseprite reads an .aseprite or .ase file, composites each frame from
+// its visible layers, uploads the packed image and binds an atlas: one
+// call where a game would otherwise parse, pack, upload and bind by
+// hand. The atlas is on the result's Atlas field, its frames are named
+// by number and its tags play through Atlas.Animation; the result also
+// carries the file's layers, tags, slices and palette.
+func Aseprite(g *gfx.Graphics, fs *FS, name string, opts gfx.AsepriteOptions, texOpts gfx.TextureOptions) (*gfx.Aseprite, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	a, err := gfx.ParseAseprite(data, opts)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	if _, err := a.Upload(g, texOpts); err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	return a, nil
 }
 
 // Font reads a TTF or OTF file and prepares a bitmap atlas at size.
@@ -152,6 +174,36 @@ func parseModel(fs *FS, name string) (*gltf.Document, error) {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
 	return doc, nil
+}
+
+// Scene reads a scene document, ready for ecs.World.Instantiate. The
+// component types the scene names are checked when it is instantiated,
+// not here, so a scene loads before the game registers them.
+func Scene(fs *FS, name string) (*ecs.Scene, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	scene, err := ecs.ParseScene(data)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	return scene, nil
+}
+
+// Prefab reads a prefab document, for the ecs.PrefabLibrary a scene's
+// prefab references are resolved against. Every component type the file
+// names must be registered first.
+func Prefab(fs *FS, name string) (*ecs.Prefab, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	pf, err := ecs.ParsePrefab(data)
+	if err != nil {
+		return nil, fmt.Errorf("asset %s: %w", name, err)
+	}
+	return pf, nil
 }
 
 // Tracker reads and parses a MOD, S3M, XM or IT module.
