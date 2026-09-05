@@ -651,6 +651,18 @@ five hundred trees are one call. `DrawText3D(font, text, pos, scale,
 color, onTop, opts)` draws a line of text the same way, centred on
 `pos`, with `scale` in world units per view unit of the font.
 
+For the many small quads an effect needs rather than the few a scene
+places by hand, `DrawParticles3D(tex, quads, opts)` draws a whole slice
+of camera-facing quads as one instanced call: smoke, embers, snow,
+magic. It runs over the finished scene, after decals, so the geometry in
+front hides them, and `opts.Soft` fades a particle out over that many
+world units as it nears the surface behind it, which hides the hard line
+a quad otherwise cuts where it meets the ground. `opts.Blend` picks the
+blend mode. The particles are neither lit nor depth sorted against each
+other, so unlit and additive effects suit them. The `particle` package
+fills the slice: `GPUSystem.Draw3D` simulates an `Emitter` and hands the
+result straight to this call. See the 2D graphics guide for the emitter.
+
 `DrawDecal(tex, box, tint)` projects a texture onto whatever geometry
 lies inside a box, for bullet holes, blood, footprints and road
 markings. The box matrix maps the unit cube to the world, the texture

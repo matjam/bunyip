@@ -93,7 +93,8 @@ type Context struct {
 	edits    map[widgetID]*editState
 	expanded map[widgetID]bool // tree nodes
 	drags    map[widgetID]*dragState
-	hues     map[widgetID]float32 // colour pickers' last hue
+	hues     map[widgetID]float32    // colour pickers' last hue
+	curves   map[widgetID]curveState // curve editors' dragged point
 
 	openMenu    widgetID
 	menuX       float32
@@ -154,6 +155,7 @@ const (
 func New(g *gfx.Graphics, theme Theme) *Context {
 	return &Context{Theme: theme, g: g, seq: map[widgetID]int{}, scroll: map[widgetID]*scrollState{},
 		edits: map[widgetID]*editState{}, expanded: map[widgetID]bool{}, drags: map[widgetID]*dragState{}, hues: map[widgetID]float32{},
+		curves:     map[widgetID]curveState{},
 		groupFocus: map[widgetID]widgetID{},
 		rich:       map[string]*richEntry{}, richOld: map[string]*richEntry{}}
 }

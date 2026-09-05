@@ -36,6 +36,7 @@ type Graphics struct {
 	lastStats    FrameStats         // the last finished frame's counts
 	meshes       meshPass
 	post         postPass
+	particles    particlePass
 	white        *Texture
 	frame        *render.Frame
 	frameNo      uint64
@@ -490,6 +491,10 @@ type FrameStats struct {
 	// MaxLights, whatever part of the view each one reaches. The
 	// directional light is not counted: every frame has one.
 	Lights int
+	// Particles counts the instances drawn by DrawParticles and
+	// DrawParticles3D. Each batch is one draw call however many
+	// instances it holds, counted in Draws2D or Draws3D.
+	Particles int
 	// ProbesDropped counts reflection probes added past MaxProbes, which
 	// a frame keeps none of.
 	ProbesDropped int
@@ -614,7 +619,7 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 // the 2D stream, into target (a render texture) or the swapchain when nil.
 func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, target *render.Target) error {
 	cb := fr.CB
-	has3D := len(q.draws) > 0 || q.light.Background || len(q.lines.items) > 0
+	has3D := len(q.draws) > 0 || q.light.Background || len(q.lines.items) > 0 || len(q.parts.scene) > 0
 	bloom := has3D && g.post.settings.Bloom > 0
 	ao := has3D && g.post.settings.AmbientOcclusion > 0
 	if has3D {
@@ -704,7 +709,17 @@ type recordScratch struct {
 // flush2D records the queue's 2D stream: one draw per run of equal state.
 func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error {
 	st := &q.stream
+	if err := g.prepareParticles(q, fr.Slot); err != nil {
+		return err
+	}
 	if len(st.items) == 0 {
+		// Instanced particles can still be the only 2D drawing there is.
+		if len(q.parts.flat) > 0 {
+			render.SetViewportRect(fr.CB, vp)
+			g.particles.push = push2D{frame: lin.V4(g.time, q.viewW, q.viewH, float32(vp.Extent.Width)/q.viewW)}
+			_, err := g.drawFlatParticles(fr.CB, q, 0, draw2D{}, true, vp)
+			return err
+		}
 		return nil
 	}
 	st.build()
@@ -724,7 +739,26 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	boundUniform := int32(-2)
 	scaleX, scaleY := float32(vp.Extent.Width)/q.viewW, float32(vp.Extent.Height)/q.viewH
 	rec.push = push2D{frame: lin.V4(g.time, q.viewW, q.viewH, scaleX)}
+	g.particles.push = push2D{frame: rec.push.frame}
+	part := 0 // the next instanced particle batch to record
 	for _, d := range st.draws {
+		if part < len(q.parts.flat) {
+			// Particles submitted before this run, by layer and then by
+			// order, go under it. They bind their own pipeline and
+			// buffer, so what was bound for the stream has to be bound
+			// again afterwards.
+			next, err := g.drawFlatParticles(cb, q, part, d, false, vp)
+			if err != nil {
+				return err
+			}
+			if next != part {
+				part = next
+				bound, boundProj, boundUniform = nil, nil, -2
+				boundClip = lin.Rect{} // the particles restored the full scissor
+				rec.offset = 0
+				vk.CmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &rec.offset)
+			}
+		}
 		s := d.state
 		if s.clip != boundClip {
 			boundClip = s.clip
@@ -758,6 +792,10 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
 		vk.CmdDraw(cb, d.count, 1, d.first, 0)
 	}
+	// Then whatever was submitted after the last sprite run.
+	if _, err := g.drawFlatParticles(cb, q, part, draw2D{}, true, vp); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -777,6 +815,7 @@ func (g *Graphics) destroy() {
 		g.dbgFont = nil
 	}
 	g.linePipe.destroy()
+	g.particles.destroy()
 	g.post.destroy(g)
 	g.meshes.destroy(g)
 	if g.white != nil {

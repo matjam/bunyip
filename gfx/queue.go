@@ -70,6 +70,7 @@ type drawQueue struct {
 	skyCached    skyKey       // the sky whose harmonics are in skySH
 	skySH        [9]lin.Vec4
 	lines        lineStream         // debug lines drawn over the 3D scene
+	parts        particleStream     // instanced particles, 2D and 3D
 	probes       []*ReflectionProbe // this frame's reflection probes
 	grid         *LightProbeGrid    // this frame's irradiance grid, nil for none
 }
@@ -79,6 +80,7 @@ func (q *drawQueue) reset() {
 	q.draws = q.draws[:0]
 	q.decals = q.decals[:0]
 	q.lines.reset()
+	q.parts.reset()
 	q.points = q.points[:0]
 	q.probes = q.probes[:0]
 	q.grid = nil
@@ -105,6 +107,7 @@ func (q *drawQueue) destroy() {
 	q.stream.destroy()
 	q.inst.destroy()
 	q.lines.destroy()
+	q.parts.destroy()
 	if q.shadowTex != nil {
 		q.shadowTex.Destroy()
 		q.shadowTex = nil

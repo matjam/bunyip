@@ -18,6 +18,7 @@ import (
 	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/lin"
 	"github.com/matjam/bunyip/ui"
 )
 
@@ -61,6 +62,10 @@ type gallery struct {
 	order    []string
 	drops    int
 	lastDrop string
+
+	// The particle editor's window and the texture its effects draw with.
+	edit *editor
+	soft *gfx.Texture
 }
 
 func (g *gallery) Init(ctx *bunyip.Context) error {
@@ -101,6 +106,10 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	if g.beep {
 		ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: 0.4})
 	}
+	if g.soft, err = softCircle(ctx.Gfx); err != nil {
+		return err
+	}
+	g.edit = newEditor(g.soft, lin.V2(452, 580))
 	// Two of the gallery's own values through the console: set them from
 	// the command line, or watch them in the Services panel.
 	ctx.Console.Float("gallery.volume", &g.volume, "the volume slider's value")
@@ -135,6 +144,7 @@ func (g *gallery) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
 	g.big.Destroy()
 	g.bold.Destroy()
+	g.soft.Destroy()
 	for _, t := range g.skinTex {
 		t.Destroy()
 	}
@@ -151,6 +161,7 @@ func (g *gallery) Update(ctx *bunyip.Context) error {
 		ctx.Screenshot(g.shot)
 		g.shotDone = true
 	}
+	g.edit.update(ctx.Delta)
 	return nil
 }
 
@@ -165,6 +176,8 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 	ctx.Gfx.DrawTextBlock(g.big, "Bunyip", 380, 40, gfx.TextOptions{Size: 72 + 8*float32(math.Sin(float64(t))), Angle: -0.08}, gfx.RGB(255, 220, 120))
 	ctx.Gfx.DrawTextBlock(g.big, "scalable text from one atlas", 384, 130, gfx.TextOptions{Size: 22}, gfx.RGB(200, 200, 215))
 	ctx.Gfx.DrawTextBlock(g.big, "tiny", 384, 160, gfx.TextOptions{Size: 11}, gfx.RGB(150, 150, 170))
+	// The effect the particle editor is tuning, under every window.
+	g.edit.preview(ctx.Gfx)
 	u := g.ui
 	u.Theme.BoldFont = g.bold
 	u.Clipboard = ctx
@@ -285,6 +298,7 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 				}
 			})
 		})
+		g.edit.draw(u)
 	})
 	// The console draws last of all, above every window the gallery
 	// opened: ` opens it and F4 opens the debug panels.
@@ -373,7 +387,7 @@ func main() {
 	theme := flag.String("theme", "dark", "starting theme: "+fmt.Sprint(ui.ThemeNames()))
 	tab := flag.Int("tab", 0, "the tab of the More widgets window to open on (0-3)")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true, Debug: *debug, Console: true},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 1220, Height: 620, Resizable: true, Validation: true, Debug: *debug, Console: true},
 		&gallery{seconds: *seconds, shot: *shot, beep: *beep, skinned: *skin, theme: *theme, startTab: *tab})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)

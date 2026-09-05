@@ -101,6 +101,17 @@ type Config struct {
 	// screenshot runs on a build machine.
 	Headless bool
 
+	// FixedClock advances the game clock by exactly one FixedStep each
+	// frame instead of reading the wall clock, and runs exactly one
+	// Update per frame. Frame N is then always at N steps, whatever the
+	// machine took to render it, so a run produces the same frames every
+	// time and a screenshot can be compared against a stored image. It is
+	// for tests and for recording, not for playing: a game run this way
+	// speeds up or slows down with the frame rate. Context.Alpha is
+	// always zero. The environment variable BUNYIP_FIXED_CLOCK sets it,
+	// as BUNYIP_HEADLESS sets Headless. Off by default.
+	FixedClock bool
+
 	// Icon is the window's or application's icon; nil keeps the default.
 	// HandleClose leaves the window open when the user asks to close it
 	// and sets Context.CloseRequested instead, so the game can save or

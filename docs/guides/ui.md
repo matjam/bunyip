@@ -74,11 +74,21 @@ u.Begin(ctx.Input, func() {
 Besides the labels, buttons, checkboxes, sliders, progress bars and
 dropdowns above there are `Radio` and `RadioGroup`; `IntSlider` and
 `Spinner` for whole numbers; `ListBox` for a scrolling selection;
-`ColorPicker` with a hue bar and a saturation-value square; `Image`,
+`ColorPicker` with a hue bar and a saturation-value square;
+`CurveEditor` for a value that changes over a span; `Image`,
 `ImageRegion` and `IconButton` for pictures; `Tooltip` and `Separator`;
 and `RichLabel` for markup with bold, italic, colour and links, which
 returns the link that was clicked (set `Theme.BoldFont` and
 `ItalicFont` for the faces).
+
+`CurveEditor(label, &points, lo, hi, height)` draws a curve as a graph
+and edits it in place: drag a point to move it, click an empty part of
+the graph to add one, right-click a point to remove it. The points are
+`lin.Vec2` pairs kept in increasing x, x running 0 to 1 across the graph
+and y from `lo` to `hi` up it; the first and last keep their x so the
+curve always spans the range. `particle.Curve` converts both ways with
+`Points` and `CurveOf`, which is how the gallery's particle editor tunes
+size and alpha over a particle's life.
 
 ```go
 u.Panel("Settings", ui.Rect{X: 20, Y: 20, W: 320, H: 300}, func() {

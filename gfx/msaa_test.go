@@ -106,6 +106,55 @@ func TestMultisampling(t *testing.T) {
 	}
 }
 
+// TestMultisampledParticles draws 3D particles over a multisampled
+// scene. They land in the scene's own colour attachment, so their
+// pipeline has to be built at its sample count, and they read the
+// resolved depth for the fade the fragment program does by hand.
+func TestMultisampledParticles(t *testing.T) {
+	g := newHeadless(t, 128, 128)
+	if g.MaxSamples() < 4 {
+		t.Skipf("device supports at most %d samples", g.MaxSamples())
+	}
+	verts, idx := QuadMesh()
+	mesh, err := g.NewMesh(verts, idx)
+	if err != nil {
+		t.Fatalf("NewMesh: %v", err)
+	}
+	defer mesh.Destroy()
+	post := DefaultPost()
+	post.Bloom, post.AmbientOcclusion = 0, 0
+	post.NoAntiAlias, post.Samples = true, 4
+	g.SetPost(post)
+	var img *image.RGBA
+	for range 2 {
+		ok, err := g.begin(Black)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if !ok {
+			continue
+		}
+		g.SetCamera(Camera{Position: lin.V3(0, 0, 6), Target: lin.Vec3{}})
+		g.SetLight(Light{Direction: lin.V3(0, -1, -1), Color: White})
+		// A wall across the left half of the view, at z = 0.
+		g.DrawMesh(mesh, Material{BaseColor: RGB(20, 20, 20), Unlit: true, DoubleSided: true},
+			lin.TRS(lin.V3(-1.2, 0, 0), lin.Quat{W: 1}, lin.V3(2, 4, 1)))
+		g.DrawParticles3D(nil, []ParticleQuad{
+			{Pos: lin.V3(-1.2, 0, -1), Size: lin.V2(1, 1), UV1: lin.V2(1, 1), Color: RGB(255, 0, 0)}, // behind the wall
+			{Pos: lin.V3(1.2, 0, 0), Size: lin.V2(1, 1), UV1: lin.V2(1, 1), Color: RGB(0, 255, 0)},   // clear of it
+		}, Particles3D{})
+		if img, err = g.end(true); err != nil {
+			t.Fatalf("end: %v", err)
+		}
+	}
+	if got := img.RGBAAt(86, 64); got.G < 120 || got.R > 80 {
+		t.Errorf("particle clear of the wall = %v, want green", got)
+	}
+	if got := img.RGBAAt(42, 64); got.R > 80 {
+		t.Errorf("particle behind the wall showed through: %v", got)
+	}
+}
+
 // TestMultisampledTransparency runs the order-independent transparency
 // pass inside a multisampled scene. Its own two images stay
 // single-sample and test against the resolved depth, so the pass works

@@ -38,6 +38,18 @@ func (b Blend) String() string {
 	return fmt.Sprintf("Blend(%d)", int(b))
 }
 
+// ParseBlend reads a blend mode written the way String spells it, so a
+// mode can be named in an asset file or on a console line. It reports
+// false for anything else, leaving the caller to keep its default.
+func ParseBlend(s string) (Blend, bool) {
+	for b := Blend(0); b < blendCount; b++ {
+		if b.String() == s {
+			return b, true
+		}
+	}
+	return BlendAlpha, false
+}
+
 func (b Blend) factors() *render.BlendFactors {
 	over := vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
 	f := func(sc, dc vk.VkBlendFactor, op vk.VkBlendOp) *render.BlendFactors {

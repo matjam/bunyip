@@ -28,7 +28,8 @@ window.
   clamp and shake that culls what it cannot see, sort keys within a
   layer, atlases with tag animations, Aseprite files read as they are
   saved, vector paths
-  with gradients and dashes, particles, HarfBuzz-shaped text with colour
+  with gradients and dashes, particles on the CPU or as instanced quads
+  for hundreds of thousands, HarfBuzz-shaped text with colour
   glyphs (COLR, SVG and bitmap emoji), rich markup and hyphenation in
   thirteen languages, colour matrices, lit sprites with shadows cast
   from occluders, blend modes and
@@ -115,7 +116,7 @@ with it.
 | `gfx/ktx2` | KTX2 texture files and the BC1, BC3, BC4, BC5 and BC7 block formats they carry: encoding, decoding and offline mip chains |
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
 | `console` | in-game debug console: commands, variables, log capture, and panels for the engine, graphics, entities, physics, audio, input and services |
-| `particle` | CPU particle systems drawn through the sprite batch |
+| `particle` | particle systems: `System` draws through the sprite batch, `GPUSystem` as instanced quads in 2D or 3D for hundreds of thousands |
 | `tiled` | maps from the Tiled editor in JSON or XML form, built into drawable levels |
 | `audio` | mixer, voices, streams, microphone capture; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
 | `audio/tracker` | MOD, S3M, XM and IT loader and player |
@@ -183,7 +184,7 @@ whole program and explains it section by section:
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
-| `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay, and the debug console on ` and F4 |
+| `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, a live particle editor that saves its emitter as JSON, audio beep, frame-timing overlay, and the debug console on ` and F4 |
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
 | `go run ./examples/audio [-music file.ogg] [-zone] [-mic]` | positional voices with panning or the binaural head model, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream, streamed music files and a microphone level meter |
 | `go run ./examples/solar` | the ECS driving a scene: a scene document and a prefab loaded from embedded files, hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
@@ -243,7 +244,16 @@ go vet ./...
 
 Renderer tests render into offscreen images, read the frame back and check
 pixels; headless mode needs no window system and no surface extension, so
-it works on any conformant Vulkan driver. `go test ./examples/` runs every example headless for a moment and
-checks that it drew something; it needs a GPU and is skipped with `-short`.
+it works on any conformant Vulkan driver. `go test ./examples/` runs every
+example headless for a moment and compares the frame against a stored
+image in `examples/testdata`: a mean difference over the whole frame, and
+a tighter comparison of both frames blurred, which is what catches
+something moving rather than something changing colour. A failure writes
+the frame, the stored image and a diff to a temporary directory it names.
+The runs are made reproducible by `BUNYIP_FIXED_CLOCK=1`, which counts
+frames instead of reading the wall clock. Rerecord the images after a
+deliberate change with `go test ./examples -run TestExamplesRun -update`,
+adding `-docs` to rewrite the walkthrough screenshots from the same run.
+It needs a GPU and is skipped with `-short`.
 The parsers have fuzz targets: `go test -fuzz=Fuzz ./audio/...` and the
 same in `gltf`, `tiled` and `gfx`.

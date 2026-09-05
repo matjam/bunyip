@@ -93,6 +93,11 @@ against the 2D camera by the sprite's own corners and under the
 transform stack, a sort key within a layer (`SetSortKey`), camera
 follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
+So are GPU-instanced particles: `particle.GPUSystem` simulates over
+parallel arrays and draws through `gfx.DrawParticles` in 2D or
+`gfx.DrawParticles3D` in the scene, interleaved with the sprite stream
+by layer, with a soft depth fade in 3D and a stateless mode that keeps
+no per-particle state at all.
 
 - 2D shadows are cast by the occluder outlines a frame adds, not by the
   sprites themselves: nothing derives an occluder from a sprite's alpha,
@@ -110,10 +115,19 @@ follow, clamp and shake on `Camera2D`, tiled nine-slices,
   `renderQueue` skips when the frame has no 3D draws, no background and
   no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
   `RenderTexture` and blits it with its own sprite shader instead.
-- GPU-instanced particles for very large counts; the system is CPU
-  simulated and drawn through the sprite stream, which is fine for
-  thousands.
-- A particle editor in the gallery.
+- Stateless emitters are evaluated on the CPU, not in the vertex shader.
+  Every particle is a closed form of its seed and the clock, so the
+  vertex program could compute it from `gl_InstanceIndex` and upload
+  nothing at all; that needs a third pipeline and the emitter's curves
+  in a uniform block. Radial and tangential acceleration have no closed
+  form and would stay unsupported either way.
+- Instanced particles are drawn in the order the system holds them, with
+  no depth sort, in 2D or 3D. Additive effects do not care; a game with
+  overlapping alpha-blended particles orders the slice itself.
+- 3D particles are not lit and cast no shadows.
+- The gallery's particle editor edits one emitter at a time and previews
+  it in 2D. It does not show the instanced or the 3D path, chain several
+  emitters into one effect, or preview against a game's own background.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.
 
@@ -279,7 +293,7 @@ splits, tabs, tables, trees, menus, modals, draggable windows, radios,
 integer sliders, spinners, list boxes, colour pickers, images, icon
 buttons, rich labels with links, arrow-key navigation inside lists,
 tables, trees, tabs, radios and dropdowns, drag and drop, reorderable
-lists, and an accessibility tree are in.
+lists, curve editors, and an accessibility tree are in.
 
 - Handing the accessibility tree to a platform screen reader. The tree
   exists; the bridge to VoiceOver and its counterparts does not.
@@ -393,16 +407,29 @@ listed by the engine panel and totalled by the F3 overlay.
 
 ## Quality and process
 
+The examples are compared against stored images, not merely run:
+`examples/examples_test.go` runs each one under `BUNYIP_HEADLESS=1` and
+`BUNYIP_FIXED_CLOCK=1`, downscales the frame to 320 wide and checks it
+against `examples/testdata/<name>.png` by a mean difference over the
+frame and a tighter comparison of both frames blurred, writing the
+frame, the stored image and a diff to a temporary directory when they
+disagree. `-update` rerecords them and `-update -docs` also rewrites the
+walkthrough screenshots from the same run.
+
 - Hardware verification on Windows, of the Linux audio and gamepad
   layers, and of the Linux window layer beyond the one desktop it has
   run on; a GPU matrix in CI.
-- Screenshot comparison for the examples. `examples/examples_test.go`
-  runs each one headless (`BUNYIP_HEADLESS=1`) and checks that it drew
-  something, but not what.
-- Regenerating the example screenshots in `docs/examples/` is manual.
-  The test in `cmd/bunyip-docs` catches a walkthrough whose excerpts have
-  drifted from the source, but nothing notices when a committed
-  screenshot no longer shows what the example draws.
+- The walkthrough screenshots in `docs/examples/` are still rewritten by
+  hand in practice. The test can write them (`-update -docs`), but it
+  writes what a 1.5 second run draws, which is not always the moment
+  that shows an example best, so they are not regenerated wholesale.
+- The comparison runs on one machine's GPU. The tolerances are set for a
+  frame redrawn on the same driver; a different driver may need them
+  loosened, and nothing yet records a golden per driver.
+- `examples/assets` has no stored image: it counts its runs in a save
+  file, draws the count, and rewrites its own images on disk as it goes,
+  so its frame is never the same twice. It is still run and checked for
+  having drawn something.
 - Longer fuzzing campaigns. Every parser (glTF, the sound decoders, the
   tracker loaders, HDR, atlases, Aseprite files, rich text, Tiled maps
   and tilesets in both forms) has a fuzz target, run with `go test -fuzz=Fuzz` in its
