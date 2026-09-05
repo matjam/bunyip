@@ -27,6 +27,16 @@ type PostSettings struct {
 	OcclusionRadius float32
 	// ShowOcclusion displays the occlusion buffer instead of the scene, for tuning.
 	ShowOcclusion bool
+	// OrderIndependent composites blended materials without sorting them.
+	// Each pixel's translucent fragments accumulate with a weight that
+	// favours the nearest, and one pass resolves them, so meshes that
+	// intersect or overlap themselves no longer pick a single order for
+	// the whole draw (weighted blended order-independent transparency,
+	// McGuire and Bavoil). It costs two more images the size of the frame
+	// and one pass. Zero keeps the sorted path, and transmissive
+	// materials stay on it either way, because they read the scene behind
+	// them and so must draw in order.
+	OrderIndependent bool
 	// Reflections is the strength of screen-space reflections, 0 (off, the
 	// default) to 1. A smooth surface mirrors what the screen already
 	// shows: a polished floor under a bright object, a wet road under a
@@ -167,6 +177,7 @@ type postPass struct {
 	fxaa         *render.Pipeline
 	ssao         *render.Pipeline
 	aoBlur       *render.Pipeline
+	oit          *render.Pipeline // resolves the order-independent transparency targets
 	reflect      *render.Pipeline // screen-space reflections, see ssr.go
 	taa          *render.Pipeline
 	dof          *render.Pipeline
@@ -175,6 +186,7 @@ type postPass struct {
 	velocity     *render.Pipeline
 	velocitySkin *render.Pipeline
 	singles      *render.DescriptorSets
+	pairs        *render.DescriptorSets // accumulation and revealage together
 	triples      *render.DescriptorSets
 	quads        *render.DescriptorSets
 	main         *sceneTargets
@@ -199,7 +211,10 @@ type sceneTargets struct {
 	ldr       *render.Target
 	aoA       *render.Target
 	aoB       *render.Target
-	scene     *render.Image // the opaque scene with blurred mips, for transmission
+	scene     *render.Image  // the opaque scene with blurred mips, for transmission
+	accum     *render.Target // weighted translucent colour, made on first use
+	reveal    *render.Target // what those fragments leave showing
+	oitSet    vk.VkDescriptorSet
 	hdrSet    vk.VkDescriptorSet
 	depthSet  vk.VkDescriptorSet
 	bloomASet vk.VkDescriptorSet
@@ -271,12 +286,20 @@ type ssaoPush struct {
 
 const aoFormat = vk.VK_FORMAT_R8_UNORM
 
+// revealFormat holds the product of one minus each translucent
+// fragment's alpha. It is a half float rather than a byte because the
+// product falls away quickly and the composite divides by what is left.
+const revealFormat = vk.VK_FORMAT_R16_SFLOAT
+
 func (g *Graphics) initPost() error {
 	p := &g.post
 	p.settings = DefaultPost()
 	dev := g.r.Device
 	var err error
 	if p.singles, err = dev.NewSamplerDescriptors(1, 64); err != nil {
+		return err
+	}
+	if p.pairs, err = dev.NewSamplerDescriptors(2, 32); err != nil {
 		return err
 	}
 	if p.triples, err = dev.NewSamplerDescriptors(3, 32); err != nil {
@@ -325,6 +348,20 @@ func (g *Graphics) initPost() error {
 	}
 	if p.aoBlur, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.AOBlurFrag, ColorFormat: aoFormat, PushConstantSize: push, SetLayouts: single,
+	}); err != nil {
+		return err
+	}
+	// Resolving transparency draws over the scene with the revealage in
+	// alpha: the source keeps what the fragments covered and the
+	// destination keeps what they left.
+	if p.oit, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.PostVert, Frag: shaders.OITFrag,
+		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
+		Blend: true, Factors: &render.BlendFactors{
+			SrcColor: vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, DstColor: vk.VK_BLEND_FACTOR_SRC_ALPHA, ColorOp: vk.VK_BLEND_OP_ADD,
+			SrcAlpha: vk.VK_BLEND_FACTOR_ZERO, DstAlpha: vk.VK_BLEND_FACTOR_ONE, AlphaOp: vk.VK_BLEND_OP_ADD,
+		},
+		PushConstantSize: push, SetLayouts: []vk.VkDescriptorSetLayout{p.pairs.Layout},
 	}); err != nil {
 		return err
 	}
@@ -447,12 +484,46 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 	return t, nil
 }
 
+// orderIndependent makes the accumulation and revealage images for an
+// output the first time a frame asks for order-independent transparency.
+// They are the size of the frame again in half floats, so an output that
+// never uses them never pays for them. Nothing samples them before the
+// pass that clears and fills them, so they need no clear here.
+func (g *Graphics) orderIndependent(t *sceneTargets) error {
+	if t.accum != nil {
+		return nil
+	}
+	dev := g.r.Device
+	accum, err := dev.NewTarget(t.extent, hdrFormat, vk.VK_FORMAT_UNDEFINED)
+	if err != nil {
+		return err
+	}
+	reveal, err := dev.NewTarget(t.extent, revealFormat, vk.VK_FORMAT_UNDEFINED)
+	if err != nil {
+		accum.Destroy()
+		return err
+	}
+	set, err := g.post.pairs.AllocateMany([]render.SamplerBinding{
+		{View: accum.Color.View, Sampler: g.linear}, {View: reveal.Color.View, Sampler: g.linear},
+	})
+	if err != nil {
+		accum.Destroy()
+		reveal.Destroy()
+		return err
+	}
+	t.accum, t.reveal, t.oitSet = accum, reveal, set
+	return nil
+}
+
 func (t *sceneTargets) destroy(g *Graphics) {
 	p := &g.post
 	for _, set := range []vk.VkDescriptorSet{t.hdrSet, t.depthSet, t.bloomASet, t.bloomBSet, t.ldrSet, t.aoASet, t.ldr2Set} {
 		if set != 0 {
 			p.singles.Free(set)
 		}
+	}
+	if t.oitSet != 0 {
+		p.pairs.Free(t.oitSet)
 	}
 	for _, set := range []vk.VkDescriptorSet{t.mbSet, t.dofSet, t.reflectSet} {
 		if set != 0 {
@@ -464,7 +535,8 @@ func (t *sceneTargets) destroy(g *Graphics) {
 			p.quads.Free(set)
 		}
 	}
-	for _, tg := range []*render.Target{t.hdr, t.bloomA, t.bloomB, t.ldr, t.aoA, t.aoB, t.vel, t.hist, t.pong, t.rays, t.ldr2} {
+	for _, tg := range []*render.Target{t.hdr, t.bloomA, t.bloomB, t.ldr, t.aoA, t.aoB,
+		t.accum, t.reveal, t.vel, t.hist, t.pong, t.rays, t.ldr2} {
 		if tg != nil {
 			tg.Destroy()
 		}
@@ -582,7 +654,7 @@ func (p *postPass) destroy(g *Graphics) {
 	if p.main != nil {
 		p.main.destroy(g)
 	}
-	for _, pipe := range []*render.Pipeline{p.composite, p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur, p.reflect,
+	for _, pipe := range []*render.Pipeline{p.composite, p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur, p.oit, p.reflect,
 		p.taa, p.dof, p.motionBlur, p.godRays, p.velocity, p.velocitySkin} {
 		if pipe != nil {
 			pipe.Destroy()
@@ -590,6 +662,9 @@ func (p *postPass) destroy(g *Graphics) {
 	}
 	if p.singles != nil {
 		p.singles.Destroy()
+	}
+	if p.pairs != nil {
+		p.pairs.Destroy()
 	}
 	if p.triples != nil {
 		p.triples.Destroy()

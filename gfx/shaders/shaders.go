@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // The 2D and mesh programs, including the engine's own, are game-style
@@ -32,6 +33,7 @@ var (
 )
 
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage frag -o pbr.frag.spv pbr_default.glsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -stage oitfrag -o pbr_oit.frag.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage vert -o pbr.vert.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage skinvert -o pbr_skin.vert.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage shadowvert -o shadow.vert.spv pbr_default.glsl
@@ -52,6 +54,7 @@ var (
 //go:generate glslangValidator -V -o dof.frag.spv dof.frag
 //go:generate glslangValidator -V -o motionblur.frag.spv motionblur.frag
 //go:generate glslangValidator -V -o godrays.frag.spv godrays.frag
+//go:generate glslangValidator -V -o oit.frag.spv oit.frag
 //go:generate glslangValidator -V -o sky.frag.spv sky.frag
 //go:generate glslangValidator -V -o skyparam.frag.spv skyparam.frag
 //go:generate glslangValidator -V -o line.vert.spv line.vert
@@ -80,6 +83,8 @@ var (
 	DecalFrag []byte
 	//go:embed pbr.frag.spv
 	PBRFrag []byte
+	//go:embed pbr_oit.frag.spv
+	PBROITFrag []byte
 	//go:embed pbr.vert.spv
 	PBRVert []byte
 	//go:embed pbr_skin.vert.spv
@@ -120,6 +125,8 @@ var (
 	MotionBlurFrag []byte
 	//go:embed godrays.frag.spv
 	GodRaysFrag []byte
+	//go:embed oit.frag.spv
+	OITFrag []byte
 )
 
 // Kind is which pipeline a game shader is written for.
@@ -142,12 +149,13 @@ const (
 	StageSkinVert                    // skinned meshes, lit pass
 	StageShadowVert                  // static meshes, shadow pass
 	StageShadowSkinVert              // skinned meshes, shadow pass
+	StageOITFrag                     // the fragment program of the order-independent transparency pass
 	stageCount
 )
 
 // String names a stage as bunyip-shader's -stage flag spells it.
 func (s Stage) String() string {
-	names := [...]string{"frag", "vert", "skinvert", "shadowvert", "shadowskinvert"}
+	names := [...]string{"frag", "vert", "skinvert", "shadowvert", "shadowskinvert", "oitfrag"}
 	if int(s) < len(names) {
 		return names[s]
 	}
@@ -222,11 +230,44 @@ void main() {
     vec3 color = s.unlit ? s.albedo : light(s);
     vec4 lit = finish(vec4(color + s.emissive, s.alpha), s);
     lit.rgb = applyFog(lit.rgb, vWorldPos, vViewDepth);
-    // An opaque draw's alpha is never read as coverage, so the frame
+OUTPUT}
+`
+
+// meshOutput and meshOITOutput are the two ways the fragment main ends,
+// substituted for OUTPUT in meshPostlude. The order-independent pass
+// writes two attachments and every other pass writes one, so the two are
+// separate programs rather than one with a branch: a program that writes
+// an attachment its pass does not have is a validation warning on every
+// draw.
+const meshOutput = `    // An opaque draw's alpha is never read as coverage, so the frame
     // carries the screen-space reflection weight there instead and the
     // reflection pass reads it back from the scene copy.
     if (vGI.y > 0.5 && frame.reflect.x > 0.0) lit.a = reflectWeight(s);
     outColor = lit;
+`
+
+const meshOITOutput = `    // The colour goes into the accumulation attachment scaled by the
+    // depth weight, and the alpha multiplies the revealage attachment
+    // down. The composite divides one by the other, which gives back
+    // exactly this fragment's colour where it is the only layer.
+    outColor = lit * oitWeight(lit.a, gl_FragCoord.z);
+    outReveal = lit.a;
+`
+
+// meshOITDecls is what the order-independent fragment program has that
+// the others do not. It goes after the game's own code, so the lines a
+// compiler reports still line up with the file.
+const meshOITDecls = `
+layout(location = 1) out float outReveal;
+
+// oitWeight is how much a translucent fragment counts in the
+// order-independent pass: nearer fragments weigh far more, so a surface
+// in front of another still looks like it is in front (McGuire and
+// Bavoil, equation 10). It reads the depth buffer's own scale, so it
+// holds whatever size a game's world is, and stops at a thousand so a
+// stack of layers cannot overflow the half-float target.
+float oitWeight(float alpha, float z) {
+    return alpha * clamp(3e3 * pow(1.0 - z, 3.0), 1e-2, 1e3);
 }
 `
 
@@ -342,7 +383,9 @@ func Compose(kind Kind, stage Stage, source string) (glsl string, lineOffset int
 		}
 		switch stage {
 		case StageFrag:
-			return meshPrelude + body + meshPostlude, countLines(meshPrelude), nil
+			return meshPrelude + body + strings.Replace(meshPostlude, "OUTPUT", meshOutput, 1), countLines(meshPrelude), nil
+		case StageOITFrag:
+			return meshPrelude + body + meshOITDecls + strings.Replace(meshPostlude, "OUTPUT", meshOITOutput, 1), countLines(meshPrelude), nil
 		case StageVert:
 			return vertCommon + body + skinCall.ReplaceAllString(litVertPostlude, ""), countLines(vertCommon), nil
 		case StageSkinVert:

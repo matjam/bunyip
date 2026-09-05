@@ -151,7 +151,8 @@ kerning and ligatures cross the style changes inside it.
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, frustum culling with a public `Frustum`, bounds that follow
+ground fog, an atmospheric sky with aerial perspective, order-independent
+transparency, frustum culling with a public `Frustum`, bounds that follow
 a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, levels of detail, spot and point
 lights with shadows, per-light culling in the shadow pass, clustered
@@ -194,10 +195,14 @@ repeating sampling for render textures are in.
   and what is off screen or hidden falls back to the probe or the
   environment. There is no temporal accumulation, so a rough surface's
   rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
-- Volumetrics: atmospheric scattering for the sky rather than the
-  parametric gradient. Fog is a per-pixel fade, not a medium, and the
-  god rays are a screen-space radial blur over the depth buffer's sky
-  mask rather than light marched through one.
+- Volumetrics: light shafts through a medium. Fog is a per-pixel fade,
+  `Sky.Atmosphere` scatters single bounces only, and the god rays are a
+  screen-space radial blur over the depth buffer's sky mask, so none of
+  the three casts a shaft through anything.
+- Order-independent transparency is the weighted blended approximation
+  (`PostSettings.OrderIndependent`), so a deep stack of layers comes out
+  flatter than compositing them in order would, and transmissive draws
+  stay sorted. Per-pixel lists or depth peeling would be exact.
 - MSAA. FXAA and temporal anti-aliasing are the two options.
 - Motion vectors come from a pass of their own rather than from a second
   colour attachment on the HDR pass, so a frame with moving meshes in it
@@ -218,7 +223,6 @@ repeating sampling for render textures are in.
 - Motion blur gathers along each pixel's own vector, with no tile-max
   pass to dilate a fast object's blur past its silhouette, so an object
   smears inside its own outline and leaves no trail behind it.
-- Order-independent transparency; blended draws are sorted per mesh.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back.
 - Culling is per draw and by bounding sphere. There is no bounding

@@ -35,7 +35,9 @@ type drawQueue struct {
 	depthClamp   bool    // the shadow pipelines clamp depth rather than clip
 	hasCasters   bool    // casterAlong holds a value
 	casterAlong  float32 // how far the furthest caster is against the light
+	sorted       []int32 // scratch for partitionOIT: the draws that stay sorted
 	visOpaque    int     // draws at the front of the opaque group the camera sees
+	visOIT       int     // the same for the order-independent group
 	visBlended   int     // the same for the blended group
 	decals       []decal
 	camera       Camera
