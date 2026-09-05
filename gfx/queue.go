@@ -19,6 +19,19 @@ type drawQueue struct {
 	meshIDs      idTable
 	shadowVis    []bool // draws that reach the shadow map being recorded
 	cascadeMats  [shadowCascades]lin.Mat4
+	// jitter is this frame's sub-pixel projection offset in clip units,
+	// zero unless temporal anti-aliasing is on, and projJ, viewProjJ and
+	// invViewProjJ are the matrices the scene pass rasterises with once it
+	// is applied. prevViewProj is the previous frame's view-projection
+	// without the jitter, which the velocity and resolve passes measure
+	// motion against; hasPrevVP says a previous frame exists.
+	jitter       lin.Vec2
+	projJ        lin.Mat4
+	viewProjJ    lin.Mat4
+	invViewProjJ lin.Mat4
+	prevViewProj lin.Mat4
+	hasPrevVP    bool
+	hasMoved     bool    // some draw this frame carries a previous transform
 	depthClamp   bool    // the shadow pipelines clamp depth rather than clip
 	hasCasters   bool    // casterAlong holds a value
 	casterAlong  float32 // how far the furthest caster is against the light

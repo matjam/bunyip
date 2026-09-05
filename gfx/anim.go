@@ -878,7 +878,15 @@ func sampleWeights(ch gltf.Channel, t float32, out []float32) {
 // pose: node-animated parts move rigidly, skinned parts deform and morph
 // targets blend to the player's weights.
 func (g *Graphics) DrawModelAnimated(m *Model, t Transform, p *AnimPlayer) {
-	world := t.Matrix()
+	g.DrawModelAnimatedMoved(m, t, t, p)
+}
+
+// DrawModelAnimatedMoved is DrawModelAnimated for a model that moved:
+// prev is the transform it was drawn with last frame, which the velocity
+// buffer carries for temporal anti-aliasing and motion blur. The pose's
+// own motion is not carried; see DrawSkinnedMoved.
+func (g *Graphics) DrawModelAnimatedMoved(m *Model, t, prev Transform, p *AnimPlayer) {
+	world, was := t.Matrix(), prev.Matrix()
 	for _, mm := range m.morphs {
 		if w := p.MorphWeights(mm.node); w != nil {
 			_ = mm.apply(w)
@@ -888,9 +896,10 @@ func (g *Graphics) DrawModelAnimated(m *Model, t Transform, p *AnimPlayer) {
 	for _, part := range m.Parts {
 		if part.Mesh.skinned && part.skin >= 0 {
 			joints = p.jointMatrices(part.skin, joints[:0])
-			g.DrawSkinned(part.Mesh, part.Material, world, joints)
+			g.DrawSkinnedMoved(part.Mesh, part.Material, world, was, joints)
 			continue
 		}
-		g.DrawMesh(part.Mesh, part.Material, world.Mul(p.NodeMatrix(part.node)))
+		node := p.NodeMatrix(part.node)
+		g.DrawMeshMoved(part.Mesh, part.Material, world.Mul(node), was.Mul(node))
 	}
 }

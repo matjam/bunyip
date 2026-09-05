@@ -540,38 +540,84 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 // the 2D stream, into target (a render texture) or the swapchain when nil.
 func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, target *render.Target) error {
 	cb := fr.CB
+	s := g.post.settings
 	has3D := len(q.draws) > 0 || q.light.Background || len(q.lines.items) > 0
-	bloom := has3D && g.post.settings.Bloom > 0
-	ao := has3D && g.post.settings.AmbientOcclusion > 0
+	q.jitterFrame(t.extent, g.frameNo, has3D && s.TemporalAA)
+	// A frame with nothing 3D in it can still go through the composite,
+	// so bloom, the grade, the LUT and the lens effects reach a 2D game.
+	flat := !has3D && s.Post2D && len(q.stream.items) > 0
+	bloom := (has3D || flat) && s.Bloom > 0
+	ao := has3D && s.AmbientOcclusion > 0
+	rays := false
 	if has3D {
 		if err := g.renderScene(fr, q, t); err != nil {
 			return err
 		}
+		if err := g.postChain(cb, q, t); err != nil {
+			return err
+		}
+		if s.GodRays > 0 {
+			if sun, ok := sunScreen(q); ok {
+				if err := t.needRays(g); err != nil {
+					return err
+				}
+				g.renderRays(cb, q, t, sun)
+				rays = true
+			}
+		}
 		if bloom {
-			g.renderBloom(cb, t)
+			g.renderBloom(cb, t, t.hdrSet)
 		}
 		if ao {
 			g.renderAO(cb, q, t)
 		}
 	}
 	clear := q.clear.premultiplied()
-	aa := has3D && !g.post.settings.NoAntiAlias && target == nil
-	if aa {
-		// Composite into the LDR image, then resolve with FXAA on screen.
-		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
-		g.composite(cb, t, bloom, ao)
-		render.EndTargetPass(cb, t.ldr)
-	}
 	vp := vk.VkRect2D{Extent: g.r.Swapchain.Extent}
 	switch {
 	case target != nil:
-		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
 		vp.Extent = target.Extent
+	case g.viewport.Extent.Width > 0:
+		vp = g.viewport
+	}
+	if flat {
+		// The 2D stream draws into the LDR image and the composite reads
+		// it back, so no 2D pipeline needs an HDR-format variant.
+		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
+		if err := g.flush2D(fr, q, vk.VkRect2D{Extent: t.extent}); err != nil {
+			return err
+		}
+		render.EndTargetPass(cb, t.ldr)
+		if bloom {
+			g.renderBloom(cb, t, t.ldrSet)
+		}
+	}
+	// Temporal anti-aliasing has already resolved the edges, so FXAA
+	// would only soften them again.
+	aa := (has3D || flat) && !s.NoAntiAlias && !(has3D && s.TemporalAA) && target == nil
+	aaSet := t.ldrSet
+	if aa {
+		// Composite into an LDR image, then resolve with FXAA on screen.
+		dst := t.ldr
+		if flat {
+			if err := t.needLDR2(g); err != nil {
+				return err
+			}
+			dst, aaSet = t.ldr2, t.ldr2Set
+		}
+		render.BeginTargetPass(cb, render.PassDesc{Target: dst, ClearColor: clear, ClearDepth: 1})
+		if err := g.composite(cb, t, bloom, ao, rays, flat); err != nil {
+			return err
+		}
+		render.EndTargetPass(cb, dst)
+	}
+	switch {
+	case target != nil:
+		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
 	case g.viewport.Extent.Width > 0:
 		// A fixed view inside the window: black outside the viewport, the
 		// clear colour within it.
 		g.r.BeginSwapchainPass(fr, [4]float32{0, 0, 0, 1})
-		vp = g.viewport
 		render.SetViewportRect(cb, vp)
 		render.SetScissorRect(cb, vp)
 		render.ClearRect(cb, vp, clear)
@@ -580,15 +626,24 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	}
 	switch {
 	case aa:
-		g.antiAlias(cb, t)
-	case has3D:
-		g.composite(cb, t, bloom, ao)
+		g.antiAlias(cb, t, aaSet)
+	case has3D || flat:
+		if err := g.composite(cb, t, bloom, ao, rays, flat); err != nil {
+			return err
+		}
 	}
-	if err := g.flush2D(fr, q, vp); err != nil {
-		return err
+	if !flat { // a 2D post frame has already drawn its stream
+		if err := g.flush2D(fr, q, vp); err != nil {
+			return err
+		}
 	}
 	if target != nil {
 		render.EndTargetPass(cb, target)
+	}
+	if has3D {
+		// What the next frame reprojects against, without the jitter.
+		aspect := float32(t.extent.Width) / float32(t.extent.Height)
+		q.prevViewProj, q.hasPrevVP = q.camera.ViewProj(aspect), true
 	}
 	return nil
 }

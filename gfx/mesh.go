@@ -401,6 +401,10 @@ type meshDraw struct {
 	mesh  *Mesh
 	mat   Material
 	model lin.Mat4
+	// prev is the model matrix the draw had last frame and moved says the
+	// game supplied one. The velocity pass draws only what moved.
+	prev  lin.Mat4
+	moved bool
 	set   vk.VkDescriptorSet
 	// samplers packs the sampler index of each of the material set's
 	// eleven texture slots, two bits apiece, for the instance stream.
@@ -437,9 +441,13 @@ type meshInstance struct {
 	// index a shader reads from here is the same across the draw, which
 	// is what indexing the sampler array needs.
 	atten [4]float32
+	// prevModel is the model matrix's three rows as they were last frame,
+	// read by the velocity pass alone. The lit and shadow programs do not
+	// declare it; it only has to be in the stride they share.
+	prevModel [3]lin.Vec4
 }
 
-const meshInstanceSize = 176
+const meshInstanceSize = 224
 
 // blended reports whether a material draws after the opaque scene. The
 // receiver is a pointer because Material is large and this sits in the

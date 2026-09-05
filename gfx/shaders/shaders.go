@@ -44,6 +44,13 @@ var (
 //go:generate glslangValidator -V -o fxaa.frag.spv fxaa.frag
 //go:generate glslangValidator -V -o ssao.frag.spv ssao.frag
 //go:generate glslangValidator -V -o aoblur.frag.spv aoblur.frag
+//go:generate glslangValidator -V -o velocity.vert.spv velocity.vert
+//go:generate glslangValidator -V -o velocity_skin.vert.spv velocity_skin.vert
+//go:generate glslangValidator -V -o velocity.frag.spv velocity.frag
+//go:generate glslangValidator -V -o taa.frag.spv taa.frag
+//go:generate glslangValidator -V -o dof.frag.spv dof.frag
+//go:generate glslangValidator -V -o motionblur.frag.spv motionblur.frag
+//go:generate glslangValidator -V -o godrays.frag.spv godrays.frag
 //go:generate glslangValidator -V -o sky.frag.spv sky.frag
 //go:generate glslangValidator -V -o skyparam.frag.spv skyparam.frag
 //go:generate glslangValidator -V -o line.vert.spv line.vert
@@ -96,6 +103,20 @@ var (
 	SSAOFrag []byte
 	//go:embed aoblur.frag.spv
 	AOBlurFrag []byte
+	//go:embed velocity.vert.spv
+	VelocityVert []byte
+	//go:embed velocity_skin.vert.spv
+	VelocitySkinVert []byte
+	//go:embed velocity.frag.spv
+	VelocityFrag []byte
+	//go:embed taa.frag.spv
+	TAAFrag []byte
+	//go:embed dof.frag.spv
+	DOFFrag []byte
+	//go:embed motionblur.frag.spv
+	MotionBlurFrag []byte
+	//go:embed godrays.frag.spv
+	GodRaysFrag []byte
 )
 
 // Kind is which pipeline a game shader is written for.

@@ -416,6 +416,15 @@ func (g *Graphics) DrawModel(m *Model, world lin.Mat4) {
 	}
 }
 
+// DrawModelMoved is DrawModel for a model that moved: prev is the world
+// transform it was drawn with last frame, which the velocity buffer
+// carries for temporal anti-aliasing and motion blur.
+func (g *Graphics) DrawModelMoved(m *Model, world, prev lin.Mat4) {
+	for _, p := range m.Parts {
+		g.DrawMeshMoved(p.Mesh, p.Material, world.Mul(p.World), prev.Mul(p.World))
+	}
+}
+
 // Destroy frees the model's meshes and textures.
 func (m *Model) Destroy() {
 	if m.g != nil {
