@@ -514,14 +514,18 @@ type FrameStats struct {
 	// reflections, the decals, bloom, ambient occlusion, the composite,
 	// the anti-alias resolve and the 2D stream. A pass that runs for a
 	// render texture as well as the screen is summed into one entry. It is
-	// empty on a device without timestamp queries, which some MoltenVK
-	// configurations are. The figures come from queries read back without
-	// waiting, so they describe a frame two frames back, and the slice is
-	// reused every frame; copy it to keep it.
+	// empty on a device without timestamp queries or before results arrive.
+	// Available queries can still report zero durations when the device's
+	// timestamp resolution cannot distinguish the pass endpoints. MoltenVK
+	// without Metal counter sampling can report zero for every pass. The
+	// figures come from queries read back without waiting, so they describe
+	// a frame two frames back, and the slice is reused every frame; copy it
+	// to keep it.
 	GPU []GPUSpan
 	// GPUFrameMS is the GPU time from the frame's first pass to the end
-	// of its last, so it covers the gaps between passes as well. Zero
-	// means the device has no timestamp queries or the frame drew nothing.
+	// of its last, so it covers the gaps between passes as well. It is zero
+	// when no results are available or the timestamps cannot resolve a
+	// duration, including on some devices that emulate timestamp queries.
 	GPUFrameMS float64
 }
 

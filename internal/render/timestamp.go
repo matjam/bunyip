@@ -63,9 +63,10 @@ type pendingSpan struct {
 
 // NewTimestamps makes a query pool for timing the frame's passes, or
 // returns nil when the device cannot time them: a zero timestamp period,
-// or a queue family with no valid timestamp bits, which is what some
-// MoltenVK configurations report. The caller keeps a nil value and every
-// method does nothing.
+// or a queue family with no valid timestamp bits. Query pool creation
+// failure also returns nil. The caller keeps a nil value and every
+// method does nothing. Available queries may still report equal counters
+// and zero durations, including on MoltenVK without Metal counter sampling.
 func (d *Device) NewTimestamps() *Timestamps {
 	period := float64(d.gpu.props.Limits.TimestampPeriod)
 	bits := d.timestampValidBits()
@@ -168,7 +169,8 @@ func (t *Timestamps) End(cb vk.VkCommandBuffer) {
 
 // Spans is the newest frame's sections, in the order they were opened,
 // summed by name. The slice is reused every time results arrive, so copy
-// it to keep it.
+// it to keep it. A span with equal available counters is retained with
+// zero duration; it is distinct from an unavailable query, which is omitted.
 func (t *Timestamps) Spans() []Span {
 	if t == nil {
 		return nil
@@ -178,7 +180,8 @@ func (t *Timestamps) Spans() []Span {
 
 // FrameMS is the GPU time from the first timed section's start to the
 // last one's end, which is the whole frame when the outermost sections
-// cover it. It is zero until results arrive.
+// cover it. It is zero until results arrive, and also when all available
+// counters are equal because of the device's timestamp resolution.
 func (t *Timestamps) FrameMS() float64 {
 	if t == nil {
 		return 0

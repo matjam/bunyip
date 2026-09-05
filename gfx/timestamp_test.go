@@ -1,14 +1,15 @@
 package gfx
 
 import (
+	"math"
 	"testing"
 
 	"github.com/matjam/bunyip/lin"
 )
 
 // TestGPUTimestamps draws a lit mesh for enough frames that the query
-// results come back, and checks that the frame reports a nonzero opaque
-// pass and a frame total no smaller than it. A device without timestamp
+// results come back, and checks that the frame reports an opaque pass
+// and a frame total no smaller than it. A device without timestamp
 // queries reports nothing at all, which is also correct, so the test
 // says so and stops rather than failing.
 func TestGPUTimestamps(t *testing.T) {
@@ -31,15 +32,28 @@ func TestGPUTimestamps(t *testing.T) {
 		t.Fatal("no GPU pass times after eight frames")
 	}
 	var opaque float64
+	foundOpaque := false
 	var sum float64
 	for _, s := range stats.GPU {
+		if math.IsNaN(s.MS) || math.IsInf(s.MS, 0) || s.MS < 0 {
+			t.Errorf("pass %q has invalid duration %g ms", s.Name, s.MS)
+		}
 		sum += s.MS
 		if s.Name == "opaque" {
 			opaque = s.MS
+			foundOpaque = true
 		}
 	}
-	if opaque <= 0 {
-		t.Errorf("opaque pass timed %g ms, want more than zero (spans %v)", opaque, stats.GPU)
+	// Equal available counters are valid: timestamp resolution can be
+	// coarser than a pass. Without Metal counter sampling, MoltenVK even
+	// assigns all queries in a command buffer the same completion time.
+	// TestTimestampReadback in internal/render verifies positive counter
+	// conversion independently of the hardware's timing resolution.
+	if !foundOpaque {
+		t.Errorf("opaque pass is missing from spans %v", stats.GPU)
+	}
+	if math.IsNaN(stats.GPUFrameMS) || math.IsInf(stats.GPUFrameMS, 0) || stats.GPUFrameMS < 0 {
+		t.Errorf("invalid frame duration %g ms", stats.GPUFrameMS)
 	}
 	if stats.GPUFrameMS < opaque {
 		t.Errorf("frame total %g ms is under the opaque pass's %g ms", stats.GPUFrameMS, opaque)
