@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/matjam/bunyip/audio"
+	"github.com/matjam/bunyip/console"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/internal/audioout"
@@ -121,7 +122,11 @@ func runOnce(cfg Config, game Game) error {
 	defer gd.Destroy()
 	in := hook.NewInput()
 	mix := hook.NewMixer(audioRate)
-	if !cfg.NoAudio && !cfg.Headless {
+	if cfg.NoAudio || cfg.Headless {
+		// No device at all was asked for, so the mixer refuses to record
+		// from one either.
+		mix.SetDevice(false)
+	} else {
 		dev, err := audioout.Open(audioRate, mix.Mix)
 		if err != nil {
 			cfg.Log.Warn("bunyip: audio output unavailable, continuing silent", "err", err)
@@ -132,7 +137,17 @@ func runOnce(cfg Config, game Game) error {
 	// The drivers stay in the loop; the game sees the public values.
 	l := &loop{cfg: cfg, app: app, win: win, game: game, gfx: gd, input: in, audio: mix,
 		ctx: &Context{Gfx: gd.Game().(*gfx.Graphics), Input: in.Game().(*input.State), Log: cfg.Log,
-			Audio: mix.Game().(*audio.Mixer), Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1, focused: true}}
+			Audio: mix.Game().(*audio.Mixer), Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1,
+			focused: true, visible: true, timeScale: 1, budget: cfg.DrawBudget}}
+	if cfg.Console {
+		// The console tees the log, so it is built before anything the
+		// game logs during Init.
+		con := console.New(console.Options{Key: cfg.ConsoleKey})
+		l.ctx.Console = con
+		l.ctx.Log = slog.New(con.Handler(cfg.Log.Handler()))
+		cfg.Log = l.ctx.Log
+		defer con.Destroy() // before the graphics context goes
+	}
 	l.overlay.on = cfg.Debug
 	l.overlay.budget = cfg.DrawBudget
 	if cfg.Icon != nil {
@@ -176,6 +191,10 @@ type loop struct {
 	// for mapping pointer positions into view units.
 	viewport       lin.Rect
 	pixelsPerPoint float32
+
+	// pausedNow is the pause the loop last put on the mixer, so that it
+	// writes the mixer on a change and never otherwise.
+	pausedNow bool
 
 	// Timings gathered during the frame, published to ctx.Stats at its end.
 	frameStart          time.Time
@@ -265,7 +284,7 @@ func (l *loop) run() error {
 		l.beginFrame(now)
 		l.ctx.Time = now.Sub(start).Seconds()
 		if l.cfg.TurnBased {
-			l.ctx.Delta = now.Sub(last).Seconds()
+			l.ctx.Delta = now.Sub(last).Seconds() * l.ctx.timeScale
 			last = now
 			if err := l.update(); err != nil {
 				return err
@@ -274,13 +293,15 @@ func (l *loop) run() error {
 		} else {
 			accumulator += now.Sub(last)
 			last = now
-			if l.cfg.PauseUnfocused && !l.ctx.focused {
-				accumulator = 0 // the game stands still while another window has focus
+			if l.paused() {
+				accumulator = 0 // the game stands still while it is paused
 			}
 			if accumulator > catchUp { // do not spiral after a stall
 				accumulator = catchUp
 			}
-			l.ctx.Delta = step.Seconds()
+			// The step is fixed; the time it covers is scaled, so slow
+			// motion runs the same number of updates over less game time.
+			l.ctx.Delta = step.Seconds() * l.ctx.timeScale
 			for steps := 0; accumulator >= step; steps++ {
 				if l.cfg.MaxSteps > 0 && steps >= l.cfg.MaxSteps {
 					accumulator = 0 // drop the rest of the lost time
@@ -393,6 +414,31 @@ func (l *loop) publishStats() {
 	s.Scopes = append(s.Scopes[:0], l.ctx.scopes...)
 	gs := l.ctx.Gfx.Stats()
 	s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances = gs.Draws2D, gs.Vertices2D, gs.Draws3D, gs.Instances
+	s.Waits = gs.Waits
+}
+
+// paused reports whether the game stands still: Config.PauseUnfocused
+// with the focus elsewhere, or Config.PauseHidden with the window out of
+// sight. Both are off by default, so a loop that sets neither never
+// pauses.
+func (l *loop) paused() bool {
+	return (l.cfg.PauseUnfocused && !l.ctx.focused) || (l.cfg.PauseHidden && !l.ctx.visible)
+}
+
+// applyPause silences the mixer when the pause state changes, and only
+// then. One place decides it, so a window that loses focus and is hidden
+// at once does not have the two settings undo each other, and an event
+// that changes nothing leaves the mixer alone: a game that paused its own
+// mixer keeps it paused across a focus change it did not ask to react to.
+func (l *loop) applyPause() {
+	paused := l.paused()
+	if paused == l.pausedNow {
+		return
+	}
+	l.pausedNow = paused
+	if l.ctx.Audio != nil {
+		l.ctx.Audio.SetPaused(paused)
+	}
 }
 
 func (l *loop) handleEvents(events []platform.Event) {
@@ -409,12 +455,13 @@ func (l *loop) handleEvents(events []platform.Event) {
 			l.applySize()
 		case platform.EventFocus:
 			l.ctx.focused = e.Focused
-			if l.cfg.PauseUnfocused && l.ctx.Audio != nil {
-				l.ctx.Audio.SetPaused(!e.Focused)
-			}
+			l.applyPause()
 			if !e.Focused {
 				in.FeedFocusLost()
 			}
+		case platform.EventVisible:
+			l.ctx.visible = e.Visible
+			l.applyPause()
 		case platform.EventMouseEnter:
 			// The system resets the pointer's shape at the window's edge.
 			if l.ctx.cursor != CursorArrow {

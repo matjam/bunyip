@@ -20,7 +20,7 @@ type Texture struct {
 	repeat        bool
 	external      bool // image owned elsewhere (render textures)
 	data          bool // sampled without gamma decoding; pixels upload as given
-	retiring      bool // destroyed inside a frame; freed once it is submitted
+	destroyed     bool // Destroy was called; the image lives until the frame retires it
 	g             *Graphics
 }
 
@@ -55,7 +55,18 @@ func (g *Graphics) NewTexture(src image.Image, opts TextureOptions) (*Texture, e
 		pix = append([]byte(nil), pix...)
 		linearPremultiply(pix)
 	}
-	return g.newTexture(b.Dx(), b.Dy(), pix, opts)
+	t, err := g.newTexture(b.Dx(), b.Dy(), pix, opts)
+	if err == nil {
+		g.trackTexture(t, opts)
+	}
+	return t, err
+}
+
+// trackTexture records a texture in the live resource list.
+func (g *Graphics) trackTexture(t *Texture, opts TextureOptions) {
+	mips := opts.Linear && !opts.NoMipmaps && t.Width > 1 && t.Height > 1
+	g.track(t, Resource{Kind: ResourceTexture, Width: t.Width, Height: t.Height,
+		Bytes: textureBytes(t.Width, t.Height, mips)})
 }
 
 // needsLinearPremultiply reports whether any texel is translucent, which
@@ -97,7 +108,7 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		format = vk.VK_FORMAT_R8G8B8A8_UNORM
 	}
 	mips := opts.Linear && !opts.NoMipmaps && w > 1 && h > 1
-	img, err := g.r.Device.NewTextureImage(extent, format, pix, mips)
+	img, err := g.uploadTexture(extent, format, pix, mips)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +119,27 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		return nil, err
 	}
 	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat, data: opts.Data, g: g}, nil
+}
+
+// uploadTexture creates a sampled image and fills it. Inside a frame the
+// copy is recorded into the frame's command buffer from the staging
+// arena, before any pass, so a draw later in the same frame sees the
+// pixels; outside one it goes through a one-shot submission that waits.
+func (g *Graphics) uploadTexture(extent vk.VkExtent2D, format vk.VkFormat, pix []byte, mips bool) (*render.Image, error) {
+	if g.frame == nil {
+		return g.r.Device.NewTextureImage(extent, format, pix, mips)
+	}
+	img, err := g.r.Device.NewSampledImage(extent, format, mips)
+	if err != nil {
+		return nil, err
+	}
+	staging, offset, err := g.stage(pix)
+	if err != nil {
+		img.Destroy()
+		return nil, err
+	}
+	render.RecordImageUpload(g.frame.CB, img, staging, offset)
+	return img, nil
 }
 
 // setFor returns the descriptor set sampling the texture with a filter:
@@ -133,7 +165,11 @@ func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Tex
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("gfx: blank texture needs a positive size")
 	}
-	return g.newTexture(width, height, make([]byte, width*height*4), opts)
+	t, err := g.newTexture(width, height, make([]byte, width*height*4), opts)
+	if err == nil {
+		g.trackTexture(t, opts)
+	}
+	return t, err
 }
 
 // Write replaces the pixels under src placed at (x, y), clipped to the
@@ -142,7 +178,7 @@ func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Tex
 // is recorded into the frame and costs no wait, so video and painting
 // can write every frame; outside one it waits for the GPU first.
 func (t *Texture) Write(x, y int, src image.Image) error {
-	if t.img == nil {
+	if t.img == nil || t.destroyed {
 		return fmt.Errorf("gfx: write to a destroyed texture")
 	}
 	b := src.Bounds()
@@ -157,12 +193,11 @@ func (t *Texture) Write(x, y int, src image.Image) error {
 	}
 	g := t.g
 	if fr := g.frame; fr != nil {
-		staging, err := g.r.Device.NewStaging(rgba.Pix)
+		staging, offset, err := g.stage(rgba.Pix)
 		if err != nil {
 			return err
 		}
-		render.RecordImageWrite(fr.CB, t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), staging)
-		g.staging[fr.Slot] = append(g.staging[fr.Slot], staging)
+		render.RecordImageWrite(fr.CB, t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), staging, offset)
 		return nil
 	}
 	if err := g.r.Device.WaitIdle(); err != nil {
@@ -175,7 +210,7 @@ func (t *Texture) Write(x, y int, src image.Image) error {
 // they are stored. It waits for the GPU first; use it for screenshots of
 // render textures and tests, not per frame.
 func (t *Texture) Read() (*image.RGBA, error) {
-	if t.img == nil {
+	if t.img == nil || t.destroyed {
 		return nil, fmt.Errorf("gfx: read from a destroyed texture")
 	}
 	if err := t.g.r.Device.WaitIdle(); err != nil {
@@ -184,29 +219,30 @@ func (t *Texture) Read() (*image.RGBA, error) {
 	return t.g.r.Device.ReadImage(t.img)
 }
 
-// Destroy frees the texture. It must not be in use by a frame in flight.
+// Destroy frees the texture. Called inside a frame it costs no wait: the
+// image and its descriptor sets go on the frame slot's retire list and
+// are freed once that frame has finished, so sprites and meshes already
+// queued this frame still draw with it.
 func (t *Texture) Destroy() {
-	if t.img == nil {
+	if t.img == nil || t.destroyed {
 		return
 	}
-	if t.g.frame != nil {
-		// Sprites queued this frame may still reference the texture, so
-		// it is destroyed after the frame is submitted rather than now.
-		if !t.retiring {
-			t.retiring = true
-			t.g.retire(t)
+	t.destroyed = true
+	g := t.g
+	g.forget(t)
+	// The cached material sets that name this texture leave the cache
+	// now, so no later frame can bind one; freeing them is deferred with
+	// everything else.
+	g.forgetTexture(t)
+	g.deferDestroy(func() {
+		g.descriptors.Free(t.set)
+		if t.altSet != 0 {
+			g.descriptors.Free(t.altSet)
+			t.altSet = 0
 		}
-		return
-	}
-	_ = t.g.r.Device.WaitIdle()
-	t.g.forgetTexture(t)
-	t.g.descriptors.Free(t.set)
-	if t.altSet != 0 {
-		t.g.descriptors.Free(t.altSet)
-		t.altSet = 0
-	}
-	if !t.external {
-		t.img.Destroy()
-	}
-	t.img = nil
+		if !t.external {
+			t.img.Destroy()
+		}
+		t.img, t.set = nil, 0
+	})
 }

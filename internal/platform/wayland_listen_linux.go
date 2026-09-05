@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"syscall"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -38,12 +39,19 @@ var (
 	cbOutputGeometry, cbOutputMode, cbOutputDone     uintptr
 	cbOutputScale, cbOutputName, cbOutputDescription uintptr
 
+	cbDataDeviceDataOffer, cbDataDeviceEnter, cbDataDeviceLeave      uintptr
+	cbDataDeviceMotion, cbDataDeviceDrop, cbDataDeviceSelection      uintptr
+	cbDataSourceTarget, cbDataSourceSend, cbDataSourceCancelled      uintptr
+	cbDataSourceDndDrop, cbDataSourceDndFinished, cbDataSourceAction uintptr
+	cbDataOfferOffer, cbDataOfferSourceActions, cbDataOfferAction    uintptr
+
 	cbWMBasePing          uintptr
 	cbXdgSurfaceConfigure uintptr
 
 	cbToplevelConfigure, cbToplevelClose                uintptr
 	cbToplevelConfigureBounds, cbToplevelWMCapabilities uintptr
 	cbDecorationConfigure                               uintptr
+	cbFractionalScale                                   uintptr
 	cbRelativeMotion                                    uintptr
 	cbLockedPointerLocked, cbLockedPointerUnlocked      uintptr
 )
@@ -116,6 +124,7 @@ func wlInitCallbacks() {
 	// wl_pointer.
 	cbPointerEnter = purego.NewCallback(func(data, proxy unsafe.Pointer, serial uint32, surface unsafe.Pointer, sx, sy int32) {
 		if a := wlCurrent; a != nil {
+			a.lastSerial = serial // the earliest serial set_selection can quote
 			a.onPointerEnter(serial, surface, sx, sy)
 		}
 	})
@@ -131,6 +140,7 @@ func wlInitCallbacks() {
 	})
 	cbPointerButton = purego.NewCallback(func(data, proxy unsafe.Pointer, serial, time, button, state uint32) {
 		if a := wlCurrent; a != nil {
+			a.lastSerial = serial // set_selection has to quote an input serial
 			a.onPointerButton(button, state)
 		}
 	})
@@ -174,6 +184,7 @@ func wlInitCallbacks() {
 		if w == nil {
 			return
 		}
+		a.lastSerial = serial // the earliest serial set_selection can quote
 		a.kbFocus = w
 		w.setFocused(true)
 	})
@@ -194,6 +205,7 @@ func wlInitCallbacks() {
 	})
 	cbKeyboardKey = purego.NewCallback(func(data, proxy unsafe.Pointer, serial, time, key, state uint32) {
 		if a := wlCurrent; a != nil {
+			a.lastSerial = serial // set_selection has to quote an input serial
 			a.onKey(key, state)
 		}
 	})
@@ -212,6 +224,53 @@ func wlInitCallbacks() {
 			a.repeatKey = 0
 		}
 	})
+
+	// wl_data_device, wl_data_source and wl_data_offer: the clipboard.
+	// Drag and drop is not handled, so the drag events do nothing.
+	cbDataDeviceDataOffer = purego.NewCallback(func(data, proxy, offer unsafe.Pointer) {
+		if a := wlCurrent; a != nil {
+			a.onDataOffer(offer)
+		}
+	})
+	cbDataDeviceEnter = purego.NewCallback(func(data, proxy unsafe.Pointer, serial uint32, surface unsafe.Pointer, x, y int32, offer unsafe.Pointer) {
+	})
+	cbDataDeviceLeave = purego.NewCallback(func(data, proxy unsafe.Pointer) {})
+	cbDataDeviceMotion = purego.NewCallback(func(data, proxy unsafe.Pointer, time uint32, x, y int32) {})
+	cbDataDeviceDrop = purego.NewCallback(func(data, proxy unsafe.Pointer) {})
+	cbDataDeviceSelection = purego.NewCallback(func(data, proxy, offer unsafe.Pointer) {
+		if a := wlCurrent; a != nil {
+			a.onSelection(offer)
+		}
+	})
+	cbDataSourceTarget = purego.NewCallback(func(data, proxy unsafe.Pointer, mime *byte) {})
+	cbDataSourceSend = purego.NewCallback(func(data, proxy unsafe.Pointer, mime *byte, fd int32) {
+		a := wlCurrent
+		if a == nil || proxy != a.clipSource {
+			syscall.Close(int(fd))
+			return
+		}
+		a.writeClipboard(int(fd))
+	})
+	cbDataSourceCancelled = purego.NewCallback(func(data, proxy unsafe.Pointer) {
+		a := wlCurrent
+		if a != nil && proxy == a.clipSource {
+			a.destroySource() // another client took the selection
+		}
+	})
+	cbDataSourceDndDrop = purego.NewCallback(func(data, proxy unsafe.Pointer) {})
+	cbDataSourceDndFinished = purego.NewCallback(func(data, proxy unsafe.Pointer) {})
+	cbDataSourceAction = purego.NewCallback(func(data, proxy unsafe.Pointer, action uint32) {})
+	cbDataOfferOffer = purego.NewCallback(func(data, proxy unsafe.Pointer, mime *byte) {
+		a := wlCurrent
+		if a == nil {
+			return
+		}
+		if _, ok := a.offerMimes[proxy]; ok {
+			a.offerMimes[proxy] = append(a.offerMimes[proxy], goString(mime))
+		}
+	})
+	cbDataOfferSourceActions = purego.NewCallback(func(data, proxy unsafe.Pointer, actions uint32) {})
+	cbDataOfferAction = purego.NewCallback(func(data, proxy unsafe.Pointer, action uint32) {})
 
 	// wl_output.
 	cbOutputGeometry = purego.NewCallback(func(data, proxy unsafe.Pointer, x, y, physWidth, physHeight, subpixel int32,
@@ -286,6 +345,17 @@ func wlInitCallbacks() {
 		}
 		if w := a.owner[proxy]; w != nil {
 			w.serverDecors = mode == xdgDecorationModeServerSide
+		}
+	})
+
+	// wp_fractional_scale_v1.
+	cbFractionalScale = purego.NewCallback(func(data, proxy unsafe.Pointer, scale uint32) {
+		a := wlCurrent
+		if a == nil {
+			return
+		}
+		if w := a.owner[proxy]; w != nil {
+			w.onFractionalScale(scale)
 		}
 	})
 

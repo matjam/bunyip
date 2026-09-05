@@ -26,6 +26,10 @@ var (
 	procAvSetMmThreadChar = avrt.NewProc("AvSetMmThreadCharacteristicsW")
 	procAvRevertMmThread  = avrt.NewProc("AvRevertMmThreadCharacteristics")
 	errUnsupported        = errors.New("audioout: WASAPI unavailable")
+
+	// proAudio is the scheduler class an audio thread asks for, so the
+	// output and capture loops are not descheduled mid-buffer.
+	proAudio = syscall.StringToUTF16Ptr("Pro Audio")
 )
 
 type guid struct {
@@ -176,7 +180,7 @@ func (d *Device) loop() {
 	runtime.LockOSThread()
 	defer close(d.done)
 	var taskIndex uint32
-	task, _, _ := procAvSetMmThreadChar.Call(uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Pro Audio"))), uintptr(unsafe.Pointer(&taskIndex)))
+	task, _, _ := procAvSetMmThreadChar.Call(uintptr(unsafe.Pointer(proAudio)), uintptr(unsafe.Pointer(&taskIndex)))
 	if task != 0 {
 		defer procAvRevertMmThread.Call(task)
 	}

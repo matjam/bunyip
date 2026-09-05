@@ -15,34 +15,35 @@ import (
 // Graphics is the drawing context for one window. The engine opens a
 // frame, the Draw* calls queue work, and the engine submits it.
 type Graphics struct {
-	r             *render.Renderer
-	descriptors   *render.DescriptorSets // five samplers: a texture and a shader's image0..3
-	uniforms      *render.DynamicUniforms
-	arena         *render.Arena // this frame's shader uniform blocks
-	imageSets     map[[5]*Texture]vk.VkDescriptorSet
-	nearest       vk.VkSampler
-	linear        vk.VkSampler
-	nearestRep    vk.VkSampler
-	linearRep     vk.VkSampler
-	spriteShader  *Shader                                 // the default 2D shader
-	sdfShader     *Shader                                 // distance-field text
-	matrixShader  *Shader                                 // sprites through a colour matrix
-	litShader     *Shader                                 // normal-mapped sprites under 2D lights
-	staging       [render.FramesInFlight][]*render.Buffer // texture writes in flight, freed when the slot comes round
-	stats         FrameStats                              // counts for the frame being recorded
-	lastStats     FrameStats                              // the last finished frame's counts
-	waitsAtBegin  uint64                                  // the device's wait count when the frame began
-	meshes        meshPass
-	post          postPass
-	white         *Texture
-	frame         *render.Frame
-	frameNo       uint64
-	time          float32
-	main          *drawQueue // the screen
-	cur           *drawQueue // where Draw* calls land
-	subFrames     []subFrame
-	retired       []*Texture       // replaced mid-frame; destroyed once the frame is submitted
-	retiredBufs   []*render.Buffer // a mesh's old geometry after Update, likewise
+	r            *render.Renderer
+	descriptors  *render.DescriptorSets // five samplers: a texture and a shader's image0..3
+	uniforms     *render.DynamicUniforms
+	arena        *render.Arena // this frame's shader uniform blocks
+	imageSets    map[[5]*Texture]vk.VkDescriptorSet
+	nearest      vk.VkSampler
+	linear       vk.VkSampler
+	nearestRep   vk.VkSampler
+	linearRep    vk.VkSampler
+	spriteShader *Shader         // the default 2D shader
+	sdfShader    *Shader         // distance-field text
+	matrixShader *Shader         // sprites through a colour matrix
+	litShader    *Shader         // normal-mapped sprites under 2D lights
+	staging      *render.Staging // this frame's upload arena, one per frame slot
+	waitBase     uint64          // the device's wait count when the frame began
+	stats        FrameStats      // counts for the frame being recorded
+	lastStats    FrameStats      // the last finished frame's counts
+	meshes       meshPass
+	post         postPass
+	white        *Texture
+	frame        *render.Frame
+	frameNo      uint64
+	time         float32
+	main         *drawQueue // the screen
+	cur          *drawQueue // where Draw* calls land
+	subFrames    []subFrame
+	// retire holds what each frame slot destroyed or replaced, freed at
+	// that slot's next begin, once its fence has been waited on.
+	retire        [render.FramesInFlight][]func()
 	scratch       []vertex2D
 	pathSubs      []subpath        // flattened sub-paths, reused by FillPath and StrokePath
 	pathFill      filler           // likewise the scanline filler
@@ -52,6 +53,7 @@ type Graphics struct {
 	dbgFontFailed bool
 	rec           recordScratch // long-lived arguments for the recording commands
 	viewport      vk.VkRect2D   // the main output's pixel rectangle; zero means the whole window
+	res           resources     // the live resources a debug view lists
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
@@ -127,36 +129,86 @@ func clipCoord(v float32) int32 {
 	return int32(math.Floor(float64(lin.Clamp(v, -limit, limit))))
 }
 
-// retire schedules a texture that queued sprites may still reference for
-// destruction at the end of the frame.
-func (g *Graphics) retire(t *Texture) { g.retired = append(g.retired, t) }
-
-// retireBuffers schedules a mesh's old buffers for destruction once the
-// frame that may draw them is submitted.
-func (g *Graphics) retireBuffers(bufs ...*render.Buffer) {
-	g.retiredBufs = append(g.retiredBufs, bufs...)
-}
-
-// freeRetired destroys what was retired, after waiting for the device
-// when anything is pending.
-func (g *Graphics) freeRetired() {
-	if len(g.retired) == 0 && len(g.retiredBufs) == 0 {
+// deferDestroy frees a GPU object once the frame that may still use it
+// has finished. Inside a frame the work goes on that slot's retire list,
+// run at the slot's next begin; outside one it runs at once, after
+// waiting for the device, because the last frame submitted may still be
+// reading the object.
+func (g *Graphics) deferDestroy(free func()) {
+	if fr := g.frame; fr != nil {
+		g.retire[fr.Slot] = append(g.retire[fr.Slot], free)
 		return
 	}
 	_ = g.r.Device.WaitIdle()
-	for _, t := range g.retired {
-		t.Destroy()
+	free()
+}
+
+// freeRetired runs a slot's retire list. The slot's fence has been
+// waited on by then, and the queue runs submissions in order, so every
+// earlier frame has finished too.
+func (g *Graphics) freeRetired(slot int) {
+	// Freeing one object can retire another, and the frame is open by
+	// now, so those land on this same list; the index walk picks them up.
+	for i := 0; i < len(g.retire[slot]); i++ {
+		g.retire[slot][i]()
 	}
-	for _, b := range g.retiredBufs {
-		b.Destroy()
+	g.retire[slot] = g.retire[slot][:0]
+}
+
+// stage copies data into this frame's upload arena. It returns the
+// buffer and offset to record a copy from; the caller must record that
+// copy into the open frame's command buffer.
+func (g *Graphics) stage(data []byte) (*render.Buffer, vk.VkDeviceSize, error) {
+	return g.staging.Alloc(g.frame.Slot, data)
+}
+
+// growStream gives every frame slot a fresh host-visible buffer of size
+// bytes, for a per-frame vertex stream that outgrew the ones it had. The
+// old buffers go on the retire list, since a frame in flight may still
+// be drawing from them, so growing costs no wait.
+func (g *Graphics) growStream(bufs *[render.FramesInFlight]*render.Buffer, size vk.VkDeviceSize) error {
+	var fresh [render.FramesInFlight]*render.Buffer
+	for i := range fresh {
+		buf, err := g.r.Device.NewBuffer(size, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+			vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		if err != nil {
+			for _, b := range fresh {
+				if b != nil {
+					b.Destroy()
+				}
+			}
+			return err
+		}
+		fresh[i] = buf
 	}
-	g.retired, g.retiredBufs = g.retired[:0], g.retiredBufs[:0]
+	old := *bufs
+	*bufs = fresh
+	g.deferDestroy(func() {
+		for _, b := range old {
+			if b != nil {
+				b.Destroy()
+			}
+		}
+	})
+	return nil
+}
+
+// setup records commands that prepare a resource. Inside a frame they go
+// into the frame's command buffer, before any pass; outside one they are
+// submitted on their own and waited for.
+func (g *Graphics) setup(record func(cb vk.VkCommandBuffer)) error {
+	if fr := g.frame; fr != nil {
+		record(fr.CB)
+		return nil
+	}
+	return g.r.Device.OneShot(record)
 }
 
 // newGraphics builds the drawing context over a renderer. The engine
 // loop calls it through internal/hook.
 func newGraphics(r *render.Renderer) (*Graphics, error) {
 	g := &Graphics{r: r, imageSets: map[[5]*Texture]vk.VkDescriptorSet{}}
+	g.staging = r.Device.NewStaging()
 	var err error
 	if g.descriptors, err = r.Device.NewSamplerDescriptors(5, 2048); err != nil {
 		return nil, err
@@ -228,12 +280,12 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	}
 	g.frameNo++
 	g.arena.Reset()
-	for _, b := range g.staging[g.frame.Slot] {
-		b.Destroy() // the frame that used it has finished; BeginFrame waited
-	}
-	g.staging[g.frame.Slot] = g.staging[g.frame.Slot][:0]
+	// BeginFrame waited on this slot's fence, so everything the last
+	// frame in this slot staged or retired is finished with.
+	g.staging.Begin(g.frame.Slot)
+	g.freeRetired(g.frame.Slot)
+	g.waitBase = g.r.Device.Waits()
 	g.stats = FrameStats{}
-	g.waitsAtBegin = g.r.Device.Waits()
 	g.main.reset()
 	g.main.clear = clear
 	g.cur = g.main
@@ -253,7 +305,7 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.Color == (Color{}) {
 		s.Color = White
 	}
-	if q := g.cur; q.hasCam2D && q.xform.IsIdentity() && !spriteVisible(s, q.visible) {
+	if q := g.cur; q.hasCam2D && !spriteVisible(s, q.xform, q.visible) {
 		g.stats.Culled2D++
 		return
 	}
@@ -268,15 +320,55 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 }
 
 // spriteVisible reports whether any of a sprite can lie inside a
-// world-space view. It tests the circle around the sprite's position
-// that holds its corners at any rotation, so it is conservative and
-// costs no trigonometry.
-func spriteVisible(s Sprite, view lin.Rect) bool {
-	ox, oy := s.Origin.X*s.Size.X, s.Origin.Y*s.Size.Y
-	dx := max(abs32(ox), abs32(s.Size.X-ox))
-	dy := max(abs32(oy), abs32(s.Size.Y-oy))
-	r := float32(math.Hypot(float64(dx), float64(dy)))
-	return s.Pos.X+r >= view.X && s.Pos.X-r <= view.X+view.W && s.Pos.Y+r >= view.Y && s.Pos.Y-r <= view.Y+view.H
+// world-space view. It tests the sprite's four corners, mapped through
+// the 2D transform in force, against the view rectangle by separating
+// axes, so a long thin rotated sprite is culled as soon as its own quad
+// clears the view rather than when the circle around it does.
+func spriteVisible(s Sprite, xform lin.Affine, view lin.Rect) bool {
+	p := spriteCorners(s)
+	if !xform.IsIdentity() {
+		for i := range p {
+			p[i] = xform.Apply(p[i])
+		}
+	}
+	// The view's own axes first: they reject everything well clear of it.
+	lo, hi := p[0], p[0]
+	for _, c := range p[1:] {
+		lo = lin.V2(min(lo.X, c.X), min(lo.Y, c.Y))
+		hi = lin.V2(max(hi.X, c.X), max(hi.Y, c.Y))
+	}
+	if hi.X < view.X || lo.X > view.X+view.W || hi.Y < view.Y || lo.Y > view.Y+view.H {
+		return false
+	}
+	// Then the quad's two edge normals, which separate a rotated or
+	// sheared sprite that the axis-aligned test alone keeps.
+	corners := [4]lin.Vec2{
+		lin.V2(view.X, view.Y), lin.V2(view.X+view.W, view.Y),
+		lin.V2(view.X+view.W, view.Y+view.H), lin.V2(view.X, view.Y+view.H),
+	}
+	for _, e := range [2]lin.Vec2{p[1].Sub(p[0]), p[3].Sub(p[0])} {
+		axis := lin.V2(-e.Y, e.X)
+		if axis == (lin.Vec2{}) {
+			continue // a degenerate sprite has no such axis
+		}
+		qlo, qhi := projectPoints(axis, p[:])
+		vlo, vhi := projectPoints(axis, corners[:])
+		if qhi < vlo || qlo > vhi {
+			return false
+		}
+	}
+	return true
+}
+
+// projectPoints returns the range points cover along an axis.
+func projectPoints(axis lin.Vec2, points []lin.Vec2) (lo, hi float32) {
+	lo = axis.X*points[0].X + axis.Y*points[0].Y
+	hi = lo
+	for _, p := range points[1:] {
+		d := axis.X*p.X + axis.Y*p.Y
+		lo, hi = min(lo, d), max(hi, d)
+	}
+	return lo, hi
 }
 
 // DrawTriangles queues textured triangles: three vertices each, with
@@ -334,6 +426,11 @@ type FrameStats struct {
 	Draws3D    int // mesh draw calls after instancing, all passes
 	Instances  int // mesh instances drawn in the main pass
 	Culled     int // mesh draws outside the camera's view, skipped in the main pass
+	// ShadowDraws counts the mesh instances recorded into the shadow maps,
+	// summed over the cascades and the shadowed spot lights. A caster is
+	// only recorded into the maps its bounds reach, so this falls as
+	// lights and casters spread out.
+	ShadowDraws int
 	// Culled2D counts sprites outside the 2D camera's view that were
 	// dropped before reaching the vertex stream.
 	Culled2D int
@@ -341,10 +438,17 @@ type FrameStats struct {
 	// which a frame keeps none of; a nonzero count means the scene should
 	// add its nearest lights first.
 	LightsDropped int
-	// Waits counts the times the frame idled the GPU, which costs the whole
-	// pipeline. Growing a per-frame buffer no longer waits; destroying a
-	// texture, mesh or render texture mid-frame does.
+	// Waits counts the times the frame stopped and waited for the GPU to
+	// go idle. Uploads and destroys inside a frame go through the staging
+	// arena and the retire ring, and every per-frame buffer grows through
+	// the retire ring too, so a running game reports zero; a nonzero
+	// count means something stalled the whole pipeline, such as a
+	// Texture.Read or a resource destroyed outside a frame.
 	Waits int
+	// Lights counts the point and spot lights the frame kept, out of
+	// MaxLights. The directional light is not counted: every frame has
+	// one.
+	Lights int
 }
 
 // Stats returns the last finished frame's counts.
@@ -401,8 +505,20 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	if g.frame == nil {
 		return nil, fmt.Errorf("gfx: end without begin")
 	}
+	// The 2D shadow maps are built and uploaded before any pass is
+	// recorded, so every lit draw in the frame samples the same maps.
+	for _, sf := range g.subFrames {
+		if err := g.buildShadows2D(sf.queue); err != nil {
+			return nil, err
+		}
+	}
+	if err := g.buildShadows2D(g.main); err != nil {
+		return nil, err
+	}
 	fr := g.frame
-	g.frame = nil
+	// The frame stays open while the passes are recorded, so anything
+	// retired or staged while recording still lands on this slot.
+	defer func() { g.frame = nil }()
 	g.cur = g.main
 	if err := g.uniforms.Write(fr.Slot, g.arena.Bytes()); err != nil {
 		return nil, err
@@ -416,8 +532,7 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 		return nil, err
 	}
 	img, err := g.r.EndFrame(fr, capture)
-	g.freeRetired()
-	g.stats.Waits = int(g.r.Device.Waits() - g.waitsAtBegin)
+	g.stats.Waits = int(g.r.Device.Waits() - g.waitBase)
 	g.lastStats = g.stats
 	return img, err
 }
@@ -500,7 +615,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		return nil
 	}
 	st.build()
-	if err := st.upload(g.r.Device, fr.Slot); err != nil {
+	if err := st.upload(g, fr.Slot); err != nil {
 		return err
 	}
 	g.stats.Draws2D += len(st.draws)
@@ -557,8 +672,10 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 // must be destroyed first or are leaked with the device.
 func (g *Graphics) destroy() {
 	_ = g.r.Device.WaitIdle()
-	g.freeRetired()
-	g.retired, g.retiredBufs = nil, nil
+	for slot := range g.retire {
+		g.freeRetired(slot)
+		g.retire[slot] = nil
+	}
 	if g.main != nil {
 		g.main.destroy()
 	}
@@ -578,11 +695,8 @@ func (g *Graphics) destroy() {
 	g.sdfShader.Destroy()
 	g.matrixShader.Destroy()
 	g.litShader.Destroy()
-	for slot := range g.staging {
-		for _, b := range g.staging[slot] {
-			b.Destroy()
-		}
-		g.staging[slot] = nil
+	if g.staging != nil {
+		g.staging.Destroy()
 	}
 	if g.uniforms != nil {
 		g.uniforms.Destroy()

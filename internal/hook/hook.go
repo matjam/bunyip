@@ -92,6 +92,11 @@ type Audio interface {
 	// Mix writes len(out)/2 stereo frames. The output device calls it
 	// from its own thread.
 	Mix(out []float32)
+	// SetDevice tells the mixer whether the run has an audio device. A
+	// headless or silent run has none, and the mixer then refuses to
+	// open a capture stream rather than reaching the hardware behind the
+	// game's back.
+	SetDevice(open bool)
 	// Game returns the *audio.Mixer the game plays through.
 	Game() any
 }

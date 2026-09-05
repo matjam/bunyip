@@ -3,14 +3,16 @@
 // mixer's rate. To play one, call Play, which returns a Voice that can
 // be adjusted or stopped while it runs. Music streams from a decoder
 // instead of being held in memory. Voices can be placed in the
-// listener's world (with distance, panning, Doppler and occlusion),
+// listener's world (with distance, panning or a binaural head model,
+// Doppler and occlusion),
 // filtered, sent to a reverb, faded, pitched, muted, soloed and
 // prioritised, and grouped on a Bus to be turned down, muted or paused
 // together. The mixer has one shared reverb, which a ReverbZone replaces
 // while the listener is inside that zone, and a Bus can carry a reverb
 // of its own. Mixing happens on the audio device's thread, so every
 // method is safe to call from the game loop, and every change in gain
-// ramps across a block so nothing clicks. A setter copies its value in
+// ramps across a block so nothing clicks; stopping a voice ramps it to
+// silence over about a millisecond first. A setter copies its value in
 // under a short lock and the mixer applies it at the start of the next
 // block, so the game loop never waits for a block; the mixer reads
 // streams with no lock held, so a Stream may take locks of its own and
@@ -20,6 +22,10 @@
 // The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole
 // file as bytes. The streams (OpenMusic) take readers, because they seek
 // while they play.
+//
+// OpenCapture records from the machine's default input into a ring the
+// game drains with Read. It is separate from the mix: what it records is
+// not played back unless the game plays it.
 package audio
 
 import (
@@ -43,17 +49,19 @@ import (
 // game code called from Stream.Read may take locks of its own, and may
 // call back into the mixer, without waiting on the game loop.
 type Mixer struct {
-	mu        sync.Mutex
-	mixMu     sync.Mutex // held across a block; guards playback position
-	rate      int
-	voices    []*Voice
-	master    float32
-	paused    bool
-	maxVoices int
-	scratch   []float32
-	sendBuf   []float32
-	listener  Listener
-	finished  []func() // OnDone callbacks to run once the lock is released
+	mu         sync.Mutex
+	mixMu      sync.Mutex // held across a block; guards playback position
+	rate       int
+	voices     []*Voice
+	master     float32
+	paused     bool
+	maxVoices  int
+	stopFrames int  // length of a stop's ramp to silence, about a millisecond
+	noDevice   bool // the run opened no audio device, so capture is refused
+	scratch    []float32
+	sendBuf    []float32
+	listener   Listener
+	finished   []func() // OnDone callbacks to run once the lock is released
 
 	// The block being mixed. Only the mixer's thread touches these, under
 	// mixMu, and they are reused from block to block so mixing allocates
@@ -70,6 +78,7 @@ type Mixer struct {
 
 	doppler      float32 // Doppler factor, 0 off
 	speedOfSound float32
+	spatial      SpatialSettings // how positional voices reach the ears
 
 	buses                    map[string]*Bus
 	busList                  []*Bus // the same buses in creation order, to walk without the map
@@ -78,7 +87,8 @@ type Mixer struct {
 
 // NewMixer makes a mixer for the given output sample rate.
 func NewMixer(rate int) *Mixer {
-	m := &Mixer{rate: rate, master: 1, maxVoices: 64, buses: map[string]*Bus{}, speedOfSound: 343,
+	m := &Mixer{rate: rate, master: 1, maxVoices: 64, stopFrames: max(rate/1000, 1),
+		buses: map[string]*Bus{}, speedOfSound: 343,
 		listener: Listener{Forward: lin.Vec3{Z: -1}, Up: lin.Vec3{Y: 1}}}
 	m.music = m.NewBus("music")
 	m.effects = m.NewBus("effects")
@@ -98,7 +108,9 @@ func (m *Mixer) SetMasterVolume(v float32) {
 
 // SetMaxVoices caps how many voices play at once (default 64). When the
 // mixer is full, a new voice takes the place of the quietest voice of the
-// lowest priority no higher than its own, or is refused.
+// lowest priority no higher than its own, or is refused. The stolen voice
+// leaves the count at once and ramps out over the next millisecond, so
+// the mixer may briefly render one more voice than the cap.
 func (m *Mixer) SetMaxVoices(n int) {
 	m.mu.Lock()
 	m.maxVoices = max(n, 1)
@@ -169,16 +181,18 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 
 // add places the voice in the mix, stealing a lower-priority voice when
 // the mixer is full. A refused voice comes back already finished, so
-// callers need not check.
+// callers need not check. A stolen voice gives up its slot at once and
+// keeps ramping out for a millisecond, so the new voice starts on the
+// same block and the old one does not click.
 func (m *Mixer) add(v *Voice) *Voice {
 	m.mu.Lock()
-	if len(m.voices) < m.maxVoices {
-		m.voices = append(m.voices, v)
-		m.mu.Unlock()
-		return v
-	}
-	victim := -1
+	active, ramping, victim := 0, 0, -1
 	for i, o := range m.voices {
+		if o.stop || o.done {
+			ramping++
+			continue
+		}
+		active++
 		if o.priority > v.priority {
 			continue
 		}
@@ -187,11 +201,19 @@ func (m *Mixer) add(v *Voice) *Voice {
 			victim = i
 		}
 	}
-	if victim < 0 {
+	switch {
+	case active < m.maxVoices:
+		m.voices = append(m.voices, v)
+	case victim < 0:
 		v.done = true
-	} else {
+	case ramping >= m.maxVoices:
+		// Already ramping out a mixer's worth of stolen voices, so this
+		// one is cut rather than adding to the work of a block.
 		m.finish(m.voices[victim])
 		m.voices[victim] = v
+	default:
+		m.beginStop(m.voices[victim])
+		m.voices = append(m.voices, v)
 	}
 	done := m.takeFinished()
 	m.mu.Unlock()
@@ -199,13 +221,13 @@ func (m *Mixer) add(v *Voice) *Voice {
 	return v
 }
 
-// StopAll silences every voice.
+// StopAll silences every voice. Each one frees its slot at once and
+// ramps out over the next millisecond, so nothing clicks.
 func (m *Mixer) StopAll() {
 	m.mu.Lock()
 	for _, v := range m.voices {
-		m.finish(v)
+		m.beginStop(v)
 	}
-	m.voices = m.voices[:0]
 	done := m.takeFinished()
 	m.mu.Unlock()
 	run(done)
@@ -216,6 +238,19 @@ func (m *Mixer) finish(v *Voice) {
 	v.done = true
 	if v.onDone != nil {
 		m.finished = append(m.finished, v.onDone)
+	}
+}
+
+// beginStop starts a voice's ramp to silence and queues its OnDone at
+// once, because the voice has already given up its slot: Playing no
+// longer counts it and a new voice may take its place, while the mixer
+// spends one more millisecond fading what is left. Callers hold the
+// lock.
+func (m *Mixer) beginStop(v *Voice) {
+	v.stop = true
+	if v.onDone != nil {
+		m.finished = append(m.finished, v.onDone)
+		v.onDone = nil
 	}
 }
 
@@ -232,11 +267,18 @@ func run(fns []func()) {
 	}
 }
 
-// Playing counts active voices.
+// Playing counts active voices. A voice that has been stopped is not
+// counted while its last millisecond ramps out.
 func (m *Mixer) Playing() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.voices)
+	n := 0
+	for _, v := range m.voices {
+		if !v.stop && !v.done {
+			n++
+		}
+	}
+	return n
 }
 
 // busReverb is a bus's reverb and its send buffer for one block, copied
@@ -267,8 +309,15 @@ type voiceMix struct {
 	occ  *lowPass // occlusion's filter state, nil at 0
 	occc biquad
 
+	bin *binaural // head-model state, nil unless the voice is spatialised
+	ear earParams // the head model this block ramps to
+
 	curL, curR float32 // gains at the start of the block
 	tl, tr     float32 // gains to ramp to by the end of it
+
+	stopping  bool // ramping to silence; render no more than stopLimit frames
+	stopLimit int  // frames of the ramp that fall in this block
+	stopLast  bool // the ramp ends in this block, and the voice with it
 
 	skip   bool // held silent: nothing to read, nothing to write back
 	frames int  // frames written
@@ -294,6 +343,14 @@ func (m *Mixer) mix(out []float32) {
 		b.r.process(b.buf, out)
 	}
 	for i, s := range out {
+		// A NaN or an infinity from a decoder, a game Stream or an effect
+		// would reach the device as a click or worse, so it is replaced by
+		// silence rather than clamped; min and max would pass a NaN
+		// through untouched.
+		if s != s || s > math.MaxFloat32 || s < -math.MaxFloat32 {
+			out[i] = 0
+			continue
+		}
 		out[i] = max(-1, min(1, s))
 	}
 	fns := m.apply()
@@ -343,7 +400,7 @@ func (m *Mixer) snapshot(out []float32) []float32 {
 	}
 	m.snap = m.snap[:0]
 	for _, v := range m.voices {
-		if sn, ok := m.snapVoice(v, send, soloVoices, soloBuses); ok {
+		if sn, ok := m.snapVoice(v, send, len(out)/2, soloVoices, soloBuses); ok {
 			m.snap = append(m.snap, sn)
 		}
 	}
@@ -351,13 +408,37 @@ func (m *Mixer) snapshot(out []float32) []float32 {
 }
 
 // snapVoice copies one voice's block, or reports false when the voice has
-// ended and takes no part in it. Callers hold the lock.
-func (m *Mixer) snapVoice(v *Voice, send []float32, soloVoices, soloBuses bool) (voiceMix, bool) {
+// ended and takes no part in it. frames is the block's length. Callers
+// hold the lock.
+func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, soloBuses bool) (voiceMix, bool) {
 	sn := voiceMix{v: v, stream: v.stream, snd: v.snd, send: send, pos: v.pos,
 		loop: v.loop, reverb: v.reverb, lp: v.lp, lpc: v.lpc, occ: v.occ, occc: v.occc,
 		curL: v.curL, curR: v.curR, fade: v.fade, more: true}
-	if v.stop || v.done {
+	if v.done {
 		sn.more = false
+		return sn, true
+	}
+	if v.stop {
+		// A stopped voice fades to silence over about a millisecond and
+		// then ends. One that is already silent, or that never reached
+		// the output, ends here instead.
+		if !v.started || (v.curL == 0 && v.curR == 0) {
+			sn.more = false
+			return sn, true
+		}
+		if v.bin != nil && v.bin.started {
+			// Hold the head model still through the ramp, so the last
+			// millisecond does not jump out of the spatialiser.
+			sn.bin, sn.ear = v.bin, v.bin.cur
+		}
+		if v.stopLeft == 0 {
+			v.stopLeft = m.stopFrames
+		}
+		n := min(v.stopLeft, frames)
+		left := float32(v.stopLeft-n) / float32(v.stopLeft)
+		sn.step = v.pitch
+		sn.tl, sn.tr = v.curL*left, v.curR*left
+		sn.stopping, sn.stopLimit, sn.stopLast = true, n, n >= v.stopLeft
 		return sn, true
 	}
 	// A pause fades the voice out over the block it lands in, then holds
@@ -395,9 +476,24 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, soloVoices, soloBuses bool) 
 		gain *= att
 		pan = p
 	}
-	pan = max(-1, min(1, pan))
-	sn.tl = gain * sqrt32((1-pan)/2)
-	sn.tr = gain * sqrt32((1+pan)/2)
+	switch {
+	case v.positional && m.spatial.Binaural:
+		// The head model replaces the pan law: it decides each ear's
+		// gain, and the mixer ramps to those the same way.
+		if v.bin == nil {
+			v.bin = newBinaural(m.rate)
+		}
+		sn.bin = v.bin
+		sn.ear = m.listener.headModel(v.position, m.spatial.headRadius(), m.rate)
+		sn.tl, sn.tr = gain*sn.ear.gainL, gain*sn.ear.gainR
+	default:
+		if v.bin != nil {
+			v.bin.started = false // back to panning; the model starts fresh
+		}
+		pan = max(-1, min(1, pan))
+		sn.tl = gain * sqrt32((1-pan)/2)
+		sn.tr = gain * sqrt32((1+pan)/2)
+	}
 	if !v.started {
 		sn.curL, sn.curR = sn.tl, sn.tr
 	}
@@ -420,6 +516,9 @@ func (m *Mixer) apply() []func() {
 				v.playedPub.Store(v.played)
 			}
 			v.curL, v.curR, v.started = sn.tl, sn.tr, true
+			if sn.stopping {
+				v.stopLeft = max(v.stopLeft-sn.frames, 0)
+			}
 			// A fade the game replaced mid-block belongs to the new fade,
 			// not this one, so only the fade that was mixed is advanced.
 			if f := v.fade; f != nil && f == sn.fade {
@@ -428,7 +527,11 @@ func (m *Mixer) apply() []func() {
 					v.vol = f.to
 					v.fade = nil
 					if f.stop {
-						sn.more = false
+						// The fade ends at whatever level its last block
+						// reached, which for a fade shorter than a block
+						// is the level it started from, so the voice
+						// stops through the ramp rather than cutting.
+						v.stop = true
 					}
 				}
 			}
@@ -477,6 +580,7 @@ type Voice struct {
 	stop     bool
 	paused   bool
 	priority int
+	stopLeft int // frames left of the stop's ramp to silence, 0 before it starts
 	reverb   float32
 	lp       *lowPass // the filter's running state, nil when unfiltered
 	lpc      biquad   // its coefficients, which SetLowPass replaces
@@ -492,6 +596,7 @@ type Voice struct {
 	position         lin.Vec3
 	velocity         lin.Vec3
 	minDist, maxDist float32
+	bin              *binaural // head-model state, nil until spatialised
 
 	// Gains ramp across each block so changes never click.
 	curL, curR float32
@@ -519,7 +624,9 @@ func (v *Voice) set(fn func()) {
 	v.m.mu.Unlock()
 }
 
-// Stop ends the voice.
+// Stop ends the voice. The gain ramps to silence over about a
+// millisecond first, so stopping mid-cycle never clicks; the voice frees
+// its slot at once and OnDone runs when the ramp finishes.
 func (v *Voice) Stop() { v.set(func() { v.stop = true }) }
 
 // SetVolume changes the voice's gain; 1 is unity.
@@ -626,16 +733,20 @@ func (v *Voice) startFade(vol, seconds float32, stop bool) {
 	v.fade = &fade{from: from, to: vol, left: total, total: total, stop: stop}
 }
 
-// FadeOut fades to silence over seconds and then stops the voice.
+// FadeOut fades to silence over seconds and then stops the voice. The
+// stop ramps out whatever level the last block of the fade reached, so a
+// fade shorter than one block does not click.
 func (v *Voice) FadeOut(seconds float32) {
 	v.set(func() { v.startFade(0, seconds, true) })
 }
 
-// Playing reports whether the voice is still audible.
+// Playing reports whether the voice is still audible. A stopped voice
+// reports false as soon as it is stopped, while its last millisecond
+// ramps out.
 func (v *Voice) Playing() bool {
 	v.m.mu.Lock()
 	defer v.m.mu.Unlock()
-	return !v.done
+	return !v.done && !v.stop
 }
 
 // Position is how far into the sound the voice is, in seconds. For a
@@ -690,11 +801,14 @@ func (v *Voice) Seek(seconds float64) error {
 }
 
 // OnDone registers fn to run when the voice ends, whether it played out,
-// was stopped, faded out, or lost its slot to a higher priority voice. It
-// is called on the mixer's thread, usually the audio device's, after the
-// mixer has released its lock, so it may start another voice, but it must
-// return quickly and must not block. A voice that has already ended runs
-// fn at once on the calling goroutine. Only the last fn registered runs.
+// was stopped, faded out, or lost its slot to a higher priority voice. A
+// voice that played out or was stopped with Voice.Stop calls fn on the
+// mixer's thread, usually the audio device's, after the mixer has
+// released its lock; StopAll and a stolen slot call it on the calling
+// goroutine, before the millisecond of ramp that follows is mixed. A
+// voice that has already ended runs fn at once on the calling goroutine.
+// fn may start another voice, but it must return quickly and must not
+// block. Only the last fn registered runs.
 func (v *Voice) OnDone(fn func()) {
 	v.m.mu.Lock()
 	done := v.done
@@ -714,6 +828,9 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	if sn.skip || !sn.more {
 		return
 	}
+	if sn.stopping {
+		frames = min(frames, sn.stopLimit)
+	}
 	var n int
 	var more bool
 	if sn.stream != nil {
@@ -723,6 +840,9 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 		n, more = sn.readSound(scratch[:frames*2])
 	}
 	sn.frames, sn.more = n, more
+	if sn.stopLast {
+		sn.more = false
+	}
 	if n == 0 {
 		return
 	}
@@ -731,6 +851,10 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	}
 	if sn.occ != nil {
 		sn.occ.process(sn.occc, scratch[:n*2])
+	}
+	if sn.bin != nil {
+		sn.renderBinaural(scratch, out, n)
+		return
 	}
 	dl := (sn.tl - sn.curL) / float32(n)
 	dr := (sn.tr - sn.curR) / float32(n)

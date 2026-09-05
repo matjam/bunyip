@@ -175,7 +175,7 @@ func TestXMLErrors(t *testing.T) {
 		src  string
 		want error
 	}{
-		{"zstd", layer(`<data encoding="base64" compression="zstd">` + encode(t, []uint32{1}, "") + `</data>`), ErrUnsupported},
+		{"unknown compression", layer(`<data encoding="base64" compression="lzma">` + encode(t, []uint32{1}, "") + `</data>`), ErrUnsupported},
 		{"unknown encoding", layer(`<data encoding="hex">01</data>`), ErrUnsupported},
 		{"tileset root", `<tileset name="t"/>`, nil},
 		{"bad csv", layer(`<data encoding="csv">1,x</data>`), nil},

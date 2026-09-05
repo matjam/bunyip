@@ -64,31 +64,17 @@ type lineStream struct {
 
 func (s *lineStream) reset() { s.items = s.items[:0] }
 
-func (s *lineStream) upload(dev *render.Device, slot int) error {
+func (s *lineStream) upload(g *Graphics, slot int) error {
 	s.slot = slot
 	if len(s.items) > s.capacity {
 		newCap := max(s.capacity*2, 4096)
 		for newCap < len(s.items) {
 			newCap *= 2
 		}
-		var bufs [render.FramesInFlight]*render.Buffer
-		for i := range bufs {
-			buf, err := dev.NewBuffer(vk.VkDeviceSize(newCap*lineVertexSize), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-			if err != nil {
-				for _, b := range bufs {
-					if b != nil {
-						b.Destroy()
-					}
-				}
-				return err
-			}
-			bufs[i] = buf
+		if err := g.growStream(&s.buffers, vk.VkDeviceSize(newCap*lineVertexSize)); err != nil {
+			return err
 		}
-		// A frame in flight may still be reading the old buffers, so they
-		// go to the retire ring rather than idling the device here.
-		dev.RetireBuffers(s.buffers)
-		s.buffers, s.capacity = bufs, newCap
+		s.capacity = newCap
 	}
 	if len(s.items) == 0 {
 		return nil
@@ -207,7 +193,7 @@ func (g *Graphics) drawDebugLines(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 	if len(q.lines.items) == 0 {
 		return nil
 	}
-	if err := q.lines.upload(g.r.Device, fr.Slot); err != nil {
+	if err := q.lines.upload(g, fr.Slot); err != nil {
 		return err
 	}
 	rec := &g.rec

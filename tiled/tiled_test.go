@@ -12,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/matjam/bunyip/grid/autotile"
 	"github.com/matjam/bunyip/lin"
 )
@@ -33,6 +34,13 @@ func encode(t *testing.T, cells []uint32, compression string) string {
 		w.Close()
 	case "gzip":
 		w := gzip.NewWriter(&buf)
+		w.Write(raw)
+		w.Close()
+	case "zstd":
+		w, err := zstd.NewWriter(&buf)
+		if err != nil {
+			t.Fatalf("encode: zstd: %v", err)
+		}
 		w.Write(raw)
 		w.Close()
 	default:
@@ -323,15 +331,45 @@ func TestInfiniteChunks(t *testing.T) {
 	}
 }
 
+// Zstd layer data decodes in both of Tiled's file forms, whole layers
+// and the chunks of an infinite map alike.
+func TestZstdLayers(t *testing.T) {
+	cells := []uint32{1, 2, 3, 4, 5, 6}
+	src := fmt.Sprintf(`{"width": 3, "height": 2, "tilewidth": 8, "tileheight": 8,
+	  "layers": [{"name": "l", "type": "tilelayer", "width": 3, "height": 2,
+	  "encoding": "base64", "compression": "zstd", "data": "%s"}]}`, encode(t, cells, "zstd"))
+	m, err := Parse([]byte(src), nil)
+	if err != nil {
+		t.Fatalf("JSON zstd layer: %v", err)
+	}
+	if !slices.Equal(m.Layers[0].Data, cells) {
+		t.Errorf("JSON zstd layer: %v", m.Layers[0].Data)
+	}
+	src = fmt.Sprintf(`<map width="3" height="2" tilewidth="8" tileheight="8">
+	  <layer name="l" width="3" height="2"><data encoding="base64" compression="zstd">%s</data></layer></map>`,
+		encode(t, cells, "zstd"))
+	if m, err = Parse([]byte(src), nil); err != nil {
+		t.Fatalf("XML zstd layer: %v", err)
+	}
+	if !slices.Equal(m.Layers[0].Data, cells) {
+		t.Errorf("XML zstd layer: %v", m.Layers[0].Data)
+	}
+	// Truncated zstd data is an error, not a panic.
+	bad := fmt.Sprintf(`{"width": 1, "height": 1, "layers": [{"name": "l", "type": "tilelayer", "width": 1, "height": 1,
+	  "encoding": "base64", "compression": "zstd", "data": "%s"}]}`, base64.StdEncoding.EncodeToString([]byte{0x28, 0xb5, 0x2f, 0xfd}))
+	if _, err := Parse([]byte(bad), nil); err == nil {
+		t.Error("truncated zstd data parsed")
+	}
+}
+
 func TestErrors(t *testing.T) {
-	zstd := fmt.Sprintf(`{"width": 1, "height": 1, "layers": [{"name": "l", "type": "tilelayer", "width": 1, "height": 1,
-	  "encoding": "base64", "compression": "zstd", "data": "%s"}]}`, encode(t, []uint32{1}, ""))
 	cases := []struct {
 		name string
 		src  string
 		want error
 	}{
-		{"zstd", zstd, ErrUnsupported},
+		{"unknown compression", fmt.Sprintf(`{"width": 1, "height": 1, "layers": [{"name": "l", "type": "tilelayer",
+		  "width": 1, "height": 1, "encoding": "base64", "compression": "lzma", "data": "%s"}]}`, encode(t, []uint32{1}, "")), ErrUnsupported},
 		{"xml tileset as map", `<?xml version="1.0"?><tileset name="t"/>`, nil},
 		{"external without resolver", `{"tilesets": [{"firstgid": 1, "source": "x.tsj"}]}`, nil},
 		{"short data", `{"layers": [{"name": "l", "type": "tilelayer", "width": 2, "height": 2, "data": [1]}]}`, nil},
@@ -408,4 +446,93 @@ func TestJSONWangSets(t *testing.T) {
 			t.Errorf("cell %d,%d: frame %d, want 3", x, y, f)
 		}
 	})
+	if m.Layout() != autotile.Square {
+		t.Errorf("an orthogonal map has layout %v", m.Layout())
+	}
+}
+
+// A hexagonal map carries its stagger fields through both file forms and
+// names the layout its terrain sets and mappers need.
+func TestHexagonalMaps(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want autotile.Layout
+	}{
+		{"json rows odd", `{"orientation": "hexagonal", "staggeraxis": "y", "staggerindex": "odd",
+		  "hexsidelength": 8, "width": 2, "height": 2, "tilewidth": 16, "tileheight": 16, "layers": []}`, autotile.HexRowsOdd},
+		{"json cols even", `{"orientation": "hexagonal", "staggeraxis": "x", "staggerindex": "even",
+		  "hexsidelength": 8, "width": 2, "height": 2, "tilewidth": 16, "tileheight": 16, "layers": []}`, autotile.HexColsEven},
+		{"xml rows even", `<map orientation="hexagonal" staggeraxis="y" staggerindex="even" hexsidelength="8"
+		  width="2" height="2" tilewidth="16" tileheight="16"/>`, autotile.HexRowsEven},
+		{"xml cols odd", `<map orientation="hexagonal" staggeraxis="x" staggerindex="odd" hexsidelength="8"
+		  width="2" height="2" tilewidth="16" tileheight="16"/>`, autotile.HexColsOdd},
+		{"isometric", `{"orientation": "isometric", "width": 2, "height": 2, "tilewidth": 32, "tileheight": 16, "layers": []}`, autotile.Square},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, err := Parse([]byte(c.src), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.Layout() != c.want {
+				t.Errorf("layout %v, want %v", m.Layout(), c.want)
+			}
+			if m.Orientation == "hexagonal" && (m.HexSideLength != 8 || m.StaggerAxis == "" || m.StaggerIndex == "") {
+				t.Errorf("stagger fields: axis %q index %q side %d", m.StaggerAxis, m.StaggerIndex, m.HexSideLength)
+			}
+		})
+	}
+}
+
+// A hexagonal terrain set's colours move into the direction slots the
+// layout uses: Tiled stores a hexagon's six sides one slot back.
+func TestHexWangSetRules(t *testing.T) {
+	// A rows hexagon with grass on its north-east side alone. Tiled
+	// writes that in the slot it calls the top.
+	src := `{"orientation": "hexagonal", "staggeraxis": "y", "staggerindex": "odd", "hexsidelength": 8,
+	  "width": 2, "height": 2, "tilewidth": 16, "tileheight": 16, "layers": [],
+	  "tilesets": [{"firstgid": 1, "name": "terr", "image": "t.png", "tilewidth": 16, "tileheight": 16, "columns": 4, "tilecount": 8,
+	    "wangsets": [{"name": "ground", "type": "edge",
+	      "colors": [{"name": "grass", "color": "#00ff00", "tile": -1, "probability": 1}],
+	      "wangtiles": [
+	        {"tileid": 0, "wangid": [0, 0, 0, 0, 0, 0, 0, 0]},
+	        {"tileid": 1, "wangid": [1, 0, 0, 0, 0, 0, 0, 0]},
+	        {"tileid": 2, "wangid": [1, 1, 1, 1, 1, 1, 1, 1]}]}]}]}`
+	m, err := Parse([]byte(src), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ws := m.WangSet("ground")
+	if ws == nil {
+		t.Fatal("wangset not found")
+	}
+	layout := m.Layout()
+	rules := ws.RulesFor(layout)
+	mp := autotile.Mapper{Rules: rules, Layout: layout, OutsideFixed: true}
+	// Grass at (1,1) and at the cell north-east of it. The cell's own
+	// colour fills every other side, so only the tile whose sides are all
+	// grass matches; the interesting case is the border cell, which sees
+	// grass on its north-east alone.
+	got := map[[2]int]int{}
+	grass := func(x, y int) int {
+		if x == 1 && y == 1 {
+			return 1
+		}
+		return 0
+	}
+	mp.Apply(4, 4, grass, func(x, y, f int) { got[[2]int{x, y}] = f })
+	if got[[2]int{1, 1}] != 2 {
+		t.Errorf("the grass hexagon got frame %d, want the all-grass tile 2", got[[2]int{1, 1}])
+	}
+	// The cell south-west of it sees grass on its north-east side only,
+	// which is the tile Tiled stored in the top slot.
+	sx, sy := layout.Neighbour(1, 1, autotile.DirSW)
+	if got[[2]int{sx, sy}] != 1 {
+		t.Errorf("the cell at (%d,%d) got frame %d, want the north-east tile 1", sx, sy, got[[2]int{sx, sy}])
+	}
+	// Square conversion leaves the wangid where Tiled put it.
+	if sq := ws.Rules(); sq == nil {
+		t.Error("square rules")
+	}
 }

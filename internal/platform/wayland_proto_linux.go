@@ -9,8 +9,9 @@ import (
 // and built into C interface tables at run time. libwayland-client exports
 // wl_registry_interface, wl_compositor_interface and the rest of the core
 // protocol as symbols, so those are read from the library instead; xdg-shell,
-// xdg-decoration, relative-pointer and pointer-constraints live in
-// wayland-protocols, which ships only XML, so their tables are built here.
+// xdg-decoration, relative-pointer, pointer-constraints, fractional-scale,
+// viewporter and xdg-toplevel-icon live in wayland-protocols, which ships
+// only XML, so their tables are built here.
 //
 // Every signature string is what wayland-scanner emits for the same message:
 // a leading decimal "since" version when the message is not in version one,
@@ -106,6 +107,23 @@ const (
 	opRelativePointerManagerGetPtr  = 1
 	opRelativePointerDestroy        = 0
 
+	opToplevelIconMgrDestroy    = 0
+	opToplevelIconMgrCreateIcon = 1
+	opToplevelIconMgrSetIcon    = 2
+	opToplevelIconDestroy       = 0
+	opToplevelIconSetName       = 1
+	opToplevelIconAddBuffer     = 2
+
+	opFractionalScaleMgrDestroy = 0
+	opFractionalScaleMgrGet     = 1
+	opFractionalScaleDestroy    = 0
+
+	opViewporterDestroy      = 0
+	opViewporterGetViewport  = 1
+	opViewportDestroy        = 0
+	opViewportSetSource      = 1
+	opViewportSetDestination = 2
+
 	opPointerConstraintsDestroy     = 0
 	opPointerConstraintsLockPointer = 1
 	opPointerConstraintsConfinePtr  = 2
@@ -121,6 +139,9 @@ const (
 	xdgToplevelStateFullscreen = 2
 	xdgToplevelStateResizing   = 3
 	xdgToplevelStateActivated  = 4
+	// Suspended arrived in xdg_toplevel version six. A compositor that
+	// offers less never sends it, so the window counts as visible.
+	xdgToplevelStateSuspended = 9
 
 	xdgDecorationModeClientSide = 1
 	xdgDecorationModeServerSide = 2
@@ -130,7 +151,9 @@ const (
 )
 
 // Request opcodes for the core protocol, whose interface tables come from
-// libwayland-client.
+// libwayland-client. The clipboard is core: wl_data_device_manager,
+// wl_data_device, wl_data_source and wl_data_offer are all exported by
+// the library, so only their opcodes are named here.
 const (
 	opDisplaySync        = 0
 	opDisplayGetRegistry = 1
@@ -160,6 +183,20 @@ const (
 	opKeyboardRelease = 0
 
 	opOutputRelease = 0
+
+	opDataDeviceManagerCreateSource = 0
+	opDataDeviceManagerGetDevice    = 1
+
+	opDataSourceOffer   = 0
+	opDataSourceDestroy = 1
+
+	opDataDeviceStartDrag    = 0
+	opDataDeviceSetSelection = 1
+	opDataDeviceRelease      = 2 // the destructor, from version two
+
+	opDataOfferAccept  = 0
+	opDataOfferReceive = 1
+	opDataOfferDestroy = 2
 
 	opShmCreatePool    = 0
 	opShmPoolCreateBuf = 0
@@ -202,12 +239,27 @@ const (
 	evKeyboardKey           = 3
 	evKeyboardModifiers     = 4
 	evKeyboardRepeatInfo    = 5
+	evDataSourceTarget      = 0
+	evDataSourceSend        = 1
+	evDataSourceCancelled   = 2
+	evDataDeviceDataOffer   = 0
+	evDataDeviceEnter       = 1
+	evDataDeviceLeave       = 2
+	evDataDeviceMotion      = 3
+	evDataDeviceDrop        = 4
+	evDataDeviceSelection   = 5
+	evDataOfferOffer        = 0
+	evDataOfferSourceAction = 1
+	evDataOfferAction       = 2
 	evOutputGeometry        = 0
 	evOutputMode            = 1
 	evOutputDone            = 2
 	evOutputScale           = 3
 	evOutputName            = 4
 	evOutputDescription     = 5
+	evToplevelIconSize      = 0
+	evToplevelIconDone      = 1
+	evFractionalScalePref   = 0
 	evXdgWMBasePing         = 0
 	evXdgSurfaceConfigure   = 0
 	evXdgToplevelConfigure  = 0
@@ -320,6 +372,57 @@ var wlProtocols = []protoInterface{
 		},
 		events: []protoMessage{
 			{name: "configure", sig: "u", types: []string{""}},
+		},
+	},
+	{
+		name: "xdg_toplevel_icon_manager_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "create_icon", sig: "n", types: []string{"xdg_toplevel_icon_v1"}},
+			{name: "set_icon", sig: "o?o", types: []string{"xdg_toplevel", "xdg_toplevel_icon_v1"}},
+		},
+		events: []protoMessage{
+			{name: "icon_size", sig: "i", types: []string{""}},
+			{name: "done", sig: "", types: nil},
+		},
+	},
+	{
+		name: "xdg_toplevel_icon_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "set_name", sig: "s", types: []string{""}},
+			{name: "add_buffer", sig: "oi", types: []string{"wl_buffer", ""}},
+		},
+	},
+	{
+		name: "wp_fractional_scale_manager_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "get_fractional_scale", sig: "no", types: []string{"wp_fractional_scale_v1", "wl_surface"}},
+		},
+	},
+	{
+		name: "wp_fractional_scale_v1", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+		},
+		events: []protoMessage{
+			{name: "preferred_scale", sig: "u", types: []string{""}},
+		},
+	},
+	{
+		name: "wp_viewporter", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "get_viewport", sig: "no", types: []string{"wp_viewport", "wl_surface"}},
+		},
+	},
+	{
+		name: "wp_viewport", version: 1,
+		methods: []protoMessage{
+			{name: "destroy", sig: "", types: nil},
+			{name: "set_source", sig: "ffff", types: []string{"", "", "", ""}},
+			{name: "set_destination", sig: "ii", types: []string{"", ""}},
 		},
 	},
 	{

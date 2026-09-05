@@ -239,30 +239,16 @@ func (s *stream2D) build() {
 
 // upload copies this frame's vertices into the slot's buffer, growing every
 // slot's buffer when the stream outgrew them.
-func (s *stream2D) upload(dev *render.Device, slot int) error {
+func (s *stream2D) upload(g *Graphics, slot int) error {
 	if len(s.ordered) > s.capacity {
 		newCap := max(s.capacity*2, initialVertexCapacity)
 		for newCap < len(s.ordered) {
 			newCap *= 2
 		}
-		var bufs [render.FramesInFlight]*render.Buffer
-		for i := range bufs {
-			buf, err := dev.NewBuffer(vk.VkDeviceSize(newCap*vertex2DSize), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-			if err != nil {
-				for _, b := range bufs {
-					if b != nil {
-						b.Destroy()
-					}
-				}
-				return err
-			}
-			bufs[i] = buf
+		if err := g.growStream(&s.buffers, vk.VkDeviceSize(newCap*vertex2DSize)); err != nil {
+			return err
 		}
-		// A frame in flight may still be reading the old buffers, so they
-		// go to the retire ring rather than idling the device here.
-		dev.RetireBuffers(s.buffers)
-		s.buffers, s.capacity = bufs, newCap
+		s.capacity = newCap
 	}
 	if len(s.ordered) == 0 {
 		return nil
@@ -369,20 +355,25 @@ func (g *Graphics) textureSet(view vk.VkImageView, sampler vk.VkSampler) (vk.VkD
 	return g.descriptors.AllocateMany(bindings)
 }
 
-// quad appends a sprite's two triangles.
-func spriteVertices(s Sprite, out []vertex2D) []vertex2D {
-	c := s.Color.premultiplied()
+// spriteCorners returns a sprite's four corners, clockwise from the
+// top-left, after its origin and rotation are applied. The transform
+// stack is not included; emit and spriteVisible apply that.
+func spriteCorners(s Sprite) [4]lin.Vec2 {
 	// Corners relative to the origin, then rotated about it.
 	ox, oy := s.Origin.X*s.Size.X, s.Origin.Y*s.Size.Y
 	x0, y0, x1, y1 := -ox, -oy, s.Size.X-ox, s.Size.Y-oy
-	var p [4]lin.Vec2
 	if s.Rotation == 0 {
-		p = [4]lin.Vec2{{X: s.Pos.X + x0, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y1}, {X: s.Pos.X + x0, Y: s.Pos.Y + y1}}
-	} else {
-		sn, cs := sin32(s.Rotation), cos32(s.Rotation)
-		rot := func(x, y float32) lin.Vec2 { return lin.V2(s.Pos.X+x*cs-y*sn, s.Pos.Y+x*sn+y*cs) }
-		p = [4]lin.Vec2{rot(x0, y0), rot(x1, y0), rot(x1, y1), rot(x0, y1)}
+		return [4]lin.Vec2{{X: s.Pos.X + x0, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y1}, {X: s.Pos.X + x0, Y: s.Pos.Y + y1}}
 	}
+	sn, cs := sin32(s.Rotation), cos32(s.Rotation)
+	rot := func(x, y float32) lin.Vec2 { return lin.V2(s.Pos.X+x*cs-y*sn, s.Pos.Y+x*sn+y*cs) }
+	return [4]lin.Vec2{rot(x0, y0), rot(x1, y0), rot(x1, y1), rot(x0, y1)}
+}
+
+// spriteVertices appends a sprite's two triangles.
+func spriteVertices(s Sprite, out []vertex2D) []vertex2D {
+	c := s.Color.premultiplied()
+	p := spriteCorners(s)
 	uv := [4]lin.Vec2{s.UV0, {X: s.UV1.X, Y: s.UV0.Y}, s.UV1, {X: s.UV0.X, Y: s.UV1.Y}}
 	return append(out,
 		vertex2D{p[0], uv[0], c}, vertex2D{p[1], uv[1], c}, vertex2D{p[2], uv[2], c},

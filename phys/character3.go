@@ -26,6 +26,8 @@ type CharacterController3 struct {
 	// Set by Move.
 	Grounded     bool
 	GroundNormal lin.Vec3
+
+	shape Shape3 // the capsule as a Shape3, kept so a move boxes it once
 }
 
 func (c *CharacterController3) capsule() Capsule {
@@ -39,6 +41,18 @@ func (c *CharacterController3) capsule() Capsule {
 	return Capsule{Radius: r, HalfHeight: h}
 }
 
+// shapeOf is the capsule as a Shape3, rebuilt only when the size
+// changes. Putting a capsule in an interface copies it onto the heap, and
+// a move that did that for each of its half dozen sweeps would allocate
+// every frame.
+func (c *CharacterController3) shapeOf() Shape3 {
+	cap := c.capsule()
+	if s, ok := c.shape.(Capsule); !ok || s != cap {
+		c.shape = cap
+	}
+	return c.shape
+}
+
 func (c *CharacterController3) params() (skin, cosSlope float32) {
 	skin = c.Skin
 	if skin == 0 {
@@ -49,6 +63,13 @@ func (c *CharacterController3) params() (skin, cosSlope float32) {
 		slope = 45
 	}
 	return skin, float32(math.Cos(float64(lin.Radians(slope))))
+}
+
+// sweep casts the controller's capsule from pos along delta, ignoring
+// the controller's own entity. It is a method rather than a closure
+// because a closure handed to stepUp would go on the heap once per move.
+func (c *CharacterController3) sweep(w *ecs.World, e ecs.Entity, pos, delta lin.Vec3) (Hit3, bool) {
+	return shapeCast3(w, c.shapeOf(), pos, mat3FromQuat(lin.QuatIdentity()), delta, c.Mask, e)
 }
 
 // backoff shortens a sweep that hit at fraction f so a skin's gap remains.
@@ -66,19 +87,15 @@ func (c *CharacterController3) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 	if !ok {
 		return
 	}
-	cap := c.capsule()
 	skin, cosSlope := c.params()
 	id := mat3FromQuat(lin.QuatIdentity())
-	sweep := func(pos, delta lin.Vec3) (Hit3, bool) {
-		return shapeCast3(w, cap, pos, id, delta, c.Mask, e)
-	}
 	pos := t.Position
 	c.Grounded = false
 	// Horizontal.
 	horiz := lin.V3(velocity.X, 0, velocity.Z).Mul(dt)
 	remaining := horiz
 	for i := 0; i < 4 && remaining.Len() > 1e-5; i++ {
-		hit, ok := sweep(pos, remaining)
+		hit, ok := c.sweep(w, e, pos, remaining)
 		if !ok {
 			pos = pos.Add(remaining)
 			break
@@ -92,7 +109,7 @@ func (c *CharacterController3) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 			continue
 		}
 		if c.StepHeight > 0 {
-			if np, ok := c.stepUp(w, e, sweep, pos, rest, skin, cosSlope); ok {
+			if np, ok := c.stepUp(w, e, pos, rest, skin, cosSlope); ok {
 				pos = np
 				break
 			}
@@ -113,7 +130,7 @@ func (c *CharacterController3) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 	vert := velocity.Y * dt
 	if vert <= 0 {
 		down := -vert + 2*skin
-		if hit, ok := sweep(pos, lin.V3(0, -down, 0)); ok {
+		if hit, ok := c.sweep(w, e, pos, lin.V3(0, -down, 0)); ok {
 			dist := hit.Distance * down
 			move := lin.Clamp(dist-skin, 0, -vert)
 			pos.Y -= move
@@ -128,7 +145,7 @@ func (c *CharacterController3) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 				n := hit.Normal
 				rem := lin.V3(0, -left, 0)
 				rem = rem.Sub(n.Mul(rem.Dot(n)))
-				if h2, ok := sweep(pos, rem); ok {
+				if h2, ok := c.sweep(w, e, pos, rem); ok {
 					pos = pos.Add(rem.Mul(backoff(h2.Distance, rem.Len(), skin)))
 				} else {
 					pos = pos.Add(rem)
@@ -139,15 +156,17 @@ func (c *CharacterController3) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 		}
 	} else {
 		up := lin.V3(0, vert, 0)
-		if hit, ok := sweep(pos, up); ok {
+		if hit, ok := c.sweep(w, e, pos, up); ok {
 			pos = pos.Add(up.Mul(backoff(hit.Distance, vert, skin)))
 		} else {
 			pos = pos.Add(up)
 		}
 	}
 	// Push out of anything still overlapping.
+	st := stateOf3(w)
 	for range 2 {
-		for _, h := range overlapShape3(w, cap, pos, id, c.Mask, false, e) {
+		st.hits = overlapShape3(st.hits[:0], w, c.shapeOf(), pos, id, c.Mask, false, e)
+		for _, h := range st.hits {
 			if h.Distance > 0 {
 				pos = pos.Add(h.Normal.Mul(h.Distance))
 			}
@@ -172,7 +191,7 @@ func (c *CharacterController3) groundBelow(w *ecs.World, e ecs.Entity, pos lin.V
 // stepUp tries to climb an obstacle: when a ray just ahead finds
 // walkable ground no higher than a step, move up by StepHeight, forward,
 // then back down, keeping the result if it ended up higher.
-func (c *CharacterController3) stepUp(w *ecs.World, e ecs.Entity, sweep func(pos, delta lin.Vec3) (Hit3, bool), pos, forward lin.Vec3, skin, cosSlope float32) (lin.Vec3, bool) {
+func (c *CharacterController3) stepUp(w *ecs.World, e ecs.Entity, pos, forward lin.Vec3, skin, cosSlope float32) (lin.Vec3, bool) {
 	length := forward.Len()
 	if length < 1e-6 {
 		return pos, false
@@ -193,7 +212,7 @@ func (c *CharacterController3) stepUp(w *ecs.World, e ecs.Entity, sweep func(pos
 	}
 	p := pos
 	up := lin.V3(0, c.StepHeight, 0)
-	if hit, ok := sweep(p, up); ok {
+	if hit, ok := c.sweep(w, e, p, up); ok {
 		p = p.Add(up.Mul(backoff(hit.Distance, c.StepHeight, skin)))
 	} else {
 		p = p.Add(up)
@@ -202,7 +221,7 @@ func (c *CharacterController3) stepUp(w *ecs.World, e ecs.Entity, sweep func(pos
 	if climbed <= 1e-4 {
 		return pos, false
 	}
-	if hit, ok := sweep(p, forward); ok {
+	if hit, ok := c.sweep(w, e, p, forward); ok {
 		if hit.Distance*length < min(2*skin, length/2) {
 			return pos, false // still blocked: taller than a step
 		}
@@ -211,7 +230,7 @@ func (c *CharacterController3) stepUp(w *ecs.World, e ecs.Entity, sweep func(pos
 		p = p.Add(forward)
 	}
 	down := lin.V3(0, -climbed, 0)
-	hit, ok := sweep(p, down)
+	hit, ok := c.sweep(w, e, p, down)
 	if !ok {
 		return pos, false
 	}

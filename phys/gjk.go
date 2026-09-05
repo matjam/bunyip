@@ -6,17 +6,69 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
-// convex is a placed convex volume described by a support function: a
-// core (a point, a segment or a set of vertices) grown by a margin.
-// Spheres and capsules are all margin; boxes, hulls and triangles are
-// all core, so their flat faces can be found for contact manifolds.
+// How a convex describes its core.
+const (
+	convexPoint   = iota // one point: a sphere's centre
+	convexSegment        // a segment: a capsule's axis
+	convexPoints         // a vertex set: a box, a hull, a triangle
+)
+
+// convexBuf is how many core vertices a convex holds by value. A box has
+// eight and a triangle three, so every shape but a large hull is placed
+// without touching the heap.
+const convexBuf = 8
+
+// convex is a placed convex volume: a core (a point, a segment or a set
+// of vertices) grown by a margin. Spheres and capsules are all margin;
+// boxes, hulls and triangles are all core, so their flat faces can be
+// found for contact manifolds.
+//
+// The core sits in buf where it fits and in ext otherwise, and offset
+// shifts the whole volume, which is how a sweep moves a shape without
+// placing it again. A convex is copied by value, and a copy shares the
+// original's ext, which is read only.
 type convex struct {
-	sup    func(dir lin.Vec3) lin.Vec3 // furthest core point along dir
+	kind   uint8
+	n      uint8
+	buf    [convexBuf]lin.Vec3
+	ext    []lin.Vec3 // core vertices when there are more than buf holds
+	offset lin.Vec3
 	margin float32
 	center lin.Vec3
-	size   float32    // bounding radius, for tolerances
-	pts    []lin.Vec3 // core vertices, nil for points and segments
-	ends   []lin.Vec3 // capsule end centres, for extra resting contacts
+	size   float32 // bounding radius, for tolerances
+}
+
+// points are the core vertices before the offset, empty for a point or a
+// segment core.
+func (c *convex) points() []lin.Vec3 {
+	if c.kind != convexPoints {
+		return nil
+	}
+	if c.ext != nil {
+		return c.ext
+	}
+	return c.buf[:c.n]
+}
+
+// sup is the furthest core point along dir.
+func (c *convex) sup(dir lin.Vec3) lin.Vec3 {
+	switch c.kind {
+	case convexPoint:
+		return c.buf[0].Add(c.offset)
+	case convexSegment:
+		if dir.Dot(c.buf[1].Sub(c.buf[0])) > 0 {
+			return c.buf[1].Add(c.offset)
+		}
+		return c.buf[0].Add(c.offset)
+	}
+	pts := c.points()
+	best, bestDot := pts[0], float32(math.Inf(-1))
+	for _, p := range pts {
+		if d := p.Dot(dir); d > bestDot {
+			best, bestDot = p, d
+		}
+	}
+	return best.Add(c.offset)
 }
 
 // support is the furthest point of the grown shape along dir.
@@ -28,45 +80,65 @@ func (c *convex) support(dir lin.Vec3) lin.Vec3 {
 	return p
 }
 
+// endCount and end give a capsule's cap centres, which earn resting
+// contacts of their own so a capsule lying on a face rests on two points.
+func (c *convex) endCount() int {
+	if c.kind == convexSegment {
+		return 2
+	}
+	return 0
+}
+
+func (c *convex) end(i int) lin.Vec3 { return c.buf[i].Add(c.offset) }
+
 func pointConvex(p lin.Vec3, margin float32) convex {
-	return convex{sup: func(lin.Vec3) lin.Vec3 { return p }, margin: margin, center: p, size: margin}
+	c := convex{kind: convexPoint, n: 1, margin: margin, center: p, size: margin}
+	c.buf[0] = p
+	return c
 }
 
 func segmentConvex(a, b lin.Vec3, margin float32) convex {
 	e := b.Sub(a)
-	return convex{
-		sup: func(dir lin.Vec3) lin.Vec3 {
-			if dir.Dot(e) > 0 {
-				return b
-			}
-			return a
-		},
-		margin: margin,
-		center: a.Add(b).Mul(0.5),
-		size:   e.Len()/2 + margin,
-		ends:   []lin.Vec3{a, b},
-	}
+	c := convex{kind: convexSegment, n: 2, margin: margin, center: a.Add(b).Mul(0.5), size: e.Len()/2 + margin}
+	c.buf[0], c.buf[1] = a, b
+	return c
 }
 
+// pointsConvex places a vertex core from at most convexBuf points, which
+// it copies in. The caller's slice may be a local array, because nothing
+// keeps a reference to it; points past convexBuf are dropped.
 func pointsConvex(pts []lin.Vec3, center lin.Vec3) convex {
-	var size float32
+	c := convex{kind: convexPoints, center: center}
+	c.n = uint8(copy(c.buf[:], pts))
+	for _, p := range c.buf[:c.n] {
+		c.size = max(c.size, p.Sub(center).Len())
+	}
+	return c
+}
+
+// hullConvex places a vertex core that is too large to copy in. The
+// slice is kept by reference and must not change while the convex is in
+// use.
+func hullConvex(pts []lin.Vec3, center lin.Vec3) convex {
+	c := convex{kind: convexPoints, center: center, ext: pts}
 	for _, p := range pts {
-		size = max(size, p.Sub(center).Len())
+		c.size = max(c.size, p.Sub(center).Len())
 	}
-	return convex{
-		sup: func(dir lin.Vec3) lin.Vec3 {
-			best, bestDot := pts[0], float32(math.Inf(-1))
-			for _, p := range pts {
-				if d := p.Dot(dir); d > bestDot {
-					best, bestDot = p, d
-				}
-			}
-			return best
-		},
-		center: center,
-		size:   size,
-		pts:    pts,
-	}
+	return c
+}
+
+// supporter is anything a ray can be cast at: a placed convex, or the
+// difference of two of them for a sweep.
+type supporter interface {
+	support(dir lin.Vec3) lin.Vec3
+}
+
+// minkowski is b minus a, whose surface a sweep of a against b reaches
+// at the moment the two shapes touch.
+type minkowski struct{ a, b *convex }
+
+func (m minkowski) support(dir lin.Vec3) lin.Vec3 {
+	return m.b.support(dir).Sub(m.a.support(dir.Neg()))
 }
 
 // face appends the core vertices furthest along dir to dst: one for a
@@ -74,18 +146,19 @@ func pointsConvex(pts []lin.Vec3, center lin.Vec3) convex {
 // anticlockwise around dir. Nothing is added when the shape has no
 // vertices. dst must not be the scratch's angle or index buffer.
 func (c *convex) face(sc *scratch3, dst []lin.Vec3, dir lin.Vec3) []lin.Vec3 {
-	if len(c.pts) == 0 {
+	pts := c.points()
+	if len(pts) == 0 {
 		return dst
 	}
 	best := float32(math.Inf(-1))
-	for _, p := range c.pts {
+	for _, p := range pts {
 		best = max(best, p.Dot(dir))
 	}
 	tol := 1e-3*c.size + 1e-6
 	start := len(dst)
-	for _, p := range c.pts {
+	for _, p := range pts {
 		if p.Dot(dir) >= best-tol {
-			dst = append(dst, p)
+			dst = append(dst, p.Add(c.offset))
 		}
 	}
 	out := dst[start:]
@@ -492,9 +565,9 @@ func barycentric(p, a, b, c lin.Vec3) (float32, float32, float32) {
 // castRay finds where the ray origin + t·dir, t in [0, 1], first reaches
 // the grown convex shape, with the surface normal there. A ray that starts
 // inside reports t 0 and a zero normal.
-func castRay(sup func(lin.Vec3) lin.Vec3, origin, dir lin.Vec3, size float32) (t float32, normal lin.Vec3, ok bool) {
+func castRay[S supporter](sup S, origin, dir lin.Vec3, size float32) (t float32, normal lin.Vec3, ok bool) {
 	x := origin
-	v := x.Sub(sup(lin.V3(0, 1, 0)))
+	v := x.Sub(sup.support(lin.V3(0, 1, 0)))
 	var s [4]gjkVert
 	n := 0
 	eps := 1e-4 * max(size, 1e-3)
@@ -503,7 +576,7 @@ func castRay(sup func(lin.Vec3) lin.Vec3, origin, dir lin.Vec3, size float32) (t
 		if v.Dot(v) <= eps {
 			break
 		}
-		p := sup(v)
+		p := sup.support(v)
 		w := x.Sub(p)
 		if vw := v.Dot(w); vw > 0 {
 			vr := v.Dot(dir)

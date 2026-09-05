@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "name": "solar system",
+  "properties": {
+    "belt": 400,
+    "beltSeed": 11
+  },
+  "entities": [
+    {
+      "name": "sun",
+      "components": {
+        "solar.body": {
+          "Name": "Sun",
+          "Radius": 1.4,
+          "Color": {"R": 1, "G": 0.57758045, "B": 0.10224173, "A": 1},
+          "Emissive": 3
+        },
+        "solar.spin": {"Speed": 0.2},
+        "gfx.Transform": {}
+      }
+    },
+    {
+      "name": "Ember",
+      "parent": 1,
+      "components": {
+        "solar.body": {
+          "Name": "Ember",
+          "Radius": 0.35,
+          "Color": {"R": 0.57758045, "G": 0.18782078, "B": 0.08021982, "A": 1}
+        },
+        "solar.orbit": {"Radius": 3.2, "Speed": 0.9, "Angle": 5.567997},
+        "solar.spin": {"Speed": 1},
+        "gfx.Transform": {}
+      }
+    },
+    {
+      "name": "Verdis",
+      "parent": 1,
+      "components": {
+        "solar.body": {
+          "Name": "Verdis",
+          "Radius": 0.55,
+          "Color": {"R": 0.10224173, "G": 0.40197778, "B": 0.15592647, "A": 1}
+        },
+        "solar.orbit": {"Radius": 5.4, "Speed": 0.55, "Angle": 2.2696896},
+        "solar.spin": {"Speed": 1},
+        "gfx.Transform": {}
+      }
+    },
+    {
+      "name": "Verdis I",
+      "parent": 3,
+      "prefab": "moon",
+      "components": {
+        "solar.orbit": {"Radius": 1.15, "Speed": 2, "Angle": 2.706549}
+      }
+    },
+    {
+      "name": "Halcyon",
+      "parent": 1,
+      "components": {
+        "solar.body": {
+          "Name": "Halcyon",
+          "Radius": 0.8,
+          "Color": {"R": 0.18782078, "G": 0.3049873, "B": 0.7912979, "A": 1}
+        },
+        "solar.orbit": {"Radius": 8.2, "Speed": 0.32, "Angle": 2.3898475},
+        "solar.spin": {"Speed": 1},
+        "gfx.Transform": {}
+      }
+    },
+    {
+      "name": "Halcyon I",
+      "parent": 5,
+      "prefab": "moon",
+      "components": {
+        "solar.orbit": {"Radius": 1.4, "Speed": 2, "Angle": 3.6371708}
+      }
+    },
+    {
+      "name": "Halcyon II",
+      "parent": 5,
+      "prefab": "moon",
+      "components": {
+        "solar.orbit": {"Radius": 1.9, "Speed": 3, "Angle": 5.3284526}
+      }
+    },
+    {
+      "name": "Umber",
+      "parent": 1,
+      "components": {
+        "solar.body": {
+          "Name": "Umber",
+          "Radius": 0.45,
+          "Color": {"R": 0.45641103, "G": 0.26225066, "B": 0.12743768, "A": 1}
+        },
+        "solar.orbit": {"Radius": 11, "Speed": 0.2, "Angle": 4.2370143},
+        "solar.spin": {"Speed": 1},
+        "gfx.Transform": {}
+      }
+    },
+    {
+      "name": "Umber I",
+      "parent": 8,
+      "prefab": "moon",
+      "components": {
+        "solar.orbit": {"Radius": 1.05, "Speed": 2, "Angle": 6.077956}
+      }
+    }
+  ]
+}

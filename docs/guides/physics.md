@@ -2,7 +2,7 @@
 title: Physics
 group: Simulation
 order: 1
-summary: rigid bodies in 2D and 3D: shapes, collisions, queries, joints, ragdolls and character controllers
+summary: rigid bodies in 2D and 3D: shapes, collisions, queries, joints, ragdolls and character controllers, and the cloth, soft bodies and fluids beside them
 ---
 
 The [phys](../pkg/phys.html) package simulates rigid bodies on the
@@ -125,13 +125,32 @@ sweep a shape along a direction and report the first collider it would
 hit and how far along the sweep it got. `Nearest2` and `Nearest3` find
 the closest collider to a point within a radius.
 
-A game that casts the same ray every frame can avoid the result slice by
-calling `RaycastAll2Into` or `RaycastAll3Into`, which append to a slice
-the caller keeps and hands back truncated with `[:0]`:
+`SignedDistance2` and `SignedDistance3` measure a point against one
+shape placed in the world, without touching the entity world at all.
+They return the distance to the surface, negative inside, and the
+outward normal there, which is what code that pushes points out of
+solids needs. They understand `Sphere`, `Box3`, `Capsule` and compounds
+of those in 3D, and `Circle`, `Box2`, `Polygon2` and `Capsule2` in 2D,
+and report false for the rest.
+
+A game that queries every frame can avoid the result slice by calling
+`RaycastAll2Into`, `RaycastAll3Into`, `OverlapShape2Into` or
+`OverlapShape3Into`, which append to a slice the caller keeps and hands
+back truncated with `[:0]`. Every query then allocates nothing once the
+slice has grown to fit:
 
 ```go
 g.hits = phys.RaycastAll3Into(g.hits[:0], w, ray, 0)
+g.near = phys.OverlapShape3Into(g.near[:0], w, blast, pos, lin.Quat{}, 0)
 ```
+
+Casts and sweeps take their candidates from the broadphase's sorted axis
+rather than looking at every collider, order them along the sweep so the
+nearest is found first, and keep each collider's placed shape between
+queries. A cast across a level therefore costs what is near its path, not
+what the level contains. A collider's placed shape is rebuilt when it
+moves, turns or changes size; a shape whose points are edited in place
+without any of those changing must be assigned to the collider again.
 
 ```go
 // The body under the pointer.
@@ -155,14 +174,18 @@ _, grounded := phys.ShapeCast2(w, phys.Circle{Radius: 12}, pos, 0, lin.V2(0, 4),
 
 A joint is a component on its own entity that constrains two bodies. To
 constrain one body to a point in the world instead, leave the other
-side as `ecs.None`. `DistanceJoint2` and `DistanceJoint3` hold two
-bodies a fixed distance apart, or within a range when given `Min` and
-`Max`. `RevoluteJoint2` and `HingeJoint3` allow rotation about one
-axis. `BallJoint3` allows rotation about any axis through a point.
-`SpringJoint2` and `SpringJoint3` pull towards a rest length with
-stiffness and damping. `FixedJoint2` and `FixedJoint3` remove all
-relative motion. Joints are solved in the same iterations as the
+side as `ecs.None`. Joints are solved in the same iterations as the
 contacts, so a chain of hinges holds together.
+
+| Joint | What it allows | Limits and drives |
+|---|---|---|
+| `DistanceJoint2`, `DistanceJoint3` | a fixed distance, or a range with `Min` and `Max` | none |
+| `RevoluteJoint2`, `HingeJoint3` | rotation about one axis | `MinAngle`, `MaxAngle`, `MotorSpeed` with `MaxMotorTorque` |
+| `BallJoint3` | rotation about any axis through a point | `ConeAngle`, `TwistAngle` |
+| `PrismaticJoint2`, `PrismaticJoint3` | sliding along one axis | `Min`, `Max`, `MotorSpeed` with `MaxMotorForce`, `Stiffness` with `Damping` |
+| `WheelJoint2` | sliding along one axis and free spin | `Min`, `Max`, `MotorSpeed` with `MaxMotorTorque`, `Frequency` with `DampingRatio` |
+| `SpringJoint2`, `SpringJoint3` | a damped pull toward a rest length | none |
+| `FixedJoint2`, `FixedJoint3` | nothing; a weld | none |
 
 ```go
 // 2D: a crate on a rope from a fixed point, and a wheel sprung to a cart.
@@ -194,6 +217,35 @@ frame (by default, the direction the limb pointed on the first step).
 `ConeAngle` limits how far the limb swings from that centre and
 `TwistAngle` limits how far it turns about itself. `Angles(w)` reads
 both.
+
+`PrismaticJoint2` and `PrismaticJoint3` are sliders: a lift, a piston, a
+drawer, a sliding door. `Axis` is the slide direction in A's frame and a
+zero axis means local X. The translation is how far B's anchor sits from
+A's along that axis, so it is zero when the anchors meet, and
+`Translation(w)` reads it. `Min` and `Max` stop the travel, `MotorSpeed`
+with `MaxMotorForce` drives it, and `Stiffness` with `Damping` adds a
+spring that pulls the translation back toward zero.
+
+`WheelJoint2` is a wheel on a suspension. A is the chassis and B the
+wheel, which spins freely and slides along `Axis` in the chassis frame;
+a zero axis means local Y. `AnchorA` is where the wheel sits when the
+suspension is at rest. The spring is given as `Frequency` in hertz and
+`DampingRatio`, where 1 is critically damped, so the response is the
+same whatever the chassis weighs; zero frequency leaves the axis free.
+`MotorSpeed` with `MaxMotorTorque` drives the wheel's spin, which is
+how a car pulls itself along. `Min` and `Max` stop the suspension
+travel.
+
+```go
+// A lift that runs up a rail between two floors.
+w.SpawnWith(phys.PrismaticJoint3{A: ecs.None, B: platform, AnchorA: lin.V3(0, 0, 0),
+	Axis: lin.V3(0, 1, 0), Min: 0, Max: 4, MotorSpeed: 1.5, MaxMotorForce: 4000})
+
+// A driven wheel under the front of a car.
+w.SpawnWith(phys.WheelJoint2{A: chassis, B: wheel, AnchorA: lin.V2(-0.8, -0.65),
+	Axis: lin.V2(0, 1), Frequency: 4, DampingRatio: 0.7,
+	MotorSpeed: -20, MaxMotorTorque: 20})
+```
 
 ## Ragdolls
 
@@ -248,14 +300,15 @@ go to sleep. A sleeping body is neither integrated nor paired with other
 sleeping bodies. A contact or an impulse wakes it. `Body.Asleep` reports
 the state and `Wake` ends it early. Sleeping is off by default. A body
 counts as at rest while it moves slower than `Settings.SleepThreshold`,
-in units and radians per second. A stack of boxes at the default solver
-quality jitters slightly and may never settle below the threshold;
-raise `Substeps` and `Iterations` for stacks that should sleep, or
-raise the threshold a little.
+in units and radians per second. A stack of boxes settles below the
+threshold at the default solver quality, within a second or two of
+landing. A stack whose boxes are turned relative to each other keeps
+creeping into place for longer, and raising `Substeps` and `Iterations`
+settles it sooner.
 
 ```go
 ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0),
-	Substeps: 8, Iterations: 16, SleepTime: 0.5})
+	SleepTime: 0.5})
 
 // How much of the world has settled, for a debug readout.
 resting := 0
@@ -299,7 +352,11 @@ integrate gravity and forces. A sweep over bounding boxes finds
 candidate pairs. The shapes generate contact points. A sequential
 impulse solver iterates over the contacts and joints, applying normal
 impulses with restitution, friction impulses clamped by the normal
-impulse, and a small positional correction. Positions then integrate.
+impulse, and a small positional correction. Positions then integrate,
+and a relax pass solves the contacts once more with the positional
+correction dropped, which takes the separating speed that correction
+added back out of the velocities. Restitution is kept out of that
+correction, so bounces survive the relax pass.
 
 `Settings.Substeps` (default 4) trades speed for stability under fast
 motion and tall stacks; `Iterations` (default 8) stiffens contacts and
@@ -316,6 +373,157 @@ step := ctx.Profile("physics")
 w.Update(ctx.Delta)
 step.End()
 ```
+
+## Soft bodies
+
+Rigid bodies keep their shape. For things that bend, squash and flow,
+the [phys/soft](../pkg/phys/soft.html) package simulates particles held
+together by constraints: `Cloth` for sheets, `SoftBody3` for a closed
+mesh that keeps its volume, and `Fluid2` for liquid in the plane. All
+three are components stepped by one system, `soft.System`, on the same
+world as the rigid bodies. Register it after `System3`, so soft bodies
+see where the rigid ones ended the update.
+
+```go
+ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
+w.AddSystem("physics", phys.System3)
+w.AddSystem("soft", soft.System)
+```
+
+A zero `Gravity3` takes the gravity from the `phys.Settings3` resource,
+and a zero `Gravity2` from `phys.Settings2`, so rigid and soft bodies
+fall together without saying it twice. `Ground` turns on a floor plane
+at `GroundY` for scenes with no collider under them.
+
+Particles collide with the static and kinematic colliders already in
+the world, through the signed-distance queries above: spheres, boxes,
+capsules and compounds in 3D, and circles, boxes, polygons and capsules
+in 2D. They do not push rigid bodies back, and dynamic bodies are
+ignored.
+
+### Cloth
+
+`NewCloth` builds a rectangular sheet of particles: distance
+constraints along the edges, diagonals across each cell, and a bending
+constraint across each pair of edges in line. Pinned particles hang the
+sheet up, and `Wind` pushes each cell by the air blowing through it, so
+a sheet edge-on to the wind is barely moved.
+
+```go
+pins := []int{0, 1, 2, 3} // the top-left corner, held
+flag := w.SpawnWith(soft.NewCloth(soft.ClothSpec{
+	Width: 26, Height: 16, Spacing: 0.14, Mass: 0.4,
+	Origin: lin.V3(-2, 3.6, 0), Pinned: pins, Wind: lin.V3(0, 0, 5),
+}))
+```
+
+`Pin`, `Free` and `Move` change what is held while the game runs, which
+is how a cape follows a running character. `Positions` and
+`Velocities` are the particles themselves.
+
+### A mesh that follows
+
+Cloth and soft bodies are drawn by keeping a `gfx.Mesh` in step with
+their particles. `NewMesh` uploads a mesh shaped like the body, and
+`UpdateMesh` writes the positions and recomputes the normals each
+frame. Particle positions are world space, so the mesh is drawn with an
+identity matrix and needs no transform. Give cloth a `DoubleSided`
+material, because it is seen from both sides.
+
+```go
+c, _ := ecs.Get[soft.Cloth](w, flag)
+mesh, err := c.NewMesh(ctx.Gfx) // in Init; Destroy it in Shutdown
+
+// In Draw, after the world has stepped.
+c.UpdateMesh(mesh)
+ctx.Gfx.DrawMesh(mesh, gfx.Material{BaseColor: gfx.RGB(220, 60, 70), DoubleSided: true}, lin.Identity())
+```
+
+### Volumetric soft bodies
+
+`NewSoftBody3` takes a closed triangle mesh, from `gfx.CubeMesh`,
+`gfx.SphereMesh`, `gfx.TorusMesh` or a loaded glTF model, welds the
+vertices that share a position into particles, and holds them with
+constraints along the surface edges, one constraint on the enclosed
+volume, and shape matching that pulls the body back toward its original
+shape rotated to where it is now. A body resting under gravity keeps
+its volume within a few percent.
+
+```go
+cv, ci := gfx.CubeMesh()
+jelly := w.SpawnWith(soft.NewSoftBody3(soft.SoftBody3Spec{
+	Vertices: cv, Indices: ci, Scale: 1.4, Position: lin.V3(0, 2.4, 0),
+	Mass: 3, Compliance: 0.001, ShapeMatch: 0.04,
+}))
+
+b, _ := ecs.Get[soft.SoftBody3](w, jelly)
+b.AddImpulse(lin.V3(-9, 16, 0)) // kicked
+b.Pressure = 1.3                // inflated
+```
+
+### Fluids
+
+`Fluid2` is position-based fluids: a density constraint over a spatial
+hash keeps the liquid incompressible, a small push at close range stops
+it clumping, and viscosity pulls neighbours toward a shared velocity.
+`Bounds` is the tank, and the 2D colliders in the world are obstacles
+in it. The game draws the particles itself, from `Positions`, as
+sprites or circles.
+
+```go
+f := soft.NewFluid2(soft.Fluid2Spec{Bounds: tank, Spacing: 7})
+f.Fill(lin.Rect{X: tank.X + 8, Y: tank.Y + 8, W: tank.W/2, H: tank.H - 16})
+w.SpawnWith(f)
+
+// In Draw.
+for i, p := range f.Positions() {
+	shade := lin.Clamp(f.Density(i)/f.RestDensity(), 0, 1)
+	ctx.Gfx.Draw(drop, gfx.Sprite{Pos: p, Size: lin.V2(16, 16), Color: water(shade)})
+}
+```
+
+A fluid keeps its own `Substeps`, one by default, because its density
+solve is a whole-step pressure solve: splitting it finer leaves the
+same residual in a shorter step, and the velocity read back from that
+is noise. The `Substeps` in the world settings belongs to cloth and
+soft bodies.
+
+### Tuning the soft solver
+
+Constraint stiffness is compliance, in metres per newton: zero is
+rigid, larger is softer, and it does not drift with the substep or
+iteration count. `Settings.Substeps` (default 4) and `Iterations`
+(default 4) trade time for stiffness; cloth is stiffer for the same
+work with more substeps and fewer iterations than the other way around.
+A thousand-particle sheet and two thousand fluid particles each step in
+a few milliseconds, and a step allocates nothing.
+
+The `examples/softbody` program puts all three together:
+a flag on a pole, a jelly cube beside a rigid crate, and a tank of
+fluid in the corner of the screen.
+
+## Seeing what the solver sees
+
+`phys.DrawColliders3` outlines every collider in a world over the 3D
+scene as debug lines and draws the normal of each contact the last
+update reported; `DrawColliders2` does the same in 2D as stroked paths.
+Awake bodies, sleeping bodies and static colliders are told apart by
+colour, which `DrawCollidersColors3` chooses. `DrawShape3` and
+`DrawShape2` outline one shape placed by a transform, for a query result
+or a shape the game is about to cast.
+
+```go
+func (g *game) Draw(ctx *bunyip.Context) error {
+	// ... the scene ...
+	if g.showColliders {
+		phys.DrawColliders3(ctx.Gfx, g.world)
+	}
+	return nil
+}
+```
+
+The [debug console](console.html) has a switch for the same drawing, and
+counts the bodies, contacts and joints beside it.
 
 ## Orbital mechanics
 

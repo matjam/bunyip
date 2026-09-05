@@ -113,6 +113,7 @@ type game struct {
 	ctrl      phys.CharacterController3
 	heroDir   float32
 	heroTimer float64
+	torque    float32
 	contacts  []phys.Collision3
 	yaw       float32
 	pitch     float32
@@ -191,6 +192,16 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	w.SpawnWith(phys.HingeJoint3{A: ecs.None, AnchorA: wheelAt, B: g.wheel, AxisA: lin.V3(0, 0, 1), AxisB: lin.V3(0, 0, 1), MotorSpeed: 1.5, MaxMotorTorque: 400})
 	w.AddSystem("physics", phys.System3)
 	g.drop()
+	// The console gets the world, so its entity and physics panels can
+	// list the bodies, pause the simulation and edit the solver
+	// settings, plus a variable and a command of the lab's own.
+	g.torque = 400
+	ctx.Console.Attach("lab", g.world)
+	ctx.Console.Float("wheel.torque", &g.torque, "the paddle wheel's motor torque")
+	ctx.Console.Register("drop", "drop: throw the debris in again", func([]string) (string, error) {
+		g.drop()
+		return "dropped", nil
+	})
 	return nil
 }
 
@@ -237,6 +248,17 @@ func (g *game) drop() {
 	}
 }
 
+// step advances the simulation, giving the paddle wheel's motor
+// whatever torque the console's wheel.torque variable holds.
+func (g *game) step(dt float64) {
+	ecs.Each(g.world, func(_ ecs.Entity, j *phys.HingeJoint3) {
+		if j.B == g.wheel {
+			j.MaxMotorTorque = g.torque
+		}
+	})
+	g.world.Update(dt)
+}
+
 func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.terrain.Destroy()
 	g.cube.Destroy()
@@ -247,6 +269,12 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 
 func (g *game) Update(ctx *bunyip.Context) error {
 	in := ctx.Input
+	if ctx.Console.Open() {
+		// The console has the keyboard and the pointer while it is open;
+		// the simulation keeps running behind it.
+		g.step(ctx.Delta)
+		return nil
+	}
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -278,52 +306,10 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	}
 	step := ctx.Profile("physics")
 	g.ctrl.Move(g.world, g.hero, lin.V3(2.5*g.heroDir, -6, 0), float32(ctx.Delta))
-	g.world.Update(ctx.Delta)
+	g.step(ctx.Delta)
 	step.End()
 	g.contacts = append(g.contacts[:0], ecs.Events[phys.Collision3](g.world)...)
 	return nil
-}
-
-// wireShape outlines a collider in place.
-func wireShape(gr *gfx.Graphics, s phys.Shape3, t gfx.Transform, c gfx.Color) {
-	rot := t.Rotation
-	if rot == (lin.Quat{}) {
-		rot = lin.QuatIdentity()
-	}
-	switch sh := s.(type) {
-	case phys.Sphere:
-		gr.DrawWireSphere(t.Position, sh.Radius, c)
-	case phys.Box3:
-		gr.DrawWireCube(lin.TRS(t.Position, rot, sh.Half.Mul(2)), c)
-	case phys.Capsule:
-		up := rot.Rotate(lin.V3(0, sh.HalfHeight, 0))
-		a, b := t.Position.Sub(up), t.Position.Add(up)
-		gr.DrawWireSphere(a, sh.Radius, c)
-		gr.DrawWireSphere(b, sh.Radius, c)
-		for _, d := range []lin.Vec3{rot.Rotate(lin.V3(sh.Radius, 0, 0)), rot.Rotate(lin.V3(0, 0, sh.Radius))} {
-			gr.DrawLine3D(a.Add(d), b.Add(d), c)
-			gr.DrawLine3D(a.Sub(d), b.Sub(d), c)
-		}
-	case phys.ConvexHull:
-		// Every pair of points: a dense outline that shows the volume.
-		pts := make([]lin.Vec3, len(sh.Points))
-		for i, p := range sh.Points {
-			pts[i] = t.Position.Add(rot.Rotate(p))
-		}
-		for i := range pts {
-			for j := i + 1; j < len(pts); j++ {
-				gr.DrawLine3D(pts[i], pts[j], c)
-			}
-		}
-	case phys.Compound3:
-		for _, p := range sh.Parts {
-			pt := gfx.Transform{Position: t.Position.Add(rot.Rotate(p.Offset)), Rotation: rot.Mul(p.Rotation)}
-			if p.Rotation == (lin.Quat{}) {
-				pt.Rotation = rot
-			}
-			wireShape(gr, p.Shape, pt, c)
-		}
-	}
 }
 
 func (g *game) Draw(ctx *bunyip.Context) error {
@@ -365,7 +351,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				}
 			}
 		}
-		wireShape(gr, c.Shape, *t, col)
+		phys.DrawShape3(gr, c.Shape, *t, col)
 	})
 	// The ragdoll's capsules as a cylinder with a sphere at each end.
 	if g.doll != nil {
@@ -400,7 +386,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		}
 		if sh, ok := c.Shape.(phys.Box3); ok {
 			gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(120, 120, 130), Roughness: 0.9}, lin.TRS(t.Position, t.Rotation, sh.Half.Mul(2)))
-			wireShape(gr, c.Shape, *t, gfx.RGB(90, 200, 255))
+			phys.DrawShape3(gr, c.Shape, *t, gfx.RGB(90, 200, 255))
 		}
 	})
 	// Joint anchors as short lines between the bodies they join.
@@ -425,7 +411,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		if !g.ctrl.Grounded {
 			col = gfx.RGB(255, 80, 80)
 		}
-		wireShape(gr, phys.Capsule{Radius: g.ctrl.Radius, HalfHeight: g.ctrl.HalfHeight}, *ht, col)
+		phys.DrawShape3(gr, phys.Capsule{Radius: g.ctrl.Radius, HalfHeight: g.ctrl.HalfHeight}, *ht, col)
 		if g.ctrl.Grounded {
 			foot := ht.Position.Sub(lin.V3(0, g.ctrl.HalfHeight+g.ctrl.Radius, 0))
 			gr.DrawLine3D(foot, foot.Add(g.ctrl.GroundNormal), gfx.RGB(255, 255, 255))
@@ -438,7 +424,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr.DrawAxes(lin.Identity(), 2)
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("physics lab", ui.Rect{X: 12, Y: ctx.Height - 150, W: 380, H: 138}, func() {
+		u.Panel("physics lab", ui.Rect{X: 12, Y: ctx.Height - 186, W: 380, H: 174}, func() {
 			ms := 0.0
 			if len(ctx.Stats.Scopes) > 0 {
 				ms = ctx.Stats.Scopes[0].MS
@@ -457,9 +443,11 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			if u.Button("Drop again (R)") {
 				g.drop()
 			}
+			u.Label("` opens the console, F4 the debug panels")
 		})
 	})
-	return nil
+	// The console draws last, so it sits above the lab's own interface.
+	return ctx.Console.Draw(ctx)
 }
 
 func main() {
@@ -467,7 +455,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	ragdoll := flag.Bool("ragdoll", true, "drop a ragdoll with the debris")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true, Console: true},
 		&game{seconds: *seconds, shot: *shot, ragdoll: *ragdoll})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "physics-lab:", err)

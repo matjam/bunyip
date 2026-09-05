@@ -22,9 +22,11 @@ type Device struct {
 	portability bool
 	alloc       allocator
 	anisotropy  float32 // max anisotropy the device allows, 1 when unsupported
+	arrayIndex  bool    // sampler and sampled-image arrays may be indexed dynamically
+	depthClamp  bool    // the device clamps depth instead of clipping, when asked
+	waits       uint64  // times the device or its queue was waited on
 	frameNo     uint64  // frames begun, for the retire ring
 	retired     []deferred
-	waits       uint64 // times the device has been idled
 }
 
 // NewDevice picks a GPU able to present to surface and creates the logical
@@ -65,6 +67,21 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 		features.Features.SamplerAnisotropy = vk.VK_TRUE
 		d.anisotropy = min(g.props.Limits.MaxSamplerAnisotropy, 8)
 	}
+	// The mesh material set holds one array of samplers that a shader
+	// indexes per texture slot, which needs this feature. Every desktop
+	// driver and MoltenVK report it; a device without it cannot run the
+	// mesh pipelines, and initMeshPass says so.
+	if g.features.ShaderSampledImageArrayDynamicIndexing != 0 {
+		features.Features.ShaderSampledImageArrayDynamicIndexing = vk.VK_TRUE
+		d.arrayIndex = true
+	}
+	// Depth clamping lets the shadow pipelines keep casters in front of a
+	// cascade's near plane. It is optional, so pipelines ask for it and
+	// NewPipeline drops the request where the device does not have it.
+	if g.features.DepthClamp != 0 {
+		features.Features.DepthClamp = vk.VK_TRUE
+		d.depthClamp = true
+	}
 	info := vk.VkDeviceCreateInfo{
 		SType:                   vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		PNext:                   unsafe.Pointer(&features),
@@ -95,16 +112,24 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 }
 
 // WaitIdle blocks until the device has finished all submitted work. It
-// stalls every frame in flight, so prefer Retire for objects a recorded
-// frame may still reference.
+// stalls the GPU, so it belongs in setup and teardown rather than in a
+// frame; Waits counts every such stall. Prefer Retire for an object a
+// recorded frame may still reference.
 func (d *Device) WaitIdle() error {
 	d.waits++
 	return vk.Check("vkDeviceWaitIdle", vk.VkDeviceWaitIdle(d.Handle))
 }
 
-// Waits counts the times the device has been idled since it was created.
-// A frame whose count rises stalled the GPU; FrameStats.Waits reports it.
+// Waits is how many times the device or its queue has been waited on
+// since it was created. A frame that uploads and destroys through the
+// staging arena and the retire ring adds nothing to it, so the count
+// stands still once a game is running.
 func (d *Device) Waits() uint64 { return d.waits }
+
+// ArrayIndexing reports whether sampler and sampled-image arrays may be
+// indexed by a dynamically uniform expression, which the mesh material
+// set's sampler array needs.
+func (d *Device) ArrayIndexing() bool { return d.arrayIndex }
 
 // Destroy releases the device after waiting for it to go idle.
 func (d *Device) Destroy() {
@@ -118,6 +143,11 @@ func (d *Device) Destroy() {
 	vk.VkDestroyDevice(d.Handle, nil)
 	d.Handle = 0
 }
+
+// DepthClamp reports whether the device clamps depth for pipelines that
+// ask for it. Without it a pipeline clips at its near and far planes,
+// and the caller compensates.
+func (d *Device) DepthClamp() bool { return d.depthClamp }
 
 // Limits exposes the physical device limits.
 func (d *Device) Limits() *vk.VkPhysicalDeviceLimits { return &d.gpu.props.Limits }
@@ -160,5 +190,6 @@ func (d *Device) OneShot(record func(cb vk.VkCommandBuffer)) error {
 	if err := vk.Check("vkQueueSubmit2", vk.VkQueueSubmit2(d.Queue, 1, &submit, 0)); err != nil {
 		return err
 	}
+	d.waits++
 	return vk.Check("vkQueueWaitIdle", vk.VkQueueWaitIdle(d.Queue))
 }

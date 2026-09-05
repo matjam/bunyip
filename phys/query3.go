@@ -36,30 +36,89 @@ func eachCollider3(w *ecs.World, lo, hi lin.Vec3, mask uint32, triggers bool, fn
 	})
 }
 
-// convexParts breaks a placed shape into its convex pieces with their
-// bounds; a mesh has none.
-func convexParts(s Shape3, pos lin.Vec3, rot mat3) []convexPart {
+// candidate3 is one collider a query still has to test, with how far
+// along a sweep its bounds are first reached so the nearest are tried
+// first and the rest fall away as the best hit shortens.
+type candidate3 struct {
+	p     placed3
+	enter float32
+}
+
+// gatherColliders3 appends every collider whose bounds overlap the box
+// to dst, skipping triggers unless asked, the excluded entity and
+// colliders the mask leaves out. Passing back a slice a previous call
+// filled reuses its storage.
+func gatherColliders3(dst []candidate3, w *ecs.World, lo, hi lin.Vec3, mask uint32, triggers bool, exclude ecs.Entity) []candidate3 {
+	eachCollider3(w, lo, hi, mask, triggers, func(p placed3) {
+		if p.e != exclude {
+			dst = append(dst, candidate3{p: p})
+		}
+	})
+	return dst
+}
+
+// sweepEnter3 is the earliest fraction of delta at which a moving box
+// first overlaps a still one: zero when they already overlap, and
+// infinity when they never do.
+func sweepEnter3(lo, hi, delta, olo, ohi lin.Vec3) float32 {
+	enter, exit := float32(0), float32(1)
+	if !slabSweep(lo.X, hi.X, delta.X, olo.X, ohi.X, &enter, &exit) ||
+		!slabSweep(lo.Y, hi.Y, delta.Y, olo.Y, ohi.Y, &enter, &exit) ||
+		!slabSweep(lo.Z, hi.Z, delta.Z, olo.Z, ohi.Z, &enter, &exit) {
+		return float32(math.Inf(1))
+	}
+	return enter
+}
+
+// slabSweep narrows [enter, exit] to the span in which a moving interval
+// overlaps a still one, and reports false when they never do.
+func slabSweep(lo, hi, d, olo, ohi float32, enter, exit *float32) bool {
+	if d > -1e-20 && d < 1e-20 {
+		return lo <= ohi && olo <= hi
+	}
+	t0, t1 := (olo-hi)/d, (ohi-lo)/d
+	if t0 > t1 {
+		t0, t1 = t1, t0
+	}
+	*enter = max(*enter, t0)
+	*exit = min(*exit, t1)
+	return *enter <= *exit
+}
+
+// appendConvexParts breaks a placed shape into its convex pieces with
+// their bounds and appends them to dst; a mesh has none. Each piece
+// keeps the hull buffer it was given, so passing back a slice a previous
+// call filled places the same shapes again without allocating.
+func appendConvexParts(dst []convexPart, s Shape3, pos lin.Vec3, rot mat3) []convexPart {
 	if c, ok := s.(Compound3); ok {
-		var out []convexPart
 		for _, p := range c.Parts {
 			if p.Shape == nil {
 				continue
 			}
 			pp, pr := p.place(pos, rot)
-			out = append(out, convexParts(p.Shape, pp, pr)...)
+			dst = appendConvexParts(dst, p.Shape, pp, pr)
 		}
-		return out
+		return dst
 	}
-	c, ok := placeConvex(s, pos, rot)
+	n := len(dst)
+	if n < cap(dst) {
+		dst = dst[:n+1] // keep the hull buffer this row already holds
+	} else {
+		dst = append(dst, convexPart{})
+	}
+	part := &dst[n]
+	var ok bool
+	part.conv, part.hull, ok = placeConvex(part.hull, s, pos, rot)
 	if !ok {
-		return nil
+		return dst[:n]
 	}
-	lo, hi := s.bounds(pos, rot)
-	return []convexPart{{conv: c, lo: lo, hi: hi}}
+	part.lo, part.hi = s.bounds(pos, rot)
+	return dst
 }
 
 type convexPart struct {
 	conv   convex
+	hull   []lin.Vec3 // reused world points for a hull the convex cannot hold
 	lo, hi lin.Vec3
 }
 
@@ -68,13 +127,20 @@ type convexPart struct {
 // the collider, Normal pointing from the collider back toward the shape
 // and Distance the penetration depth. Triggers are included.
 func OverlapShape3(w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, mask uint32) []Hit3 {
-	return overlapShape3(w, s, pos, mat3FromQuat(rot), mask, true, ecs.None)
+	return OverlapShape3Into(nil, w, s, pos, rot, mask)
 }
 
-func overlapShape3(w *ecs.World, s Shape3, pos lin.Vec3, r mat3, mask uint32, triggers bool, exclude ecs.Entity) []Hit3 {
+// OverlapShape3Into appends every collider the shape overlaps to out and
+// returns out. Pass the previous result truncated with [:0] to reuse its
+// storage; pass nil for a fresh slice. A game that overlaps every frame
+// then allocates nothing.
+func OverlapShape3Into(out []Hit3, w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, mask uint32) []Hit3 {
+	return overlapShape3(out, w, s, pos, mat3FromQuat(rot), mask, true, ecs.None)
+}
+
+func overlapShape3(out []Hit3, w *ecs.World, s Shape3, pos lin.Vec3, r mat3, mask uint32, triggers bool, exclude ecs.Entity) []Hit3 {
 	lo, hi := s.bounds(pos, r)
 	st := stateOf3(w)
-	var out []Hit3
 	eachCollider3(w, lo, hi, mask, triggers, func(p placed3) {
 		if p.e == exclude {
 			return
@@ -115,7 +181,9 @@ func ShapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, delta lin.Ve
 }
 
 func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, mask uint32, exclude ecs.Entity) (Hit3, bool) {
-	parts := convexParts(s, pos, rot)
+	st := stateOf3(w)
+	st.castParts = appendConvexParts(st.castParts[:0], s, pos, rot)
+	parts := st.castParts
 	if len(parts) == 0 {
 		return Hit3{}, false
 	}
@@ -124,11 +192,21 @@ func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, 
 		lo, hi = lo.Min(p.lo), hi.Max(p.hi)
 	}
 	slo, shi := lo.Min(lo.Add(delta)), hi.Max(hi.Add(delta))
+	// Order the candidates along the sweep, so the first collider hit
+	// shortens the cast and everything behind it is dropped on its
+	// bounds alone.
+	cands := gatherColliders3(st.qcands[:0], w, slo, shi, mask, false, exclude)
+	for i := range cands {
+		cands[i].enter = sweepEnter3(lo, hi, delta, cands[i].p.lo, cands[i].p.hi)
+	}
+	slices.SortFunc(cands, func(a, b candidate3) int { return cmp.Compare(a.enter, b.enter) })
+	st.qcands = cands
 	best := Hit3{Distance: float32(math.Inf(1))}
 	found := false
-	eachCollider3(w, slo, shi, mask, false, func(p placed3) {
-		if p.e == exclude {
-			return
+	for ci := range cands {
+		p := &cands[ci].p
+		if cands[ci].enter > best.Distance {
+			break
 		}
 		for i := range parts {
 			a := &parts[i].conv
@@ -138,13 +216,14 @@ func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, 
 				}
 				continue
 			}
-			for _, target := range convexParts(p.c.Shape, p.pos, p.rot) {
-				if t, n, pt, hit := sweepConvex(a, &target.conv, delta); hit && t < best.Distance {
+			targets := st.shapes.parts(p.e, p.c.Shape, p.pos, p.rot, p.lo, p.hi)
+			for j := range targets {
+				if t, n, pt, hit := sweepConvex(a, &targets[j].conv, delta); hit && t < best.Distance {
 					best, found = Hit3{Entity: p.e, Point: pt, Normal: n, Distance: t}, true
 				}
 			}
 		}
-	})
+	}
 	return best, found
 }
 
@@ -153,6 +232,7 @@ func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, 
 // query point (zero when the point is inside) and Distance is how far.
 func Nearest3(w *ecs.World, point lin.Vec3, radius float32, mask uint32) (Hit3, bool) {
 	r := lin.V3(radius, radius, radius)
+	st := stateOf3(w)
 	best := Hit3{Distance: float32(math.Inf(1))}
 	found := false
 	eachCollider3(w, point.Sub(r), point.Add(r), mask, false, func(p placed3) {
@@ -162,8 +242,9 @@ func Nearest3(w *ecs.World, point lin.Vec3, radius float32, mask uint32) (Hit3, 
 			}
 			return
 		}
-		for _, part := range convexParts(p.c.Shape, p.pos, p.rot) {
-			q, d := closestPointConvex(&part.conv, point)
+		parts := st.shapes.parts(p.e, p.c.Shape, p.pos, p.rot, p.lo, p.hi)
+		for i := range parts {
+			q, d := closestPointConvex(&parts[i].conv, point)
 			if d <= radius && d < best.Distance {
 				best, found = Hit3{Entity: p.e, Point: q, Normal: point.Sub(q).Norm(), Distance: d}, true
 			}

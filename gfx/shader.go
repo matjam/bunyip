@@ -114,6 +114,15 @@ func (g *Graphics) Transform() lin.Affine { return g.cur.xform }
 // adjusts a surface before the engine lights it. Uniforms and up to four
 // extra images ride along with every draw made while it is set.
 type Shader struct {
+	// VertexBounds is how far a mesh shader's vertex program moves a
+	// vertex, as a multiple of the mesh's bounding radius: 0.25 for a flag
+	// that ripples a quarter of its own size. Culling grows a draw's
+	// radius by 1 + VertexBounds. Zero means the program may put a vertex
+	// anywhere, so draws made with the shader are never culled; set it as
+	// soon as the displacement has a limit. It is read as each draw is
+	// prepared, so a game may change it between draws.
+	VertexBounds float32
+
 	g      *Graphics
 	frag   []byte
 	stages map[shaders.Stage][]byte // a mesh shader's vertex programs, when it hooks vertices
@@ -322,31 +331,38 @@ func (s *Shader) uniformOffset() int32 {
 // Reload replaces the shader's program with newly compiled SPIR-V from
 // bunyip-shader, rebuilding its pipelines, so a game watching its shader
 // files (asset.Watcher) can swap them while it runs. Images and uniforms
-// are kept. It waits for the GPU first.
+// are kept. The old pipelines are freed once the frame that may still be
+// drawing with them has finished.
 func (s *Shader) Reload(spirv []byte) error {
 	fresh, err := s.g.newShader(spirv, s.mesh)
 	if err != nil {
 		return err
 	}
-	_ = s.g.r.Device.WaitIdle()
-	for _, p := range s.pipes {
-		p.Destroy()
-	}
+	s.retirePipelines()
 	s.frag, s.stages, s.pipes = fresh.frag, fresh.stages, fresh.pipes
 	return nil
 }
 
-// Destroy frees the shader's pipelines. It must not be in use by a frame
-// in flight.
+// Destroy frees the shader's pipelines. Called inside a frame it costs
+// no wait: they go on the frame slot's retire list and are freed once
+// that frame has finished.
 func (s *Shader) Destroy() {
 	if s == nil || s.pipes == nil {
 		return
 	}
-	_ = s.g.r.Device.WaitIdle()
-	for _, p := range s.pipes {
-		p.Destroy()
-	}
+	s.retirePipelines()
 	s.pipes = nil
+}
+
+// retirePipelines hands the shader's pipelines to the frame slot's
+// retire list, so draws already recorded keep their pipeline.
+func (s *Shader) retirePipelines() {
+	pipes := slices.Collect(maps.Values(s.pipes))
+	s.g.deferDestroy(func() {
+		for _, p := range pipes {
+			p.Destroy()
+		}
+	})
 }
 
 // SetShader makes later 2D drawing in the current queue use a sprite

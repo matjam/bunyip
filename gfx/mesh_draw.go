@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"unsafe"
@@ -19,10 +20,39 @@ const (
 	maxSpotShadows = 4    // spot lights with shadow maps in one frame
 	spotShadowSize = 1024 // pixels across a spot light's shadow map
 	// shadowAtlasSize is one depth image holding the three cascades and
-	// the spot maps, so the shadows cost one sampler binding: Metal allows
-	// sixteen samplers a stage and the material set uses thirteen.
+	// the spot maps, so every shadow costs one binding rather than one
+	// each.
 	shadowAtlasSize = 4096
+	// matImages is how many sampled images the material set holds:
+	// five material textures, four shader images, the environment cube,
+	// the thickness map, the scene copy for transmission and the
+	// transmission map. Keeping this and the shadow atlas together at or
+	// under thirty-one leaves the mesh pipelines inside the texture
+	// limit MoltenVK reports on Intel Macs; Apple silicon allows 128.
+	matImages = 13
+	// matSamplerBinding is where the material set's shared sampler array
+	// sits, after the images.
+	matSamplerBinding = matImages
+	// matSamplers is how many samplers that array holds: linear repeat,
+	// linear clamp, nearest repeat, nearest clamp, in that order. They
+	// are immutable in the layout, so no set ever writes them, and Metal
+	// sees five samplers a stage counting the shadow atlas's, well under
+	// its limit of sixteen.
+	matSamplers = 4
 )
+
+// samplerIndex is where a texture's filtering and edge handling sit in
+// the material set's sampler array: bit 1 is nearest, bit 0 is clamp.
+func samplerIndex(linear, repeat bool) uint32 {
+	i := uint32(0)
+	if !linear {
+		i |= 2
+	}
+	if !repeat {
+		i |= 1
+	}
+	return i
+}
 
 // shadowRegion is where a shadow map lives in the atlas: cascades in
 // three quadrants, the spot maps sharing the fourth.
@@ -43,21 +73,25 @@ type meshPass struct {
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
-	materials     *render.DescriptorSets // five material textures, a shader's image0..3, the environment cube
-	matSets       map[materialKey]vk.VkDescriptorSet
-	lastMatKey    materialKey // the key materialSet last resolved, to skip hashing matSets
-	lastMatSet    vk.VkDescriptorSet
-	lastMatOK     bool
-	flatNormal    *Texture
-	black         *Texture
-	blackCube     *render.Image    // stands in for the environment when none is set
-	skyPipe       *render.Pipeline // an image environment as the background
-	skyParamPipe  *render.Pipeline // the procedural sky as the background
-	outlinePipe   *render.Pipeline // solid shell where the stencil is clear
-	xrayPipe      *render.Pipeline // solid tint where depth says hidden
-	decalPipe     *render.Pipeline // set up by the post pass, which owns the depth sampler layout
-	decalMesh     *Mesh            // a unit cube
-	quad          *Mesh            // the billboard quad, made on first use
+	// materials is set 0: thirteen sampled images (five material
+	// textures, a shader's image0..3, the environment cube, the
+	// thickness map, the scene copy, the transmission map) and the
+	// shared sampler array, which is immutable in the layout.
+	materials    *render.DescriptorSets
+	matSets      map[materialKey]vk.VkDescriptorSet
+	lastMatKey   materialKey // the key materialSet last resolved, to skip hashing matSets
+	lastMatSet   vk.VkDescriptorSet
+	lastMatOK    bool
+	flatNormal   *Texture
+	black        *Texture
+	blackCube    *render.Image    // stands in for the environment when none is set
+	skyPipe      *render.Pipeline // an image environment as the background
+	skyParamPipe *render.Pipeline // the procedural sky as the background
+	outlinePipe  *render.Pipeline // solid shell where the stencil is clear
+	xrayPipe     *render.Pipeline // solid tint where depth says hidden
+	decalPipe    *render.Pipeline // set up by the post pass, which owns the depth sampler layout
+	decalMesh    *Mesh            // a unit cube
+	quad         *Mesh            // the billboard quad, made on first use
 }
 
 // decal is a texture projected onto the scene inside a box.
@@ -145,7 +179,9 @@ type frameUniforms struct {
 }
 
 // materialKey identifies a material descriptor set: its textures, the
-// shader's images and the frame's environment map.
+// shader's images and the frame's environment map. The order of tex is
+// the order the set binds them and the order the packed sampler indices
+// are read in.
 type materialKey struct {
 	tex   [11]*Texture // five material textures, four shader images, the thickness and transmission maps
 	env   *Environment
@@ -165,7 +201,28 @@ func (g *Graphics) initMeshPass() error {
 	if mp.jointLayout, err = dev.NewStorageSets(64, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
 		return err
 	}
-	if mp.materials, err = dev.NewSamplerDescriptors(13, 1024); err != nil {
+	// Set 0 keeps its images and its samplers apart: thirteen sampled
+	// images, then one array of four samplers baked into the layout that
+	// a shader indexes per texture slot. Sampling an array of samplers by
+	// a dynamically uniform index needs this feature, which every desktop
+	// driver and MoltenVK report.
+	if !dev.ArrayIndexing() {
+		return fmt.Errorf("gfx: this GPU does not support shaderSampledImageArrayDynamicIndexing, which mesh materials need")
+	}
+	matBindings := make([]render.DescriptorBinding, matSamplerBinding+1)
+	for i := range matImages {
+		matBindings[i] = render.DescriptorBinding{
+			Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			// A shader's vertex hook may read the same images, for
+			// displacement maps.
+			Stages: meshStages,
+		}
+	}
+	matBindings[matSamplerBinding] = render.DescriptorBinding{
+		Type: vk.VK_DESCRIPTOR_TYPE_SAMPLER, Count: matSamplers, Stages: meshStages,
+		Immutable: []vk.VkSampler{g.linearRep, g.linear, g.nearestRep, g.nearest},
+	}
+	if mp.materials, err = dev.NewDescriptors(matBindings, 1024); err != nil {
 		return err
 	}
 	var blackFace [6][]byte
@@ -232,7 +289,7 @@ func (g *Graphics) initMeshPass() error {
 		return err
 	}
 	atlasDepth := mp.shadowAtlas.Depth
-	if err := dev.OneShot(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
+	if err := g.setup(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
 		return err
 	}
 	if mp.shadowSet, err = mp.shadowDesc.AllocateMany([]render.SamplerBinding{{View: atlasDepth.View, Sampler: mp.shadowSamp}}); err != nil {
@@ -271,7 +328,10 @@ func (mp *meshPass) pipelineDesc(skinned bool) render.PipelineDesc {
 
 // shadowPipelineDesc is the depth-only shadow pass pipeline, without a
 // vertex program. The vertex prelude declares the whole instance stream,
-// so the layout matches the lit pass.
+// so the layout matches the lit pass. Depth is clamped rather than
+// clipped, so a caster above a cascade's near plane still casts into it;
+// where the device has no depth clamping the cascade moves its near
+// plane back instead.
 func (mp *meshPass) shadowPipelineDesc(skinned bool) render.PipelineDesc {
 	g := mp.defaultShader.g
 	bindings, attrs := meshVertexLayout()
@@ -283,7 +343,7 @@ func (mp *meshPass) shadowPipelineDesc(skinned bool) render.PipelineDesc {
 		NoColor: true, DepthFormat: g.r.DepthFormat,
 		Bindings: bindings, Attributes: attrs,
 		CullMode: vk.VK_CULL_MODE_NONE, DepthTest: true, DepthWrite: true,
-		DepthBias: 1.5, DepthSlopeBias: 2.0,
+		DepthBias: 1.5, DepthSlopeBias: 2.0, DepthClamp: true,
 		PushConstantSize: 4, // cascade index
 		SetLayouts:       []vk.VkDescriptorSetLayout{mp.materials.Layout, mp.uniformLayout.Layout, mp.shadowDesc.Layout, mp.jointLayout.Layout, g.uniforms.Layout},
 	}
@@ -311,6 +371,16 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 // SetCamera sets the camera for this frame's meshes.
 func (g *Graphics) SetCamera(c Camera) { g.cur.camera, g.cur.hasCam = c, true }
 
+// ensureCamera gives a queue that drew a 3D scene without SetCamera the
+// default camera, five units back down the z axis. It runs before the
+// draws are prepared and again before the frame block is written, so
+// culling, sorting and the shader see one view.
+func (q *drawQueue) ensureCamera() {
+	if !q.hasCam {
+		q.camera, q.hasCam = Camera{Position: lin.V3(0, 0, 5)}, true
+	}
+}
+
 // SetLight sets the directional light, ambient term and shadow settings.
 func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 
@@ -324,6 +394,7 @@ func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
 		return
 	}
 	g.cur.points = append(g.cur.points, pointLight{pos: pos, color: c, rng: rng})
+	g.stats.Lights++
 }
 
 // MaxLights is how many point and spot lights a frame keeps.
@@ -376,6 +447,7 @@ func (g *Graphics) AddSpot(s SpotLight) {
 		cosOuter: float32(math.Cos(float64(s.OuterAngle) / 2)),
 		outer:    s.OuterAngle, shadow: s.Shadows,
 	})
+	g.stats.Lights++
 }
 
 // spotShadows lists the lights that get shadow maps this frame, in map
@@ -425,10 +497,12 @@ func (g *Graphics) queueMesh(d meshDraw) {
 }
 
 // materialSet returns the descriptor set for a material's textures, its
-// shader's images, the environment map in use and the output's scene copy.
-// A frame's draws are usually grouped by material, so the last key and
-// set are remembered and compared before the map is hashed.
-func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, error) {
+// shader's images, the environment map in use and the output's scene
+// copy, together with the sampler index of each texture slot packed two
+// bits apiece, which the instance stream carries to the shader. A
+// frame's draws are usually grouped by material, so the last key and set
+// are remembered and compared before the map is hashed.
+func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Image) (vk.VkDescriptorSet, float32, error) {
 	mp := &g.meshes
 	key := materialKey{env: env, scene: scene}
 	key.tex = [11]*Texture{orTex(mat.Texture, g.white), orTex(mat.MetalRoughTexture, g.white), orTex(mat.NormalTexture, mp.flatNormal), orTex(mat.EmissiveTexture, mp.black), orTex(mat.OcclusionTexture, g.white)}
@@ -443,63 +517,96 @@ func (g *Graphics) materialSet(mat *Material, env *Environment, scene *render.Im
 	}
 	key.tex[9] = orTex(mat.ThicknessTexture, thin)
 	key.tex[10] = orTex(mat.TransmissionTexture, g.white)
-	if mp.lastMatOK && key == mp.lastMatKey {
-		return mp.lastMatSet, nil
+	// Each slot's sampler index rides with the draw rather than in the
+	// set, so the four samplers are shared by every material. A texture
+	// destroyed earlier this frame still has its image until the frame
+	// retires it, so the draw keeps its pixels; the set it needs is not
+	// cached, since a later frame must not find it.
+	var bits uint32
+	cache := true
+	for i, t := range key.tex {
+		if t == nil {
+			t = g.white
+		}
+		bits |= samplerIndex(!t.nearest, t.repeat) << (2 * i)
+		if t.destroyed {
+			cache = false
+		}
 	}
-	if set, ok := mp.matSets[key]; ok {
-		mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
-		return set, nil
+	samplers := float32(bits)
+	if cache {
+		if mp.lastMatOK && key == mp.lastMatKey {
+			return mp.lastMatSet, samplers, nil
+		}
+		if set, ok := mp.matSets[key]; ok {
+			mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
+			return set, samplers, nil
+		}
 	}
 	// Bindings 0..8 are the material and image textures, 9 the environment
-	// cube, 10 the thickness map, 11 the scene copy, 12 the transmission map.
-	bindings := make([]render.SamplerBinding, 13)
+	// cube, 10 the thickness map, 11 the scene copy, 12 the transmission
+	// map. They are sampled images; binding 13 holds the samplers.
+	bindings := make([]render.SamplerBinding, matImages)
 	for i, t := range key.tex[:9] {
 		if t == nil {
 			t = g.white
 		}
-		bindings[i] = render.SamplerBinding{View: t.img.View, Sampler: g.sampler(!t.nearest, t.repeat)}
+		bindings[i] = render.SamplerBinding{View: t.img.View}
 	}
 	cube := mp.blackCube
 	if env != nil {
 		cube = env.cube
 	}
-	bindings[9] = render.SamplerBinding{View: cube.View, Sampler: g.linear}
-	thick := key.tex[9]
-	bindings[10] = render.SamplerBinding{View: thick.img.View, Sampler: g.sampler(!thick.nearest, thick.repeat)}
-	bindings[11] = render.SamplerBinding{View: scene.View, Sampler: g.linear}
-	trans := key.tex[10]
-	bindings[12] = render.SamplerBinding{View: trans.img.View, Sampler: g.sampler(!trans.nearest, trans.repeat)}
+	bindings[9] = render.SamplerBinding{View: cube.View}
+	bindings[10] = render.SamplerBinding{View: key.tex[9].img.View}
+	bindings[11] = render.SamplerBinding{View: scene.View}
+	bindings[12] = render.SamplerBinding{View: key.tex[10].img.View}
 	set, err := mp.materials.AllocateMany(bindings)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
+	}
+	if !cache {
+		g.deferDestroy(func() { mp.materials.Free(set) })
+		return set, samplers, nil
 	}
 	mp.matSets[key] = set
 	mp.lastMatKey, mp.lastMatSet, mp.lastMatOK = key, set, true
-	return set, nil
+	return set, samplers, nil
 }
 
 // forgetEnvironment drops cached material sets that reference a destroyed
 // environment.
 func (g *Graphics) forgetEnvironment(env *Environment) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if key.env == env {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
-		}
-	}
+	g.forgetMaterialSets(func(key materialKey) bool { return key.env == env })
 }
 
 // forgetScene drops cached material sets that reference an output's
 // destroyed scene copy.
 func (g *Graphics) forgetScene(scene *render.Image) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if key.scene == scene {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
+	g.forgetMaterialSets(func(key materialKey) bool { return key.scene == scene })
+}
+
+// forgetMaterialSets drops every cached material set matching a
+// predicate. The sets themselves are freed once the frame that may still
+// bind them has finished.
+func (g *Graphics) forgetMaterialSets(match func(materialKey) bool) {
+	mp := &g.meshes
+	mp.lastMatOK = false
+	var freed []vk.VkDescriptorSet
+	for key, set := range mp.matSets {
+		if match(key) {
+			freed = append(freed, set)
+			delete(mp.matSets, key)
 		}
 	}
+	if len(freed) == 0 {
+		return
+	}
+	g.deferDestroy(func() {
+		for _, set := range freed {
+			mp.materials.Free(set)
+		}
+	})
 }
 
 func orTex(t, fallback *Texture) *Texture {
@@ -511,24 +618,31 @@ func orTex(t, fallback *Texture) *Texture {
 
 // forgetTexture drops cached descriptor sets that reference a destroyed texture.
 func (g *Graphics) forgetTexture(t *Texture) {
-	g.meshes.lastMatOK = false
-	for key, set := range g.meshes.matSets {
-		if slices.Contains(key.tex[:], t) {
-			g.meshes.materials.Free(set)
-			delete(g.meshes.matSets, key)
-		}
-	}
+	g.forgetMaterialSets(func(key materialKey) bool { return slices.Contains(key.tex[:], t) })
+	var freed []vk.VkDescriptorSet
 	for key, set := range g.imageSets {
 		if slices.Contains(key[:], t) {
-			g.descriptors.Free(set)
+			freed = append(freed, set)
 			delete(g.imageSets, key)
 		}
 	}
+	if len(freed) == 0 {
+		return
+	}
+	g.deferDestroy(func() {
+		for _, set := range freed {
+			g.descriptors.Free(set)
+		}
+	})
 }
 
 // cascades fits one orthographic light frustum to each slice of the
 // camera frustum out to the shadow distance, returning the matrices and
-// the view-space depth where each cascade ends.
+// the view-space depth where each cascade ends. A cascade's near plane
+// sits two slice radii above the slice, which a caster higher than that
+// would fall in front of; the shadow pipelines clamp depth instead of
+// clipping there, and where the device cannot, the near plane moves back
+// to hold every caster the queue has (q.casterAlong).
 func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4, lin.Vec4) {
 	var mats [shadowCascades]lin.Mat4
 	var splits, radii lin.Vec4
@@ -586,8 +700,17 @@ func (q *drawQueue) cascades(aspect float32) ([shadowCascades]lin.Mat4, lin.Vec4
 		c.X = float32(math.Floor(float64(c.X/texel))) * texel
 		c.Y = float32(math.Floor(float64(c.Y/texel))) * texel
 		centre = view.Inverse().MulPoint(c)
-		view = lin.LookAt(centre.Sub(dir.Mul(radius*2)), centre, lightUp)
-		mats[i] = lin.Ortho(-radius, radius, -radius, radius, 0.1, radius*4).Mul(view)
+		// Without depth clamping the volume has to reach every caster, so
+		// the eye moves back along the light until the nearest one is
+		// inside it. The x and y extents, and the snapping, do not change.
+		back := float32(0)
+		if !q.depthClamp && q.hasCasters {
+			// The eye sits 2 radii before the centre; a caster is at
+			// -casterAlong along the light from the origin at the furthest.
+			back = max(0, 0.1-(-q.casterAlong-centre.Dot(dir)+radius*2))
+		}
+		view = lin.LookAt(centre.Sub(dir.Mul(radius*2+back)), centre, lightUp)
+		mats[i] = lin.Ortho(-radius, radius, -radius, radius, 0.1, radius*4+back).Mul(view)
 		switch i {
 		case 0:
 			radii.X = radius
@@ -608,11 +731,11 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// writeUniforms fills the queue's frame block for the slot.
+// writeUniforms fills the queue's frame block for the slot. It runs
+// after prepareDraws, whose caster bounds the cascades need, and keeps
+// the cascade matrices for the shadow pass to cull against.
 func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
-	if !q.hasCam {
-		q.camera = Camera{Position: lin.V3(0, 0, 5)}
-	}
+	q.ensureCamera()
 	l := q.light
 	strength := l.ShadowStrength
 	if strength == 0 {
@@ -620,6 +743,7 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	}
 	sky := l.Sky.resolved(l)
 	mats, splits, radii := q.cascades(aspect)
+	q.cascadeMats = mats
 	u := frameUniforms{
 		viewProj:      q.camera.ViewProj(aspect),
 		view:          q.camera.viewMatrix(),
@@ -679,78 +803,17 @@ func boolFloat(b bool) float32 {
 	return 0
 }
 
-// sortDraws puts the queue's draws in the order they are recorded in:
-// opaque before blended, what the camera sees before what it does not,
-// blended draws back to front, and opaque draws grouped by the state a
-// run of instances must share. It leaves q.draws where they are and
-// orders a permutation instead, so the sort moves indices rather than
-// 360-byte records. Each draw's blended field must already be resolved.
-func (q *drawQueue) sortDraws() drawList {
-	n := len(q.draws)
-	if cap(q.order) < n {
-		q.order = make([]int32, n)
-	}
-	q.order = q.order[:n]
-	for i := range q.order {
-		q.order[i] = int32(i)
-	}
-	draws := q.draws
-	slices.SortStableFunc(q.order, func(x, y int32) int {
-		a, b := &draws[x], &draws[y]
-		switch {
-		case a.blended != b.blended:
-			if a.blended {
-				return 1
-			}
-			return -1
-		case a.culled != b.culled: // what the camera sees first
-			if a.culled {
-				return 1
-			}
-			return -1
-		case a.blended: // farthest first
-			if a.depth > b.depth {
-				return -1
-			}
-			if a.depth < b.depth {
-				return 1
-			}
-			return 0
-		case a.skinned != b.skinned:
-			if a.skinned {
-				return 1
-			}
-			return -1
-		case a.shader != b.shader:
-			if uintptr(unsafe.Pointer(a.shader)) < uintptr(unsafe.Pointer(b.shader)) {
-				return -1
-			}
-			return 1
-		case a.uniform != b.uniform:
-			return int(a.uniform - b.uniform)
-		case a.set != b.set:
-			if a.set < b.set {
-				return -1
-			}
-			return 1
-		case a.mesh != b.mesh:
-			if uintptr(unsafe.Pointer(a.mesh)) < uintptr(unsafe.Pointer(b.mesh)) {
-				return -1
-			}
-			return 1
-		}
-		return 0
-	})
-	return drawList{draws: draws, order: q.order}
-}
-
-// prepareDraws resolves material sets, culls draws outside the camera's
-// view, sorts opaque draws for instancing and blended draws back to
-// front, and uploads the instance stream. Culled draws sort to the end
-// of their group and stay in the lists for the shadow pass, which sees
-// them from the light; q.visOpaque and q.visBlended count the draws the
-// camera sees at the front of each list.
+// prepareDraws resolves material sets and bounds, culls draws outside
+// the camera's view, sorts opaque draws for instancing and blended draws
+// back to front, and uploads the instance stream. Culled draws sort to
+// the end of their group and stay in the lists for the shadow pass,
+// which sees them from the light; q.visOpaque and q.visBlended count the
+// draws the camera sees at the front of each list. It runs before
+// writeUniforms and leaves each draw's bounding sphere on the draw, for
+// the shadow pass to cull against, and the furthest caster's reach
+// against the light in q.casterAlong, for the cascades.
 func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, blended drawList, err error) {
+	q.ensureCamera() // culling, sorting and the frame block share one view
 	view := q.camera.viewMatrix()
 	frustum := FrustumOf(q.camera.ViewProj(aspect))
 	env := q.light.Environment
@@ -758,21 +821,25 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		env = nil
 	}
 	culled := 0
+	q.depthClamp = g.r.Device.DepthClamp()
+	q.hasCasters, q.casterAlong = false, 0
+	lightDir := q.light.Direction.Norm()
 	for i := range q.draws {
 		d := &q.draws[i]
-		if d.set, err = g.materialSet(&d.mat, env, scene); err != nil {
+		if d.set, d.samplers, err = g.materialSet(&d.mat, env, scene); err != nil {
 			return drawList{}, drawList{}, err
 		}
-		centre, radius := d.mesh.boundingSphere(d.model)
-		d.depth = -view.MulPoint(centre).Z
+		d.centre, d.radius, d.cullable = q.drawBounds(d)
+		d.depth = -view.MulPoint(d.centre).Z
 		d.blended = d.mat.blended()
-		if d.skinned {
-			radius *= 2 // the bind pose's bounds, loosely
-		}
-		// A shader that moves vertices may push them anywhere.
-		d.culled = len(d.shader.stages) == 0 && !frustum.ContainsSphere(centre, radius)
+		d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
 		if d.culled {
 			culled++
+		}
+		if !d.blended { // opaque draws are the shadow pass's casters
+			if along := -lightDir.Dot(d.centre) + d.radius; !q.hasCasters || along > q.casterAlong {
+				q.hasCasters, q.casterAlong = true, along
+			}
 		}
 	}
 	g.stats.Culled += culled
@@ -820,10 +887,10 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			uvT1:      [4]float32{uv.E, uv.F, m.Clearcoat, ccRough},
 			sheen:     [4]float32{m.Sheen.R, m.Sheen.G, m.Sheen.B, sheenRough},
 			volume:    [4]float32{m.Transmission, ior, m.Thickness, m.AttenuationDistance},
-			atten:     [4]float32{atten.R, atten.G, atten.B, 0},
+			atten:     [4]float32{atten.R, atten.G, atten.B, d.samplers},
 		})
 	}
-	if err := q.inst.upload(g.r.Device, slot); err != nil {
+	if err := q.inst.upload(g, slot); err != nil {
 		return drawList{}, drawList{}, err
 	}
 	if len(q.joints) > 0 {
@@ -879,7 +946,7 @@ func orOne(metallic float32, hasTexture bool) float32 {
 // stream. In the shadow pass (cascade set) the depth-only pipelines are
 // used; otherwise each draw's shader picks its lit pipeline. Skinned
 // draws are never merged, since each has its own joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32) error {
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32, mask []bool) error {
 	n := draws.len()
 	if n == 0 {
 		return nil // a sky-only frame has no instance buffer to bind
@@ -890,12 +957,19 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 	var bound *render.Pipeline
 	boundUniform := int32(-2)
 	for i := 0; i < n; {
+		if mask != nil && !mask[i] { // this draw misses the shadow map
+			i++
+			continue
+		}
 		d := draws.at(i)
 		run := 1
 		if !d.skinned {
 			runKey := meshKey(&d.mat, false)
 			for i+run < n {
 				e := draws.at(i + run)
+				if mask != nil && !mask[i+run] {
+					break
+				}
 				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false) != runKey {
 					break
 				}
@@ -938,6 +1012,8 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		g.stats.Draws3D++
 		if cascade == nil {
 			g.stats.Instances += run
+		} else {
+			g.stats.ShadowDraws += run
 		}
 		i += run
 	}
@@ -950,18 +1026,20 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	mp := &g.meshes
 	cb := fr.CB
 	aspect := float32(t.extent.Width) / float32(t.extent.Height)
-	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
-		return err
-	}
+	// The draws are prepared first: the cascades' near planes need the
+	// caster bounds, and the shadow pass culls against every light.
 	opaque, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
 	if err != nil {
+		return err
+	}
+	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
 		return err
 	}
 	seen, seenBlended := opaque.slice(0, q.visOpaque), blended.slice(0, q.visBlended)
 	// Every shadow map is a region of one atlas: the cascades, then the
 	// spot maps, each drawn with its own viewport. The vertex program
 	// picks the projection by index, spot lights past the cascades.
-	spotLights, _ := q.spotShadows()
+	spotLights, spotMats := q.spotShadows()
 	if q.light.Shadows || len(spotLights) > 0 {
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadowAtlas, ClearDepth: 1})
 		var maps []int
@@ -976,7 +1054,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 			render.SetViewportRect(cb, region)
 			render.SetScissorRect(cb, region)
 			pc := int32(index)
-			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc); err != nil {
+			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc, q.shadowMask(opaque, index, spotMats)); err != nil {
 				return err
 			}
 		}
@@ -1002,7 +1080,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
 		vk.CmdDraw(cb, 3, 1, 0, 0)
 	}
-	if err := g.drawRuns(cb, fr, q, seen, 0, nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seen, 0, nil, nil); err != nil {
 		return err
 	}
 	g.drawSolid(cb, fr, q, seen, 0, t.extent)
@@ -1013,7 +1091,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
-	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil, nil); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {
