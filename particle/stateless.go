@@ -110,10 +110,11 @@ func (s *GPUSystem) statelessRange() (first, last int64, maxLife float32) {
 	}
 	now := float64(s.clock)
 	last = int64(math.Floor(now * rate))
+	// The indices run back past zero, so at a clock of zero the stream
+	// already holds a lifetime of particles born at negative times. That
+	// is what makes a stateless emitter need no Prewarm: rain is already
+	// falling on the first frame rather than starting from an empty sky.
 	first = int64(math.Ceil((now - float64(maxLife)) * rate))
-	if first < 0 {
-		first = 0
-	}
 	// Max caps the stream from the newest end, so raising the rate past
 	// the cap thins the oldest rather than refusing to draw the newest.
 	if n := int64(e.max()); last-first+1 > n {

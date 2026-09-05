@@ -116,6 +116,71 @@ func TestDrawParticlesLayers(t *testing.T) {
 	}
 }
 
+// TestDrawParticlesCallOrder checks that within one layer a particle
+// batch draws where a sprite drawn at that point would: a sprite drawn
+// after the particles covers them, and one drawn before is covered.
+// That is what lets a game swap particle.System for particle.GPUSystem
+// without its interface ending up underneath the effect.
+func TestDrawParticlesCallOrder(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	ok, err := g.begin(Black)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if !ok {
+		t.Skip("no frame")
+	}
+	// All on layer 0, so only the call order decides. On the left the
+	// particle comes first and the sprite covers it; on the right the
+	// sprite comes first and the particle covers it.
+	g.FillRect(0, 0, 64, 64, RGB(20, 20, 20))
+	g.DrawParticles(nil, []ParticleQuad{quad(16, 32, 20, RGB(255, 0, 0))})
+	g.FillRect(6, 22, 20, 20, RGB(0, 255, 0))
+	g.DrawParticles(nil, []ParticleQuad{quad(48, 32, 20, RGB(0, 0, 255))})
+	img, err := g.end(true)
+	if err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if got := img.RGBAAt(16, 32); !closeColor(got, color.RGBA{0, 255, 0, 255}) {
+		t.Errorf("the sprite drawn after the particles did not cover them: %v", got)
+	}
+	if got := img.RGBAAt(48, 32); !closeColor(got, color.RGBA{0, 0, 255, 255}) {
+		t.Errorf("the particles drawn after the sprites were covered: %v", got)
+	}
+}
+
+// TestDrawParticlesUnderAHigherLayer is the shape a game draws in: the
+// scene on layer 0 with the particles among it, and the interface on a
+// layer well above. The interface must be on top.
+func TestDrawParticlesUnderAHigherLayer(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	ok, err := g.begin(Black)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if !ok {
+		t.Skip("no frame")
+	}
+	g.SetLayer(0)
+	g.FillRect(0, 40, 64, 24, RGB(40, 40, 40)) // the ground
+	g.DrawParticles(nil, []ParticleQuad{quad(32, 32, 60, RGB(255, 0, 0))})
+	g.SetLayer(1)
+	g.FillRect(0, 0, 8, 8, RGB(0, 255, 255)) // something between
+	g.SetLayer(10)
+	g.FillRect(8, 8, 24, 24, RGB(0, 255, 0)) // the interface
+	g.SetLayer(0)
+	img, err := g.end(true)
+	if err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if got := img.RGBAAt(20, 20); !closeColor(got, color.RGBA{0, 255, 0, 255}) {
+		t.Errorf("the layer 10 panel is under the layer 0 particles: %v", got)
+	}
+	if got := img.RGBAAt(40, 32); !closeColor(got, color.RGBA{255, 0, 0, 255}) {
+		t.Errorf("the particles did not draw where nothing covers them: %v", got)
+	}
+}
+
 // TestDrawParticles3D draws billboards in the scene and checks that one
 // in front of the camera is visible while one behind a wall is hidden,
 // which is the depth test the fragment program does by hand.

@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"cmp"
 	"slices"
 	"unsafe"
 
@@ -59,7 +60,12 @@ type particleBatch struct {
 	set   vk.VkDescriptorSet
 	blend Blend
 	layer int32
-	soft  float32
+	// seq is how far the 2D stream had got when the batch was
+	// submitted, which orders it against the sprite draws of the same
+	// layer: a batch drawn before a sprite in the game's code is drawn
+	// before it on screen, as it would be through the sprite path.
+	seq  int32
+	soft float32
 	// proj is the 2D projection in force when the batch was submitted,
 	// held by value because the stream's projection table is rebuilt
 	// each frame and moves.
@@ -226,9 +232,11 @@ func (p *particlePass) destroy() {
 
 // DrawParticles queues a batch of 2D particles as one instanced draw,
 // for the very large counts a sprite-by-sprite path cannot afford. A nil
-// texture draws plain quads. The batch takes the queue's current layer,
-// and the blend mode is the queue's unless the particle package sets its
-// own; within one layer particles draw over sprites.
+// texture draws plain quads. The batch takes the queue's current layer
+// and blend mode, and draws in the same place a sprite drawn at that
+// point would: by layer first, then by the order the calls were made.
+// A sort key set with SetSortKey orders sprites within a layer but not
+// particle batches, which keep their call order.
 //
 // The slice is copied into this frame's instance buffer, so it may be
 // reused as soon as the call returns. Particles are drawn in the order
@@ -249,8 +257,12 @@ func (g *Graphics) drawParticlesBlend(tex *Texture, quads []ParticleQuad, blend 
 	q := g.cur
 	first, count := q.parts.add(quads)
 	q.parts.flat = append(q.parts.flat, particleBatch{
-		set: tex.setFor(FilterDefault), blend: blend, layer: q.layer, proj: q.spriteProj, first: first, count: count,
+		set: tex.setFor(FilterDefault), blend: blend, layer: q.layer, seq: int32(len(q.stream.verts)),
+		proj: q.spriteProj, first: first, count: count,
 	})
+	// The sprite run that follows must not merge into the one before, or
+	// this batch would have nowhere to go between them.
+	q.stream.breakRun = true
 }
 
 // DrawParticles3D queues a batch of camera-facing particles in the 3D
@@ -288,22 +300,26 @@ func (g *Graphics) prepareParticles(q *drawQueue, slot int) error {
 		return err
 	}
 	slices.SortStableFunc(q.parts.flat, func(a, b particleBatch) int {
-		return int(a.layer) - int(b.layer)
+		if c := cmp.Compare(a.layer, b.layer); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.seq, b.seq)
 	})
 	return nil
 }
 
-// drawFlatParticles records the 2D batches from at up to the first one
-// at or above layer, and returns where it stopped. flush2D calls it
-// between draws so particles interleave with sprites by layer. A batch
-// carries no clip rectangle, so the first one restores the full
+// drawFlatParticles records the 2D batches from at that belong under
+// the draw d, and returns where it stopped; all records the rest.
+// flush2D calls it between draws so particles interleave with sprites
+// by layer and, within a layer, by the order they were submitted in. A
+// batch carries no clip rectangle, so the first one restores the full
 // viewport scissor.
-func (g *Graphics) drawFlatParticles(cb vk.VkCommandBuffer, q *drawQueue, at int, layer int32, all bool, vp vk.VkRect2D) (int, error) {
+func (g *Graphics) drawFlatParticles(cb vk.VkCommandBuffer, q *drawQueue, at int, d draw2D, all bool, vp vk.VkRect2D) (int, error) {
 	batches := q.parts.flat
 	pp := &g.particles
 	for first := true; at < len(batches); first = false {
 		b := batches[at]
-		if !all && b.layer >= layer {
+		if !all && (b.layer > d.layer || b.layer == d.layer && b.seq > d.seq) {
 			break
 		}
 		if first {

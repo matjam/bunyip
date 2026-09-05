@@ -22,14 +22,17 @@ import (
 type game struct {
 	seconds float64
 	shot    string
+	drops   int
 
-	font     *gfx.Font
-	ui       *ui.Context
-	soft     *gfx.Texture
-	fireE    particle.Emitter
-	fire     *particle.System
-	smoke    *particle.System
-	rain     *particle.System
+	font  *gfx.Font
+	ui    *ui.Context
+	soft  *gfx.Texture
+	fireE particle.Emitter
+	fire  *particle.System
+	smoke *particle.System
+	// The rain is a GPUSystem rather than a System: tens of thousands of
+	// drops as one instanced draw call rather than one sprite each.
+	rain     *particle.GPUSystem
 	sparks   *particle.System
 	bursts   []*particle.System // confetti pops, dropped once Finished
 	fireRate float32
@@ -64,11 +67,17 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	smoke.Layer = 1
 	g.smoke = particle.New(smoke)
 
+	// Rain through the instanced path. Stateless means no per-particle
+	// state is kept at all: every drop is a closed form of the seed, its
+	// index and the clock, so the storm is already falling at time zero
+	// with no Prewarm and costs the same memory at any size.
 	rain := particle.Rain()
 	rain.Position = lin.V2(-40, -20)
 	rain.Shape = particle.Line(lin.V2(ctx.Width+80, 0))
-	rain.Prewarm = 2
-	g.rain = particle.New(rain)
+	rain.Stateless = true
+	rain.Max = g.drops
+	rain.Rate = float32(g.drops) / 1.6 // the rate that fills Max over a lifetime
+	g.rain = particle.NewGPU(rain)
 
 	sparks := particle.Sparks()
 	sparks.Burst = 0 // only on click
@@ -157,7 +166,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	for _, b := range g.bursts {
 		alive += b.Alive()
 	}
-	gr.DebugText(12, ctx.Height-28, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
+	gr.DebugText(12, ctx.Height-46, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
+	gr.DebugText(12, ctx.Height-28, fmt.Sprintf("%d of them are stateless rain, drawn as one instanced call.", g.rain.Alive()))
 
 	u := g.ui
 	u.Begin(ctx.Input, func() {
@@ -180,9 +190,10 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	headless := flag.Bool("headless", false, "render without a window, for screenshots")
+	drops := flag.Int("drops", 3000, "raindrops in the instanced storm; try 200000")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
-		&game{seconds: *seconds, shot: *shot})
+		&game{seconds: *seconds, shot: *shot, drops: max(*drops, 1)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "particles:", err)
 		os.Exit(1)

@@ -629,7 +629,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		if len(q.parts.flat) > 0 {
 			render.SetViewportRect(fr.CB, vp)
 			g.particles.push = push2D{frame: lin.V4(g.time, q.viewW, q.viewH, float32(vp.Extent.Width)/q.viewW)}
-			_, err := g.drawFlatParticles(fr.CB, q, 0, 0, true, vp)
+			_, err := g.drawFlatParticles(fr.CB, q, 0, draw2D{}, true, vp)
 			return err
 		}
 		return nil
@@ -655,10 +655,11 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	part := 0 // the next instanced particle batch to record
 	for _, d := range st.draws {
 		if part < len(q.parts.flat) {
-			// Particles of a lower layer go under this run. They bind
-			// their own pipeline and buffer, so what was bound for the
-			// stream has to be bound again afterwards.
-			next, err := g.drawFlatParticles(cb, q, part, d.layer, false, vp)
+			// Particles submitted before this run, by layer and then by
+			// order, go under it. They bind their own pipeline and
+			// buffer, so what was bound for the stream has to be bound
+			// again afterwards.
+			next, err := g.drawFlatParticles(cb, q, part, d, false, vp)
 			if err != nil {
 				return err
 			}
@@ -703,8 +704,8 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
 		vk.CmdDraw(cb, d.count, 1, d.first, 0)
 	}
-	// Then the particles above every sprite layer.
-	if _, err := g.drawFlatParticles(cb, q, part, 0, true, vp); err != nil {
+	// Then whatever was submitted after the last sprite run.
+	if _, err := g.drawFlatParticles(cb, q, part, draw2D{}, true, vp); err != nil {
 		return err
 	}
 	return nil

@@ -173,14 +173,42 @@ func TestStatelessDamping(t *testing.T) {
 	}
 }
 
+// TestStatelessNeedsNoPrewarm checks that a stateless emitter is at its
+// steady state on the very first frame, because its indices run back
+// past zero: rain falls from the start rather than out of an empty sky.
+func TestStatelessNeedsNoPrewarm(t *testing.T) {
+	e := Emitter{Rate: 1000, Lifetime: Range{Min: 1, Max: 1}, Stateless: true, Max: 4000}
+	fresh := NewGPU(e)
+	fresh.buildQuads(lin.Vec2{})
+	atStart := fresh.Alive()
+
+	settled := NewGPU(e)
+	settled.SetClock(5)
+	settled.buildQuads(lin.Vec2{})
+	later := settled.Alive()
+
+	if later == 0 {
+		t.Fatal("no particles after five seconds")
+	}
+	if d := atStart - later; d < -later/10 || d > later/10 {
+		t.Errorf("the first frame has %d particles and a settled one %d; a stateless stream starts full", atStart, later)
+	}
+}
+
 // TestStatelessIgnoresBurst records that a stateless emitter's stream is
 // a function of the clock and cannot be added to.
 func TestStatelessIgnoresBurst(t *testing.T) {
 	e := Emitter{Rate: 100, Lifetime: Range{Min: 1}, Stateless: true, Max: 500}
-	s := NewGPU(e)
-	s.Burst(100)
-	s.buildQuads(lin.Vec2{})
-	if got := len(s.Quads()); got > 1 {
-		t.Errorf("a burst added %d particles to a stateless stream", got)
+	quiet := NewGPU(e)
+	quiet.buildQuads(lin.Vec2{})
+	want := len(quiet.Quads())
+	if want == 0 {
+		t.Fatal("the stream is empty before the burst")
+	}
+	burst := NewGPU(e)
+	burst.Burst(100)
+	burst.buildQuads(lin.Vec2{})
+	if got := len(burst.Quads()); got != want {
+		t.Errorf("a burst changed the stream from %d particles to %d", want, got)
 	}
 }
