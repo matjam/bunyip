@@ -788,8 +788,10 @@ effects where order does not matter.
 
 `Transmission` keeps the sorted path either way, because refraction reads
 the scene behind the surface and so has to be drawn after it. A frame can
-have both: the order-independent pass runs first and the transmissive
-draws follow it in order, seeing what it resolved.
+have both: the copy of the scene that glass and screen-space reflections
+read is taken from the opaque draws, the order-independent pass resolves
+over it, and the transmissive draws follow in sorted order. So glass
+refracts the opaque scene, not the translucent surfaces in front of it.
 
 Meshes, models, textures, environments, render textures, shaders and
 fonts all hold GPU memory and all have `Destroy`. Call it from `Init`,
