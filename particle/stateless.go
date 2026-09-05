@@ -91,8 +91,8 @@ func travel(v0, accel lin.Vec2, damping, t float32) lin.Vec2 {
 	}
 	k := damping
 	decay := float32(math.Exp(-float64(k * t)))
-	term := accel.Mul(1 / k)              // the speed the drag settles at
-	rise := (1 - decay) / k               // the integral of the decay
+	term := accel.Mul(1 / k) // the speed the drag settles at
+	rise := (1 - decay) / k  // the integral of the decay
 	return v0.Sub(term).Mul(rise).Add(term.Mul(t))
 }
 
