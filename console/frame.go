@@ -56,6 +56,13 @@ type Stats struct {
 	Updates   int     // Update calls this frame
 	Scopes    []Scope // profile scopes recorded this frame
 
+	// GPUFrameMS is how long the GPU spent on a recent frame and GPU is
+	// that time by pass. Both come from timestamp queries read back a
+	// frame or two later, so they lag the frame on screen, and both are
+	// zero and empty on a device without timestamp queries.
+	GPUFrameMS float64
+	GPU        []Scope
+
 	// DrawBudget is the draw call count a frame should stay under, from
 	// Config.DrawBudget; zero means no budget was set.
 	DrawBudget int

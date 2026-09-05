@@ -31,6 +31,17 @@ type Stats struct {
 	// to go idle. Uploads and destroys inside a frame do not, so a
 	// running game reports zero; the overlay names it when it is not.
 	Waits int
+
+	// GPUFrameMS is how long the GPU spent on a recent frame, from its
+	// first pass to the end of its last. GPU breaks that down by pass:
+	// the shadow atlas, the opaque and blended scene, the reflections, the
+	// decals, bloom, ambient occlusion, the composite and the 2D stream.
+	// Both come from
+	// timestamp queries read back a frame or two later, so they lag the
+	// frame on screen, and both are zero and empty on a device without
+	// timestamp queries.
+	GPUFrameMS float64
+	GPU        []Scope
 }
 
 // Scope is one timed section recorded with Context.Profile.
@@ -106,6 +117,9 @@ func (o *overlay) draw(ctx *Context) error {
 		fmt.Sprintf("update %.2f ms x%d  draw %.2f ms  present %.2f ms", s.UpdateMS, s.Updates, s.DrawMS, s.PresentMS),
 		fmt.Sprintf("voices %d  frame %d", ctx.Audio.Playing(), ctx.Frame),
 		fmt.Sprintf("2D %d draws %d verts  3D %d draws %d instances", s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances),
+	}
+	if s.GPUFrameMS > 0 {
+		lines = append(lines, fmt.Sprintf("gpu %.2f ms", s.GPUFrameMS))
 	}
 	if s.Waits > 0 {
 		lines = append(lines, fmt.Sprintf("GPU STALLS: %d this frame", s.Waits))
