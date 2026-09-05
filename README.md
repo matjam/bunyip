@@ -103,7 +103,7 @@ https://matjam.github.io/bunyip/ by the Docs workflow on each push to
 `main`. The site is built by `go run ./cmd/bunyip-docs -out site` from
 the Markdown in `docs/guides` and the packages' godoc, so `go doc ./gfx`
 shows the same text and `go test ./...` runs every example that prints
-output. The guides are grouped: Start (introduction, getting started,
+output. The guides are grouped: Start (introduction, Why Go?, getting started,
 API design and Tetris), Engine (the window, input, entities and systems, game
 services), Graphics (2D graphics, 3D graphics, shaders, animation, the
 interface), Simulation (physics, orbits) and Audio.
@@ -115,7 +115,8 @@ and everything in one file at `llms-full.txt`. `CLAUDE.md` in the
 repository is written for a model working on the engine or writing a game
 with it.
 
-The [API design guide](docs/guides/api-design.md) explains resource ownership,
+[Why Go?](docs/guides/why-go.md) explains the benefits and tradeoffs of Go
+as the engine's foundation. The [API design guide](docs/guides/api-design.md) explains resource ownership,
 cleanup, defaults and scoped operations with examples.
 
 ## Packages

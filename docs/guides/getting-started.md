@@ -1,7 +1,7 @@
 ---
 title: Getting started
 group: Start
-order: 2
+order: 3
 summary: install the Vulkan driver, open a window, learn the loop and the window controls
 ---
 

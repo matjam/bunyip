@@ -1,7 +1,7 @@
 ---
 title: API design
 group: Start
-order: 3
+order: 4
 summary: ownership, cleanup, scoped work, useful defaults and typed operations
 ---
 
@@ -9,6 +9,8 @@ Bunyip keeps the game loop and device lifetime in the engine. Game code
 describes what to update and draw, owns its application state, and chooses
 when resources can be released early. Closures handle short scopes;
 concrete values and typed methods handle the state that survives them.
+
+For the language choices behind this approach, see [Why Go?](why-go.html).
 
 ## Let the engine manage the loop
 
