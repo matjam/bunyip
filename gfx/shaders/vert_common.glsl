@@ -56,11 +56,12 @@ layout(location = 12) in vec4 iUVT1;    // texture transform e, f; z clearcoat, 
 layout(location = 13) in vec4 iSheen;   // sheen colour, w sheen roughness
 layout(location = 14) in vec4 iVolume;  // x transmission, y ior, z thickness, w attenuation distance
 layout(location = 15) in vec4 iAtten;   // attenuation colour, w = packed sampler indices
-// Locations 16 and 17 are a skinned mesh's joints and weights, so the
-// instance stream carries on at 18.
-layout(location = 18) in vec4 iSpec;    // specular colour, w specular strength
-layout(location = 19) in vec4 iIrid;    // iridescence strength, film ior, thickness min and max in nm
-layout(location = 20) in vec4 iFur;     // anisotropy strength, its rotation; shell offset and shell height
+layout(location = 16) in vec4 iGI;      // x reflection probe index plus one, y 1 for an opaque draw, w = packed sampler indices
+// Locations 17 and 18 are a skinned mesh's joints and weights, so the
+// instance stream carries on at 19.
+layout(location = 19) in vec4 iSpec;    // specular colour, w specular strength
+layout(location = 20) in vec4 iIrid;    // iridescence strength, film ior, thickness min and max in nm
+layout(location = 21) in vec4 iFur;     // anisotropy strength, its rotation; shell offset and shell height
 
 // The material's textures and the shader's images are visible here too,
 // for displacement maps. Set 0 keeps images and samplers apart, and the

@@ -60,7 +60,9 @@ type drawQueue struct {
 	xforms       []lin.Affine // transform stack below it
 	skyCached    skyKey       // the sky whose harmonics are in skySH
 	skySH        [9]lin.Vec4
-	lines        lineStream // debug lines drawn over the 3D scene
+	lines        lineStream         // debug lines drawn over the 3D scene
+	probes       []*ReflectionProbe // this frame's reflection probes
+	grid         *LightProbeGrid    // this frame's irradiance grid, nil for none
 }
 
 func (q *drawQueue) reset() {
@@ -69,6 +71,8 @@ func (q *drawQueue) reset() {
 	q.decals = q.decals[:0]
 	q.lines.reset()
 	q.points = q.points[:0]
+	q.probes = q.probes[:0]
+	q.grid = nil
 	q.joints = q.joints[:0]
 	q.hasCam = false
 	q.hasCam2D = false
@@ -109,7 +113,9 @@ func (q *drawQueue) destroy() {
 func (g *Graphics) newQueue(w, h float32) (*drawQueue, error) {
 	q := &drawQueue{light: defaultLight(), xform: lin.Identity2(), pixelW: w}
 	var err error
-	if q.uniforms, err = g.r.Device.NewUniformSets(frameUniformsSize, meshStages); err != nil {
+	// Binding 1 of the same set is the light probe grid's harmonics, which
+	// no uniform block is large enough to hold.
+	if q.uniforms, err = g.r.Device.NewUniformStorageSets(frameUniformsSize, gridStorageSize, meshStages); err != nil {
 		return nil, err
 	}
 	if q.jointBuf, err = g.r.Device.NewStorageSets(64*128, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {
