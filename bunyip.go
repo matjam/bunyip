@@ -1,5 +1,6 @@
 // Package bunyip runs a game's main loop. To start a game, implement
-// Game, fill in a Config and call Run. Run owns the window, the event
+// Game or provide GameFuncs callbacks, fill in a Config and call Run.
+// Run owns the window, the event
 // loop, the renderer, the audio device and the frame pacing, and passes
 // a Context to each call with the input state, the Graphics to draw
 // with, the audio Mixer, the clock and the window controls.
@@ -32,6 +33,12 @@
 // so a game can save or prompt first. Games that implement Recoverer can
 // rebuild resources after a lost graphics device; Recover runs with the
 // new context instead of Init. Other games receive the device-loss error.
+//
+// Graphics releases its GPU resources when the context closes, including
+// after setup fails. Context.Cleanup registers closures for other teardown
+// in reverse acquisition order. Context.NewUI supplies a default font and
+// connects clipboard and text-input placement to the window. Config.Console
+// enables an engine-drawn console without an extra drawing call.
 package bunyip
 
 import (
@@ -50,8 +57,8 @@ import (
 // Config describes the window and the loop.
 type Config struct {
 	Title     string // window title; empty means "Bunyip"
-	Width     int    // window content width in points; if either dimension is nonpositive, use 1280 by 720
-	Height    int    // window content height in points
+	Width     int    // window content width in points; nonpositive means 1280
+	Height    int    // window content height in points; nonpositive means 720
 	Resizable bool   // allow the player to resize the window; off by default
 	NoVSync   bool   // present without waiting for the display; vsync is on by default
 
@@ -133,8 +140,8 @@ type Config struct {
 	Pprof string
 
 	// Console builds the debug console, puts it on Context.Console and
-	// tees the log through it. The game draws it: call ctx.Console.Draw
-	// last in Draw, so it sits above the game's own interface. It starts
+	// tees the log through it. The engine draws it after the game and
+	// debug overlay, above the game's own interface. The console starts
 	// closed and costs nothing until it is opened. ConsoleKey is the key
 	// that opens it; zero means the backquote key.
 	Console    bool
@@ -174,7 +181,8 @@ type Initer interface {
 // Shutdowner is implemented by games that free resources on exit.
 // Shutdown runs with a live context after successful Init or Recover,
 // including before a device-loss rebuild. It is not called if Init or
-// Recover returns an error; those callbacks must clean up partial setup.
+// Recover returns an error. Context.Cleanup runs even when setup fails,
+// and Graphics always releases the GPU resources it owns.
 type Shutdowner interface {
 	Shutdown(ctx *Context)
 }
@@ -203,19 +211,14 @@ type Context struct {
 	Audio *audio.Mixer
 
 	// Console is the debug console, set when Config.Console is on and nil
-	// otherwise. Draw it last in the game's Draw, and ask Open whether it
-	// has the keyboard:
+	// otherwise. The engine draws it last; ask Open whether it has the
+	// keyboard:
 	//
 	//	func (g *game) Update(ctx *bunyip.Context) error {
 	//		if ctx.Console.Open() {
 	//			return nil // the console is taking the keys
 	//		}
 	//		...
-	//	}
-	//
-	//	func (g *game) Draw(ctx *bunyip.Context) error {
-	//		// ... the game's drawing ...
-	//		return ctx.Console.Draw(ctx)
 	//	}
 	//
 	// Register commands and variables and attach worlds from Init. A lost
@@ -253,6 +256,7 @@ type Context struct {
 	Stats Stats
 
 	scopes    []Scope
+	cleanups  []func()
 	timeScale float64
 	budget    int
 	app       clipboardWaker
@@ -454,7 +458,7 @@ func (c *Context) SetTimeScale(scale float64) { c.timeScale = max(scale, 0) }
 func (c *Context) TimeScale() float64 { return c.timeScale }
 
 // ConsoleFrame reports the state the debug console draws from. The
-// console calls it; a game passes its context to Console.Draw and never
+// console calls it; the engine passes its context to Console.Draw and never
 // calls this itself.
 func (c *Context) ConsoleFrame() console.Frame {
 	f := console.Frame{

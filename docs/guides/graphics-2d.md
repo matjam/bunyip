@@ -45,7 +45,9 @@ bunyip.Run(bunyip.Config{
 `Graphics.NewTexture` uploads an `image.Image`. `TextureOptions` chooses
 `Linear` filtering for smooth scaling, `NoMipmaps`, `Repeat` to tile,
 and `Data` for pixels that are not sRGB colour, such as masks and normal
-maps. Every texture has `Destroy`; call it from `Shutdown`. To load a
+maps. The renderer owns its textures and releases them when the game
+closes, including when setup or drawing fails. Call `Destroy` to release
+one earlier, for example when unloading a level. To load a
 texture by name, use the [asset](../pkg/asset.html) package. It resolves
 a name against loose directories, pack files and embedded filesystems in
 that order, so a loose file takes priority over a shipped one.
@@ -259,6 +261,21 @@ corners against the view, so a long thin rotated sprite is culled as
 soon as its quad clears the view, and it holds under `Transformed` as
 well: a sprite the transform stack pushes off screen costs nothing.
 `ScreenSpace` returns to view coordinates for the HUD.
+
+Use `WithCamera2D` and `Layered` when the state belongs to a block of
+drawing. Each restores the previous state when its closure returns,
+including on panic:
+
+```go
+gr.WithCamera2D(g.cam, func() {
+	gr.Layered(2, func() { g.player.Draw(gr) })
+})
+gr.Layered(100, func() { gr.DebugText(8, 8, "Score: 10") })
+```
+
+The other drawing scopes (`Blended`, `Transformed`, `Shaded`,
+`ColorMatrixed`, `Clip` and `DrawTo`) also restore their original queue's
+state on panic. They do not undo drawing already queued.
 
 ```go
 g.cam.Follow(g.player.Pos, 8, ctx.Delta) // in Update
@@ -553,7 +570,8 @@ outlines it, both anti-aliased. `StrokeOptions` sets the width, `Cap`,
 `Join`, miter limit and a `Dash` pattern; `FillOptions` maps a `Texture`
 over the path or colours it with a `Gradient`. A `Gradient` is baked
 from stops and given a direction with `Linear` or `Radial`; it holds a
-small texture, so `Destroy` it at the end.
+small texture, which the renderer releases at shutdown; `Destroy` releases
+it earlier.
 
 ```go
 var p gfx.Path

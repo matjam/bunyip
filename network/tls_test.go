@@ -3,6 +3,7 @@ package network
 import (
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -23,6 +24,12 @@ func TestTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cl.Close()
+	var clientActivity, serverActivity atomic.Int32
+	cl.SetOnActivity(func() { clientActivity.Add(1) })
+	if clientActivity.Load() != 1 {
+		t.Fatal("TLS connected event did not wake late registration")
+	}
+	srv.SetOnActivity(func() { serverActivity.Add(1) })
 	if err := cl.Send(hello{"eve-proof"}); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +44,7 @@ func TestTLS(t *testing.T) {
 		return false
 	})
 	conn.Send(move{5, 6})
+	wait(t, "TLS server activity", func() bool { return serverActivity.Load() > 0 })
 	wait(t, "reply over tls", func() bool {
 		for _, ev := range cl.Poll() {
 			if m, ok := ev.Msg.(*move); ok && m.X == 5 {

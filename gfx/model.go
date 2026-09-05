@@ -680,6 +680,7 @@ func (m *Model) morphSet() vk.VkDescriptorSet {
 func (m *Model) Destroy() {
 	if m.g != nil {
 		m.g.forget(m)
+		m.g.owned.remove(m)
 	}
 	for _, mesh := range m.meshes {
 		mesh.Destroy()

@@ -187,19 +187,19 @@ type pending3 struct {
 }
 
 func stateOf3(w *ecs.World) *state3 {
-	s := ecs.Resource[state3](w)
+	s := w.Resource[state3]()
 	if s == nil {
-		ecs.SetResource(w, state3{
-			bodies:    ecs.NewQuery2[gfx.Transform, Body3](w),
-			colliders: ecs.NewQuery2[gfx.Transform, Collider3](w),
-			distance:  ecs.NewQuery1[DistanceJoint3](w),
-			hinge:     ecs.NewQuery1[HingeJoint3](w),
-			ball:      ecs.NewQuery1[BallJoint3](w),
-			prismatic: ecs.NewQuery1[PrismaticJoint3](w),
-			spring:    ecs.NewQuery1[SpringJoint3](w),
-			fixed:     ecs.NewQuery1[FixedJoint3](w),
+		w.SetResource(state3{
+			bodies:    w.Query2[gfx.Transform, Body3](),
+			colliders: w.Query2[gfx.Transform, Collider3](),
+			distance:  w.Query1[DistanceJoint3](),
+			hinge:     w.Query1[HingeJoint3](),
+			ball:      w.Query1[BallJoint3](),
+			prismatic: w.Query1[PrismaticJoint3](),
+			spring:    w.Query1[SpringJoint3](),
+			fixed:     w.Query1[FixedJoint3](),
 		})
-		s = ecs.Resource[state3](w)
+		s = w.Resource[state3]()
 	}
 	return s
 }
@@ -209,10 +209,10 @@ func System3(w *ecs.World, dt float64) {
 	if dt <= 0 {
 		return
 	}
-	settings := ecs.Resource[Settings3](w)
+	settings := w.Resource[Settings3]()
 	if settings == nil {
-		ecs.SetResource(w, Settings3{})
-		settings = ecs.Resource[Settings3](w)
+		w.SetResource(Settings3{})
+		settings = w.Resource[Settings3]()
 	}
 	substeps, iterations := settings.Substeps, settings.Iterations
 	if substeps <= 0 {
@@ -272,7 +272,7 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		b.invMass = 1 / b.Mass
 		b.invInertia = mat3{}
 		if !b.LockRotation {
-			if c, ok := ecs.Get[Collider3](w, e); ok && c.Shape != nil {
+			if c, ok := w.Get[Collider3](e); ok && c.Shape != nil {
 				i := c.Shape.inertia(b.Mass)
 				r := mat3FromQuat(t.Rotation)
 				local := diag3(inv(i.X), inv(i.Y), inv(i.Z))
@@ -302,7 +302,7 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		if c.Shape == nil {
 			return
 		}
-		b, _ := ecs.Get[Body3](w, e)
+		b, _ := w.Get[Body3](e)
 		if b != nil && b.invMass > 0 {
 			s.motion = max(s.motion, abs32(b.Vel.X)*h)
 			s.anyCCD = s.anyCCD || b.CCD
@@ -350,10 +350,10 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		if a.c.Trigger || b.c.Trigger {
 			if !s.reported.add(key) {
 				if a.c.Trigger {
-					ecs.Emit(w, Trigger3{Trigger: a.e, Other: b.e})
+					w.Emit(Trigger3{Trigger: a.e, Other: b.e})
 				}
 				if b.c.Trigger {
-					ecs.Emit(w, Trigger3{Trigger: b.e, Other: a.e})
+					w.Emit(Trigger3{Trigger: b.e, Other: a.e})
 				}
 			}
 			return
@@ -402,7 +402,7 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		for _, c := range s.arbiters[p.arb].contacts {
 			p.ev.Impulse += c.pn
 		}
-		ecs.Emit(w, p.ev)
+		w.Emit(p.ev)
 	}
 	// Continuous collision: clamp fast bodies to their first static hit.
 	for i := range en {

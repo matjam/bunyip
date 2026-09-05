@@ -162,7 +162,7 @@ func TestSimulation(t *testing.T) {
 
 func TestSystem(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings{TimeScale: 3600, Scale: 1e-6, Substeps: 16})
+	w.SetResource(Settings{TimeScale: 3600, Scale: 1e-6, Substeps: 16})
 	w.AddSystem("orbit", System)
 	sun := w.SpawnWith(Body{Mass: sol.SunMass}, gfx.Transform{})
 	earth := w.SpawnWith(Body{Mass: sol.EarthMass}, Kepler{Primary: sun, Elements: Circular(sol.AU)}, gfx.Transform{})
@@ -170,24 +170,24 @@ func TestSystem(t *testing.T) {
 	// A ship in low Earth orbit, a free body under everyone's gravity.
 	leo := Circular(7000e3).State(sol.MuEarth)
 	w.Update(0) // place the Kepler bodies so the ship can start relative to Earth
-	eb, _ := ecs.Get[Body](w, earth)
+	eb, _ := w.Get[Body](earth)
 	ship := w.SpawnWith(Ship{}, Body{Pos: eb.Pos.Add(leo.Pos), Vel: eb.Vel.Add(leo.Vel)}, gfx.Transform{})
 	period := Circular(7000e3).Period(sol.MuEarth)
 	steps := 200
 	for range steps {
 		w.Update(period / float64(steps) / 3600) // TimeScale turns hours into seconds
 	}
-	eb, _ = ecs.Get[Body](w, earth)
-	sb, _ := ecs.Get[Body](w, ship)
+	eb, _ = w.Get[Body](earth)
+	sb, _ := w.Get[Body](ship)
 	rel := sb.Pos.Sub(eb.Pos)
 	if !within(rel.Len(), 7000e3, 0.01) {
 		t.Fatalf("ship radius after one orbit %v", rel.Len())
 	}
-	mb, _ := ecs.Get[Body](w, moon)
+	mb, _ := w.Get[Body](moon)
 	if !within(mb.Pos.Sub(eb.Pos).Len(), sol.MoonDistance, 1e-6) {
 		t.Fatalf("moon did not follow Earth: %v", mb.Pos.Sub(eb.Pos).Len())
 	}
-	et, _ := ecs.Get[gfx.Transform](w, earth)
+	et, _ := w.Get[gfx.Transform](earth)
 	if !within(float64(et.Position.Len()), sol.AU*1e-6, 1e-3) {
 		t.Fatalf("scaled transform %v", et.Position)
 	}

@@ -10,10 +10,27 @@ rebuilds the interface every frame by calling widget methods, and each
 widget returns what happened. There is no widget tree to create,
 update or free.
 
-Create a `ui.Context` once with `ui.New(ctx.Gfx, ui.DarkTheme(font))`
-and reuse it on the rendering goroutine. The context retains focus,
+Create a `ui.Context` once during `Init` and reuse it on the rendering
+goroutine:
+
+```go
+g.ui, err = ctx.NewUI(ui.Theme{})
+if err != nil {
+	return err
+}
+```
+
+The zero theme selects the dark theme with the engine's shared Go Regular
+font at 14 view units. A custom theme preserves all settings; a nil
+`Font` is filled with that default. Clipboard access and input-method
+placement are connected automatically. Recreate the interface during
+device recovery because its graphics context has changed.
+
+Use `ui.New(ctx.Gfx, theme)` when supplying and wiring these dependencies
+yourself. The context retains focus,
 scroll positions, caret, selection and undo history by widget identity;
-the game owns widget values, fonts and skin textures. Keep labels,
+the game owns widget values. The engine releases fonts and skin textures
+created through `ctx.Gfx` at graphics teardown. Keep labels,
 container structure and the order of repeated labels stable to retain
 that interaction state.
 
@@ -127,11 +144,12 @@ u.Panel("Settings", ui.Rect{X: 20, Y: 20, W: 320, H: 300}, func() {
 have a caret, a selection made with Shift and the arrows or by dragging,
 Home and End, word jumps with Ctrl or Cmd and the arrows, select all,
 cut, copy, paste, and undo and redo (Ctrl or Cmd with Z, Shift+Z or Y).
-To use the system clipboard, set the context's `Clipboard` to the
+`ctx.NewUI` connects the system clipboard and input-method placement.
+When using `ui.New` directly, set the interface's `Clipboard` to the
 engine's `Context`. Text fields show the input method's
 composition underlined and report their rectangle through
 `OnTextInputRect` so the platform can place candidate windows; wire
-that to `ctx.SetTextInputRect` once.
+that to `ctx.SetTextInputRect` once when constructing the interface manually.
 
 An open modal owns text input, clipboard shortcuts and composition.
 Fields behind it release text focus and cannot edit their values or move
@@ -319,7 +337,8 @@ u.Theme.Skin = &ui.Skin{
 }
 ```
 
-The textures are the game's to destroy in `Shutdown`. The gallery
+The engine releases these textures during graphics teardown. Call
+`Destroy` earlier when replacing a skin and reclaiming its resources. The gallery
 example draws a complete skin procedurally; a game would load PNGs the
 same way.
 

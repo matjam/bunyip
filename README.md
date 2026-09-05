@@ -17,6 +17,9 @@ examples.
 - Native window, input and audio layers per platform. No SDL, no GLFW.
 - Two loop modes: a fixed timestep for real-time games, or turn-based,
   where the process sleeps in the operating system until input arrives.
+- Go 1.27 generic methods keep typed operations on their owning objects.
+  Graphics manages GPU lifetimes; closures manage temporary drawing state,
+  deferred entity changes and context cleanup.
 - Rendering examples run to a screenshot without a window, and the renderer's
   tests render into offscreen images and read the pixels back.
 
@@ -101,7 +104,7 @@ https://matjam.github.io/bunyip/ by the Docs workflow on each push to
 the Markdown in `docs/guides` and the packages' godoc, so `go doc ./gfx`
 shows the same text and `go test ./...` runs every example that prints
 output. The guides are grouped: Start (introduction, getting started,
-Tetris), Engine (the window, input, entities and systems, game
+Tetris and API migration), Engine (the window, input, entities and systems, game
 services), Graphics (2D graphics, 3D graphics, shaders, animation, the
 interface), Simulation (physics, orbits) and Audio.
 
@@ -111,6 +114,9 @@ tools: the guides at `guides/<name>.md`, each package at
 and everything in one file at `llms-full.txt`. `CLAUDE.md` in the
 repository is written for a model working on the engine or writing a game
 with it.
+
+For existing games, the [API migration guide](docs/guides/api-migration.md)
+lists the replaced generic functions and the new resource-lifetime rules.
 
 ## Packages
 
@@ -227,7 +233,7 @@ whole program and explains it section by section:
 
 ## Requirements
 
-Go 1.26 or later, and a Vulkan driver.
+Go 1.27 or later, and a Vulkan driver.
 
 Set `CGO_ENABLED=0` for all Go commands shown here: `export CGO_ENABLED=0`
 in a POSIX shell, or `$env:CGO_ENABLED = "0"` in PowerShell.

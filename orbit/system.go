@@ -67,11 +67,11 @@ type relState struct {
 }
 
 func stateOf(w *ecs.World) *state {
-	s := ecs.Resource[state](w)
+	s := w.Resource[state]()
 	if s == nil {
-		ecs.SetResource(w, state{keplers: ecs.NewQuery2[Kepler, Body](w), ships: ecs.NewQuery2[Ship, Body](w),
-			bodies: ecs.NewQuery1[Body](w), placed: ecs.NewQuery2[Body, gfx.Transform](w)})
-		s = ecs.Resource[state](w)
+		w.SetResource(state{keplers: w.Query2[Kepler, Body](), ships: w.Query2[Ship, Body](),
+			bodies: w.Query1[Body](), placed: w.Query2[Body, gfx.Transform]()})
+		s = w.Resource[state]()
 	}
 	return s
 }
@@ -82,10 +82,10 @@ func stateOf(w *ecs.World) *state {
 // timestep: the ship integrator does not integrate backwards. Kepler
 // primary chains should be acyclic and no more than sixteen links deep.
 func System(w *ecs.World, dt float64) {
-	settings := ecs.Resource[Settings](w)
+	settings := w.Resource[Settings]()
 	if settings == nil {
-		ecs.SetResource(w, Settings{})
-		settings = ecs.Resource[Settings](w)
+		w.SetResource(Settings{})
+		settings = w.Resource[Settings]()
 	}
 	scale := settings.TimeScale
 	if scale == 0 {
@@ -111,7 +111,7 @@ func System(w *ecs.World, dt float64) {
 	s.sim.G, s.sim.Softening = g, settings.Softening
 	fixed := s.fixed[:0]
 	s.bodies.Each(func(e ecs.Entity, b *Body) {
-		if b.Mass > 0 && !ecs.Has[Ship](w, e) && !ecs.Has[Kepler](w, e) {
+		if b.Mass > 0 && !w.Has[Ship](e) && !w.Has[Kepler](e) {
 			fixed = append(fixed, *b)
 		}
 	})
@@ -124,7 +124,7 @@ func System(w *ecs.World, dt float64) {
 	}
 	s.ships.Each(func(e ecs.Entity, _ *Ship, b *Body) {
 		var thrust Vec3
-		if t, ok := ecs.Get[Thrust](w, e); ok {
+		if t, ok := w.Get[Thrust](e); ok {
 			thrust = t.Accel
 		}
 		accel := func(p, _ Vec3) Vec3 { return s.sim.FieldAt(p).Add(thrust) }
@@ -136,7 +136,7 @@ func System(w *ecs.World, dt float64) {
 	// so every body sees its primary at the same instant.
 	s.keplers.Each(func(e ecs.Entity, k *Kepler, _ *Body) { k.elapsed += sim })
 	s.keplerStates(w, g, 0, ecs.None, true, func(e ecs.Entity, st State, _ float64) {
-		if b, ok := ecs.Get[Body](w, e); ok {
+		if b, ok := w.Get[Body](e); ok {
 			b.Pos, b.Vel = st.Pos, st.Vel
 		}
 	})
@@ -189,7 +189,7 @@ func (s *state) keplerStates(w *ecs.World, g, ahead float64, ref ecs.Entity, all
 		}
 		mu := k.Mu
 		if mu == 0 {
-			if p, ok := ecs.Get[Body](w, k.Primary); ok {
+			if p, ok := w.Get[Body](k.Primary); ok {
 				mu = g * p.Mass
 			}
 		}
@@ -215,7 +215,7 @@ func (s *state) keplerStates(w *ecs.World, g, ahead float64, ref ecs.Entity, all
 		var base State
 		if j, ok := s.index[r.primary]; ok && depth < 16 {
 			base = resolve(j, depth+1)
-		} else if p, ok := ecs.Get[Body](w, r.primary); ok {
+		} else if p, ok := w.Get[Body](r.primary); ok {
 			base = State{Pos: p.Pos, Vel: p.Vel}
 		}
 		st := State{Pos: base.Pos.Add(r.st.Pos), Vel: base.Vel.Add(r.st.Vel)}
@@ -248,16 +248,16 @@ func Predict(w *ecs.World, ship ecs.Entity, seconds float64, samples int) []lin.
 // free reference body supplies no moving-frame correction. Requirements,
 // units and sample placement are the same as Predict.
 func PredictRelative(w *ecs.World, ship, ref ecs.Entity, seconds float64, samples int) []lin.Vec3 {
-	settings := ecs.Resource[Settings](w)
+	settings := w.Resource[Settings]()
 	if settings == nil || samples <= 0 {
 		return nil
 	}
 	refNow := Vec3{}
-	if rb, ok := ecs.Get[Body](w, ref); ok {
+	if rb, ok := w.Get[Body](ref); ok {
 		refNow = rb.Pos
 	}
 	s := stateOf(w)
-	b, ok := ecs.Get[Body](w, ship)
+	b, ok := w.Get[Body](ship)
 	if !ok {
 		return nil
 	}
@@ -266,7 +266,7 @@ func PredictRelative(w *ecs.World, ship, ref ecs.Entity, seconds float64, sample
 		g = G
 	}
 	var thrust Vec3
-	if t, ok := ecs.Get[Thrust](w, ship); ok {
+	if t, ok := w.Get[Thrust](ship); ok {
 		thrust = t.Accel
 	}
 	unit := settings.Scale
@@ -277,7 +277,7 @@ func PredictRelative(w *ecs.World, ship, ref ecs.Entity, seconds float64, sample
 	// nor on a Kepler orbit.
 	var fixed []Body
 	s.bodies.Each(func(e ecs.Entity, o *Body) {
-		if o.Mass > 0 && !ecs.Has[Ship](w, e) && !ecs.Has[Kepler](w, e) {
+		if o.Mass > 0 && !w.Has[Ship](e) && !w.Has[Kepler](e) {
 			fixed = append(fixed, *o)
 		}
 	})
@@ -312,11 +312,11 @@ func PredictRelative(w *ecs.World, ship, ref ecs.Entity, seconds float64, sample
 // Around describes a ship's orbit relative to the massive body whose
 // gravity dominates it, in classical elements, for a readout.
 func Around(w *ecs.World, ship ecs.Entity) (primary ecs.Entity, el Elements, mu float64, ok bool) {
-	b, has := ecs.Get[Body](w, ship)
+	b, has := w.Get[Body](ship)
 	if !has {
 		return ecs.None, Elements{}, 0, false
 	}
-	settings := ecs.Resource[Settings](w)
+	settings := w.Resource[Settings]()
 	g := G
 	if settings != nil && settings.G != 0 {
 		g = settings.G

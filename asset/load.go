@@ -6,6 +6,7 @@ import (
 	"image"
 	_ "image/jpeg" // registers the JPEG decoder for Image
 	_ "image/png"  // registers the PNG decoder for Image
+	"io/fs"
 	"path"
 	"strings"
 
@@ -21,8 +22,8 @@ import (
 // image: unknown format".
 
 // Image reads and decodes a PNG or JPEG.
-func Image(fs *FS, name string) (image.Image, error) {
-	data, err := fs.Read(name)
+func Image(fsys fs.FS, name string) (image.Image, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -36,9 +37,9 @@ func Image(fs *FS, name string) (image.Image, error) {
 // Texture decodes an image and uploads it. A name ending in .ktx2 is a
 // compressed texture from bunyip-tex: its blocks and its mip levels go
 // to the GPU as they stand, without being decoded or downsampled first.
-func Texture(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.Texture, error) {
+func Texture(g *gfx.Graphics, fsys fs.FS, name string, opts gfx.TextureOptions) (*gfx.Texture, error) {
 	if compressedName(name) {
-		data, err := fs.Read(name)
+		data, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			return nil, fmt.Errorf("asset %s: %w", name, err)
 		}
@@ -48,7 +49,7 @@ func Texture(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gf
 		}
 		return tex, nil
 	}
-	img, err := Image(fs, name)
+	img, err := Image(fsys, name)
 	if err != nil {
 		return nil, err
 	}
@@ -85,8 +86,8 @@ func replaceTexture(tex *gfx.Texture, name string, data []byte) error {
 // Atlas reads a TexturePacker or Aseprite JSON atlas, loads the image it
 // names from the same directory, uploads it and binds the frames: one
 // call where a game would otherwise parse, load and bind by hand.
-func Atlas(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.Atlas, error) {
-	data, err := fs.Read(name)
+func Atlas(g *gfx.Graphics, fsys fs.FS, name string, opts gfx.TextureOptions) (*gfx.Atlas, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -97,7 +98,7 @@ func Atlas(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.
 	if d.Image == "" {
 		return nil, fmt.Errorf("asset %s: the atlas names no image", name)
 	}
-	tex, err := Texture(g, fs, path.Join(path.Dir(name), d.Image), opts)
+	tex, err := Texture(g, fsys, path.Join(path.Dir(name), d.Image), opts)
 	if err != nil {
 		return nil, err
 	}
@@ -110,8 +111,8 @@ func Atlas(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.
 // hand. The atlas is on the result's Atlas field, its frames are named
 // by number and its tags play through Atlas.Animation; the result also
 // carries the file's layers, tags, slices and palette.
-func Aseprite(g *gfx.Graphics, fs *FS, name string, opts gfx.AsepriteOptions, texOpts gfx.TextureOptions) (*gfx.Aseprite, error) {
-	data, err := fs.Read(name)
+func Aseprite(g *gfx.Graphics, fsys fs.FS, name string, opts gfx.AsepriteOptions, texOpts gfx.TextureOptions) (*gfx.Aseprite, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -126,8 +127,8 @@ func Aseprite(g *gfx.Graphics, fs *FS, name string, opts gfx.AsepriteOptions, te
 }
 
 // Font reads a TTF or OTF file and prepares a bitmap atlas at size.
-func Font(g *gfx.Graphics, fs *FS, name string, size float32, opts gfx.FontOptions) (*gfx.Font, error) {
-	data, err := fs.Read(name)
+func Font(g *gfx.Graphics, fsys fs.FS, name string, size float32, opts gfx.FontOptions) (*gfx.Font, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -139,8 +140,8 @@ func Font(g *gfx.Graphics, fs *FS, name string, size float32, opts gfx.FontOptio
 }
 
 // SDFFont reads a TTF or OTF file and prepares a scalable font.
-func SDFFont(g *gfx.Graphics, fs *FS, name string, size float32, opts gfx.FontOptions) (*gfx.Font, error) {
-	data, err := fs.Read(name)
+func SDFFont(g *gfx.Graphics, fsys fs.FS, name string, size float32, opts gfx.FontOptions) (*gfx.Font, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -153,8 +154,8 @@ func SDFFont(g *gfx.Graphics, fs *FS, name string, size float32, opts gfx.FontOp
 
 // Sound reads and decodes a WAV, Ogg Vorbis or MP3 clip into the mixer's
 // format.
-func Sound(m *audio.Mixer, fs *FS, name string) (*audio.Sound, error) {
-	data, err := fs.Read(name)
+func Sound(m *audio.Mixer, fsys fs.FS, name string) (*audio.Sound, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -171,8 +172,8 @@ func Sound(m *audio.Mixer, fs *FS, name string) (*audio.Sound, error) {
 
 // Music reads a WAV, Ogg Vorbis or MP3 file and opens it for streaming.
 // The encoded bytes stay in memory; decoding happens as it plays.
-func Music(m *audio.Mixer, fs *FS, name string, loop bool) (*audio.Music, error) {
-	data, err := fs.Read(name)
+func Music(m *audio.Mixer, fsys fs.FS, name string, loop bool) (*audio.Music, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -185,8 +186,8 @@ func Music(m *audio.Mixer, fs *FS, name string, loop bool) (*audio.Music, error)
 
 // Model reads a .gltf or .glb file and uploads it. External buffers and
 // images are read through the same FS relative to the model's directory.
-func Model(g *gfx.Graphics, fs *FS, name string) (*gfx.Model, error) {
-	doc, err := parseModel(fs, name)
+func Model(g *gfx.Graphics, fsys fs.FS, name string) (*gfx.Model, error) {
+	doc, err := parseModel(fsys, name)
 	if err != nil {
 		return nil, err
 	}
@@ -198,14 +199,14 @@ func Model(g *gfx.Graphics, fs *FS, name string) (*gfx.Model, error) {
 }
 
 // parseModel reads and parses a glTF file without touching the GPU.
-func parseModel(fs *FS, name string) (*gltf.Document, error) {
-	data, err := fs.Read(name)
+func parseModel(fsys fs.FS, name string) (*gltf.Document, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
 	dir := path.Dir(name)
 	resolve := func(uri string) ([]byte, error) {
-		return fs.Read(path.Join(dir, uri))
+		return fs.ReadFile(fsys, path.Join(dir, uri))
 	}
 	doc, err := gltf.Parse(data, resolve)
 	if err != nil {
@@ -217,8 +218,8 @@ func parseModel(fs *FS, name string) (*gltf.Document, error) {
 // Scene reads a scene document, ready for ecs.World.Instantiate. The
 // component types the scene names are checked when it is instantiated,
 // not here, so a scene loads before the game registers them.
-func Scene(fs *FS, name string) (*ecs.Scene, error) {
-	data, err := fs.Read(name)
+func Scene(fsys fs.FS, name string) (*ecs.Scene, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -232,8 +233,8 @@ func Scene(fs *FS, name string) (*ecs.Scene, error) {
 // Prefab reads a prefab document, for the ecs.PrefabLibrary a scene's
 // prefab references are resolved against. Every component type the file
 // names must be registered first.
-func Prefab(fs *FS, name string) (*ecs.Prefab, error) {
-	data, err := fs.Read(name)
+func Prefab(fsys fs.FS, name string) (*ecs.Prefab, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -249,8 +250,8 @@ func Prefab(fs *FS, name string) (*ecs.Prefab, error) {
 // naming no texture comes back drawing plain quads. Destroy the texture
 // with the rest of the game's resources; it is the returned emitter's
 // Texture.
-func Emitter(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (particle.Emitter, error) {
-	data, err := fs.Read(name)
+func Emitter(g *gfx.Graphics, fsys fs.FS, name string, opts gfx.TextureOptions) (particle.Emitter, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return particle.Emitter{}, fmt.Errorf("asset %s: %w", name, err)
 	}
@@ -261,7 +262,7 @@ func Emitter(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (par
 	if e.TextureName == "" {
 		return e, nil
 	}
-	tex, err := Texture(g, fs, path.Join(path.Dir(name), e.TextureName), opts)
+	tex, err := Texture(g, fsys, path.Join(path.Dir(name), e.TextureName), opts)
 	if err != nil {
 		return particle.Emitter{}, err
 	}
@@ -270,8 +271,8 @@ func Emitter(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (par
 }
 
 // Tracker reads and parses a MOD, S3M, XM or IT module.
-func Tracker(fs *FS, name string) (*tracker.Module, error) {
-	data, err := fs.Read(name)
+func Tracker(fsys fs.FS, name string) (*tracker.Module, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}

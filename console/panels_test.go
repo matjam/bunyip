@@ -125,7 +125,7 @@ func TestEntityPanel(t *testing.T) {
 	r.draw(t)
 	r.in.typed("42")
 	r.drawN(t, 2)
-	p, ok := ecs.Get[position](w, e)
+	p, ok := w.Get[position](e)
 	if !ok {
 		t.Fatal("the entity lost its component")
 	}
@@ -185,7 +185,7 @@ func TestPhysicsPanel(t *testing.T) {
 	r := newRig(t, Options{})
 	c := r.con
 	w := ecs.NewWorld()
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 2, Iterations: 4})
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 2, Iterations: 4})
 	w.SpawnWith(gfx.At(0, 10, 0), phys.Dynamic3(1), phys.Collider3{Shape: phys.Sphere{Radius: 0.5}})
 	w.AddSystem("physics", phys.System3)
 	c.Attach("world", w)
@@ -238,7 +238,7 @@ func TestPhysicsPanel(t *testing.T) {
 func velocityOf(t testing.TB, w *ecs.World) float32 {
 	t.Helper()
 	var v float32
-	ecs.Each(w, func(_ ecs.Entity, b *phys.Body3) { v = b.Vel.Y })
+	w.Each(func(_ ecs.Entity, b *phys.Body3) { v = b.Vel.Y })
 	return v
 }
 

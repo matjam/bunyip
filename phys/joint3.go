@@ -109,7 +109,7 @@ func entityQuat(w *ecs.World, e ecs.Entity) lin.Quat {
 	if e == ecs.None {
 		return lin.QuatIdentity()
 	}
-	t, _ := ecs.Get[gfx.Transform](w, e)
+	t, _ := w.Get[gfx.Transform](e)
 	return quatOf(t)
 }
 
@@ -242,14 +242,14 @@ func sideOf3(w *ecs.World, e ecs.Entity) (jointSide3, bool) {
 	if e == ecs.None {
 		return s, true
 	}
-	t, ok := ecs.Get[gfx.Transform](w, e)
+	t, ok := w.Get[gfx.Transform](e)
 	if !ok {
 		return s, false
 	}
 	s.t = t
 	s.pos = t.Position
 	s.rot = mat3FromQuat(t.Rotation)
-	if b, ok := ecs.Get[Body3](w, e); ok {
+	if b, ok := w.Get[Body3](e); ok {
 		s.body = b
 		if !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
 			s.b = b

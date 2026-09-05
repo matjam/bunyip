@@ -120,14 +120,6 @@ func (g *Graphics) SetColorMatrix(m *ColorMatrix) {
 	}
 }
 
-// ColorMatrixed runs draw with the matrix set, then restores the previous.
-func (g *Graphics) ColorMatrixed(m ColorMatrix, draw func()) {
-	prev := g.cur.colorMatrix
-	g.SetColorMatrix(&m)
-	draw()
-	g.SetColorMatrix(prev)
-}
-
 // Light2D is a point light for lit sprites: a position in the same units
 // as sprites, a height above their plane and a radius where it fades out.
 type Light2D struct {

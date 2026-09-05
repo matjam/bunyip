@@ -2,19 +2,13 @@
 // command line over the top of the view, and a window of panels that
 // show what every part of the engine is doing.
 //
-// To turn it on, set Config.Console and draw it last:
-//
-//	func (g *game) Draw(ctx *bunyip.Context) error {
-//		// ... the game's own drawing and interface ...
-//		return ctx.Console.Draw(ctx)
-//	}
+// To turn it on, set Config.Console. The engine draws it after the game
+// and the debug overlay.
 //
 // The engine makes the console, attaches what it owns (the graphics
 // context, the mixer, the input state and the frame timings) and hands
-// it to the game on Context.Console. Draw is the game's call because
-// draw order belongs to the game: the console has to be the last thing
-// drawn so it sits above the game's own interface. A game that wants a
-// console of its own shape calls New instead and drives it the same way.
+// it to the game on Context.Console. A game that wants a console of its
+// own shape calls New instead and calls its Draw method explicitly.
 //
 // # The console
 //
@@ -280,8 +274,9 @@ type Host interface {
 }
 
 // Draw runs one frame of console: the toggle keys, the key bindings, the
-// command line while it is open, and the panels. Call it last in the
-// game's Draw so the console sits above everything else. It draws
+// command line while it is open, and the panels. Config.Console calls
+// this automatically. For a console created with New, call it last in
+// the game's Draw so it sits above everything else. It draws
 // nothing while the console is closed and no panel window is open.
 func (c *Console) Draw(h Host) error {
 	if c == nil || h == nil {

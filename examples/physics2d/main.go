@@ -84,9 +84,9 @@ func (g *game) Init(ctx *bunyip.Context) error {
 func (g *game) reset(ctx *bunyip.Context) {
 	w := ecs.NewWorld()
 	g.world = w
-	g.shapes = ecs.NewQuery3[gfx.Transform2, phys.Collider2, look](w)
+	g.shapes = w.Query3[gfx.Transform2, phys.Collider2, look]()
 	// Screen space: y grows downward, so gravity is positive, in pixels/s².
-	ecs.SetResource(w, phys.Settings2{Gravity: lin.V2(0, 900), Substeps: 4, Iterations: 10})
+	w.SetResource(phys.Settings2{Gravity: lin.V2(0, 900), Substeps: 4, Iterations: 10})
 	W, H := ctx.Width, ctx.Height
 	wallLook := look{Color: gfx.RGB(70, 74, 90)}
 	w.SpawnWith(gfx.At2(W/2, H-20), phys.Collider2{Shape: phys.Box2{HalfW: W / 2, HalfH: 20}}, wallLook)
@@ -108,8 +108,8 @@ func (g *game) reset(ctx *bunyip.Context) {
 	w.AddSystem("physics", phys.System2)
 	// Entities that enter the trigger light up.
 	w.AddSystem("trigger", func(w *ecs.World, dt float64) {
-		for _, ev := range ecs.Events[phys.Trigger2](w) {
-			if l, ok := ecs.Get[look](w, ev.Other); ok {
+		for _, ev := range w.Events[phys.Trigger2]() {
+			if l, ok := w.Get[look](ev.Other); ok {
 				l.Hot = 1
 			}
 		}
@@ -155,7 +155,7 @@ func (g *game) buildCar(w *ecs.World, at lin.Vec2) {
 // coordinates grow downward, so a wheel turning the way the angle grows
 // rolls to the right.
 func (g *game) drive(ctx *bunyip.Context) {
-	t, ok := ecs.Get[gfx.Transform2](g.world, g.car)
+	t, ok := g.world.Get[gfx.Transform2](g.car)
 	if !ok {
 		return
 	}
@@ -169,7 +169,7 @@ func (g *game) drive(ctx *bunyip.Context) {
 		speed = -16
 	}
 	for _, e := range g.axles {
-		if j, ok := ecs.Get[phys.WheelJoint2](g.world, e); ok {
+		if j, ok := g.world.Get[phys.WheelJoint2](e); ok {
 			j.MotorSpeed = speed
 		}
 	}
@@ -216,7 +216,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		x, y := in.Mouse()
 		g.spawn(lin.V2(float32(x), float32(y)))
 	}
-	if b, ok := ecs.Get[phys.Body2](g.world, g.paddle); ok {
+	if b, ok := g.world.Get[phys.Body2](g.paddle); ok {
 		b.Vel = lin.V2(220*float32(math.Sin(ctx.Time*0.8)), 0)
 	}
 	g.drive(ctx)
@@ -259,8 +259,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	})
 	// A spoke on each wheel, so the drive is visible.
 	for _, e := range g.wheels {
-		t, ok := ecs.Get[gfx.Transform2](g.world, e)
-		c, ok2 := ecs.Get[phys.Collider2](g.world, e)
+		t, ok := g.world.Get[gfx.Transform2](e)
+		c, ok2 := g.world.Get[phys.Collider2](e)
 		if !ok || !ok2 {
 			continue
 		}
@@ -270,7 +270,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	}
 	g.segment(gr, lin.V2(40, 40), g.rayEnd, 2, gfx.RGBA(255, 255, 120, 200))
 	gr.DrawText(g.font, g.hit+"; click to drop shapes, R resets", 48, 30, gfx.RGB(230, 230, 240))
-	gr.DrawText(g.font, fmt.Sprintf("%d bodies", ecs.Count[phys.Body2](g.world)), 48, 52, gfx.RGB(170, 170, 190))
+	gr.DrawText(g.font, fmt.Sprintf("%d bodies", g.world.Count[phys.Body2]()), 48, 52, gfx.RGB(170, 170, 190))
 	return nil
 }
 

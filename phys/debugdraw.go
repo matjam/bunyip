@@ -52,9 +52,9 @@ func DrawCollidersColors3(g *gfx.Graphics, w *ecs.World, colors DebugColors) {
 		return
 	}
 	col := colors.fill()
-	ecs.Each2(w, func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
+	w.Each2(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
 		shade := col.Static
-		if b, ok := ecs.Get[Body3](w, e); ok {
+		if b, ok := w.Get[Body3](e); ok {
 			shade = col.Awake
 			if b.Asleep() {
 				shade = col.Asleep
@@ -62,7 +62,7 @@ func DrawCollidersColors3(g *gfx.Graphics, w *ecs.World, colors DebugColors) {
 		}
 		DrawShape3(g, c.Shape, *t, shade)
 	})
-	for _, hit := range ecs.Events[Collision3](w) {
+	for _, hit := range w.Events[Collision3]() {
 		g.DrawLine3D(hit.Point, hit.Point.Add(hit.Normal.Mul(0.5)), col.Contacts)
 	}
 }
@@ -127,9 +127,9 @@ func DrawCollidersColors2(g *gfx.Graphics, w *ecs.World, colors DebugColors) {
 		return
 	}
 	col := colors.fill()
-	ecs.Each2(w, func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
+	w.Each2(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
 		shade := col.Static
-		if b, ok := ecs.Get[Body2](w, e); ok {
+		if b, ok := w.Get[Body2](e); ok {
 			shade = col.Awake
 			if b.Asleep() {
 				shade = col.Asleep
@@ -137,7 +137,7 @@ func DrawCollidersColors2(g *gfx.Graphics, w *ecs.World, colors DebugColors) {
 		}
 		DrawShape2(g, c.Shape, *t, shade)
 	})
-	for _, hit := range ecs.Events[Collision2](w) {
+	for _, hit := range w.Events[Collision2]() {
 		p := hit.Point
 		n := p.Add(hit.Normal.Mul(0.5))
 		g.StrokeLine(p.X, p.Y, n.X, n.Y, debugLineWidth, col.Contacts)

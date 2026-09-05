@@ -45,7 +45,7 @@ func TestQueriesAllocNothing(t *testing.T) {
 		}},
 		{"CharacterMove3", func() func() {
 			w := ecs.NewWorld()
-			ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+			w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 			w.AddSystem("phys", System3)
 			w.SpawnWith(gfx.At(0, -0.5, 0), Collider3{Shape: Box3{Half: lin.V3(60, 0.5, 60)}})
 			for i := range 16 {
@@ -55,7 +55,7 @@ func TestQueriesAllocNothing(t *testing.T) {
 			e := w.SpawnWith(gfx.At(0, 1, 0))
 			w.Update(step)
 			c := CharacterController3{Radius: 0.35, HalfHeight: 0.45, StepHeight: 0.35}
-			tr, _ := ecs.Get[gfx.Transform](w, e)
+			tr, _ := w.Get[gfx.Transform](e)
 			return func() {
 				tr.Position = lin.V3(3.5, 1, 0)
 				c.Move(w, e, lin.V3(2, -6, 0), step)
@@ -63,7 +63,7 @@ func TestQueriesAllocNothing(t *testing.T) {
 		}},
 		{"CharacterMove2", func() func() {
 			w := ecs.NewWorld()
-			ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+			w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 			w.AddSystem("phys", System2)
 			w.SpawnWith(gfx.At2(0, -0.5), Collider2{Shape: Box2{HalfW: 60, HalfH: 0.5}})
 			for i := range 16 {
@@ -73,7 +73,7 @@ func TestQueriesAllocNothing(t *testing.T) {
 			e := w.SpawnWith(gfx.At2(0, 1))
 			w.Update(step)
 			c := CharacterController2{Radius: 0.35, HalfHeight: 0.45, StepHeight: 0.35}
-			tr, _ := ecs.Get[gfx.Transform2](w, e)
+			tr, _ := w.Get[gfx.Transform2](e)
 			return func() {
 				tr.Position = lin.V2(3.5, 1)
 				c.Move(w, e, lin.V2(2, -6), step)

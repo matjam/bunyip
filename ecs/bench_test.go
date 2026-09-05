@@ -18,12 +18,12 @@ func benchWorld2(match, rest int) *ecs.World {
 	w := ecs.NewWorld()
 	for range rest {
 		e := w.Spawn()
-		ecs.Add(w, e, benchPos{})
+		w.Add(e, benchPos{})
 	}
 	for range match {
 		e := w.Spawn()
-		ecs.Add(w, e, benchPos{})
-		ecs.Add(w, e, benchVel{X: 1})
+		w.Add(e, benchPos{})
+		w.Add(e, benchVel{X: 1})
 	}
 	return w
 }
@@ -33,7 +33,7 @@ func BenchmarkEach2Sparse(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		ecs.Each2(w, func(_ ecs.Entity, p *benchPos, v *benchVel) {
+		w.Each2(func(_ ecs.Entity, p *benchPos, v *benchVel) {
 			p.X += v.X
 		})
 	}
@@ -43,18 +43,18 @@ func BenchmarkEach3Sparse(b *testing.B) {
 	w := ecs.NewWorld()
 	for range 10000 {
 		e := w.Spawn()
-		ecs.Add(w, e, benchPos{})
+		w.Add(e, benchPos{})
 	}
 	for range 5 {
 		e := w.Spawn()
-		ecs.Add(w, e, benchPos{})
-		ecs.Add(w, e, benchVel{X: 1})
-		ecs.Add(w, e, gfx.Transform{})
+		w.Add(e, benchPos{})
+		w.Add(e, benchVel{X: 1})
+		w.Add(e, gfx.Transform{})
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		ecs.Each3(w, func(_ ecs.Entity, p *benchPos, v *benchVel, _ *gfx.Transform) {
+		w.Each3(func(_ ecs.Entity, p *benchPos, v *benchVel, _ *gfx.Transform) {
 			p.X += v.X
 		})
 	}
@@ -69,7 +69,7 @@ func benchHierarchy(n, depth int) (*ecs.World, []ecs.Entity) {
 		parent := ecs.None
 		for d := range depth {
 			e := w.Spawn()
-			ecs.Add(w, e, gfx.Transform{Position: lin.V3(1, float32(d), 0), Scale: lin.V3(1, 1, 1)})
+			w.Add(e, gfx.Transform{Position: lin.V3(1, float32(d), 0), Scale: lin.V3(1, 1, 1)})
 			if parent.Valid() {
 				ecs.SetParent(w, e, parent)
 			}

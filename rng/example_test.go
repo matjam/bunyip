@@ -16,11 +16,11 @@ func ExampleNew() {
 	// true
 }
 
-func ExamplePick() {
+func ExampleRand_Pick() {
 	r := rng.New(7)
 	loot := []string{"sword", "shield", "potion"}
-	fmt.Println(rng.Pick(r, loot))
-	rng.Shuffle(r, loot)
+	fmt.Println(r.Pick(loot))
+	r.Shuffle(loot)
 	fmt.Println(len(loot))
 	// Output:
 	// potion

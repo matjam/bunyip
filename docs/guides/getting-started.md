@@ -7,7 +7,7 @@ summary: install the Vulkan driver, open a window, learn the loop and the window
 
 ## Requirements
 
-Bunyip needs Go 1.26 or later and a Vulkan driver. There is nothing to
+Bunyip needs Go 1.27 or later and a Vulkan driver. There is nothing to
 compile against. The engine opens the driver at run time.
 
 Set `CGO_ENABLED=0` for all Go commands in this guide. On macOS or Linux,
@@ -52,7 +52,9 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 }
 
 func main() {
-	bunyip.Run(bunyip.Config{Title: "First window", Width: 960, Height: 600, Resizable: true}, &game{})
+	if err := bunyip.Run(bunyip.Config{Title: "First window", Width: 960, Height: 600, Resizable: true}, &game{}); err != nil {
+		panic(err)
+	}
 }
 ```
 
@@ -64,15 +66,37 @@ go run .
 
 `Run` opens the window, creates the renderer and the audio device,
 calls the game's `Init` method if it has one, and runs the loop until
-`Quit`. Textures, fonts, meshes and sounds are created from the context
-in `Init` and freed in an optional `Shutdown`. To recover from a lost
+`Quit`. Graphics owns its textures, fonts, meshes and other GPU resources
+and releases them at shutdown, including after setup or drawing fails.
+Use `Destroy` to release one earlier, for example when unloading a level.
+For other cleanup, register a closure with `ctx.Cleanup` after acquiring
+the resource. The callbacks run in reverse order, after optional
+`Shutdown` and before the engine closes its devices; they also run if
+`Init` or `Recover` fails. To recover from a lost
 graphics device, implement `Recover(ctx *bunyip.Context) error` and
 recreate resources there. The engine calls `Recover` with a fresh
 context instead of `Init`; without that method, `Run` returns the
 device-loss error. The mixer and console are also rebuilt, so restore
 audio configuration, playback and console registrations in `Recover`.
-`Shutdown` is called only after successful `Init` or
-`Recover`, so either setup callback must clean up if it returns an error.
+`Shutdown` is called only after successful `Init` or `Recover`.
+
+Small programs can provide closures with `GameFuncs` instead of declaring
+a game type. Unset callbacks do nothing:
+
+```go
+err := bunyip.Run(bunyip.Config{Title: "Hello"}, bunyip.GameFuncs{
+	DrawFunc: func(ctx *bunyip.Context) error {
+		ctx.Gfx.DebugText(20, 20, "Hello, Bunyip")
+		return nil
+	},
+})
+if err != nil {
+	panic(err)
+}
+```
+
+Window width and height default independently to 1280 and 720 points, so
+`Config{Width: 960}` keeps that width and uses the default height.
 
 ## The loop
 
@@ -150,7 +174,7 @@ Timing runs whether or not the overlay is shown.
 backquote key and panels on F4 that show the frame timings, the GPU
 resources, a world's entities, the physics simulation, the mixer and the
 input devices, and that let a game expose its own commands and tunable
-variables. Draw it last, with `ctx.Console.Draw(ctx)`. The
+variables. The engine draws it after the game and the debug overlay. The
 [console guide](console.html) covers it.
 
 `Config.DrawBudget` turns the draw-call count

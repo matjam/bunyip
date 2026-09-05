@@ -99,6 +99,7 @@ func TestTCPClientActivityReplacementDuringCallback(t *testing.T) {
 		cl := newClient(a, registry())
 		defer cl.Close()
 		defer b.Close()
+		cl.Poll() // the following callback should wait for the message
 		writer := &Conn{c: b, reg: cl.reg}
 		entered, release := make(chan struct{}), make(chan struct{})
 		var releaseOnce sync.Once
@@ -127,15 +128,15 @@ func TestTCPClientActivityReplacementDuringCallback(t *testing.T) {
 		}
 		unblock()
 		synctest.Wait()
-		if first != 1 || second != 0 {
-			t.Fatalf("in-flight callback = (%d, %d), want (1, 0)", first, second)
+		if first != 1 || second != 1 {
+			t.Fatalf("in-flight and pending callbacks = (%d, %d), want (1, 1)", first, second)
 		}
 		if err := writer.Send(move{}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		if first != 1 || second != 1 {
-			t.Errorf("replaced callback = (%d, %d), want (1, 1)", first, second)
+		if first != 1 || second != 2 {
+			t.Errorf("replaced callback = (%d, %d), want (1, 2)", first, second)
 		}
 		cl.SetOnActivity(nil)
 	})
@@ -159,6 +160,7 @@ func TestTCPClientActivityReentry(t *testing.T) {
 						cl.SetOnActivity(nil)
 						cl.Close()
 					} else {
+						cl.Poll()
 						cl.SetOnActivity(func() { second++ })
 					}
 					close(done)
@@ -188,7 +190,7 @@ func TestTCPClientActivityReentry(t *testing.T) {
 	}
 }
 
-func TestTCPServerActivityAppliesToFutureConnections(t *testing.T) {
+func TestTCPServerActivityAppliesToExistingConnections(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		accepted := make(chan net.Conn)
 		ln := &tcpCloseListener{closed: make(chan struct{})}
@@ -226,8 +228,23 @@ func TestTCPServerActivityAppliesToFutureConnections(t *testing.T) {
 			}
 		}
 		synctest.Wait()
-		if first != 2 || second != 2 {
-			t.Errorf("existing connection callbacks = (%d, %d), want (2, 2)", first, second)
+		if first != 1 || second != 1 {
+			t.Errorf("removed callbacks = (%d, %d), want (1, 1)", first, second)
 		}
+		s.SetOnActivity(func() { first++; s.Poll(); s.SetOnActivity(nil) })
+		if first != 2 {
+			t.Fatalf("pending callback = %d, want 2", first)
+		}
+		s.SetOnActivity(func() { second++ })
+		for _, writer := range writers {
+			if err := writer.Send(move{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		synctest.Wait()
+		if second != 4 {
+			t.Fatalf("existing callbacks = %d, want 4", second)
+		}
+		s.SetOnActivity(nil)
 	})
 }

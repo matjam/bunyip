@@ -152,9 +152,9 @@ func (g *game) Init(ctx *bunyip.Context) error {
 
 	w := ecs.NewWorld()
 	g.world = w
-	g.bodies = ecs.NewQuery3[gfx.Transform, phys.Body3, phys.Collider3](w)
-	g.debris = ecs.NewQuery2[gfx.Transform, debris](w)
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0), Substeps: 4, Iterations: 8, SleepTime: 0.5})
+	g.bodies = w.Query3[gfx.Transform, phys.Body3, phys.Collider3]()
+	g.debris = w.Query2[gfx.Transform, debris]()
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0), Substeps: 4, Iterations: 8, SleepTime: 0.5})
 	// The terrain is a static mesh collider sharing the render mesh's data.
 	w.SpawnWith(gfx.Transform{}, phys.Collider3{Shape: phys.NewMeshShape(pts, idx)})
 	// A staircase for the character, on a flat slab so the steps line up.
@@ -251,7 +251,7 @@ func (g *game) drop() {
 // step advances the simulation, giving the paddle wheel's motor
 // whatever torque the console's wheel.torque variable holds.
 func (g *game) step(dt float64) {
-	ecs.Each(g.world, func(_ ecs.Entity, j *phys.HingeJoint3) {
+	g.world.Each(func(_ ecs.Entity, j *phys.HingeJoint3) {
 		if j.B == g.wheel {
 			j.MaxMotorTorque = g.torque
 		}
@@ -308,7 +308,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	g.ctrl.Move(g.world, g.hero, lin.V3(2.5*g.heroDir, -6, 0), float32(ctx.Delta))
 	g.step(ctx.Delta)
 	step.End()
-	g.contacts = append(g.contacts[:0], ecs.Events[phys.Collision3](g.world)...)
+	g.contacts = append(g.contacts[:0], g.world.Events[phys.Collision3]()...)
 	return nil
 }
 
@@ -325,7 +325,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		if b.Asleep() {
 			col = gfx.RGB(150, 150, 160)
 		}
-		if d, ok := ecs.Get[debris](w, e); ok {
+		if d, ok := w.Get[debris](e); ok {
 			mat := gfx.Material{BaseColor: d.Color, Roughness: 0.6}
 			switch sh := c.Shape.(type) {
 			case phys.Sphere:
@@ -334,7 +334,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				gr.DrawMesh(g.cube, mat, lin.TRS(t.Position, t.Rotation, sh.Half.Mul(2)))
 			}
 		}
-		if _, ok := ecs.Get[link](w, e); ok {
+		if _, ok := w.Get[link](e); ok {
 			if sh, ok := c.Shape.(phys.Box3); ok {
 				gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(200, 200, 210), Metallic: 1, Roughness: 0.3}, lin.TRS(t.Position, t.Rotation, sh.Half.Mul(2)))
 			}
@@ -342,7 +342,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				gr.DrawMesh(g.sphere, gfx.Material{BaseColor: gfx.RGB(220, 60, 60), Roughness: 0.4}, lin.TRS(t.Position, t.Rotation, lin.V3(sh.Radius, sh.Radius, sh.Radius)))
 			}
 		}
-		if _, ok := ecs.Get[paddle](w, e); ok {
+		if _, ok := w.Get[paddle](e); ok {
 			if sh, ok := c.Shape.(phys.Compound3); ok {
 				for _, p := range sh.Parts {
 					if box, ok := p.Shape.(phys.Box3); ok {
@@ -357,11 +357,11 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	if g.doll != nil {
 		skin := gfx.Material{BaseColor: gfx.RGB(230, 180, 140), Roughness: 0.8}
 		for _, e := range g.doll.Entities() {
-			t, ok := ecs.Get[gfx.Transform](w, e)
+			t, ok := w.Get[gfx.Transform](e)
 			if !ok {
 				continue
 			}
-			c, ok := ecs.Get[phys.Collider3](w, e)
+			c, ok := w.Get[phys.Collider3](e)
 			if !ok {
 				continue
 			}
@@ -380,8 +380,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			}
 		}
 	}
-	ecs.Each2(w, func(e ecs.Entity, t *gfx.Transform, c *phys.Collider3) {
-		if ecs.Has[phys.Body3](w, e) {
+	w.Each2(func(e ecs.Entity, t *gfx.Transform, c *phys.Collider3) {
+		if w.Has[phys.Body3](e) {
 			return
 		}
 		if sh, ok := c.Shape.(phys.Box3); ok {
@@ -394,19 +394,19 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		var a lin.Vec3
 		if ea == ecs.None {
 			a = anchorA
-		} else if ta, ok := ecs.Get[gfx.Transform](w, ea); ok {
+		} else if ta, ok := w.Get[gfx.Transform](ea); ok {
 			a = ta.Position.Add(ta.Rotation.Rotate(anchorA))
 		}
-		if tb, ok := ecs.Get[gfx.Transform](w, eb); ok {
+		if tb, ok := w.Get[gfx.Transform](eb); ok {
 			b := tb.Position.Add(tb.Rotation.Rotate(anchorB))
 			gr.DrawLine3D(a, b, gfx.RGB(255, 255, 255))
 			gr.DrawWireSphere(b, 0.08, gfx.RGB(255, 80, 80))
 		}
 	}
-	ecs.Each(w, func(e ecs.Entity, j *phys.HingeJoint3) { drawJoint(j.A, j.B, j.AnchorA, j.AnchorB) })
-	ecs.Each(w, func(e ecs.Entity, j *phys.BallJoint3) { drawJoint(j.A, j.B, j.AnchorA, j.AnchorB) })
+	w.Each(func(e ecs.Entity, j *phys.HingeJoint3) { drawJoint(j.A, j.B, j.AnchorA, j.AnchorB) })
+	w.Each(func(e ecs.Entity, j *phys.BallJoint3) { drawJoint(j.A, j.B, j.AnchorA, j.AnchorB) })
 	// The character: a green capsule with its ground normal.
-	if ht, ok := ecs.Get[gfx.Transform](w, g.hero); ok {
+	if ht, ok := w.Get[gfx.Transform](g.hero); ok {
 		col := gfx.RGB(80, 255, 120)
 		if !g.ctrl.Grounded {
 			col = gfx.RGB(255, 80, 80)
@@ -436,7 +436,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				}
 			})
 			var spin float32
-			if wb, ok := ecs.Get[phys.Body3](w, g.wheel); ok {
+			if wb, ok := w.Get[phys.Body3](g.wheel); ok {
 				spin = wb.AngVel.Z
 			}
 			u.Label(fmt.Sprintf("physics %.2f ms/frame, %d bodies asleep; capsules, hulls and spheres on a mesh terrain, a hinge chain, a motorised paddle wheel (%.1f rad/s), a ragdoll, and a character climbing stairs (grounded: %v)", ms, asleep, spin, g.ctrl.Grounded))
@@ -446,8 +446,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			u.Label("` opens the console, F4 the debug panels")
 		})
 	})
-	// The console draws last, so it sits above the lab's own interface.
-	return ctx.Console.Draw(ctx)
+	// The engine draws the console above the lab after this returns.
+	return nil
 }
 
 func main() {

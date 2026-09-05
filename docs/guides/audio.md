@@ -132,10 +132,10 @@ for _, b := range []*audio.Bus{ctx.Audio.Music(), ctx.Audio.Effects(), ctx.Audio
 
 ## Music
 
-`OpenMusic` plays WAV, Ogg or MP3 through a two-second buffer filled by
+`OpenMusicFile` plays WAV, Ogg or MP3 through a two-second buffer filled by
 a decoder goroutine. Ogg and MP3 decode incrementally; WAV is decoded
 fully at open and held in memory. `PlayStream` plays it, and `Close`
-requests decoding to stop.
+joins the decoder before closing the owned file.
 `Music.Duration` and `Music.Seek` work for all three formats.
 Looping retains resampling history across the track boundary, including
 tracks as short as one source frame. An explicit seek resets that history;
@@ -147,27 +147,25 @@ silence and report a full buffer. Procedural music and the tracker
 player use this contract.
 
 ```go
-data, err := os.ReadFile("music/theme.ogg")
-if err != nil {
+if g.music, err = ctx.Audio.OpenMusicFile("music/theme.ogg", true); err != nil { // true loops
 	return err
 }
-if g.music, err = ctx.Audio.OpenMusic(bytes.NewReader(data), true); err != nil { // true loops
-	return err
-}
+ctx.Cleanup(g.music.Close)
 g.theme = ctx.Audio.PlayStream(g.music, audio.PlayOptions{Bus: ctx.Audio.Music(), Volume: 0.5})
 ...
 g.theme.Seek(30)  // move playback and the voice's reported position
-g.music.Close()   // in Shutdown; the voice playing it ends
 ```
 
 `asset.Music(ctx.Audio, fs, "music/theme.ogg", true)` does the same
 through the asset sources, so a packed or embedded track opens the same
-way as a loose one. It reads the encoded file into memory, like the
-example above. For incremental file I/O, pass an open `io.ReadSeeker`
-instead. The caller owns that reader: `Music.Close` neither closes it
-nor waits for an in-flight decoder read. A custom reader must support
-the lifetime and shutdown behavior the game requires. Close every
-Music even after playback ends, since its decoder parks for a future seek.
+way as a loose one. It reads the encoded file into memory. Use
+`OpenMusicFile` for incremental file I/O without separate file cleanup,
+or `OpenMusic` for a borrowed `io.ReadSeeker`. A borrowed reader stays
+open and can be closed safely after `Music.Close` returns. Close waits
+for an in-flight read or seek; a custom reader must unblock those itself.
+Never call Music.Close from that reader or its callbacks. Repeated and
+concurrent Close calls are safe. Close every Music even after playback
+ends, since its decoder parks for a future seek.
 
 ## Positional audio
 

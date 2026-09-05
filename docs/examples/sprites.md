@@ -178,16 +178,12 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
-	g.tex.Destroy()
-	g.floor.Destroy()
-	g.floorNorm.Destroy()
-}
 ```
 
-`Shutdown` destroys all three textures. Every GPU resource has `Destroy`,
-and it must be called from the same goroutine that created the resource,
-which for a game means from one of the `Game` methods.
+The renderer releases all three textures when the game closes, including
+if a later upload in `Init` fails. A game can call `Destroy` to release a
+resource earlier, from the same goroutine that created it, for example
+when unloading a level.
 
 ## Update: input and motion
 

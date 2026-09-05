@@ -100,18 +100,22 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.udp, err = network.ListenUDP(":0", g.reg); err != nil {
 		return err
 	}
+	ctx.Cleanup(func() { g.udp.Close() })
 	g.udp.SetOnActivity(ctx.Wake)
 	switch {
 	case g.listen != "":
 		if g.server, err = network.Listen(g.listen, g.reg); err != nil {
 			return err
 		}
+		ctx.Cleanup(func() { g.server.Close() })
 		g.server.SetOnActivity(ctx.Wake)
 		g.say(fmt.Sprintf("Listening on %s (UDP %d). Others join with -join %s", g.server.Addr(), g.udp.Addr().Port, g.server.Addr()))
 	case g.joinTo != "":
 		if g.client, err = network.Dial(g.joinTo, g.reg, 5*time.Second); err != nil {
 			return err
 		}
+		client := g.client // retain this connection even after a disconnect clears g.client
+		ctx.Cleanup(func() { client.Close() })
 		g.client.SetOnActivity(ctx.Wake)
 		g.client.Send(join{Name: g.name})
 		g.say("Connected to " + g.joinTo)
@@ -119,17 +123,6 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		g.say("Run with -listen :7777 to host, or -join host:7777 to connect.")
 	}
 	return nil
-}
-
-func (g *game) Shutdown(ctx *bunyip.Context) {
-	if g.server != nil {
-		g.server.Close()
-	}
-	if g.client != nil {
-		g.client.Close()
-	}
-	g.udp.Close()
-	g.font.Destroy()
 }
 
 func (g *game) say(line string) {

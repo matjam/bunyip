@@ -12,7 +12,7 @@ import (
 
 func Example() {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true})
 	w.AddSystem("soft", soft.System)
 
 	// A ball of jelly dropped onto the ground plane.
@@ -23,7 +23,7 @@ func Example() {
 	for range 180 {
 		w.Update(1.0 / 60)
 	}
-	b, _ := ecs.Get[soft.SoftBody3](w, ball)
+	b, _ := w.Get[soft.SoftBody3](ball)
 	lowest := float32(math.Inf(1))
 	for _, p := range b.Particles() {
 		lowest = min(lowest, p.Y)
@@ -36,7 +36,7 @@ func Example() {
 
 func ExampleNewCloth() {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
 	w.AddSystem("soft", soft.System)
 
 	// A sheet hung from its two top corners.
@@ -48,7 +48,7 @@ func ExampleNewCloth() {
 	for range 240 {
 		w.Update(1.0 / 60)
 	}
-	c, _ := ecs.Get[soft.Cloth](w, sheet)
+	c, _ := w.Get[soft.Cloth](sheet)
 	pos := c.Positions()
 	fmt.Printf("the bottom corner hangs %.1f below the pin\n", pos[0].Y-pos[c.Index(0, rows-1)].Y)
 	// Output:
@@ -57,7 +57,7 @@ func ExampleNewCloth() {
 
 func ExampleNewFluid2() {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity2: lin.V2(0, 900)})
+	w.SetResource(soft.Settings{Gravity2: lin.V2(0, 900)})
 	w.AddSystem("soft", soft.System)
 
 	// A column of liquid released in a tank, in view units.
@@ -67,7 +67,7 @@ func ExampleNewFluid2() {
 	for range 240 {
 		w.Update(1.0 / 60)
 	}
-	got, _ := ecs.Get[soft.Fluid2](w, tank)
+	got, _ := w.Get[soft.Fluid2](tank)
 	spread := float32(0)
 	for _, p := range got.Positions() {
 		spread = max(spread, p.X)

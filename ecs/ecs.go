@@ -11,7 +11,7 @@
 //
 //	w := ecs.NewWorld()
 //	e := w.SpawnWith(Position{1, 2}, Velocity{0.5, 0})
-//	q := ecs.NewQuery2[Position, Velocity](w)
+//	q := w.Query2[Position, Velocity]()
 //	q.Each(func(e ecs.Entity, p *Position, v *Velocity) {
 //		p.X += v.X
 //	})
@@ -27,10 +27,11 @@
 // a structural change touches their table; do not retain them across frames.
 // Rows are visited last to first and matched table lengths are captured
 // at the start of a walk. The currently visited entity may be restructured
-// or despawned, but changes to other entities must be deferred with Commands.
+// or despawned, but changes to other entities must be deferred with World.Defer
+// or an explicit Commands buffer.
 // Despawning a parent also removes its children, so defer that operation.
-// Do not nest a walk of the same query within its callback. The package
-// Each helpers share a cached query per world and ordered component set,
+// Do not nest a walk of the same query within its callback. The world's
+// Each methods share a cached query per world and ordered component set,
 // so nesting the same helper and component set has the same restriction.
 // Worlds and their queries require externally serialized access.
 //
@@ -210,8 +211,8 @@ func NewWorld() *World {
 	return w
 }
 
-// Count is the number of live entities.
-func (w *World) Count() int { return w.count }
+// Len is the number of live entities.
+func (w *World) Len() int { return w.count }
 
 // Alive reports whether the entity still exists.
 func (w *World) Alive(e Entity) bool {
@@ -400,13 +401,13 @@ func (w *World) Despawn(e Entity) {
 	if !w.Alive(e) {
 		return
 	}
-	if ch, ok := Get[Children](w, e); ok {
+	if ch, ok := w.Get[Children](e); ok {
 		kids := append([]Entity(nil), ch.List...)
 		for _, c := range kids {
 			w.Despawn(c)
 		}
 	}
-	if p, ok := Get[Parent](w, e); ok && w.Alive(p.Entity) {
+	if p, ok := w.Get[Parent](e); ok && w.Alive(p.Entity) {
 		detach(w, p.Entity, e)
 	}
 	w.remove(e)
@@ -420,7 +421,7 @@ func (w *World) Despawn(e Entity) {
 }
 
 // Add attaches a component, or replaces it when already present.
-func Add[T any](w *World, e Entity, v T) {
+func (w *World) Add[T any](e Entity, v T) {
 	if !w.Alive(e) {
 		return
 	}
@@ -443,7 +444,7 @@ func Add[T any](w *World, e Entity, v T) {
 }
 
 // Remove detaches a component; nothing happens if the entity has none.
-func Remove[T any](w *World, e Entity) {
+func (w *World) Remove[T any](e Entity) {
 	if !w.Alive(e) {
 		return
 	}
@@ -465,7 +466,7 @@ func Remove[T any](w *World, e Entity) {
 // Get returns a pointer to the entity's component. The pointer is valid
 // until the next structural change (Add, Remove, Despawn, Spawn) that
 // touches its table, so read or write it right away.
-func Get[T any](w *World, e Entity) (*T, bool) {
+func (w *World) Get[T any](e Entity) (*T, bool) {
 	if !w.Alive(e) {
 		return nil, false
 	}
@@ -485,8 +486,8 @@ func Get[T any](w *World, e Entity) (*T, bool) {
 }
 
 // Has reports whether the entity carries a T.
-func Has[T any](w *World, e Entity) bool {
-	_, ok := Get[T](w, e)
+func (w *World) Has[T any](e Entity) bool {
+	_, ok := w.Get[T](e)
 	return ok
 }
 
@@ -500,7 +501,7 @@ func typeOf[T any]() reflect.Type {
 
 // upgrade replaces reflect-backed columns for T with typed ones so
 // queries and Get run without reflection. It runs once per type, the
-// first time a generic function meets a type first seen via SpawnWith.
+// first time a generic method meets a type first seen via SpawnWith.
 func upgrade[T any](w *World, id ComponentID) {
 	w.comps[id].newColumn = func() column { return &typedColumn[T]{} }
 	w.comps[id].typed = true

@@ -111,15 +111,15 @@ func TestRestOnShapes3D(t *testing.T) {
 	for _, g := range grounds {
 		for _, b := range bodies {
 			w := ecs.NewWorld()
-			ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 4, Iterations: 8})
+			w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 4, Iterations: 8})
 			w.AddSystem("phys", System3)
 			w.SpawnWith(gfx.Transform{}, Collider3{Shape: g.shape})
 			body := Dynamic3(1)
 			body.Restitution = 0
 			e := w.SpawnWith(gfx.Transform{Position: lin.V3(1, 3, 1), Rotation: b.rot}, body, Collider3{Shape: b.shape})
 			run(w, 4)
-			tr, _ := ecs.Get[gfx.Transform](w, e)
-			bd, _ := ecs.Get[Body3](w, e)
+			tr, _ := w.Get[gfx.Transform](e)
+			bd, _ := w.Get[Body3](e)
 			want := g.top + b.height
 			if !near(tr.Position.Y, want, 0.08) || bd.Vel.Len() > 0.1 {
 				t.Errorf("%s on %s: rests at %v (vel %v), want y %.2f", b.name, g.name, tr.Position, bd.Vel, want)
@@ -182,15 +182,15 @@ func TestShapes2D(t *testing.T) {
 	for _, g := range grounds {
 		for _, b := range bodies {
 			w := ecs.NewWorld()
-			ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+			w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 			w.AddSystem("phys", System2)
 			w.SpawnWith(gfx.At2(0, 0), Collider2{Shape: g.shape})
 			body := Dynamic2(1)
 			body.Restitution = 0
 			e := w.SpawnWith(gfx.Transform2{Position: lin.V2(1, 3), Rotation: b.rot}, body, Collider2{Shape: b.shape})
 			run(w, 4)
-			tr, _ := ecs.Get[gfx.Transform2](w, e)
-			bd, _ := ecs.Get[Body2](w, e)
+			tr, _ := w.Get[gfx.Transform2](e)
+			bd, _ := w.Get[Body2](e)
 			want := g.top + b.height
 			if !near(tr.Position.Y, want, 0.08) || bd.Vel.Len() > 0.1 {
 				t.Errorf("%s on %s: rests at %v (vel %v), want y %.2f", b.name, g.name, tr.Position, bd.Vel, want)

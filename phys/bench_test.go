@@ -21,7 +21,7 @@ func (r *benchRand) next() float32 {
 // the cost is the broadphase and the per-body bookkeeping.
 func falling3(n int) *ecs.World {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	r := benchRand(12345)
 	for range n {
@@ -37,7 +37,7 @@ func falling3(n int) *ecs.World {
 // generation and the solver.
 func stacked3(n int) *ecs.World {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	w.SpawnWith(gfx.At(0, -0.5, 0), Collider3{Shape: Box3{Half: lin.V3(60, 0.5, 60)}})
 	const height = 10
@@ -55,7 +55,7 @@ func stacked3(n int) *ecs.World {
 // statics3 scatters n static boxes for the query benchmarks.
 func statics3(n int) *ecs.World {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	r := benchRand(999)
 	for range n {
@@ -72,7 +72,7 @@ func statics3(n int) *ecs.World {
 // boxes, so the cost is the sweep each of them runs every substep.
 func ccd3(n int) *ecs.World {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	r := benchRand(4242)
 	for range 2000 {
@@ -127,13 +127,13 @@ func BenchmarkShapeCast3_4000(b *testing.B) {
 
 func BenchmarkCharacter3Move(b *testing.B) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	stairs3(w)
 	e := w.SpawnWith(gfx.At(0, 1, 0))
 	w.Update(step)
 	c := CharacterController3{Radius: 0.35, HalfHeight: 0.45, StepHeight: 0.35}
-	tr, _ := ecs.Get[gfx.Transform](w, e)
+	tr, _ := w.Get[gfx.Transform](e)
 	c.Move(w, e, lin.V3(2, -6, 0), step) // warm the caches
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -156,7 +156,7 @@ func BenchmarkShapeCast2_4000(b *testing.B) {
 
 func BenchmarkCharacter2Move(b *testing.B) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 	w.AddSystem("phys", System2)
 	w.SpawnWith(gfx.At2(0, -0.5), Collider2{Shape: Box2{HalfW: 60, HalfH: 0.5}})
 	r := benchRand(31337)
@@ -167,7 +167,7 @@ func BenchmarkCharacter2Move(b *testing.B) {
 	e := w.SpawnWith(gfx.At2(0, 1))
 	w.Update(step)
 	c := CharacterController2{Radius: 0.35, HalfHeight: 0.45, StepHeight: 0.35}
-	tr, _ := ecs.Get[gfx.Transform2](w, e)
+	tr, _ := w.Get[gfx.Transform2](e)
 	c.Move(w, e, lin.V2(2, -6), step) // warm the caches
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -182,7 +182,7 @@ func BenchmarkCharacter2Move(b *testing.B) {
 // statics2 scatters n static boxes for the 2D query benchmarks.
 func statics2(n int) *ecs.World {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 	w.AddSystem("phys", System2)
 	r := benchRand(999)
 	for range n {
@@ -241,7 +241,7 @@ func BenchmarkRaycast3_4000Into(b *testing.B) {
 // falling2 is the 2D equivalent of falling3.
 func falling2(n int) *ecs.World {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 	w.AddSystem("phys", System2)
 	r := benchRand(12345)
 	for range n {
@@ -255,7 +255,7 @@ func falling2(n int) *ecs.World {
 // stacked2 is the 2D equivalent of stacked3.
 func stacked2(n int) *ecs.World {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 	w.AddSystem("phys", System2)
 	w.SpawnWith(gfx.At2(0, -0.5), Collider2{Shape: Box2{HalfW: 200, HalfH: 0.5}})
 	const height = 10

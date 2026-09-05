@@ -23,6 +23,9 @@ var Default Number
 type Thing struct { Field string }
 func NewThing() *Thing { return nil }
 func (*Thing) Run() {}
+func (*Thing) Get[T any]() T { var zero T; return zero }
+type Box[T any] struct{}
+func (Box[T]) Map[U any](fn func(T) U) Box[U] { return Box[U]{} }
 type Runner interface { Run() }
 `,
 		"nested/child/api.go":   "// Package child links [github.com/matjam/bunyip.Thing].\npackage child\n",
@@ -52,6 +55,9 @@ type Runner interface { Run() }
 func TestSymbolCoverageAndAnchors(t *testing.T) {
 	s := fixtureSite(t)
 	want := map[string]string{"Top": "const", "Global": "var", "Number": "type", "First": "const", "Second": "const", "Default": "var", "Thing": "type", "NewThing": "func", "Thing.Run": "method", "Thing.Field": "field", "Runner": "type", "Runner.Run": "method"}
+	want["Thing.Get"] = "method"
+	want["Box"] = "type"
+	want["Box.Map"] = "method"
 	seen := map[string]bool{}
 	for _, sym := range s.symbols {
 		if seen[sym.URL] {
@@ -86,6 +92,18 @@ func TestSymbolCoverageAndAnchors(t *testing.T) {
 	for _, link := range []string{"https://example.test/docs/pkg/bunyip.md#Thing", "https://example.test/docs/guides/shot.png", "https://example.test/docs/guides/start.md"} {
 		if !strings.Contains(full, link) {
 			t.Errorf("aggregate missing %s", link)
+		}
+	}
+}
+
+func TestGenericMethodSignatures(t *testing.T) {
+	s := fixtureSite(t)
+	for _, signature := range []string{
+		"func (*Thing) Get[T any]() T",
+		"func (Box[T]) Map[U any](fn func(T) U) Box[U]",
+	} {
+		if !strings.Contains(string(s.pages["pkg/bunyip.md"]), signature) {
+			t.Errorf("generic method signature missing from Markdown: %s", signature)
 		}
 	}
 }

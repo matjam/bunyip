@@ -137,10 +137,11 @@ the positions, which here are view units, so the speed of sound is 3000
 of them per second to keep the orbit's shift musical.
 
 The music is either an `audio.Music` opened from a file with
-`m.OpenMusic`, or the `arpeggio` value at the bottom of this program.
+`m.OpenMusicFile`, or the `arpeggio` value at the bottom of this program.
 Both are played with `PlayStream`, which pulls samples as the device
 needs them. Ogg and MP3 decode incrementally; WAV is fully decoded when
-`OpenMusic` opens it.
+`OpenMusicFile` opens it. The music owns its source file; `ctx.Cleanup`
+registers the decoder and capture cleanup as soon as each opens.
 
 `m.OpenCapture` opens the default input device. Its error is kept
 and shown rather than returned, so a machine with no microphone still runs
@@ -187,13 +188,10 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	// Music: a file if given, otherwise a synthesised arpeggio stream.
 	if g.musicPath != "" {
-		f, err := os.Open(g.musicPath)
-		if err != nil {
+		if g.music, err = m.OpenMusicFile(g.musicPath, true); err != nil {
 			return err
 		}
-		if g.music, err = m.OpenMusic(f, true); err != nil {
-			return err
-		}
+		ctx.Cleanup(g.music.Close)
 		g.stream = m.PlayStream(g.music, audio.PlayOptions{Volume: 0.5, Priority: 20})
 	} else {
 		g.stream = m.PlayStream(&arpeggio{rate: m.Rate()}, audio.PlayOptions{Volume: 0.18, Reverb: 0.6, Priority: 20})
@@ -207,6 +205,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		if err != nil {
 			g.micErr = err.Error()
 		} else {
+			ctx.Cleanup(func() { g.capture.Close() })
 			g.micBuf = make([]float32, g.capture.Rate()/10)
 		}
 	}
@@ -214,25 +213,11 @@ func (g *game) Init(ctx *bunyip.Context) error {
 }
 ```
 
-## Shutdown
+## Cleanup
 
-The capture and music decoder are closed and the font destroyed. Voices
-belong to the mixer, which the engine shuts down. `Music.Close` does not
-close its source reader: the file opened in this example is not retained
-for explicit cleanup. A game should own that file's lifetime, or pass a
-`bytes.Reader` over encoded bytes loaded with `os.ReadFile`.
-
-```go
-func (g *game) Shutdown(ctx *bunyip.Context) {
-	if g.capture != nil {
-		g.capture.Close()
-	}
-	if g.music != nil {
-		g.music.Close()
-	}
-	g.font.Destroy()
-}
-```
+`ctx.Cleanup` closes capture and music on exit, including initialization
+failure. Music cleanup joins decoding before closing the owned file.
+The engine releases voices and the font with their owning services.
 
 ## Update: the listener, the sources and the microphone
 

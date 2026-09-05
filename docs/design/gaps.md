@@ -20,9 +20,13 @@ macOS and Windows through the system clipboard, X11 by owning the
 CLIPBOARD selection and answering requests for it (INCR included), and
 Wayland through `wl_data_device` with a pipe.
 
-- Generic `tween.Of` uses eased progress directly, so its embedded
-  `Tween.YoYo` does not reverse the blend endpoints. Scalar tweens do
-  reverse; generic vector and colour tweens need that behavior aligned.
+The Go 1.27 API pass places typed ECS, loading and random-selection
+operations on their receivers. Graphics owns GPU lifetimes, Context
+provides cleanup closures and default UI wiring, and scoped drawing and
+deferred ECS commands restore or apply their state at the end of a closure.
+Asset loaders accept standard filesystems, and music and background-load
+cleanup wait for their workers before releasing dependencies.
+
 - `orbit.Elements.State` interprets `SemiMajorAxis` as periapsis distance
   for exactly parabolic orbits, but `Elements.Periapsis()` still returns
   zero when eccentricity is one. `Simulation.Energy` uses an unsoftened

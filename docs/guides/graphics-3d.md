@@ -536,7 +536,8 @@ that names what the file is.
 side in texels (default 128). Set it as `Light.Environment` and it
 replaces the ambient and the sky. Metals reflect it, rough surfaces take
 its tint from every direction, and `Light.Background` draws it behind the
-scene. Environments hold GPU memory; `Destroy` them in `Shutdown`.
+scene. Environments hold GPU memory; `Destroy` releases it early.
+Graphics releases remaining environments when the engine closes.
 
 ```go
 panorama, err := gfx.DecodePanorama(data) // .exr, .hdr, .png or .jpg
@@ -578,8 +579,8 @@ units inside its volume, which is what stops a ball popping as it leaves
 a room. `BoxProjection` reflects a box probe's walls at the place the
 walls are rather than at infinity, so a floor mirrors the wall it faces.
 A frame keeps its first `MaxProbes` (8) probes and counts the rest in
-`FrameStats.ProbesDropped`. A probe owns GPU memory; `Destroy` it in
-`Shutdown`.
+`FrameStats.ProbesDropped`. A probe owns GPU memory; `Destroy` releases
+it early. Graphics releases its remaining GPU resources at shutdown.
 
 `LightProbeGrid` is the diffuse half: a lattice of `Counts` cells from
 `Origin` every `Spacing` units, each holding the light arriving at it as
@@ -846,8 +847,8 @@ take two distances. A nil last mesh draws nothing beyond the last
 distance, so distant scenery disappears instead of shimmering.
 `DrawLOD(lod, material, model)` and `DrawLODAt(lod, material, transform)`
 pick by the camera's distance to the model's origin; `LOD.Pick` lets you
-choose the level yourself. Walk `LOD.Levels` in `Shutdown` to destroy
-the meshes.
+choose the level yourself. Graphics releases the meshes at shutdown;
+walk `LOD.Levels` and destroy them when unloading the level earlier.
 
 The coarsest level of all is an impostor: the model baked into pictures
 of itself. `BakeImpostor(model, opts)` renders the model from a ring of
@@ -898,6 +899,17 @@ for _, c := range g.chunks {
 `SetPost` replaces the settings the post pass uses on the 3D scene.
 `DefaultPost` returns the defaults and `Post` reads back the current
 ones, so you can change one field without restating the rest.
+`ConfigurePost` makes that edit in a closure, keeping other settings and
+preserving intentional zero values:
+
+```go
+gr.ConfigurePost(func(p *gfx.PostSettings) {
+	p.Bloom = 0.3
+	p.Saturation = 0 // grayscale
+})
+```
+
+It commits the edited copy on normal return; a panic does not commit it.
 
 `Exposure` multiplies the scene before tone mapping. Use it when a scene
 is too dark or blown out. `Bloom` is the strength of the glow around
@@ -1212,8 +1224,11 @@ over it, and the transmissive draws follow in sorted order. So glass
 refracts the opaque scene, not the translucent surfaces in front of it.
 
 Meshes, models, textures, environments, render textures, shaders and
-fonts all hold GPU memory and all have `Destroy`. Call it from `Init`,
-`Update`, `Draw` or `Shutdown` on the same goroutine, never from another.
+fonts all hold GPU memory. The renderer owns everything it creates and
+releases it when the game closes, including when setup or drawing fails.
+Use `Destroy` to release a resource earlier, such as when unloading a
+level. Call it from `Init`, `Update`, `Draw` or `Shutdown` on the same
+goroutine, never from another.
 Destroying inside a frame costs no wait: the object goes on that frame
 slot's retire list and is freed a couple of frames later, once the GPU
 has finished with it, so what was already queued still draws. A model's

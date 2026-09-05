@@ -24,8 +24,9 @@ import (
 // ligatures, mark placement, Arabic joining and right-to-left order all
 // come out right; glyphs are rendered from the font's outlines at the
 // framebuffer's pixel density and drawn in view units, so text is crisp
-// on high-DPI displays. Create fonts with NewFont or NewSDFFont and call
-// Destroy when finished. The atlas has a fixed capacity: glyphs that do
+// on high-DPI displays. Create fonts with NewFont or NewSDFFont; Graphics
+// releases their atlases at shutdown, or Destroy releases one earlier.
+// The atlas has a fixed capacity: glyphs that do
 // not fit are omitted, so choose FontOptions.AtlasSize for the character
 // set and raster size the game needs.
 type Font struct {
@@ -477,6 +478,7 @@ func (f *Font) Texture() *Texture { return f.atlas }
 // Destroy frees the atlas.
 func (f *Font) Destroy() {
 	f.g.forget(f)
+	f.g.owned.remove(f)
 	if f.atlas != nil {
 		f.atlas.Destroy()
 		f.atlas = nil

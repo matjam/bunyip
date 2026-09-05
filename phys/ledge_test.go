@@ -19,7 +19,7 @@ func TestLedgeLanding3D(t *testing.T) {
 	random := rng.New(7)
 	for trial := range 40 {
 		w := ecs.NewWorld()
-		ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -9.8, 0), Substeps: 4, Iterations: 8})
+		w.SetResource(Settings3{Gravity: lin.V3(0, -9.8, 0), Substeps: 4, Iterations: 8})
 		w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(30, 0.5, 30)}})
 		w.SpawnWith(gfx.Transform{Position: lin.V3(12, 1.5, 0)}, Collider3{Shape: Box3{Half: lin.V3(0.5, 1.5, 12)}})
 		w.AddSystem("physics", System3)
@@ -33,11 +33,11 @@ func TestLedgeLanding3D(t *testing.T) {
 		var maxSpeed float32
 		for range 600 {
 			w.Update(1.0 / 60)
-			b, _ := ecs.Get[Body3](w, e)
+			b, _ := w.Get[Body3](e)
 			maxSpeed = max(maxSpeed, b.Vel.Len())
 		}
-		tr, _ := ecs.Get[gfx.Transform](w, e)
-		b, _ := ecs.Get[Body3](w, e)
+		tr, _ := w.Get[gfx.Transform](e)
+		b, _ := w.Get[Body3](e)
 		if maxSpeed > impact*1.1 {
 			t.Errorf("trial %d: cube reached %.1f, faster than its impact speed %.1f", trial, maxSpeed, impact)
 		}

@@ -32,10 +32,10 @@ func Example() {
 	for range 4 {
 		w.Update(0.5)
 	}
-	t, _ := ecs.Get[gfx.Transform](w, cube)
-	s, _ := ecs.Get[gfx.Sprite](w, sprite)
+	t, _ := w.Get[gfx.Transform](cube)
+	s, _ := w.Get[gfx.Sprite](sprite)
 	fmt.Printf("cube at y=%.0f, sprite at y=%.0f\n", t.Position.Y, s.Pos.Y)
-	for _, ev := range ecs.Events[anim.Finished](w) {
+	for _, ev := range w.Events[anim.Finished]() {
 		fmt.Println("finished:", ev.Clip.Name)
 	}
 	// Output:
@@ -54,8 +54,21 @@ func ExamplePlayer_CrossFade() {
 	w.Update(0.1)
 	p.CrossFade(jump, 0.5) // blend from idle's scale to jump's over half a second
 	w.Update(0.25)
-	t, _ := ecs.Get[gfx.Transform](w, e)
+	t, _ := w.Get[gfx.Transform](e)
 	fmt.Printf("%.1f\n", t.Scale.X)
 	// Output:
 	// 1.5
+}
+
+func ExampleCurve_Field() {
+	type Light struct{ Intensity float32 }
+	w := ecs.NewWorld()
+	e := w.SpawnWith(Light{Intensity: 1})
+	fade := anim.Floats(anim.Num(0, 1), anim.Num(1, 0)).Field(
+		func(l *Light) *float32 { return &l.Intensity })
+	fade.Apply(w, e, 0.25, 1)
+	l, _ := w.Get[Light](e)
+	fmt.Println(l.Intensity)
+	// Output:
+	// 0.75
 }

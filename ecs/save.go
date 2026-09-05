@@ -297,7 +297,7 @@ func (w *World) Load(in io.Reader, opts ...LoadOptions) error {
 	// every ancestor walk forever.
 	for _, e := range ids {
 		for a, n := e, 0; ; n++ {
-			p, ok := Get[Parent](w, a)
+			p, ok := w.Get[Parent](a)
 			if !ok || !w.Alive(p.Entity) {
 				break
 			}

@@ -182,11 +182,11 @@ func (g *game) Init(ctx *bunyip.Context) error {
 
 	w := ecs.NewWorld()
 	g.world = w
-	g.crates = ecs.NewQuery2[gfx.Transform, crate](w)
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
+	g.crates = w.Query2[gfx.Transform, crate]()
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
 	// The soft solver takes its 3D gravity from the physics settings; the
 	// fluid needs its own, in view units per second squared.
-	ecs.SetResource(w, soft.Settings{Gravity2: lin.V2(0, 900), Substeps: 6})
+	w.SetResource(soft.Settings{Gravity2: lin.V2(0, 900), Substeps: 6})
 	// The floor and the pole are static colliders, which both solvers see.
 	w.SpawnWith(gfx.Transform{Position: lin.V3(0, -0.5, 0)}, phys.Collider3{Shape: phys.Box3{Half: lin.V3(12, 0.5, 12)}})
 	w.SpawnWith(gfx.Transform{Position: lin.V3(-2.2, 2, 0)}, phys.Collider3{Shape: phys.Box3{Half: lin.V3(0.08, 2, 0.08)}})
@@ -277,11 +277,11 @@ func (g *game) reset(ctx *bunyip.Context) error {
 		g.jelly.Destroy()
 	}
 	var err error
-	c, _ := ecs.Get[soft.Cloth](w, g.cloth)
+	c, _ := w.Get[soft.Cloth](g.cloth)
 	if g.flag, err = c.NewMesh(ctx.Gfx); err != nil {
 		return err
 	}
-	b, _ := ecs.Get[soft.SoftBody3](w, g.body)
+	b, _ := w.Get[soft.SoftBody3](g.body)
 	if g.jelly, err = b.NewMesh(ctx.Gfx); err != nil {
 		return err
 	}
@@ -304,7 +304,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 
 ## Update: the gust, the kick and the step
 
-`ecs.Get` returns a pointer to the component in its table, so assigning
+`ecs.World.Get` returns a pointer to the component in its table, so assigning
 to `c.Wind` changes the value the solver will read. The gust is three
 sines at different rates, which keeps the flag flapping rather than
 standing out stiffly in a steady wind.
@@ -331,11 +331,11 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	}
 	// A gust that swings around, so the flag flaps rather than sitting out
 	// stiffly in a steady wind.
-	if c, ok := ecs.Get[soft.Cloth](g.world, g.cloth); ok {
+	if c, ok := g.world.Get[soft.Cloth](g.cloth); ok {
 		t := float32(ctx.Time)
 		c.Wind = lin.V3(1.5*sin(t*1.7), 0.6*sin(t*2.3), 5+2.5*sin(t*1.1))
 	}
-	b, hasBody := ecs.Get[soft.SoftBody3](g.world, g.body)
+	b, hasBody := g.world.Get[soft.SoftBody3](g.body)
 	if hasBody && (in.KeyPressed(input.KeySpace) || (g.seconds > 0 && !g.kicked && ctx.Time >= g.seconds*0.3)) {
 		b.AddImpulse(lin.V3(-9, 16, 0))
 		g.kicked = true
@@ -434,7 +434,7 @@ cloth's material is `DoubleSided`, because a sheet is seen from both
 sides and its back faces would otherwise be culled. The jelly gets a
 clearcoat, which reads as a wet surface.
 
-Both calls are guarded by `ecs.Get`, so drawing only proceeds when the
+Both calls are guarded by `ecs.World.Get`, so drawing only proceeds when the
 expected component exists. R rebuilds the entities synchronously in
 `Update`; `Draw` does not run halfway through that reset.
 
@@ -442,13 +442,13 @@ expected component exists. R rebuilds the entities synchronously in
 	// The cloth and the jelly follow their particles. Both are drawn with
 	// an identity matrix, because their particles are already in world
 	// space, and the cloth is seen from both sides.
-	if c, ok := ecs.Get[soft.Cloth](w, g.cloth); ok {
+	if c, ok := w.Get[soft.Cloth](g.cloth); ok {
 		if err := c.UpdateMesh(g.flag); err != nil {
 			return err
 		}
 		gr.DrawMesh(g.flag, gfx.Material{BaseColor: gfx.RGB(220, 60, 70), Roughness: 0.85, DoubleSided: true}, lin.Identity())
 	}
-	if b, ok := ecs.Get[soft.SoftBody3](w, g.body); ok {
+	if b, ok := w.Get[soft.SoftBody3](g.body); ok {
 		if err := b.UpdateMesh(g.jelly); err != nil {
 			return err
 		}
@@ -473,13 +473,13 @@ form.
 				ms = ctx.Stats.Scopes[0].MS
 			}
 			n := 0
-			if f, ok := ecs.Get[soft.Fluid2](g.world, g.fluid); ok {
+			if f, ok := g.world.Get[soft.Fluid2](g.fluid); ok {
 				n = f.Count()
 			}
 			u.Label(fmt.Sprintf("soft %.2f ms/frame: a %dx%d cloth flag, a jelly cube and %d fluid particles",
 				ms, flagCols, flagRows, n))
 			if u.Button("Kick the jelly (Space)") {
-				if b, ok := ecs.Get[soft.SoftBody3](g.world, g.body); ok {
+				if b, ok := g.world.Get[soft.SoftBody3](g.body); ok {
 					b.AddImpulse(lin.V3(-9, 16, 0))
 				}
 			}
@@ -509,7 +509,7 @@ the fluid's own coordinates are in.
 // post in it, and one soft circle per particle.
 func (g *game) drawTank(ctx *bunyip.Context) {
 	gr := ctx.Gfx
-	f, ok := ecs.Get[soft.Fluid2](g.world, g.fluid)
+	f, ok := g.world.Get[soft.Fluid2](g.fluid)
 	if !ok {
 		return
 	}

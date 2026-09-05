@@ -19,11 +19,11 @@ type Velocity struct{ X, Y float32 }
 
 w := ecs.NewWorld()
 e := w.SpawnWith(Position{0, 0}, Velocity{1, 0})
-ecs.Add(w, e, Health{10})
-if p, ok := ecs.Get[Position](w, e); ok {
+w.Add(e, Health{10})
+if p, ok := w.Get[Position](e); ok {
 	p.X += 5 // pointers into storage; write through them right away
 }
-ecs.Remove[Velocity](w, e)
+w.Remove[Velocity](e)
 w.Despawn(e)
 ```
 
@@ -39,7 +39,7 @@ Where the type is known only at run time, `w.Components(e)` lists the
 types an entity carries, `w.ComponentValues(e)` returns shallow copies
 in the same order, and `w.SetComponent(e, v)` writes one back from an
 `any`. That is what an editor or the debug console's entity panel uses;
-game code that knows the type calls `ecs.Get` and `ecs.Add`.
+game code that knows the type calls `ecs.World.Get` and `ecs.World.Add`.
 Slices, maps and pointers inside those copies still refer to the
 entity's storage. Component pointers from `Get` and queries are only
 valid until a structural change touches their table.
@@ -51,7 +51,7 @@ all of them. Make it once and keep it; it caches which tables match and
 only rescans when a new combination of components appears.
 
 ```go
-movers := ecs.NewQuery2[Position, Velocity](w, ecs.Without[Frozen]())
+movers := w.Query2[Position, Velocity](ecs.Without[Frozen]())
 
 movers.Each(func(e ecs.Entity, p *Position, v *Velocity) {
 	p.X += v.X * dt
@@ -80,8 +80,8 @@ in response to game events rather than every frame.
 
 Rows are visited last to first, so the entity a query is currently
 visiting may be despawned or given a new component inside the callback.
-Changes to *other* entities go through a `Commands` buffer and are
-applied after the walk.
+Changes to *other* entities go through `World.Defer`, whose `Commands`
+buffer is applied after the enclosing closure returns.
 
 The walk snapshots all matched table lengths, so moving the current
 entity into another matched table does not visit it twice. Despawning
@@ -90,18 +90,25 @@ Do not start another walk of the same query within its callback; the
 same restriction applies to nested `Each` helpers with the same
 ordered component set.
 
-Apply the commands after the query walk completes:
+Wrap the whole query walk so commands apply after it completes:
 
 ```go
-var cmd ecs.Commands
-enemies.Each(func(e ecs.Entity, h *Health) {
-	if h.HP <= 0 {
-		cmd.Spawn(Corpse{}, Position{...})
-		cmd.Despawn(e)
-	}
+w.Defer(func(cmd *ecs.Commands) {
+	enemies.Each(func(e ecs.Entity, h *Health) {
+		if h.HP <= 0 {
+			cmd.Spawn(Corpse{}, Position{...})
+			cmd.Despawn(e)
+		}
+	})
 })
-cmd.Apply(w)
 ```
+
+The scope applies commands in order on a normal return, including an
+early return. A panic discards pending commands and propagates. Each
+nested scope finishes independently. This is not a transaction: direct
+world writes and completed nested scopes are not rolled back. Do not
+retain the scoped buffer or call its `Apply` method. Keep an explicit
+`Commands` value and call `Apply(w)` when work must span several scopes.
 
 ## Systems, resources and events
 
@@ -114,21 +121,21 @@ counts the updates the world has run.
 
 Resources are singletons stored on the world by type, such as the
 score, the rules, the input for this frame or a random number
-generator. Systems fetch them with `ecs.Resource[Score](w)`.
+generator. Systems fetch them with `w.Resource[Score]()`.
 
 Events pass data between systems without coupling them. A producer calls
-`ecs.Emit(w, Cleared{Rows: 2})`; consumers later in the same Update read
-`ecs.Events[Cleared](w)`. Events are cleared at the start of the next
+`w.Emit(Cleared{Rows: 2})`; consumers later in the same Update read
+`w.Events[Cleared]()`. Events are cleared at the start of the next
 Update, and `Draw` still sees what the last Update emitted.
 
 ```go
-ecs.SetResource(w, Score{})
+w.SetResource(Score{})
 w.AddSystem("rules", func(w *ecs.World, dt float64) {
-	ecs.Emit(w, Cleared{Rows: 2})
+	w.Emit(Cleared{Rows: 2})
 })
 w.AddSystem("score", func(w *ecs.World, dt float64) {
-	for _, ev := range ecs.Events[Cleared](w) {
-		ecs.Resource[Score](w).Points += 100 * ev.Rows
+	for _, ev := range w.Events[Cleared]() {
+		w.Resource[Score]().Points += 100 * ev.Rows
 	}
 })
 w.Update(ctx.Delta) // runs both, in registration order
@@ -225,7 +232,7 @@ a save uses for one entity's components:
 tank := ecs.NewPrefab(Position{}, Health{10}, Team{Red}).
 	Child(ecs.NewPrefab(gfx.At(0, 1, 0), Turret{}))
 e := tank.Spawn(w)
-ecs.Add(w, e, Position{x, y}) // place it after
+w.Add(e, Position{x, y}) // place it after
 ```
 
 ```json
@@ -322,7 +329,7 @@ parts a template varies belong in components of their own.
 
 ```go
 lib := ecs.PrefabLibrary{"orc": orcPrefab, "hut": hutPrefab}
-ecs.SetResource(w, lib)
+w.SetResource(lib)
 ```
 
 A reference the library cannot resolve is a `MissingPrefabError` naming
@@ -379,7 +386,7 @@ turret := w.SpawnWith(Position{0, 1})
 ecs.SetParent(w, turret, tank)
 
 second := ecs.CloneTree(w, tank) // the tank and its turret
-if h, ok := ecs.Get[Health](w, second); ok {
+if h, ok := w.Get[Health](second); ok {
 	h.HP = 3 // the original still has 10
 }
 spark := ecs.Clone(w, muzzleFlash) // one entity, no descendants

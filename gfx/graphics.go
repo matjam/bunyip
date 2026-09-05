@@ -15,7 +15,10 @@ import (
 // Graphics is the drawing context for one window. The engine opens a
 // frame, the Draw* calls queue work, and the engine submits it. Obtain
 // Graphics from bunyip.Context; its zero value is not usable. Use it and
-// its GPU resources only on the game goroutine.
+// its GPU resources only on the game goroutine. Graphics owns every GPU
+// resource it creates and releases it when the engine closes, including
+// when game setup or drawing fails. Call a resource's Destroy method to
+// release it earlier, for example when unloading a level.
 type Graphics struct {
 	r            *render.Renderer
 	descriptors  *render.DescriptorSets // five samplers: a texture and a shader's image0..3
@@ -64,6 +67,8 @@ type Graphics struct {
 	rec           recordScratch   // long-lived arguments for the recording commands
 	viewport      vk.VkRect2D     // the main output's pixel rectangle; zero means the whole window
 	res           resources       // the live resources a debug view lists
+	owned         resourceOwner   // resources released before renderer internals
+	destroyed     bool            // teardown has begun; the device is idle
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
@@ -162,6 +167,10 @@ func clipCoord(v float32) int32 {
 // waiting for the device, because the last frame submitted may still be
 // reading the object.
 func (g *Graphics) deferDestroy(free func()) {
+	if g.destroyed {
+		free()
+		return
+	}
 	if fr := g.frame; fr != nil {
 		g.retire[fr.Slot] = append(g.retire[fr.Slot], free)
 		return
@@ -233,14 +242,18 @@ func (g *Graphics) setup(record func(cb vk.VkCommandBuffer)) error {
 
 // newGraphics builds the drawing context over a renderer. The engine
 // loop calls it through internal/hook.
-func newGraphics(r *render.Renderer) (*Graphics, error) {
+func newGraphics(r *render.Renderer) (_ *Graphics, err error) {
 	g := &Graphics{r: r, imageSets: map[[5]*Texture]vk.VkDescriptorSet{}}
+	defer func() {
+		if err != nil {
+			g.destroy()
+		}
+	}()
 	g.staging = r.Device.NewStaging()
 	// A device without timestamp queries leaves this nil, and every call
 	// on it does nothing, so the frame records no timings and FrameStats
 	// reports none.
 	g.timestamps = r.Device.NewTimestamps()
-	var err error
 	if g.descriptors, err = r.Device.NewSamplerDescriptors(5, 2048); err != nil {
 		return nil, err
 	}
@@ -547,14 +560,6 @@ func (g *Graphics) PushClip(r lin.Rect) {
 		r = intersectClip(q.clips[n-1], r)
 	}
 	q.clips = append(q.clips, r)
-}
-
-// Clip runs draw with sprites clipped to the rectangle, the closure form
-// of PushClip and PopClip.
-func (g *Graphics) Clip(r lin.Rect, draw func()) {
-	g.PushClip(r)
-	draw()
-	g.PopClip()
 }
 
 // PopClip restores the clip rectangle in force before the matching PushClip.
@@ -876,10 +881,17 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	return nil
 }
 
-// destroy releases everything the context created. Textures made from it
-// must be destroyed first or are leaked with the device.
+// destroy releases resources before the renderer caches they depend on.
 func (g *Graphics) destroy() {
+	if g.destroyed {
+		return
+	}
 	_ = g.r.Device.WaitIdle()
+	g.destroyed = true
+	g.frame = nil
+	// Resources can free cached descriptors and retire child resources,
+	// so release them while every renderer cache and pool is still alive.
+	g.owned.destroy()
 	for slot := range g.retire {
 		g.freeRetired(slot)
 		g.retire[slot] = nil
@@ -914,7 +926,9 @@ func (g *Graphics) destroy() {
 	vk.VkDestroySampler(dev, g.linear, nil)
 	vk.VkDestroySampler(dev, g.nearestRep, nil)
 	vk.VkDestroySampler(dev, g.linearRep, nil)
-	g.descriptors.Destroy()
+	if g.descriptors != nil {
+		g.descriptors.Destroy()
+	}
 }
 
 // sampler picks the shared sampler for a filtering and edge choice.

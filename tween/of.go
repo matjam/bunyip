@@ -16,8 +16,8 @@ type Of[V any] struct {
 }
 
 // NewOf makes a tween over any value with a blend function; a nil ease
-// is linear. The blend function must be non-nil. Of uses the embedded
-// Tween's Progress; its YoYo setting does not reverse the blend endpoints.
+// is linear. The blend function must be non-nil. Delay, Repeat and YoYo
+// have the same behavior as on a scalar Tween.
 func NewOf[V any](from, to V, seconds float32, ease Ease, lerp func(a, b V, t float32) V) *Of[V] {
 	return &Of[V]{Tween: New(0, 1, seconds, ease), From: from, To: to, Lerp: lerp}
 }
@@ -32,6 +32,13 @@ func NewVec3(from, to lin.Vec3, seconds float32, ease Ease) *Of[lin.Vec3] {
 	return NewOf(from, to, seconds, ease, lin.Vec3.Lerp)
 }
 
+// OnDone replaces the completion callback and returns the same typed
+// tween for chaining. It follows Tween.OnDone's callback timing.
+func (o *Of[V]) OnDone(f func()) *Of[V] {
+	o.Tween.OnDone(f)
+	return o
+}
+
 // Update advances the tween and returns the blended value.
 func (o *Of[V]) Update(dt float32) V {
 	o.Tween.Update(dt)
@@ -39,4 +46,9 @@ func (o *Of[V]) Update(dt float32) V {
 }
 
 // Value is the blended value at the tween's current progress.
-func (o *Of[V]) Value() V { return o.Lerp(o.From, o.To, o.Tween.Progress()) }
+func (o *Of[V]) Value() V {
+	if o.reversed {
+		return o.Lerp(o.To, o.From, o.Tween.Progress())
+	}
+	return o.Lerp(o.From, o.To, o.Tween.Progress())
+}

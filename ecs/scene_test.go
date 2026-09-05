@@ -79,8 +79,8 @@ func TestSceneInstantiateExportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inst.Roots) != 1 || len(inst.Spawned) != 3 || w.Count() != 3 {
-		t.Fatalf("roots %v spawned %v count %d", inst.Roots, inst.Spawned, w.Count())
+	if len(inst.Roots) != 1 || len(inst.Spawned) != 3 || w.Len() != 3 {
+		t.Fatalf("roots %v spawned %v count %d", inst.Roots, inst.Spawned, w.Len())
 	}
 	root, ok := inst.Entity("root")
 	if !ok || root != inst.Roots[0] {
@@ -97,13 +97,13 @@ func TestSceneInstantiateExportRoundTrip(t *testing.T) {
 	if kids := ChildrenOf(w, root); len(kids) != 2 || kids[0] != leader || kids[1] != minion {
 		t.Fatalf("children %v", kids)
 	}
-	if p, _ := Get[pos](w, root); p == nil || *p != (pos{1, 2}) {
+	if p, _ := w.Get[pos](root); p == nil || *p != (pos{1, 2}) {
 		t.Fatalf("root pos %v", p)
 	}
-	if f, _ := Get[follows](w, minion); f == nil || f.Leader != leader {
+	if f, _ := w.Get[follows](minion); f == nil || f.Leader != leader {
 		t.Fatalf("follows %v, want leader %v", f, leader)
 	}
-	tg, _ := Get[target](w, minion)
+	tg, _ := w.Get[target](minion)
 	if tg == nil || tg.Who != root || len(tg.Others) != 2 || tg.Others[0] != leader || tg.Others[1] != None {
 		t.Fatalf("target not remapped: %+v", tg)
 	}
@@ -191,8 +191,8 @@ func TestSceneInstancesAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.Count() != 6 {
-		t.Fatalf("count %d", w.Count())
+	if w.Len() != 6 {
+		t.Fatalf("count %d", w.Len())
 	}
 	for _, e := range first.Spawned {
 		for _, o := range second.Spawned {
@@ -203,18 +203,18 @@ func TestSceneInstancesAreIndependent(t *testing.T) {
 	}
 	f, _ := first.Entity("leader")
 	sec, _ := second.Entity("leader")
-	inv, _ := Get[inventory](w, f)
+	inv, _ := w.Get[inventory](f)
 	inv.Items[0] = "axe"
-	if other, _ := Get[inventory](w, sec); other.Items[0] != "sword" {
+	if other, _ := w.Get[inventory](sec); other.Items[0] != "sword" {
 		t.Fatal("instances share a slice")
 	}
 	// Each instance's references point inside itself.
 	fm, _ := first.Entity("minion")
 	sm, _ := second.Entity("minion")
-	if fl, _ := Get[follows](w, fm); fl.Leader != f {
+	if fl, _ := w.Get[follows](fm); fl.Leader != f {
 		t.Fatalf("first minion follows %v, want %v", fl.Leader, f)
 	}
-	if sl, _ := Get[follows](w, sm); sl.Leader != sec {
+	if sl, _ := w.Get[follows](sm); sl.Leader != sec {
 		t.Fatalf("second minion follows %v, want %v", sl.Leader, sec)
 	}
 
@@ -223,8 +223,8 @@ func TestSceneInstancesAreIndependent(t *testing.T) {
 	extra := w.SpawnWith(pos{9, 9})
 	SetParent(w, extra, first.Roots[0])
 	first.Despawn(w)
-	if w.Count() != 3 || w.Alive(extra) {
-		t.Fatalf("count %d after despawn, extra alive %v", w.Count(), w.Alive(extra))
+	if w.Len() != 3 || w.Alive(extra) {
+		t.Fatalf("count %d after despawn, extra alive %v", w.Len(), w.Alive(extra))
 	}
 	for _, e := range second.Spawned {
 		if !w.Alive(e) {
@@ -254,15 +254,15 @@ func TestSceneInstantiateOptions(t *testing.T) {
 		t.Fatalf("roots %v, children %v", inst.Roots, ChildrenOf(w, under))
 	}
 	body, _ := inst.Entity("body")
-	if tr, _ := Get[gfx.Transform](w, body); tr.Position != lin.V3(11, 1, 1) {
+	if tr, _ := w.Get[gfx.Transform](body); tr.Position != lin.V3(11, 1, 1) {
 		t.Fatalf("offset transform %v", tr.Position)
 	}
 	flat, _ := inst.Entity("flat")
-	if tr, _ := Get[gfx.Transform2](w, flat); tr.Position != lin.V2(12, 2) {
+	if tr, _ := w.Get[gfx.Transform2](flat); tr.Position != lin.V2(12, 2) {
 		t.Fatalf("offset transform2 %v", tr.Position)
 	}
 	bare, _ := inst.Entity("bare")
-	if Has[gfx.Transform](w, bare) {
+	if w.Has[gfx.Transform](bare) {
 		t.Fatal("offset added a transform to an entity without one")
 	}
 }
@@ -281,33 +281,33 @@ func TestScenePrefabReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := NewWorld()
-	SetResource(w, lib)
+	w.SetResource(lib)
 	inst, err := w.Instantiate(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.Count() != 4 || len(inst.Spawned) != 4 || len(inst.Roots) != 2 {
-		t.Fatalf("count %d spawned %v roots %v", w.Count(), inst.Spawned, inst.Roots)
+	if w.Len() != 4 || len(inst.Spawned) != 4 || len(inst.Roots) != 2 {
+		t.Fatalf("count %d spawned %v roots %v", w.Len(), inst.Spawned, inst.Roots)
 	}
 	first, _ := inst.Entity("first")
-	if p, _ := Get[pos](w, first); p == nil || *p != (pos{7, 8}) {
+	if p, _ := w.Get[pos](first); p == nil || *p != (pos{7, 8}) {
 		t.Fatalf("override not applied: %v", p)
 	}
-	if inv, _ := Get[inventory](w, first); inv == nil || inv.Items[0] != "shell" {
+	if inv, _ := w.Get[inventory](first); inv == nil || inv.Items[0] != "shell" {
 		t.Fatalf("prefab component lost: %v", inv)
 	}
 	kids := ChildrenOf(w, first)
-	if len(kids) != 1 || !Has[saveTag](w, kids[0]) {
+	if len(kids) != 1 || !w.Has[saveTag](kids[0]) {
 		t.Fatalf("prefab child missing: %v", kids)
 	}
 	second, _ := inst.Entity("second")
-	if p, _ := Get[pos](w, second); p == nil || *p != (pos{5, 5}) {
+	if p, _ := w.Get[pos](second); p == nil || *p != (pos{5, 5}) {
 		t.Fatalf("second instance took the override: %v", p)
 	}
 	// Despawn takes the prefab children with it.
 	inst.Despawn(w)
-	if w.Count() != 0 {
-		t.Fatalf("count %d after despawn", w.Count())
+	if w.Len() != 0 {
+		t.Fatalf("count %d after despawn", w.Len())
 	}
 }
 
@@ -325,7 +325,7 @@ func TestSceneMissingPrefab(t *testing.T) {
 	if !strings.Contains(err.Error(), "nosuch") {
 		t.Fatalf("error text %q does not name the prefab", err)
 	}
-	if w.Count() != 0 {
+	if w.Len() != 0 {
 		t.Fatal("entities spawned despite the error")
 	}
 	// A library holding the name but no prefab is missing all the same.
@@ -346,7 +346,7 @@ func TestSceneUnregisteredComponent(t *testing.T) {
 	if !errors.As(err, &ue) || len(ue.Names) != 1 || ue.Names[0] != "nope" {
 		t.Fatalf("error %v, want UnregisteredError naming nope", err)
 	}
-	if w.Count() != 0 {
+	if w.Len() != 0 {
 		t.Fatal("entities spawned despite the error")
 	}
 	inst, err := w.Instantiate(s, InstantiateOptions{SkipUnknown: true})
@@ -354,7 +354,7 @@ func TestSceneUnregisteredComponent(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := inst.Roots[0]
-	if p, _ := Get[pos](w, e); p == nil || p.X != 1 {
+	if p, _ := w.Get[pos](e); p == nil || p.X != 1 {
 		t.Fatalf("known component lost: %v", p)
 	}
 }
@@ -435,7 +435,7 @@ func TestSceneParsedDocumentInstantiates(t *testing.T) {
 	if p, ok := ParentOf(w, pet); !ok || p != hero {
 		t.Fatal("parent link not rebuilt")
 	}
-	if f, _ := Get[follows](w, pet); f.Leader != hero {
+	if f, _ := w.Get[follows](pet); f.Leader != hero {
 		t.Fatalf("leader %v, want %v", f.Leader, hero)
 	}
 }

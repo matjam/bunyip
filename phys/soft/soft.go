@@ -4,7 +4,7 @@
 // springs back while keeping its volume; a Fluid2 is a body of liquid in
 // the plane. All three are components stepped by one system.
 //
-//	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true})
+//	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true})
 //	flag := w.SpawnWith(soft.NewCloth(soft.ClothSpec{
 //		Width: 24, Height: 16, Spacing: 0.1, Mass: 0.4,
 //		Origin: lin.V3(0, 3, 0), Pinned: []int{0, 24 * 15},
@@ -129,14 +129,14 @@ type state struct {
 }
 
 func stateOf(w *ecs.World) *state {
-	s := ecs.Resource[state](w)
+	s := w.Resource[state]()
 	if s == nil {
-		ecs.SetResource(w, state{
-			cloths: ecs.NewQuery1[Cloth](w),
-			bodies: ecs.NewQuery1[SoftBody3](w),
-			fluids: ecs.NewQuery1[Fluid2](w),
+		w.SetResource(state{
+			cloths: w.Query1[Cloth](),
+			bodies: w.Query1[SoftBody3](),
+			fluids: w.Query1[Fluid2](),
 		})
-		s = ecs.Resource[state](w)
+		s = w.Resource[state]()
 	}
 	return s
 }
@@ -149,10 +149,10 @@ func System(w *ecs.World, dt float64) {
 	if dt <= 0 {
 		return
 	}
-	settings := ecs.Resource[Settings](w)
+	settings := w.Resource[Settings]()
 	if settings == nil {
-		ecs.SetResource(w, Settings{})
-		settings = ecs.Resource[Settings](w)
+		w.SetResource(Settings{})
+		settings = w.Resource[Settings]()
 	}
 	s := stateOf(w)
 	nCloth, nBody, nFluid := s.cloths.Count(), s.bodies.Count(), s.fluids.Count()
@@ -161,12 +161,12 @@ func System(w *ecs.World, dt float64) {
 	}
 	gravity3, gravity2 := settings.Gravity3, settings.Gravity2
 	if gravity3 == (lin.Vec3{}) {
-		if p := ecs.Resource[phys.Settings3](w); p != nil {
+		if p := w.Resource[phys.Settings3](); p != nil {
 			gravity3 = p.Gravity
 		}
 	}
 	if gravity2 == (lin.Vec2{}) {
-		if p := ecs.Resource[phys.Settings2](w); p != nil {
+		if p := w.Resource[phys.Settings2](); p != nil {
 			gravity2 = p.Gravity
 		}
 	}
@@ -199,12 +199,12 @@ func System(w *ecs.World, dt float64) {
 // static and kinematic ones whose shape has a signed distance.
 func (s *state) gather3(w *ecs.World) {
 	s.solids3 = s.solids3[:0]
-	ecs.Each2(w, func(e ecs.Entity, t *gfx.Transform, c *phys.Collider3) {
+	w.Each2(func(e ecs.Entity, t *gfx.Transform, c *phys.Collider3) {
 		if c.Shape == nil || c.Trigger {
 			return
 		}
 		friction := float32(0.5)
-		if b, ok := ecs.Get[phys.Body3](w, e); ok {
+		if b, ok := w.Get[phys.Body3](e); ok {
 			if !b.Kinematic && b.Mass > 0 {
 				return // a dynamic body: soft bodies do not push it back
 			}
@@ -227,12 +227,12 @@ func (s *state) gather3(w *ecs.World) {
 // gather2 collects the 2D colliders fluid particles can be pushed out of.
 func (s *state) gather2(w *ecs.World) {
 	s.solids2 = s.solids2[:0]
-	ecs.Each2(w, func(e ecs.Entity, t *gfx.Transform2, c *phys.Collider2) {
+	w.Each2(func(e ecs.Entity, t *gfx.Transform2, c *phys.Collider2) {
 		if c.Shape == nil || c.Trigger {
 			return
 		}
 		friction := float32(0.5)
-		if b, ok := ecs.Get[phys.Body2](w, e); ok {
+		if b, ok := w.Get[phys.Body2](e); ok {
 			if !b.Kinematic && b.Mass > 0 {
 				return
 			}

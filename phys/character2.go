@@ -77,7 +77,7 @@ func (c *CharacterController2) sweep(w *ecs.World, e ecs.Entity, pos, delta lin.
 // transform leaves the controller unchanged. Use nonnegative dt; even a
 // zero timestep may resolve overlaps and update ground contact.
 func (c *CharacterController2) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec2, dt float32) {
-	t, ok := ecs.Get[gfx.Transform2](w, e)
+	t, ok := w.Get[gfx.Transform2](e)
 	if !ok {
 		return
 	}

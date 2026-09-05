@@ -198,7 +198,7 @@ func TestBlendOnPlayer(t *testing.T) {
 	w := ecs.NewWorld()
 	w.AddSystem("anim", System)
 	e := w.SpawnWith(gfx.Transform{}, Skeleton{Player: p, Blend: NewBlend(b.Tree)})
-	s, _ := ecs.Get[Skeleton](w, e)
+	s, _ := w.Get[Skeleton](e)
 	s.SetParameter("speed", 0.5)
 	w.Update(0.75)
 	if pos, _, _ := p.NodeLocal(0); !near(pos.X, 1) || !near(s.Parameter("speed"), 0.5) || !near(float32(s.Blend.Phase()), 0.5) {

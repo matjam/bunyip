@@ -14,8 +14,8 @@ type GradientStop struct {
 }
 
 // Gradient colours a fill or stroke by position: linear from one point to
-// another, or radial out from a centre. It holds a small texture, so
-// Destroy it when done; a game usually keeps a few for its lifetime.
+// another, or radial out from a centre. Graphics releases its small
+// texture at shutdown, or Destroy releases it earlier.
 type Gradient struct {
 	from, to lin.Vec2
 	radius   float32

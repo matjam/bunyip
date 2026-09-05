@@ -15,7 +15,7 @@ interface.
 
 ## Turning it on
 
-Set `Config.Console` and draw the console last:
+Set `Config.Console`; the engine draws the console last:
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -26,11 +26,6 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
-	// ... the game's drawing and its own interface ...
-	return ctx.Console.Draw(ctx)
-}
-
 func main() {
 	bunyip.Run(bunyip.Config{Title: "Game", Console: true}, &game{})
 }
@@ -38,17 +33,17 @@ func main() {
 
 The engine builds the console, attaches what it owns (the graphics
 context, the mixer, the input state and the frame timings), tees the log
-through it and puts it on `Context.Console`. Drawing is the game's call
-because draw order belongs to the game: the console has to be the last
-thing drawn so it sits above the game's own interface.
+through it and puts it on `Context.Console`. It draws the console after
+the game's interface and the debug overlay, so no manual Draw call is
+needed.
 
-Every console method works on a nil console, so the two calls above can
+Every console method works on a nil console, so the Open call above can
 stay in the game when `Config.Console` is off and the field is nil.
 
 `Config.ConsoleKey` chooses the key that opens the drop-down; zero means
 the backquote key. A game that wants a console of another shape (a
 different height, its own font or theme, scripts read from a pack file)
-calls `console.New` itself and drives it the same way:
+calls `console.New` itself and explicitly calls its Draw method last:
 
 ```go
 g.con = console.New(console.Options{Key: input.KeyF1, Height: 0.5, Read: assets.Read})
@@ -291,7 +286,7 @@ A prefab library is a resource on the world rather than an attachment,
 so the Entities panel finds it on whichever world is showing:
 
 ```go
-ecs.SetResource(g.world, console.Prefabs{"goblin": goblinPrefab, "chest": chestPrefab})
+g.world.SetResource(console.Prefabs{"goblin": goblinPrefab, "chest": chestPrefab})
 ```
 
 ## The log

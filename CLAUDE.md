@@ -37,7 +37,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
 | `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials (including iridescence, anisotropy, specular tint and fur shells), models, skinning and animation players, lights, shadows, sky and environments (`hdr.go` for Radiance, `exr.go` for OpenEXR), fog, frustum and occlusion culling (`cull.go`, `occlude.go`), static batches with a bounding volume hierarchy (`batch.go`), LOD, impostors baked from a model (`impostor.go`), chunked terrain with per-chunk levels of detail and a splat map (`terrain.go`), billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
-| `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
+| `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the engine draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
 | `phys/` | 2D and 3D rigid bodies on the ECS: shapes, GJK/EPA, contacts, joints, ragdolls, CCD, sleeping, character controllers, queries, the signed distance to a placed shape. |
 | `phys/soft/` | Cloth, volumetric soft bodies and 2D fluids as particles under extended position-based dynamics, stepped by `soft.System` on the same world and the same static colliders. |
@@ -562,12 +562,12 @@ render pass, so text tests draw one frame.
   matched table are not visited twice. A walk must not start another
   walk of the same query inside its callback.
 - The console is built in `runOnce` before `Init`, because it tees the
-  log and the game logs during `Init`, but the game draws it: `Draw` is
-  the game's, and the console has to be last. It cannot import the root
+  log and the game logs during `Init`. The engine draws it after the
+  game and debug overlay. It cannot import the root
   package, so it declares `Frame` and the one-method `Host` that
   `Context` implements. Every console method is safe on a nil receiver,
-  so `ctx.Console.Draw(ctx)` compiles and does nothing when
-  `Config.Console` is off.
+  so calls such as `ctx.Console.Open()` do nothing when `Config.Console`
+  is off. Only separately constructed consoles need an explicit Draw.
 - The console's panels are laid out inside `ui.ScrollArea`, which has to
   be told how tall its contents are, so each tab counts its rows
   (`Console.rowsH`). A row added to a tab without adding to its count
@@ -590,7 +590,7 @@ render pass, so text tests draw one frame.
 
 ## Setup
 
-Go 1.26 or later and a Vulkan driver (`brew install vulkan-loader
+Go 1.27 or later and a Vulkan driver (`brew install vulkan-loader
 molten-vk` on macOS). `go get github.com/matjam/bunyip`. Build with
 `CGO_ENABLED=0`; there is nothing to link against.
 
@@ -615,8 +615,6 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) { g.tex.Destroy() }
-
 func main() {
 	bunyip.Run(bunyip.Config{Title: "Game", Width: 1280, Height: 720}, &game{})
 }
@@ -626,8 +624,9 @@ func main() {
 `Recover(ctx *Context) error`; it receives the replacement context
 instead of `Init`. Recreate resources and console registrations there.
 Without `Recover`, `Run` returns the device-loss error. `Shutdown` only
-runs after successful setup; clean up partial setup when `Init` or
-`Recover` returns an error. Create and destroy GPU resources from those
+runs after successful setup. Graphics releases its resources even if setup
+fails; register other teardown with `ctx.Cleanup` as resources are acquired.
+Create and destroy GPU resources from those
 callbacks, `Update`, `Draw` or `Shutdown` on the main goroutine.
 
 ## Where things are
@@ -661,13 +660,14 @@ callbacks, `Update`, `Draw` or `Shutdown` on the main goroutine.
 - Colours are `gfx.Color` in linear space; `gfx.RGB` and `gfx.Hex`
   convert from sRGB bytes. A zero colour where a tint is expected means
   white.
-- Zero values are defaults throughout; an empty `Material`, `Camera`,
-  `PostSettings` or `Emitter` is valid.
+- An empty `Material`, `Camera` or `Emitter` is valid. Start post-processing
+  settings with `gfx.DefaultPost`, or edit the current settings through
+  `ConfigurePost`; zero saturation and contrast are literal values.
 - Everything drawn in `Draw` is queued; order within a layer is call
   order. Use `SetLayer` to order across calls.
 - GPU resources (`Texture`, `Font`, `Mesh`, `Model`, `Shader`,
-  `RenderTexture`, `Environment`, `ReflectionProbe`) have `Destroy`; call
-  it in `Shutdown`.
+  `RenderTexture`, `Environment`, `ReflectionProbe`) have `Destroy` for
+  early release. Graphics automatically releases remaining GPU resources.
 - The interface is rebuilt every frame inside `ui.Begin`; values are
   passed by pointer, and widgets return whether something happened.
 - Physics, animation and orbits are ECS systems: give entities the

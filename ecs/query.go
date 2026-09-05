@@ -81,8 +81,8 @@ type Query1[A any] struct {
 	a ComponentID
 }
 
-// NewQuery1 makes a query; keep it and reuse it across frames.
-func NewQuery1[A any](w *World, filters ...Filter) *Query1[A] {
+// Query1 makes a query; keep it and reuse it across frames.
+func (w *World) Query1[A any](filters ...Filter) *Query1[A] {
 	a := componentID[A](w)
 	upgrade[A](w, a)
 	return &Query1[A]{m: newMatcher(w, []ComponentID{a}, filters), a: a}
@@ -122,8 +122,8 @@ type Query2[A, B any] struct {
 	a, b ComponentID
 }
 
-// NewQuery2 makes a query; keep it and reuse it across frames.
-func NewQuery2[A, B any](w *World, filters ...Filter) *Query2[A, B] {
+// Query2 makes a query; keep it and reuse it across frames.
+func (w *World) Query2[A, B any](filters ...Filter) *Query2[A, B] {
 	a, b := componentID[A](w), componentID[B](w)
 	upgrade[A](w, a)
 	upgrade[B](w, b)
@@ -152,8 +152,8 @@ type Query3[A, B, C any] struct {
 	a, b, c ComponentID
 }
 
-// NewQuery3 makes a query; keep it and reuse it across frames.
-func NewQuery3[A, B, C any](w *World, filters ...Filter) *Query3[A, B, C] {
+// Query3 makes a query; keep it and reuse it across frames.
+func (w *World) Query3[A, B, C any](filters ...Filter) *Query3[A, B, C] {
 	a, b, c := componentID[A](w), componentID[B](w), componentID[C](w)
 	upgrade[A](w, a)
 	upgrade[B](w, b)
@@ -184,8 +184,8 @@ type Query4[A, B, C, D any] struct {
 	a, b, c, d ComponentID
 }
 
-// NewQuery4 makes a query; keep it and reuse it across frames.
-func NewQuery4[A, B, C, D any](w *World, filters ...Filter) *Query4[A, B, C, D] {
+// Query4 makes a query; keep it and reuse it across frames.
+func (w *World) Query4[A, B, C, D any](filters ...Filter) *Query4[A, B, C, D] {
 	a, b, c, d := componentID[A](w), componentID[B](w), componentID[C](w), componentID[D](w)
 	upgrade[A](w, a)
 	upgrade[B](w, b)
@@ -223,23 +223,23 @@ type queryKey struct {
 // does not keep a query around. The query it needs is built once per
 // world and component set and kept, so calling this every frame costs
 // no more than a query of your own.
-func Each[T any](w *World, fn func(e Entity, t *T)) { query1[T](w).Each(fn) }
+func (w *World) Each[T any](fn func(e Entity, t *T)) { query1[T](w).Each(fn) }
 
 // Each2 is a one-off iteration over entities with an A and a B.
-func Each2[A, B any](w *World, fn func(e Entity, a *A, b *B)) { query2[A, B](w).Each(fn) }
+func (w *World) Each2[A, B any](fn func(e Entity, a *A, b *B)) { query2[A, B](w).Each(fn) }
 
 // Each3 is a one-off iteration over entities with an A, a B and a C.
-func Each3[A, B, C any](w *World, fn func(e Entity, a *A, b *B, c *C)) {
+func (w *World) Each3[A, B, C any](fn func(e Entity, a *A, b *B, c *C)) {
 	query3[A, B, C](w).Each(fn)
 }
 
 // Each4 is a one-off iteration over entities with four components.
-func Each4[A, B, C, D any](w *World, fn func(e Entity, a *A, b *B, c *C, d *D)) {
+func (w *World) Each4[A, B, C, D any](fn func(e Entity, a *A, b *B, c *C, d *D)) {
 	query4[A, B, C, D](w).Each(fn)
 }
 
 // Count returns how many entities carry a T.
-func Count[T any](w *World) int { return query1[T](w).Count() }
+func (w *World) Count[T any]() int { return query1[T](w).Count() }
 
 // query1 returns the world's memoised Query1 for A, building it the
 // first time. The queries live as long as the world, so a one-off Each
@@ -249,7 +249,7 @@ func query1[A any](w *World) *Query1[A] {
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query1[A])
 	}
-	q := NewQuery1[A](w)
+	q := w.Query1[A]()
 	w.oneOff[key] = q
 	return q
 }
@@ -259,7 +259,7 @@ func query2[A, B any](w *World) *Query2[A, B] {
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query2[A, B])
 	}
-	q := NewQuery2[A, B](w)
+	q := w.Query2[A, B]()
 	w.oneOff[key] = q
 	return q
 }
@@ -269,7 +269,7 @@ func query3[A, B, C any](w *World) *Query3[A, B, C] {
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query3[A, B, C])
 	}
-	q := NewQuery3[A, B, C](w)
+	q := w.Query3[A, B, C]()
 	w.oneOff[key] = q
 	return q
 }
@@ -279,7 +279,7 @@ func query4[A, B, C, D any](w *World) *Query4[A, B, C, D] {
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query4[A, B, C, D])
 	}
-	q := NewQuery4[A, B, C, D](w)
+	q := w.Query4[A, B, C, D]()
 	w.oneOff[key] = q
 	return q
 }

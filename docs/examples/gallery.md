@@ -466,9 +466,9 @@ the height of its content and a closure that builds it.
 		})
 		g.edit.draw(u)
 	})
-	// The console draws last of all, above every window the gallery
-	// opened: ` opens it and F4 opens the debug panels.
-	return ctx.Console.Draw(ctx)
+	// The engine draws the console above the gallery after this returns:
+	// ` opens it and F4 opens the debug panels.
+	return nil
 }
 ```
 

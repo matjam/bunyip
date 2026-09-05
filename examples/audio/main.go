@@ -102,13 +102,10 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	// Music: a file if given, otherwise a synthesised arpeggio stream.
 	if g.musicPath != "" {
-		f, err := os.Open(g.musicPath)
-		if err != nil {
+		if g.music, err = m.OpenMusicFile(g.musicPath, true); err != nil {
 			return err
 		}
-		if g.music, err = m.OpenMusic(f, true); err != nil {
-			return err
-		}
+		ctx.Cleanup(g.music.Close)
 		g.stream = m.PlayStream(g.music, audio.PlayOptions{Volume: 0.5, Priority: 20})
 	} else {
 		g.stream = m.PlayStream(&arpeggio{rate: m.Rate()}, audio.PlayOptions{Volume: 0.18, Reverb: 0.6, Priority: 20})
@@ -122,20 +119,11 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		if err != nil {
 			g.micErr = err.Error()
 		} else {
+			ctx.Cleanup(func() { g.capture.Close() })
 			g.micBuf = make([]float32, g.capture.Rate()/10)
 		}
 	}
 	return nil
-}
-
-func (g *game) Shutdown(ctx *bunyip.Context) {
-	if g.capture != nil {
-		g.capture.Close()
-	}
-	if g.music != nil {
-		g.music.Close()
-	}
-	g.font.Destroy()
 }
 
 func (g *game) Update(ctx *bunyip.Context) error {

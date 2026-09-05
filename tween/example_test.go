@@ -3,6 +3,7 @@ package tween_test
 import (
 	"fmt"
 
+	"github.com/matjam/bunyip/lin"
 	"github.com/matjam/bunyip/tween"
 )
 
@@ -30,4 +31,16 @@ func ExampleSequence() {
 	fmt.Println(fade.Update(0))
 	// Output:
 	// 0
+}
+
+func ExampleOf_OnDone() {
+	done := false
+	move := tween.NewVec2(lin.V2(0, 0), lin.V2(10, 20), 1, nil).
+		OnDone(func() { done = true })
+	move.Repeat, move.YoYo = 1, true
+	fmt.Println(move.Update(1), done)
+	fmt.Println(move.Update(1), done)
+	// Output:
+	// {10 20} false
+	// {0 0} true
 }

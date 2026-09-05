@@ -21,8 +21,8 @@
 // playhead being read.
 //
 // The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole
-// file as bytes. The streams (OpenMusic) take readers, because they seek
-// while they play.
+// file as bytes. OpenMusic borrows a seekable reader; OpenMusicFile owns
+// a file and releases it after Music.Close joins decoding.
 //
 // OpenCapture records from the machine's default input into a ring the
 // game drains with Read. It is separate from the mix: what it records is

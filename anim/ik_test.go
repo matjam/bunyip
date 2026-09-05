@@ -200,18 +200,18 @@ func TestSkeletonEventsAndRootMotion(t *testing.T) {
 	// Facing +x (a quarter turn about y), the clip's +z motion moves the entity along -x... no: +z turned by +90 about y is +x.
 	e := w.SpawnWith(gfx.Transform{Rotation: lin.AxisAngle(lin.V3(0, 1, 0), lin.Radians(90))}, Skeleton{Player: p})
 	w.Update(0.5)
-	tr, _ := ecs.Get[gfx.Transform](w, e)
+	tr, _ := w.Get[gfx.Transform](e)
 	if !near(tr.Position.X, 1) || !near(tr.Position.Z, 0) {
 		t.Fatalf("root motion moved the entity to %v, want (1,0,0)", tr.Position)
 	}
-	if ev := ecs.Events[SkeletonEvent](w); len(ev) != 1 || ev[0].Entity != e || ev[0].Event.Name != "step" {
+	if ev := w.Events[SkeletonEvent](); len(ev) != 1 || ev[0].Entity != e || ev[0].Event.Name != "step" {
 		t.Fatalf("skeleton events %v", ev)
 	}
 	// KeepRootMotion leaves the transform to the game.
-	s, _ := ecs.Get[Skeleton](w, e)
+	s, _ := w.Get[Skeleton](e)
 	s.KeepRootMotion = true
 	w.Update(0.25)
-	tr, _ = ecs.Get[gfx.Transform](w, e)
+	tr, _ = w.Get[gfx.Transform](e)
 	if delta, _ := p.RootMotion(); !near(tr.Position.X, 1) || !near(delta.Z, 0.5) {
 		t.Fatalf("kept root motion: entity %v delta %v", tr.Position, delta)
 	}

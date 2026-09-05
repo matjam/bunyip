@@ -115,7 +115,7 @@ type game struct {
 ## Init: settings, sources, loader and watcher
 
 `save.Open` returns a store in the operating system's own data directory
-for the named application. `save.Load` reads a value or returns the
+for the named application. `Store.Load` reads a value or returns the
 default it is given when there is no file yet, which is how a first run
 starts from a known state rather than from an error.
 
@@ -125,7 +125,7 @@ the packed copy of the same name. That is the shape a game ships with:
 the pack for the release, loose files for whatever is being edited.
 
 `asset.NewLoader(g.fs, 0)` starts the worker pool; zero means one worker
-per CPU. `asset.Load` queues one file with the
+per CPU. `Loader.Load` queues one file with the
 function that decodes its bytes and returns an
 `*asset.Handle[image.Image]`, a typed handle that reports when the value
 is ready. `asset.NewWatcher` polls the filesystem at the interval given,
@@ -149,7 +149,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.store, err = save.Open("bunyip-assets"); err != nil {
 		return err
 	}
-	if g.settings, err = save.Load(g.store, "settings", settings{Version: 1}); err != nil {
+	if g.settings, err = g.store.Load("settings", settings{Version: 1}); err != nil {
 		return err
 	}
 	g.settings.Runs++
@@ -171,7 +171,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.watcher = asset.NewWatcher(g.fs, 250*time.Millisecond)
 	for i := range count {
 		name := fmt.Sprintf("images/shape%02d.png", i)
-		g.items = append(g.items, &item{name: name, handle: asset.Load(g.loader, name, decode)})
+		g.items = append(g.items, &item{name: name, handle: g.loader.Load(name, decode)})
 		g.watcher.Add(name)
 	}
 	// Rewrite a random image now and then; the watcher reloads it.
@@ -269,9 +269,8 @@ func abs(v int) int {
 
 The watcher and the loader are closed before the filesystem they read
 from, and every texture that was created is destroyed. `Loader.Close`
-stops submissions but does not wait for queued work. This example omits
-`Loader.Wait`; add it after `Close` and before closing the filesystem if
-workers may still be reading at shutdown.
+stops submissions and waits for queued work and the workers to finish,
+so closing the filesystem next is safe even while loads are pending.
 
 ```go
 func (g *game) Shutdown(ctx *bunyip.Context) {
@@ -337,7 +336,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 					it.tex.Destroy()
 					it.tex = nil
 				}
-				it.handle = asset.Load(g.loader, name, decode)
+				it.handle = g.loader.Load(name, decode)
 				g.status = "Reloaded " + name
 			}
 		}

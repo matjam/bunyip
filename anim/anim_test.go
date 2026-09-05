@@ -61,16 +61,16 @@ func TestPlayerAndSystem(t *testing.T) {
 	e := w.SpawnWith(gfx.Transform{})
 	PlayerOf(w, e).Play(move)
 	w.Update(0.25)
-	if tr, _ := ecs.Get[gfx.Transform](w, e); !near(tr.Position.X, 2.5) {
+	if tr, _ := w.Get[gfx.Transform](e); !near(tr.Position.X, 2.5) {
 		t.Fatalf("position after 0.25 s: %v", tr.Position)
 	}
 	w.Update(1) // past the end: clamps, stops, reports
-	tr, _ := ecs.Get[gfx.Transform](w, e)
-	p, _ := ecs.Get[Player](w, e)
+	tr, _ := w.Get[gfx.Transform](e)
+	p, _ := w.Get[Player](e)
 	if tr.Position.X != 10 || p.Playing {
 		t.Fatalf("end state %v playing %v", tr.Position, p.Playing)
 	}
-	if ev := ecs.Events[Finished](w); len(ev) != 1 || ev[0].Clip != move || ev[0].Entity != e {
+	if ev := w.Events[Finished](); len(ev) != 1 || ev[0].Clip != move || ev[0].Entity != e {
 		t.Fatalf("finished events %v", ev)
 	}
 	// Crossfade: halfway through a one-second fade the value is halfway
@@ -81,27 +81,27 @@ func TestPlayerAndSystem(t *testing.T) {
 	w.Update(0.1)
 	PlayerOf(w, e).CrossFade(up, 1)
 	w.Update(0.5)
-	tr, _ = ecs.Get[gfx.Transform](w, e)
+	tr, _ = w.Get[gfx.Transform](e)
 	if !near(tr.Position.X, 5) || !near(tr.Position.Y, 10) {
 		t.Fatalf("crossfade midpoint %v", tr.Position)
 	}
 	w.Update(0.6)
-	tr, _ = ecs.Get[gfx.Transform](w, e)
+	tr, _ = w.Get[gfx.Transform](e)
 	if !near(tr.Position.X, 0) || !near(tr.Position.Y, 20) {
 		t.Fatalf("crossfade end %v", tr.Position)
 	}
 	// Speed scales time; Stop leaves the value.
-	p, _ = ecs.Get[Player](w, e)
+	p, _ = w.Get[Player](e)
 	p.Play(move)
 	p.Speed = 2
 	w.Update(0.25)
-	tr, _ = ecs.Get[gfx.Transform](w, e)
+	tr, _ = w.Get[gfx.Transform](e)
 	if !near(tr.Position.X, 5) {
 		t.Fatalf("speed 2 after 0.25 s: %v", tr.Position)
 	}
 	p.Stop()
 	w.Update(1)
-	tr, _ = ecs.Get[gfx.Transform](w, e)
+	tr, _ = w.Get[gfx.Transform](e)
 	if !near(tr.Position.X, 5) {
 		t.Fatal("stopped player moved")
 	}
@@ -115,13 +115,13 @@ func TestSpriteTracksAndProperty(t *testing.T) {
 		Position2(Vec2s(At(0, lin.V2(0, 0)), At(2, lin.V2(100, 0)))),
 		Rotation2(Floats(Num(0, 0), Num(2, 2))),
 		Tint(Colors(At(0, gfx.RGBA(255, 255, 255, 255)), At(2, gfx.RGBA(255, 255, 255, 0)))),
-		Property(Floats(Num(0, 100), Num(2, 0)), func(h *Health) float32 { return float32(h.HP) }, func(h *Health, v float32) { h.HP = int(v) }),
+		Floats(Num(0, 100), Num(2, 0)).Property(func(h *Health) float32 { return float32(h.HP) }, func(h *Health, v float32) { h.HP = int(v) }),
 	)
 	e := w.SpawnWith(gfx.Sprite{Color: gfx.White}, Health{100})
 	PlayerOf(w, e).Play(clip)
 	w.Update(1)
-	s, _ := ecs.Get[gfx.Sprite](w, e)
-	h, _ := ecs.Get[Health](w, e)
+	s, _ := w.Get[gfx.Sprite](e)
+	h, _ := w.Get[Health](e)
 	if !near(s.Pos.X, 50) || !near(s.Rotation, 1) || !near(s.Color.A, 0.5) || h.HP != 50 {
 		t.Fatalf("sprite %+v health %v", s, h)
 	}
@@ -148,7 +148,7 @@ func TestClipCaches(t *testing.T) {
 	}
 	e := w.SpawnWith(gfx.Transform{Scale: lin.V3(1, 1, 1)})
 	clip.Apply(w, e, 1, 1)
-	tr, _ := ecs.Get[gfx.Transform](w, e)
+	tr, _ := w.Get[gfx.Transform](e)
 	if !near(tr.Position.X, 1) || !near(tr.Scale.X, 2) || n != 1 {
 		t.Fatalf("transform %+v, hand-written track ran %d times", tr, n)
 	}
@@ -174,20 +174,20 @@ func TestFlipbookAndSkeleton(t *testing.T) {
 	sheet := &gfx.Sheet{Texture: &gfx.Texture{Width: 64, Height: 16}, FrameW: 16, FrameH: 16, Columns: 4, Rows: 1}
 	e := w.SpawnWith(gfx.Sprite{}, Flipbook{Sheet: sheet, Frames: []int{0, 1, 2, 3}, FPS: 4})
 	w.Update(0.3) // frame 1
-	s, _ := ecs.Get[gfx.Sprite](w, e)
+	s, _ := w.Get[gfx.Sprite](e)
 	if !near(s.UV0.X, 0.25) {
 		t.Fatalf("frame 1 uv %v", s.UV0)
 	}
 	w.Update(1) // past the end of a non-looping book
-	f, _ := ecs.Get[Flipbook](w, e)
-	s, _ = ecs.Get[gfx.Sprite](w, e)
-	if !f.Done || !near(s.UV0.X, 0.75) || len(ecs.Events[Finished](w)) != 1 {
-		t.Fatalf("flipbook end done=%v uv=%v events=%d", f.Done, s.UV0, len(ecs.Events[Finished](w)))
+	f, _ := w.Get[Flipbook](e)
+	s, _ = w.Get[gfx.Sprite](e)
+	if !f.Done || !near(s.UV0.X, 0.75) || len(w.Events[Finished]()) != 1 {
+		t.Fatalf("flipbook end done=%v uv=%v events=%d", f.Done, s.UV0, len(w.Events[Finished]()))
 	}
 	f.Loop = true
 	f.Restart()
 	w.Update(1.1) // 4.4 frames in: frame 0 again
-	s, _ = ecs.Get[gfx.Sprite](w, e)
+	s, _ = w.Get[gfx.Sprite](e)
 	if !near(s.UV0.X, 0) {
 		t.Fatalf("looping flipbook uv %v", s.UV0)
 	}

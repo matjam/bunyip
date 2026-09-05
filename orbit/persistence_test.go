@@ -17,7 +17,7 @@ func registerOrbitPersistence() {
 
 func savedOrbitBody(t *testing.T, w *ecs.World, e ecs.Entity, want State) {
 	t.Helper()
-	b, ok := ecs.Get[Body](w, e)
+	b, ok := w.Get[Body](e)
 	if !ok {
 		t.Fatal("missing orbit body")
 	}
@@ -37,7 +37,7 @@ func TestKeplerSaveLoadContinuesPhase(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := ecs.NewWorld()
-			ecs.SetResource(w, Settings{G: 1, TimeScale: tc.scale})
+			w.SetResource(Settings{G: 1, TimeScale: tc.scale})
 			star := w.SpawnWith(Body{Mass: 1}, ecs.Name{Text: "star"})
 			planet := w.SpawnWith(Body{Mass: 0.25}, Kepler{Primary: star, Elements: Circular(1)}, ecs.Name{Text: "planet"})
 			moon := w.SpawnWith(Body{}, Kepler{Primary: planet, Elements: Circular(0.25), Mu: 0.5}, ecs.Name{Text: "moon"})
@@ -58,14 +58,14 @@ func TestKeplerSaveLoadContinuesPhase(t *testing.T) {
 				t.Fatal(err)
 			}
 			loaded := map[string]ecs.Entity{}
-			ecs.NewQuery1[ecs.Name](restored).Each(func(e ecs.Entity, n *ecs.Name) { loaded[n.Text] = e })
+			restored.Query1[ecs.Name]().Each(func(e ecs.Entity, n *ecs.Name) { loaded[n.Text] = e })
 			for name, original := range map[string]ecs.Entity{"star": star, "planet": planet, "moon": moon} {
 				if !restored.Alive(loaded[name]) || loaded[name] == original {
 					t.Fatalf("%s handle = %v, want a live handle distinct from saved %v", name, loaded[name], original)
 				}
 			}
 			for _, link := range []struct{ child, parent string }{{"planet", "star"}, {"moon", "planet"}} {
-				k, ok := ecs.Get[Kepler](restored, loaded[link.child])
+				k, ok := restored.Get[Kepler](loaded[link.child])
 				if !ok || k.Primary != loaded[link.parent] {
 					t.Fatalf("%s primary was not remapped: %+v", link.child, k)
 				}
@@ -74,7 +74,7 @@ func TestKeplerSaveLoadContinuesPhase(t *testing.T) {
 				System(w, dt)
 				System(restored, dt)
 				for name, e := range map[string]ecs.Entity{"planet": planet, "moon": moon} {
-					b, _ := ecs.Get[Body](w, e)
+					b, _ := w.Get[Body](e)
 					savedOrbitBody(t, restored, loaded[name], State{Pos: b.Pos, Vel: b.Vel})
 				}
 			}
@@ -117,13 +117,13 @@ func TestKeplerCopiesContinuePhase(t *testing.T) {
 				}
 				copied = p.Spawn(w)
 			}
-			k, ok := ecs.Get[Kepler](w, copied)
+			k, ok := w.Get[Kepler](copied)
 			if !ok || k.Primary != star {
 				t.Fatalf("copy lost external primary: %+v", k)
 			}
 			for _, dt := range []float64{0, 0.25} {
 				System(w, dt)
-				b, _ := ecs.Get[Body](w, e)
+				b, _ := w.Get[Body](e)
 				savedOrbitBody(t, w, copied, State{Pos: b.Pos, Vel: b.Vel})
 			}
 		})

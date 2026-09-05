@@ -151,7 +151,7 @@ func startTinyMusic(t *testing.T, dec decoder, loop bool) *Music {
 		rs: resampler{step: float64(dec.Rate()) / 48000}}
 	music.cond = sync.NewCond(&music.mu)
 	done := make(chan struct{})
-	go func() { defer close(done); music.fill() }()
+	music.worker.Go(func() { defer close(done); music.fill() })
 	t.Cleanup(func() {
 		music.Close()
 		select {

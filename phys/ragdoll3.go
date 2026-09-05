@@ -241,7 +241,7 @@ func (r *Ragdoll3) Despawn(w *ecs.World) {
 // Length from Bones.
 func (r *Ragdoll3) Pose(w *ecs.World, positions map[string]lin.Vec3, rotations map[string]lin.Quat) {
 	for name, e := range r.Parts {
-		t, ok := ecs.Get[gfx.Transform](w, e)
+		t, ok := w.Get[gfx.Transform](e)
 		if !ok {
 			continue
 		}
@@ -251,7 +251,7 @@ func (r *Ragdoll3) Pose(w *ecs.World, positions map[string]lin.Vec3, rotations m
 		if q, ok := rotations[name]; ok {
 			t.Rotation = q.Norm()
 		}
-		if b, ok := ecs.Get[Body3](w, e); ok {
+		if b, ok := w.Get[Body3](e); ok {
 			b.Vel, b.AngVel = lin.Vec3{}, lin.Vec3{}
 			b.Wake()
 		}

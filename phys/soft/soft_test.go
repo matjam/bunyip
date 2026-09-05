@@ -25,7 +25,7 @@ func run(w *ecs.World, seconds float64) {
 func clothWorld(t *testing.T, spec soft.ClothSpec) (*ecs.World, ecs.Entity) {
 	t.Helper()
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
 	e := w.SpawnWith(soft.NewCloth(spec))
 	w.AddSystem("soft", soft.System)
 	return w, e
@@ -40,7 +40,7 @@ func TestClothHangsAtRest(t *testing.T) {
 	}
 	w, e := clothWorld(t, spec)
 	run(w, 4)
-	c, ok := ecs.Get[soft.Cloth](w, e)
+	c, ok := w.Get[soft.Cloth](e)
 	if !ok {
 		t.Fatal("the cloth component is gone")
 	}
@@ -89,7 +89,7 @@ func stretch(a, b lin.Vec3, rest float32) float32 {
 
 func TestClothLandsOnACollider(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
 	// A sheet dropped flat onto a sphere sitting on the ground.
 	w.SpawnWith(gfx.Transform{Position: lin.V3(0, 0.5, 0)}, phys.Collider3{Shape: phys.Sphere{Radius: 0.5}})
 	e := w.SpawnWith(soft.NewCloth(soft.ClothSpec{
@@ -98,7 +98,7 @@ func TestClothLandsOnACollider(t *testing.T) {
 	}))
 	w.AddSystem("soft", soft.System)
 	run(w, 3)
-	c, _ := ecs.Get[soft.Cloth](w, e)
+	c, _ := w.Get[soft.Cloth](e)
 	over := 0
 	for _, p := range c.Positions() {
 		d, _, _ := phys.SignedDistance3(phys.Sphere{Radius: 0.5}, lin.V3(0, 0.5, 0), lin.Quat{}, p)
@@ -116,7 +116,7 @@ func TestClothLandsOnACollider(t *testing.T) {
 
 func TestClothPinnedParticlesFollowMove(t *testing.T) {
 	w, e := clothWorld(t, soft.ClothSpec{Width: 8, Height: 8, Spacing: 0.1, Pinned: []int{0}})
-	c, _ := ecs.Get[soft.Cloth](w, e)
+	c, _ := w.Get[soft.Cloth](e)
 	if !c.Pinned(0) || c.Pinned(1) {
 		t.Fatal("Pinned reports the wrong particles")
 	}
@@ -137,7 +137,7 @@ func TestClothPinnedParticlesFollowMove(t *testing.T) {
 func softWorld(t *testing.T, spec soft.SoftBody3Spec) (*ecs.World, ecs.Entity) {
 	t.Helper()
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true, Substeps: 8})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true, Substeps: 8})
 	e := w.SpawnWith(soft.NewSoftBody3(spec))
 	w.AddSystem("soft", soft.System)
 	return w, e
@@ -148,7 +148,7 @@ func TestSoftBodyKeepsItsVolume(t *testing.T) {
 	w, e := softWorld(t, soft.SoftBody3Spec{
 		Vertices: verts, Indices: idx, Scale: 0.5, Position: lin.V3(0, 2, 0), Mass: 2,
 	})
-	b, _ := ecs.Get[soft.SoftBody3](w, e)
+	b, _ := w.Get[soft.SoftBody3](e)
 	rest := b.RestVolume()
 	if rest <= 0 {
 		t.Fatalf("the rest volume is %v", rest)
@@ -193,10 +193,10 @@ func TestSoftBodyWelds(t *testing.T) {
 func TestSoftBodyImpulse(t *testing.T) {
 	verts, idx := gfx.CubeMesh()
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{})
+	w.SetResource(soft.Settings{})
 	e := w.SpawnWith(soft.NewSoftBody3(soft.SoftBody3Spec{Vertices: verts, Indices: idx, Mass: 2}))
 	w.AddSystem("soft", soft.System)
-	b, _ := ecs.Get[soft.SoftBody3](w, e)
+	b, _ := w.Get[soft.SoftBody3](e)
 	b.Damping = 0
 	b.AddImpulse(lin.V3(2, 0, 0))
 	before := b.Center()
@@ -209,12 +209,12 @@ func TestSoftBodyImpulse(t *testing.T) {
 func TestSoftBodyRestsOnACollider(t *testing.T) {
 	verts, idx := gfx.CubeMesh()
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Substeps: 8})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Substeps: 8})
 	w.SpawnWith(gfx.Transform{Position: lin.V3(0, -0.5, 0)}, phys.Collider3{Shape: phys.Box3{Half: lin.V3(4, 0.5, 4)}})
 	e := w.SpawnWith(soft.NewSoftBody3(soft.SoftBody3Spec{Vertices: verts, Indices: idx, Position: lin.V3(0, 1.5, 0), Mass: 1}))
 	w.AddSystem("soft", soft.System)
 	run(w, 3)
-	b, _ := ecs.Get[soft.SoftBody3](w, e)
+	b, _ := w.Get[soft.SoftBody3](e)
 	for _, p := range b.Particles() {
 		if p.Y < -1e-2 {
 			t.Fatalf("a particle at %v sank through the box", p)
@@ -228,7 +228,7 @@ func TestSoftBodyRestsOnACollider(t *testing.T) {
 // fluidWorld fills the lower half of a tank and lets it settle.
 func fluidWorld(bounds lin.Rect, fill lin.Rect, settings soft.Settings) (*ecs.World, ecs.Entity) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, settings)
+	w.SetResource(settings)
 	f := soft.NewFluid2(soft.Fluid2Spec{Bounds: bounds, Spacing: 8})
 	f.Fill(fill)
 	e := w.SpawnWith(f)
@@ -240,7 +240,7 @@ func TestFluidStaysInTheTank(t *testing.T) {
 	bounds := lin.Rect{X: 0, Y: 0, W: 400, H: 300}
 	w, e := fluidWorld(bounds, lin.Rect{X: 20, Y: 20, W: 160, H: 160},
 		soft.Settings{Gravity2: lin.V2(0, 900)})
-	f, _ := ecs.Get[soft.Fluid2](w, e)
+	f, _ := w.Get[soft.Fluid2](e)
 	if f.Count() < 200 {
 		t.Fatalf("the tank filled with only %d particles", f.Count())
 	}
@@ -260,7 +260,7 @@ func TestFluidHoldsItsDensity(t *testing.T) {
 	bounds := lin.Rect{X: 0, Y: 0, W: 400, H: 300}
 	w, e := fluidWorld(bounds, lin.Rect{X: 20, Y: 20, W: 160, H: 160},
 		soft.Settings{Gravity2: lin.V2(0, 900)})
-	f, _ := ecs.Get[soft.Fluid2](w, e)
+	f, _ := w.Get[soft.Fluid2](e)
 	run(w, 4)
 	// Away from the surface, where the kernel runs out of neighbours, the
 	// density should sit near the rest density.
@@ -286,7 +286,7 @@ func TestFluidSettlesFlat(t *testing.T) {
 	// A column of liquid in one corner: it should collapse and spread.
 	w, e := fluidWorld(bounds, lin.Rect{X: 20, Y: 200, W: 100, H: 180},
 		soft.Settings{Gravity2: lin.V2(0, 900)})
-	f, _ := ecs.Get[soft.Fluid2](w, e)
+	f, _ := w.Get[soft.Fluid2](e)
 	run(w, 8)
 	// The surface height across the tank, in columns a spacing wide.
 	const columns = 8
@@ -314,14 +314,14 @@ func TestFluidSettlesFlat(t *testing.T) {
 func TestFluidCollidesWithAStaticShape(t *testing.T) {
 	bounds := lin.Rect{X: 0, Y: 0, W: 400, H: 400}
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity2: lin.V2(0, 900)})
+	w.SetResource(soft.Settings{Gravity2: lin.V2(0, 900)})
 	w.SpawnWith(gfx.Transform2{Position: lin.V2(200, 300)}, phys.Collider2{Shape: phys.Circle{Radius: 60}})
 	f := soft.NewFluid2(soft.Fluid2Spec{Bounds: bounds, Spacing: 8})
 	f.Fill(lin.Rect{X: 140, Y: 40, W: 120, H: 120})
 	e := w.SpawnWith(f)
 	w.AddSystem("soft", soft.System)
 	run(w, 4)
-	got, _ := ecs.Get[soft.Fluid2](w, e)
+	got, _ := w.Get[soft.Fluid2](e)
 	for i, p := range got.Positions() {
 		if p.Sub(lin.V2(200, 300)).Len() < 60-got.Spacing() {
 			t.Fatalf("particle %d at %v is inside the obstacle", i, p)
@@ -331,11 +331,11 @@ func TestFluidCollidesWithAStaticShape(t *testing.T) {
 
 func TestSettingsTakeGravityFromPhys(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
 	verts, idx := gfx.CubeMesh()
 	e := w.SpawnWith(soft.NewSoftBody3(soft.SoftBody3Spec{Vertices: verts, Indices: idx}))
 	w.AddSystem("soft", soft.System)
-	b, _ := ecs.Get[soft.SoftBody3](w, e)
+	b, _ := w.Get[soft.SoftBody3](e)
 	run(w, 0.5)
 	if b.Center().Y > -0.5 {
 		t.Errorf("the body fell to %v; it should have taken gravity from the phys settings", b.Center().Y)

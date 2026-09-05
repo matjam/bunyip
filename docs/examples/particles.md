@@ -259,18 +259,30 @@ func (g *game) pop(p lin.Vec2) {
 }
 ```
 
-## Draw: the scene
+## Draw: the scene and interface
 
 `Draw` runs once per frame and queues drawing; nothing is submitted until
-it returns. `ctx.Clear` is the colour the frame starts from, in linear
-space, and `gfx.RGB` converts from the sRGB bytes an image editor shows.
+it returns. `ctx.Clear` is the frame's clear colour in linear space;
+`gfx.RGB` converts the sRGB bytes an image editor shows.
 
-The ground and the two logs are drawn at layer 0, under everything.
-`gfx.Sprite` is a value: `Origin` is the fraction of the sprite the
+`Layered` sets the layer for one drawing closure and restores the previous
+layer when it returns, including on panic. The ground and logs use layer
+0. The particle systems then draw into their emitters' layers. The
+particle counts and interface use layer 10, over the scene, without a
+matching `SetLayer` call at the end.
+
+`gfx.Sprite` is a value. `Origin` is the fraction of the sprite the
 position refers to, so `lin.V2(0.5, 0.5)` centres it, and `Rotation` is
-in radians. Drawing with a nil texture fills the rectangle with the
-sprite's colour. The systems draw themselves next, each into the layer
-its emitter named.
+in radians. A nil texture fills the rectangle with the sprite's colour.
+`DebugText` draws the counts with the built-in font.
+
+The interface is rebuilt inside `u.Begin`, and `u.Panel` scopes its
+widgets with another closure. Each slider takes a pointer to the value
+it edits and returns whether it changed. Both sliders run every frame;
+`|| changed` preserves that even when the first slider changed. Updating
+an emitter changes acceleration, damping and appearance curves for live
+particles, while their birth size, lifetime and palette tint stay fixed.
+Later births use the new settings.
 
 ```go
 func (g *game) Draw(ctx *bunyip.Context) error {
@@ -278,13 +290,14 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	ctx.Clear = gfx.RGB(18, 20, 30)
 	// The ground and a couple of logs under the fire.
 	hearth := g.fire.Position()
-	gr.SetLayer(0)
-	gr.FillRect(0, hearth.Y+8, ctx.Width, ctx.Height-hearth.Y-8, gfx.RGB(34, 40, 36))
-	log := gfx.Sprite{Pos: hearth.Add(lin.V2(0, 4)), Size: lin.V2(70, 12), Origin: lin.V2(0.5, 0.5), Color: gfx.RGB(90, 60, 35)}
-	log.Rotation = 0.35
-	gr.Draw(nil, log)
-	log.Rotation = -0.35
-	gr.Draw(nil, log)
+	gr.Layered(0, func() {
+		gr.FillRect(0, hearth.Y+8, ctx.Width, ctx.Height-hearth.Y-8, gfx.RGB(34, 40, 36))
+		log := gfx.Sprite{Pos: hearth.Add(lin.V2(0, 4)), Size: lin.V2(70, 12), Origin: lin.V2(0.5, 0.5), Color: gfx.RGB(90, 60, 35)}
+		log.Rotation = 0.35
+		gr.Draw(nil, log)
+		log.Rotation = -0.35
+		gr.Draw(nil, log)
+	})
 
 	g.rain.Draw(gr)
 	g.smoke.Draw(gr)
@@ -293,54 +306,29 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	for _, b := range g.bursts {
 		b.Draw(gr)
 	}
-```
 
-The particle count is drawn at layer 10, over the scene. `DebugText` is
-the built-in font, meant for numbers on top of a scene rather than for a
-game's own text.
+	gr.Layered(10, func() {
+		alive := g.fire.Alive() + g.smoke.Alive() + g.rain.Alive() + g.sparks.Alive()
+		for _, b := range g.bursts {
+			alive += b.Alive()
+		}
+		gr.DebugText(12, ctx.Height-46, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
+		gr.DebugText(12, ctx.Height-28, fmt.Sprintf("%d of them are stateless rain, drawn as one instanced call.", g.rain.Alive()))
 
-```go
-	gr.SetLayer(10)
-	alive := g.fire.Alive() + g.smoke.Alive() + g.rain.Alive() + g.sparks.Alive()
-	for _, b := range g.bursts {
-		alive += b.Alive()
-	}
-	gr.DebugText(12, ctx.Height-46, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
-	gr.DebugText(12, ctx.Height-28, fmt.Sprintf("%d of them are stateless rain, drawn as one instanced call.", g.rain.Alive()))
-```
-
-## Draw: the panel
-
-The interface is rebuilt every frame inside `u.Begin`, which takes the
-frame's input and a closure. Containers take closures too, so `u.Panel`
-scopes its widgets by nesting rather than by a matching end call.
-
-`u.Slider` takes a pointer to the value it edits and returns whether the
-value changed this frame. Both sliders are called every frame, and the
-`|| changed` keeps the second call from being skipped by short-circuit
-evaluation. When either moved, the emitter value is updated and
-`SetEmitter` hands it back to the running system. Existing particles keep
-their birth size, lifetime and palette tint, while acceleration, damping
-and appearance curves change for live particles too. Later births use
-the new settings. The last line restores layer 0 for the next frame, since
-the layer
-is graphics state rather than a per-call argument.
-
-```go
-	u := g.ui
-	u.Begin(ctx.Input, func() {
-		u.Panel("Fire", ui.Rect{X: 12, Y: 12, W: 240, H: 150}, func() {
-			changed := u.Slider("Rate (per second)", &g.fireRate, 0, 400)
-			changed = u.Slider("Gravity", &g.gravity, -200, 200) || changed
-			if changed {
-				g.fireE.Rate = g.fireRate
-				g.fireE.Acceleration.Y = g.gravity
-				g.fire.SetEmitter(g.fireE)
-			}
-			u.Label(fmt.Sprintf("%d flames, %d smoke", g.fire.Alive(), g.smoke.Alive()))
+		u := g.ui
+		u.Begin(ctx.Input, func() {
+			u.Panel("Fire", ui.Rect{X: 12, Y: 12, W: 240, H: 150}, func() {
+				changed := u.Slider("Rate (per second)", &g.fireRate, 0, 400)
+				changed = u.Slider("Gravity", &g.gravity, -200, 200) || changed
+				if changed {
+					g.fireE.Rate = g.fireRate
+					g.fireE.Acceleration.Y = g.gravity
+					g.fire.SetEmitter(g.fireE)
+				}
+				u.Label(fmt.Sprintf("%d flames, %d smoke", g.fire.Alive(), g.smoke.Alive()))
+			})
 		})
 	})
-	gr.SetLayer(0)
 	return nil
 }
 ```

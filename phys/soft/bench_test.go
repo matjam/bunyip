@@ -14,7 +14,7 @@ import (
 // top edge over a sphere, at the default solver quality.
 func BenchmarkCloth(b *testing.B) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
 	w.SpawnWith(gfx.Transform{Position: lin.V3(0, 0.5, 0)}, phys.Collider3{Shape: phys.Sphere{Radius: 0.5}})
 	pins := make([]int, 0, 32)
 	for x := range 32 {
@@ -38,7 +38,7 @@ func BenchmarkCloth(b *testing.B) {
 func BenchmarkSoftBody(b *testing.B) {
 	verts, idx := gfx.SphereMesh(12, 16)
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true})
+	w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0), Ground: true})
 	w.SpawnWith(soft.NewSoftBody3(soft.SoftBody3Spec{Vertices: verts, Indices: idx, Scale: 0.5, Position: lin.V3(0, 0.6, 0), Mass: 2}))
 	w.AddSystem("soft", soft.System)
 	run(w, 0.5)
@@ -52,7 +52,7 @@ func BenchmarkSoftBody(b *testing.B) {
 // BenchmarkFluid steps two thousand fluid particles settled in a tank.
 func BenchmarkFluid(b *testing.B) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, soft.Settings{Gravity2: lin.V2(0, 900)})
+	w.SetResource(soft.Settings{Gravity2: lin.V2(0, 900)})
 	f := soft.NewFluid2(soft.Fluid2Spec{Bounds: lin.Rect{X: 0, Y: 0, W: 640, H: 480}, Spacing: 8})
 	f.Fill(lin.Rect{X: 8, Y: 160, W: 424, H: 312})
 	if f.Count() < 2000 {

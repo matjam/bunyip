@@ -219,6 +219,7 @@ func (m *Mesh) Destroy() {
 	}
 	m.destroyed = true
 	m.g.forget(m)
+	m.g.owned.remove(m)
 	m.retire()
 }
 

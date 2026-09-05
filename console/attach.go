@@ -151,5 +151,5 @@ func (c *Console) AttachLinks(name string, links func() []Link) {
 // as a resource on a world and the panel lists the names with a button
 // each:
 //
-//	ecs.SetResource(w, console.Prefabs{"goblin": goblinPrefab})
+//	w.SetResource(console.Prefabs{"goblin": goblinPrefab})
 type Prefabs map[string]*ecs.Prefab

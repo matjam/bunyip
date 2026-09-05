@@ -26,7 +26,7 @@ type property[C, V any] struct {
 }
 
 func (p property[C, V]) Apply(w *ecs.World, e ecs.Entity, t, weight float32) {
-	c, ok := ecs.Get[C](w, e)
+	c, ok := w.Get[C](e)
 	if !ok {
 		return
 	}
@@ -48,7 +48,7 @@ func (p property[C, V]) Duration() float32 { return p.curve.Duration() }
 func (p property[C, V]) componentType() reflect.Type { return reflect.TypeFor[C]() }
 
 func (p property[C, V]) fetch(w *ecs.World, e ecs.Entity) (any, bool) {
-	c, ok := ecs.Get[C](w, e)
+	c, ok := w.Get[C](e)
 	return c, ok
 }
 
@@ -69,26 +69,38 @@ type boundTrack interface {
 // The entity must already have C; a missing component is skipped. A
 // curve without a Lerper replaces the value even during a crossfade.
 //
-//	anim.Property(anim.Floats(anim.Num(0, 0), anim.Num(1, 100)),
+//	anim.Floats(anim.Num(0, 0), anim.Num(1, 100)).Property(
 //		func(h *Health) float32 { return float32(h.HP) },
 //		func(h *Health, v float32) { h.HP = int(v) })
-func Property[C, V any](curve Curve[V], get func(*C) V, set func(*C, V)) Track {
+func (curve Curve[V]) Property[C any](get func(*C) V, set func(*C, V)) Track {
 	return property[C, V]{curve: curve, get: get, set: set}
+}
+
+// Field makes a track over a component field of the curve's value type.
+// The non-nil accessor must return the field's non-nil address in the
+// component supplied to it. The address is used only during that application;
+// it is not retained across structural changes. Missing components are skipped.
+// Use Property when reading or writing needs conversion or normalization.
+//
+//	anim.Floats(anim.Num(0, 1), anim.Num(0.3, 0)).Field(
+//		func(h *Health) *float32 { return &h.Opacity })
+func (curve Curve[V]) Field[C any](field func(*C) *V) Track {
+	return curve.Property(func(c *C) V { return *field(c) }, func(c *C, v V) { *field(c) = v })
 }
 
 // Position animates a gfx.Transform's position.
 func Position(curve Curve[lin.Vec3]) Track {
-	return Property(curve, func(t *gfx.Transform) lin.Vec3 { return t.Position }, func(t *gfx.Transform, v lin.Vec3) { t.Position = v })
+	return curve.Field(func(t *gfx.Transform) *lin.Vec3 { return &t.Position })
 }
 
 // Rotation animates a gfx.Transform's rotation.
 func Rotation(curve Curve[lin.Quat]) Track {
-	return Property(curve, func(t *gfx.Transform) lin.Quat { return t.Rotation }, func(t *gfx.Transform, v lin.Quat) { t.Rotation = v })
+	return curve.Field(func(t *gfx.Transform) *lin.Quat { return &t.Rotation })
 }
 
 // Scale animates a gfx.Transform's scale.
 func Scale(curve Curve[lin.Vec3]) Track {
-	return Property(curve, func(t *gfx.Transform) lin.Vec3 {
+	return curve.Property(func(t *gfx.Transform) lin.Vec3 {
 		if t.Scale == (lin.Vec3{}) {
 			return lin.V3(1, 1, 1)
 		}
@@ -98,22 +110,22 @@ func Scale(curve Curve[lin.Vec3]) Track {
 
 // Position2 animates a gfx.Sprite's position.
 func Position2(curve Curve[lin.Vec2]) Track {
-	return Property(curve, func(s *gfx.Sprite) lin.Vec2 { return s.Pos }, func(s *gfx.Sprite, v lin.Vec2) { s.Pos = v })
+	return curve.Field(func(s *gfx.Sprite) *lin.Vec2 { return &s.Pos })
 }
 
 // Size2 animates a gfx.Sprite's size.
 func Size2(curve Curve[lin.Vec2]) Track {
-	return Property(curve, func(s *gfx.Sprite) lin.Vec2 { return s.Size }, func(s *gfx.Sprite, v lin.Vec2) { s.Size = v })
+	return curve.Field(func(s *gfx.Sprite) *lin.Vec2 { return &s.Size })
 }
 
 // Rotation2 animates a gfx.Sprite's rotation in radians.
 func Rotation2(curve Curve[float32]) Track {
-	return Property(curve, func(s *gfx.Sprite) float32 { return s.Rotation }, func(s *gfx.Sprite, v float32) { s.Rotation = v })
+	return curve.Field(func(s *gfx.Sprite) *float32 { return &s.Rotation })
 }
 
 // Tint animates a gfx.Sprite's colour.
 func Tint(curve Curve[gfx.Color]) Track {
-	return Property(curve, func(s *gfx.Sprite) gfx.Color { return s.Color }, func(s *gfx.Sprite, v gfx.Color) { s.Color = v })
+	return curve.Field(func(s *gfx.Sprite) *gfx.Color { return &s.Color })
 }
 
 // LoopMode says what a clip does at its end.

@@ -56,11 +56,11 @@ func (p *Player) Progress() float32 {
 
 // PlayerOf returns the entity's Player, adding one when it has none.
 func PlayerOf(w *ecs.World, e ecs.Entity) *Player {
-	if p, ok := ecs.Get[Player](w, e); ok {
+	if p, ok := w.Get[Player](e); ok {
 		return p
 	}
-	ecs.Add(w, e, Player{})
-	p, _ := ecs.Get[Player](w, e)
+	w.Add(e, Player{})
+	p, _ := w.Get[Player](e)
 	return p
 }
 
@@ -165,10 +165,10 @@ type queries struct {
 //
 //	w.AddSystem("anim", anim.System)
 func System(w *ecs.World, dt float64) {
-	q := ecs.Resource[queries](w)
+	q := w.Resource[queries]()
 	if q == nil {
-		ecs.SetResource(w, queries{players: ecs.NewQuery1[Player](w), flipbooks: ecs.NewQuery2[Flipbook, gfx.Sprite](w), skeletons: ecs.NewQuery1[Skeleton](w)})
-		q = ecs.Resource[queries](w)
+		w.SetResource(queries{players: w.Query1[Player](), flipbooks: w.Query2[Flipbook, gfx.Sprite](), skeletons: w.Query1[Skeleton]()})
+		q = w.Resource[queries]()
 	}
 	step := float32(dt)
 	q.players.Each(func(e ecs.Entity, p *Player) {
@@ -197,7 +197,7 @@ func System(w *ecs.World, dt float64) {
 		if done {
 			p.Playing = false
 			p.prev = nil
-			ecs.Emit(w, Finished{Entity: e, Clip: p.Clip})
+			w.Emit(Finished{Entity: e, Clip: p.Clip})
 		}
 	})
 	q.flipbooks.Each(func(e ecs.Entity, f *Flipbook, s *gfx.Sprite) {
@@ -208,7 +208,7 @@ func System(w *ecs.World, dt float64) {
 		if !f.Loop && f.Time >= f.length() {
 			f.Time = f.length()
 			f.Done = true
-			ecs.Emit(w, Finished{Entity: e})
+			w.Emit(Finished{Entity: e})
 		}
 		s.UV0, s.UV1 = f.Sheet.UV(f.Frame())
 	})
@@ -226,10 +226,10 @@ func System(w *ecs.World, dt float64) {
 			s.Player.Advance(dt * speed)
 		}
 		for _, ev := range s.Player.Events() {
-			ecs.Emit(w, SkeletonEvent{Entity: e, Event: ev})
+			w.Emit(SkeletonEvent{Entity: e, Event: ev})
 		}
 		if delta, yaw := s.Player.RootMotion(); !s.KeepRootMotion && (delta != (lin.Vec3{}) || yaw != 0) {
-			if tr, ok := ecs.Get[gfx.Transform](w, e); ok {
+			if tr, ok := w.Get[gfx.Transform](e); ok {
 				rot := tr.Rotation
 				if rot == (lin.Quat{}) {
 					rot = lin.QuatIdentity()

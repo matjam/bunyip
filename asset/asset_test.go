@@ -86,7 +86,7 @@ func TestFSSource(t *testing.T) {
 			t.Fatalf("%s: %q %v", name, data, err)
 		}
 	}
-	if _, err := fs.Read("sub"); !errors.Is(err, ErrNotFound) {
+	if _, err := fs.Read("sub"); err == nil {
 		t.Fatalf("directory read: %v", err)
 	}
 	if _, err := fs.Read("missing.txt"); !errors.Is(err, ErrNotFound) {
@@ -140,8 +140,8 @@ func TestLoader(t *testing.T) {
 	l := NewLoader(fs, 2)
 	defer l.Close()
 	decode := func(data []byte) (int, error) { return len(data), nil }
-	handles := []*Handle[int]{Load(l, "one", decode), Load(l, "two", decode), Load(l, "three", decode)}
-	bad := Load(l, "missing", decode)
+	handles := []*Handle[int]{l.Load("one", decode), l.Load("two", decode), l.Load("three", decode)}
+	bad := l.Load("missing", decode)
 	l.Wait()
 	for i, h := range handles {
 		v, err := h.Get()

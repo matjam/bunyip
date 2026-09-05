@@ -64,8 +64,10 @@
 // 3D uses game-defined world units. Texture dimensions use pixels.
 // Rectangles are lin.Rect, and angles are
 // radians. Colours are linear, non-premultiplied floats (RGB and Hex
-// convert from sRGB bytes). Create, update and destroy GPU resources on
-// the game goroutine in Init, Update, Draw or Shutdown. Destruction during
+// convert from sRGB bytes). Graphics owns the GPU resources it creates
+// and releases them at shutdown, including after setup or drawing fails.
+// Call Destroy to release a resource earlier. Create, update and destroy
+// resources on the game goroutine in Init, Update, Draw or Shutdown. Destruction during
 // Draw is deferred until queued work finishes; outside a frame it waits
 // for the GPU. Stats reports what the last frame cost.
 package gfx

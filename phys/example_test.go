@@ -11,7 +11,7 @@ import (
 
 func Example() {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
 	w.AddSystem("physics", phys.System3)
 
 	// A static floor (collider, no body) and a ball dropped onto it.
@@ -20,7 +20,7 @@ func Example() {
 	for range 180 {
 		w.Update(1.0 / 60)
 	}
-	t, _ := ecs.Get[gfx.Transform](w, ball)
+	t, _ := w.Get[gfx.Transform](ball)
 	fmt.Printf("ball rests at y = %.1f\n", t.Position.Y)
 	// Output:
 	// ball rests at y = 1.0

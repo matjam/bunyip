@@ -3,7 +3,9 @@
 // embedded in the binary with go:embed, or any mix, with earlier
 // sources taking precedence so a modder's or developer's copy overrides
 // the packed or embedded one. Open takes directory and pack paths;
-// OpenFS also takes an io/fs.FS. The one-call loaders (Image, Texture,
+// OpenFS also takes an io/fs.FS. FS implements io/fs.FS with merged
+// directories; loaders also accept embed.FS, os.DirFS and other fs.FS
+// values directly. The one-call loaders (Image, Texture,
 // Atlas, Aseprite, Font, Sound, Music, Model, Tracker, Scene, Prefab)
 // read and decode an asset into an engine object. A
 // Loader decodes assets on worker goroutines for loading screens, a
@@ -11,8 +13,9 @@
 // a changed file's texture or shader into the objects a game already
 // holds, so hot reload needs no bookkeeping in the game.
 // GPU loaders and Reloader methods run on the rendering goroutine.
-// The caller owns loaded resources; closing FS releases pack handles,
-// not textures, fonts, models, sounds or music returned by loaders.
+// Closing FS releases pack handles, not loaded resources. Graphics owns
+// uploaded GPU resources; Destroy releases them early. The caller closes
+// loaded music and other resources with independent lifetimes.
 package asset
 
 import (
@@ -29,7 +32,9 @@ import (
 	"strings"
 )
 
-// FS resolves names against its sources in order.
+// FS resolves names against its sources in order and implements fs.FS
+// and fs.ReadFileFS. Open and ReadFile use standard io/fs paths. Read,
+// Exists, Path and List retain their cleaned-name convenience syntax.
 type FS struct {
 	sources []source
 }
@@ -37,13 +42,10 @@ type FS struct {
 // source is one place an FS looks. Missing names return
 // fs.ErrNotExist (possibly wrapped) so the FS moves on to the next one.
 type source interface {
-	// read returns the file's contents.
-	read(name string) ([]byte, error)
+	fs.FS
 	// stat reports whether the source holds name and, for loose files,
 	// its on-disk path.
 	stat(name string) (diskPath string, ok bool)
-	// list adds every name under prefix to seen.
-	list(prefix string, seen map[string]bool)
 	close()
 }
 
@@ -124,12 +126,10 @@ func (s Source) open() (source, error) {
 // dirSource is a directory of loose files.
 type dirSource string
 
+func (d dirSource) Open(name string) (fs.File, error) { return os.DirFS(string(d)).Open(name) }
+
 func (d dirSource) join(name string) string {
 	return filepath.Join(string(d), filepath.FromSlash(name))
-}
-
-func (d dirSource) read(name string) ([]byte, error) {
-	return os.ReadFile(d.join(name))
 }
 
 func (d dirSource) stat(name string) (string, bool) {
@@ -138,19 +138,6 @@ func (d dirSource) stat(name string) (string, bool) {
 		return p, true
 	}
 	return "", false
-}
-
-func (d dirSource) list(prefix string, seen map[string]bool) {
-	filepath.WalkDir(d.join(prefix), func(p string, e fs.DirEntry, err error) error {
-		if err != nil || e.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(string(d), p)
-		if err == nil {
-			seen[filepath.ToSlash(rel)] = true
-		}
-		return nil
-	})
 }
 
 func (d dirSource) close() {}
@@ -162,6 +149,8 @@ type pack struct {
 	f     *os.File
 	files map[string]*zip.File
 }
+
+func (p *pack) Open(name string) (fs.File, error) { return p.zr.Open(name) }
 
 func openPack(name string) (*pack, error) {
 	file, err := os.Open(name)
@@ -187,30 +176,9 @@ func openPack(name string) (*pack, error) {
 	return p, nil
 }
 
-func (p *pack) read(name string) ([]byte, error) {
-	zf, ok := p.files[name]
-	if !ok {
-		return nil, fs.ErrNotExist
-	}
-	rc, err := zf.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-	return io.ReadAll(rc)
-}
-
 func (p *pack) stat(name string) (string, bool) {
 	_, ok := p.files[name]
 	return "", ok
-}
-
-func (p *pack) list(prefix string, seen map[string]bool) {
-	for name := range p.files {
-		if prefix == "" || name == prefix || strings.HasPrefix(name, prefix+"/") {
-			seen[name] = true
-		}
-	}
 }
 
 func (p *pack) close() { p.f.Close() }
@@ -218,29 +186,13 @@ func (p *pack) close() { p.f.Close() }
 // fsSource wraps an io/fs.FS.
 type fsSource struct{ fsys fs.FS }
 
-func (s fsSource) read(name string) ([]byte, error) {
-	if _, ok := s.stat(name); !ok {
-		return nil, fs.ErrNotExist
-	}
-	return fs.ReadFile(s.fsys, name)
-}
+func (s fsSource) Open(name string) (fs.File, error) { return s.fsys.Open(name) }
+
+func (s fsSource) ReadDir(name string) ([]fs.DirEntry, error) { return fs.ReadDir(s.fsys, name) }
 
 func (s fsSource) stat(name string) (string, bool) {
 	info, err := fs.Stat(s.fsys, name)
 	return "", err == nil && !info.IsDir()
-}
-
-func (s fsSource) list(prefix string, seen map[string]bool) {
-	root := prefix
-	if root == "" {
-		root = "."
-	}
-	fs.WalkDir(s.fsys, root, func(p string, e fs.DirEntry, err error) error {
-		if err == nil && !e.IsDir() {
-			seen[p] = true
-		}
-		return nil
-	})
 }
 
 func (s fsSource) close() {}
@@ -253,22 +205,13 @@ func (f *FS) Close() {
 }
 
 // ErrNotFound is returned for names no source holds.
-var ErrNotFound = errors.New("asset: not found")
+var ErrNotFound = fs.ErrNotExist
 
 // Read returns the named file's contents. Names use forward slashes
-// relative to the source roots, like "sprites/hero.png".
+// relative to the source roots, like "sprites/hero.png". Unlike ReadFile,
+// this convenience method cleans dot components and backslashes first.
 func (f *FS) Read(name string) ([]byte, error) {
-	name = clean(name)
-	for _, s := range f.sources {
-		data, err := s.read(name)
-		if err == nil {
-			return data, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("asset: %s: %w", name, err)
-		}
-	}
-	return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+	return f.ReadFile(clean(name))
 }
 
 // Exists reports whether some source holds the name.
@@ -288,6 +231,18 @@ func (f *FS) Path(name string) string {
 }
 
 func (f *FS) locate(name string) (string, error) {
+	file, err := f.Open(name)
+	if err != nil {
+		return "", err
+	}
+	info, err := file.Stat()
+	file.Close()
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", ErrNotFound
+	}
 	for _, s := range f.sources {
 		if p, ok := s.stat(name); ok {
 			return p, nil
@@ -296,21 +251,21 @@ func (f *FS) locate(name string) (string, error) {
 	return "", ErrNotFound
 }
 
-// List returns every name under prefix across all sources, sorted and
-// without duplicates.
+// List returns visible file names under prefix, sorted and without
+// duplicates. Unreadable directories are omitted; use fs.WalkDir when
+// errors need to be reported.
 func (f *FS) List(prefix string) []string {
 	prefix = clean(prefix)
-	if prefix == "." {
-		prefix = ""
+	if prefix == "" {
+		prefix = "."
 	}
-	seen := map[string]bool{}
-	for _, s := range f.sources {
-		s.list(prefix, seen)
-	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
-		names = append(names, n)
-	}
+	var names []string
+	fs.WalkDir(f, prefix, func(name string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() {
+			names = append(names, name)
+		}
+		return nil
+	})
 	sort.Strings(names)
 	return names
 }

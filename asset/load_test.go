@@ -117,6 +117,35 @@ func TestImage(t *testing.T) {
 	}
 }
 
+func TestLoadersAcceptStandardFS(t *testing.T) {
+	files := fstest.MapFS{
+		"hero.png":        {Data: encodeImage(t, func(w *bytes.Buffer, img image.Image) error { return png.Encode(w, img) })},
+		"beep.wav":        {Data: encodeWAV16(audio.Sine(440, 0.01, 22050))},
+		"tune.mod":        {Data: buildMOD()},
+		"models/tri.gltf": {Data: []byte(`{"asset":{"version":"2.0"},"buffers":[{"uri":"../tri.bin","byteLength":12}]}`)},
+		"tri.bin":         {Data: make([]byte, 12)},
+	}
+	img, err := Image(files, "hero.png")
+	if err != nil || img.Bounds().Dx() != 4 {
+		t.Fatalf("image: %v %v", img, err)
+	}
+	m := audio.NewMixer(44100)
+	if _, err := Sound(m, files, "beep.wav"); err != nil {
+		t.Fatal(err)
+	}
+	music, err := Music(m, files, "beep.wav", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	music.Close()
+	if _, err := Tracker(files, "tune.mod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseModel(files, "models/tri.gltf"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSoundAndMusic(t *testing.T) {
 	wav := encodeWAV16(audio.Sine(440, 0.1, 22050))
 	fs, err := OpenFS(FSSource(fstest.MapFS{
@@ -233,7 +262,7 @@ func TestSceneAndPrefab(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := ecs.NewWorld()
-	ecs.SetResource(w, ecs.PrefabLibrary{"grunt": grunt})
+	w.SetResource(ecs.PrefabLibrary{"grunt": grunt})
 	inst, err := w.Instantiate(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -242,14 +271,14 @@ func TestSceneAndPrefab(t *testing.T) {
 	if !ok {
 		t.Fatal("boss not spawned")
 	}
-	if c, _ := ecs.Get[sceneComponent](w, boss); c == nil || c.HP != 40 {
+	if c, _ := w.Get[sceneComponent](boss); c == nil || c.HP != 40 {
 		t.Fatalf("boss %+v", c)
 	}
 	escort, _ := inst.Entity("escort")
 	if p, ok := ecs.ParentOf(w, escort); !ok || p != boss {
 		t.Fatal("escort not parented to the boss")
 	}
-	if c, _ := ecs.Get[sceneComponent](w, escort); c == nil || c.HP != 3 || c.Team != "red" {
+	if c, _ := w.Get[sceneComponent](escort); c == nil || c.HP != 3 || c.Team != "red" {
 		t.Fatalf("prefab override %+v", c)
 	}
 

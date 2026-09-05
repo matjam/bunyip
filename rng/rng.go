@@ -123,10 +123,10 @@ func (r *Rand) State() (state, inc uint64) { return r.state, r.inc }
 func (r *Rand) Restore(state, inc uint64) { r.state, r.inc = state, inc|1 }
 
 // Pick returns a random element; it panics on an empty slice.
-func Pick[T any](r *Rand, items []T) T { return items[r.Intn(len(items))] }
+func (r *Rand) Pick[T any](items []T) T { return items[r.Intn(len(items))] }
 
 // Shuffle permutes the slice in place (Fisher-Yates).
-func Shuffle[T any](r *Rand, items []T) {
+func (r *Rand) Shuffle[T any](items []T) {
 	for i := len(items) - 1; i > 0; i-- {
 		j := r.Intn(i + 1)
 		items[i], items[j] = items[j], items[i]

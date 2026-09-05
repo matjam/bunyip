@@ -31,6 +31,16 @@ reports loose files that changed on disk, and a `Reloader` swaps those
 files' textures and shaders in place while the game runs.
 `bunyip-pack` builds pack files.
 
+Every one-call loader and `NewLoader` accepts a standard `fs.FS` directly:
+`asset.Image(embeddedAssets, "sprites/hero.png")` needs no asset wrapper.
+Use `asset.Open` or `OpenFS` when combining sources. Their returned `FS`
+supports `fs.ReadFile`, `fs.ReadDir`, `fs.Sub` and `fs.WalkDir`; directories
+merge while earlier files hide lower-priority names and their children.
+`Open` and `ReadFile` require valid `io/fs` paths and return standard
+filesystem errors. Legacy `Read` also cleans dot components and backslashes.
+Only missing names fall through to the next source; permission errors
+are returned. Watchers and reloaders still use `*asset.FS` to locate loose files.
+
 ```go
 // Loose files first so a developer's copy wins, then the shipped pack.
 fs, err := asset.Open("assets", "game.pak")
@@ -66,7 +76,7 @@ A `Loader` decodes CPU data in the background while a loading screen draws.
 ```go
 loader := asset.NewLoader(fs, 0) // 0 workers means one per core
 defer loader.Close()
-level := asset.Load(loader, "levels/1.json", parseLevel)
+level := loader.Load("levels/1.json", parseLevel)
 ...
 done, total := loader.Progress()
 g.bar = float32(done) / float32(total)
@@ -75,11 +85,13 @@ if level.Ready() {
 }
 ```
 
-Submission may block when the 256-entry job queue fills. Stop submitting
-before shutdown: call `Close` to close the queue, then `Wait` to await
-queued loads before closing the asset FS. `Close` returns immediately;
-submitting after or concurrently with it is invalid. Upload decoded GPU
-resources on the rendering goroutine after a handle is ready.
+Submission may block when the 256-entry job queue fills. `Close` stops
+submission and waits for accepted work and the workers to finish, so the
+asset FS can close next. Later submissions return ready handles with
+`fs.ErrClosed`. A blocked reader or decoder must return before shutdown
+finishes; a decoder must not close its own loader. `Wait` waits for work
+without closing the loader; stop submitting before calling it. Upload
+decoded GPU resources on the rendering goroutine after a handle is ready.
 
 ### Hot reload
 
@@ -195,7 +207,7 @@ store, err := save.Open("my-game") // Application Support, AppData or XDG
 if err != nil {
 	return err
 }
-s, err := save.Load(store, "settings", settings{Volume: 0.8}) // defaults for a missing file
+s, err := store.Load("settings", settings{Volume: 0.8}) // defaults for a missing file
 if err != nil {
 	return err
 }
@@ -208,6 +220,9 @@ names, _ := store.List() // the save slots, for a load menu
 `BUNYIP_DATA_DIR` overrides the base data directory and the app name is
 appended to it. Save names omit `.json` and must be nonempty leaf names
 without slashes or `.`/`..` components.
+`Store.Load` copies defaults through JSON even when the file is missing,
+so mutable maps and slices are independent of the defaults. Defaults that
+cannot be round-tripped through JSON return an error.
 
 ## Translation
 
@@ -259,11 +274,11 @@ loot := r.Fork() // its own stream: rolling here never moves the other one
 
 damage := r.Roll(2, 6) + 1 // 2d6+1
 if loot.Chance(0.1) {
-	drop := rng.Pick(loot, g.rareItems)
+	drop := loot.Pick(g.rareItems)
 	_ = drop
 }
 i := rng.WeightedIndex(loot, []float32{5, 3, 1}) // common, uncommon, rare
-rng.Shuffle(loot, g.deck)
+loot.Shuffle(g.deck)
 
 state, inc := r.State() // into the save file; r.Restore(state, inc) on load
 ```
@@ -324,15 +339,17 @@ with the usual curves, repeats and yo-yos; `Sequence` chains tweens, and
 value that has a blend function.
 
 Easing curves such as `OutBack` and `OutElastic` may overshoot the
-endpoints; `Progress` is not always between zero and one. Scalar tweens
-support `YoYo`; the current generic `Of` wrapper uses eased progress
-directly and does not reverse its endpoints for `YoYo`.
+endpoints; `Progress` is not always between zero and one. Scalar and
+generic tweens both support `YoYo`, reversing their endpoints on each
+repeat. `OnDone` runs once when the complete sequence of repeats ends
+and returns the same tween for chaining, including its generic value type.
 
 ```go
 g.menuX = tween.New(-300, 40, 0.4, tween.OutQuad) // slide the panel in
 g.pulse = tween.New(1, 1.2, 0.3, tween.InOutSine)
 g.pulse.Repeat, g.pulse.YoYo = -1, true // forever, back and forth
-g.fade = tween.NewOf(gfx.Transparent, gfx.White, 0.5, tween.OutQuad, gfx.Color.Lerp)
+g.fade = tween.NewOf(gfx.Transparent, gfx.White, 0.5, tween.OutQuad, gfx.Color.Lerp).
+	OnDone(func() { g.ready = true })
 
 // From Update.
 x := g.menuX.Update(float32(ctx.Delta))
@@ -443,14 +460,16 @@ but pending messages or disconnect notifications may be dropped during
 local shutdown. A remote disconnect is queued after its preceding
 messages as usual.
 
-A TCP client's `SetOnActivity` may be changed while messages arrive,
-including from inside its callback. Each event invokes one captured
-callback after releasing the registration lock. A server's setter
-continues to affect only connections accepted afterward.
-Callbacks run on network goroutines and should only signal the game
-loop, for example with `ctx.Wake`; keep them short. A captured callback
-may still run after replacement, and a client's initial `Connected`
-event is queued before a callback can be installed, so poll that event.
+`SetOnActivity` may be changed while messages arrive, including from
+inside its callback. Server registration updates existing and future
+connections. If events are pending, registration invokes the new callback
+before returning; later notifications run on network goroutines. This
+also wakes for a client's initial `Connected` event. Callbacks run outside
+locks and should signal the game loop, for example with `ctx.Wake`.
+Keep them short; drain pending events before registering again inside a
+callback to avoid recursion. A captured callback may finish after
+replacement or removal. Nil disables future captures. UDP uses the same
+registration behavior; its notifications can cover multiple events.
 TCP event queues hold 1024 events and apply backpressure when full.
 Sends may block on network I/O. `Broadcast` sends sequentially and
 discards per-connection errors; use `Conns` and `Send` to handle them.

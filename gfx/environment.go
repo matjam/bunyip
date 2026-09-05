@@ -373,6 +373,7 @@ func (env *Environment) Destroy() {
 	g, cube, set := env.g, env.cube, env.set
 	env.cube, env.set = nil, 0
 	g.forget(env)
+	g.owned.remove(env)
 	g.forgetEnvironment(env)
 	g.deferDestroy(func() {
 		g.descriptors.Free(set)

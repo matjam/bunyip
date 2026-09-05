@@ -95,7 +95,7 @@ prescribed Kepler paths and independent ship integration; use
 `Simulation` when all bodies must exert mutual gravity.
 
 ```go
-ecs.SetResource(w, orbit.Settings{G: 1, TimeScale: 10, Scale: 1})
+w.SetResource(orbit.Settings{G: 1, TimeScale: 10, Scale: 1})
 star := w.SpawnWith(orbit.Body{Mass: 5000}, gfx.Transform{})
 planet := w.SpawnWith(orbit.Body{Mass: 12}, gfx.Transform{},
 	orbit.Kepler{Primary: star, Elements: orbit.Elements{SemiMajorAxis: 55, Eccentricity: 0.1}})
@@ -172,9 +172,9 @@ slider to watch the system move.
 ```go
 // From examples/space: the time warp, and the focused body pinned to the
 // floating origin so the scene near the camera stays precise.
-settings := ecs.Resource[orbit.Settings](w)
+settings := w.Resource[orbit.Settings]()
 settings.TimeScale = float64(warp)
-if fb, ok := ecs.Get[orbit.Body](w, focus); ok {
+if fb, ok := w.Get[orbit.Body](focus); ok {
 	settings.Origin = fb.Pos
 }
 w.Update(ctx.Delta)
@@ -190,6 +190,6 @@ then set `TimeScale` to control how fast play runs.
 ```go
 const g, starMass = 1.0, 5000.0
 year := orbit.Elements{SemiMajorAxis: 55}.Period(g * starMass) // ≈ 36
-ecs.SetResource(w, orbit.Settings{G: g, TimeScale: year / 10, Scale: 1})
+w.SetResource(orbit.Settings{G: g, TimeScale: year / 10, Scale: 1})
 // One lap of the inner planet every ten seconds of play.
 ```

@@ -17,10 +17,10 @@ func TestAddDuringEachVisitsOnce(t *testing.T) {
 	a := w.SpawnWith(reviewHP{1})
 	w.SpawnWith(reviewHP{2}, reviewTag{}) // the {hp, tag} table exists and sorts later
 	visits := map[ecs.Entity]int{}
-	ecs.Each(w, func(e ecs.Entity, h *reviewHP) {
+	w.Each(func(e ecs.Entity, h *reviewHP) {
 		visits[e]++
-		if !ecs.Has[reviewTag](w, e) {
-			ecs.Add(w, e, reviewTag{})
+		if !w.Has[reviewTag](e) {
+			w.Add(e, reviewTag{})
 		}
 	})
 	if visits[a] != 1 {

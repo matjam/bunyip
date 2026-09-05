@@ -15,7 +15,7 @@
 // resize colliders; size the shapes themselves. A zero gravity vector
 // means no gravity. World systems and queries require serialized access.
 //
-//	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
+//	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
 //	w.SpawnWith(gfx.At(0, 5, 0), phys.Dynamic3(1), phys.Collider3{Shape: phys.Sphere{Radius: 0.5}})
 //	w.SpawnWith(gfx.Transform{}, phys.Collider3{Shape: phys.Box3{Half: lin.V3(10, 0.5, 10)}}) // static floor
 //	w.AddSystem("physics", phys.System3)

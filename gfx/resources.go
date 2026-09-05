@@ -68,7 +68,8 @@ type resources struct {
 }
 
 // track records a resource, or updates the one already recorded.
-func (g *Graphics) track(key any, r Resource) {
+func (g *Graphics) track(key gpuResource, r Resource) {
+	g.owned.add(key)
 	if g.res.live == nil {
 		g.res.live = map[any]*resEntry{}
 	}

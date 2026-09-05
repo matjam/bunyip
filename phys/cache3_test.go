@@ -26,7 +26,7 @@ func TestShapeCache3Replacement(t *testing.T) {
 		t.Fatalf("initial nearest = %+v, %v", h, ok)
 	}
 	s.Parts = append(s.Parts, Part3{Shape: Sphere{Radius: 1}})
-	ecs.Add(w, e, Collider3{Shape: s})
+	w.Add(e, Collider3{Shape: s})
 	h, ok = Nearest3(w, point, 10, 0)
 	if !ok || math.Abs(float64(h.Distance-2)) > 1e-5 {
 		t.Errorf("replacement nearest = %+v, %v; want distance 2", h, ok)
@@ -125,11 +125,11 @@ func TestShapeCache3ControllerReplacement(t *testing.T) {
 	e := w.SpawnWith(gfx.Transform{}, Collider3{Shape: s})
 	Nearest3(w, lin.V3(0, 3, 0), 10, 0)
 	s.Parts = append(s.Parts, Part3{Shape: Sphere{Radius: 1}})
-	ecs.Add(w, e, Collider3{Shape: s})
+	w.Add(e, Collider3{Shape: s})
 	character := w.SpawnWith(gfx.At(0, 3, 0))
 	c := CharacterController3{Radius: 0.25, HalfHeight: 0.25}
 	c.Move(w, character, lin.V3(0, -3, 0), 1)
-	tr, _ := ecs.Get[gfx.Transform](w, character)
+	tr, _ := w.Get[gfx.Transform](character)
 	if !c.Grounded || math.Abs(float64(tr.Position.Y-1.52)) > 1e-3 {
 		t.Errorf("controller after replacement: position=%v grounded=%v; want y=1.52 grounded", tr.Position, c.Grounded)
 	}

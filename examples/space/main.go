@@ -125,9 +125,9 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	w := ecs.NewWorld()
 	g.world = w
-	g.bodies = ecs.NewQuery2[gfx.Transform, look](w)
-	g.orbits = ecs.NewQuery3[orbit.Kepler, orbit.Body, look](w)
-	ecs.SetResource(w, orbit.Settings{G: 1, TimeScale: 1, Scale: 1, Substeps: 8})
+	g.bodies = w.Query2[gfx.Transform, look]()
+	g.orbits = w.Query3[orbit.Kepler, orbit.Body, look]()
+	w.SetResource(orbit.Settings{G: 1, TimeScale: 1, Scale: 1, Substeps: 8})
 	g.star = w.SpawnWith(orbit.Body{Mass: starMass}, gfx.Transform{}, look{"Kaal", 4, gfx.RGB(255, 214, 130), 5, false, true})
 	var vessa ecs.Entity
 	for _, p := range planets {
@@ -158,7 +158,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	w.AddSystem("orbits", orbit.System)
 	// The ship starts in a low orbit around Vessa, inside its moons.
 	w.Update(0)
-	vb, _ := ecs.Get[orbit.Body](w, vessa)
+	vb, _ := w.Get[orbit.Body](vessa)
 	rel := orbit.Elements{SemiMajorAxis: 2.4, TrueAnomaly: math.Pi}.State(1 * vb.Mass)
 	g.ship = w.SpawnWith(orbit.Ship{}, orbit.Thrust{}, orbit.Body{Pos: vb.Pos.Add(rel.Pos), Vel: vb.Vel.Add(rel.Vel)}, gfx.Transform{},
 		look{"Ship", 0.03, gfx.RGB(255, 255, 255), 2, false, true})
@@ -169,7 +169,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		}
 	})
 	for i, e := range g.focus {
-		if l, ok := ecs.Get[look](w, e); ok && l.Name == g.startFocus {
+		if l, ok := w.Get[look](e); ok && l.Name == g.startFocus {
 			g.focused = i
 		}
 	}
@@ -216,12 +216,12 @@ func (g *game) Update(ctx *bunyip.Context) error {
 		g.dist = lin.Clamp(g.dist*float32(math.Pow(0.88, float64(dy))), 1, 3000)
 	}
 	w := g.world
-	settings := ecs.Resource[orbit.Settings](w)
+	settings := w.Resource[orbit.Settings]()
 	settings.TimeScale = float64(g.warp)
 	// Thrust along the ship's velocity (prograde), across it, or out of
 	// its orbital plane.
-	body, _ := ecs.Get[orbit.Body](w, g.ship)
-	thrust, _ := ecs.Get[orbit.Thrust](w, g.ship)
+	body, _ := w.Get[orbit.Body](g.ship)
+	thrust, _ := w.Get[orbit.Thrust](g.ship)
 	prograde := body.Vel.Norm()
 	side := prograde.Cross(orbit.V3(0, 0, 1)).Norm()
 	up := side.Cross(prograde)
@@ -237,7 +237,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	thrust.Accel = a.Mul(float64(g.thrust))
 	// The focused body sits at the floating origin, so the scene stays
 	// precise wherever it is.
-	if fb, ok := ecs.Get[orbit.Body](w, g.focus[g.focused]); ok {
+	if fb, ok := w.Get[orbit.Body](g.focus[g.focused]); ok {
 		settings.Origin = fb.Pos
 	}
 	w.Update(ctx.Delta)
@@ -262,7 +262,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	// falls off with distance so the outer worlds are dimmer.
 	sun := lin.V3(0, 0, -1)
 	strength := float32(1)
-	if st, ok := ecs.Get[gfx.Transform](w, g.star); ok && st.Position.Len() > 1 {
+	if st, ok := w.Get[gfx.Transform](g.star); ok && st.Position.Len() > 1 {
 		sun = st.Position.Mul(-1).Norm()
 		strength = lin.Clamp(110*110/st.Position.Dot(st.Position), 0.25, 3)
 	}
@@ -276,8 +276,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		if e == g.ship || e == g.star {
 			continue
 		}
-		t, ok := ecs.Get[gfx.Transform](w, e)
-		l, ok2 := ecs.Get[look](w, e)
+		t, ok := w.Get[gfx.Transform](e)
+		l, ok2 := w.Get[look](e)
 		if !ok || !ok2 || t.Position.Len() < 1e-3 {
 			continue
 		}
@@ -290,7 +290,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	}
 	gr.SetLight(gfx.Light{Direction: sun, Color: gfx.Color{R: 2.4 * strength, G: 2.2 * strength, B: 1.9 * strength, A: 1},
 		Ambient: gfx.Color{R: 0.03, G: 0.03, B: 0.05, A: 1}, Sky: sky})
-	settings := ecs.Resource[orbit.Settings](w)
+	settings := w.Resource[orbit.Settings]()
 	origin := settings.Origin
 	// A distant starfield, fixed to the focused body so it never
 	// parallaxes against the system.
@@ -314,7 +314,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		if !l.Orbit {
 			return
 		}
-		pb, ok := ecs.Get[orbit.Body](w, k.Primary)
+		pb, ok := w.Get[orbit.Body](k.Primary)
 		if !ok {
 			return
 		}
@@ -336,7 +336,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		}
 	})
 	// The ship's predicted path, in the frame of the body it orbits.
-	body, _ := ecs.Get[orbit.Body](w, g.ship)
+	body, _ := w.Get[orbit.Body](g.ship)
 	primary, el, mu, ok := orbit.Around(w, g.ship)
 	horizon := 60.0
 	if ok && el.Eccentricity < 1 {
@@ -363,7 +363,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		gr.DrawText(g.font, l.Name, sx+8, sy-6, gfx.RGBA(220, 225, 235, 180))
 	})
 	focusName := "?"
-	if l, ok := ecs.Get[look](w, g.focus[g.focused]); ok {
+	if l, ok := w.Get[look](g.focus[g.focused]); ok {
 		focusName = l.Name
 	}
 	u := g.ui
@@ -373,7 +373,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			u.Label(fmt.Sprintf("speed %.3f u/s", body.Vel.Len()))
 			if ok {
 				name := "?"
-				if l, ok := ecs.Get[look](w, primary); ok {
+				if l, ok := w.Get[look](primary); ok {
 					name = l.Name
 				}
 				u.Label(fmt.Sprintf("orbiting %s: a %.1f, e %.2f", name, el.SemiMajorAxis, el.Eccentricity))

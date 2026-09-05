@@ -114,10 +114,10 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 
 	w := ecs.NewWorld()
-	ecs.SetResource(w, clock{})
+	w.SetResource(clock{})
 	// Instantiate resolves the scene's "moon" references against this
 	// library and writes each entity's own components over the prefab's.
-	ecs.SetResource(w, ecs.PrefabLibrary{"moon": moon})
+	w.SetResource(ecs.PrefabLibrary{"moon": moon})
 	system, err := w.Instantiate(scene)
 	if err != nil {
 		return err
@@ -139,7 +139,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 		ecs.SetParent(w, a, sun)
 	}
 	// Systems: orbits place bodies on their circles, spin turns them.
-	orbits := ecs.NewQuery2[orbit, gfx.Transform](w)
+	orbits := w.Query2[orbit, gfx.Transform]()
 	w.AddSystem("orbits", func(w *ecs.World, dt float64) {
 		orbits.Each(func(e ecs.Entity, o *orbit, t *gfx.Transform) {
 			o.Angle += o.Speed * float32(dt)
@@ -147,16 +147,16 @@ func (g *game) Init(ctx *bunyip.Context) error {
 			t.Position.Z = o.Radius * float32(math.Sin(float64(o.Angle)))
 		})
 	})
-	spins := ecs.NewQuery2[spin, gfx.Transform](w)
+	spins := w.Query2[spin, gfx.Transform]()
 	w.AddSystem("spin", func(w *ecs.World, dt float64) {
-		c := ecs.Resource[clock](w)
+		c := w.Resource[clock]()
 		c.Time += float32(dt)
 		spins.Each(func(e ecs.Entity, s *spin, t *gfx.Transform) {
 			t.Rotation = lin.AxisAngle(lin.V3(0, 1, 0), c.Time*s.Speed)
 		})
 	})
 	g.world = w
-	g.bodies = ecs.NewQuery1[body](w)
+	g.bodies = w.Query1[body]()
 	g.selected = sun
 	return nil
 }
@@ -200,7 +200,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				mat.Emissive = 1.5
 			}
 			mesh := g.sphere
-			if ecs.Has[asteroid](w, e) {
+			if w.Has[asteroid](e) {
 				mesh = g.cube
 			}
 			gr.DrawMesh(mesh, mat, ecs.WorldMatrix(w, e).Mul(lin.Scale(lin.V3(b.Radius, b.Radius, b.Radius))))
@@ -239,7 +239,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	// A scene's names arrive as ecs.Name components, so a moon spawned
 	// from the shared prefab still knows which moon it is.
 	name := "nothing"
-	if b, ok := ecs.Get[body](w, g.selected); ok {
+	if b, ok := w.Get[body](g.selected); ok {
 		name = b.Name
 	}
 	if n, ok := ecs.NameOf(w, g.selected); ok {
@@ -247,7 +247,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	}
 	y := ctx.Height - 64
 	gr.FillRect(12, y, 560, 52, gfx.RGBA(0, 0, 0, 150))
-	gr.DrawText(g.font, fmt.Sprintf("%d entities; click a body to select. Selected: %s", w.Count(), name), 20, y+6, gfx.RGB(230, 230, 240))
+	gr.DrawText(g.font, fmt.Sprintf("%d entities; click a body to select. Selected: %s", w.Len(), name), 20, y+6, gfx.RGB(230, 230, 240))
 	gr.DrawText(g.font, "Minimap top right is a render texture; the overlay top left shows profile scopes (F3).", 20, y+28, gfx.RGB(170, 170, 190))
 	return nil
 }

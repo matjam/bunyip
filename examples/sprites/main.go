@@ -99,12 +99,6 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
-	g.tex.Destroy()
-	g.floor.Destroy()
-	g.floorNorm.Destroy()
-}
-
 func (g *game) Update(ctx *bunyip.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()

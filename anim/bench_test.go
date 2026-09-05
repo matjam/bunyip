@@ -26,8 +26,8 @@ func BenchmarkSystemPlayers(b *testing.B) {
 	c := benchClip()
 	for range 5000 {
 		e := w.Spawn()
-		ecs.Add(w, e, gfx.Transform{Scale: lin.V3(1, 1, 1)})
-		ecs.Add(w, e, anim.Player{Clip: c, Playing: true})
+		w.Add(e, gfx.Transform{Scale: lin.V3(1, 1, 1)})
+		w.Add(e, anim.Player{Clip: c, Playing: true})
 	}
 	b.ReportAllocs()
 	b.ResetTimer()

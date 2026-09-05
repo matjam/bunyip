@@ -164,8 +164,8 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	}
 	w := ecs.NewWorld()
 	g.world = w
-	g.cells = ecs.NewQuery1[Cell](w)
-	g.falling = ecs.NewQuery1[Falling](w)
+	g.cells = w.Query1[Cell]()
+	g.falling = w.Query1[Falling]()
 	// Systems run in this order every update.
 	w.AddSystem("board", boardSystem)
 	w.AddSystem("input", inputSystem)
@@ -183,25 +183,25 @@ func (g *game) restart() {
 	for _, e := range w.Entities() {
 		w.Despawn(e)
 	}
-	ecs.SetResource(w, Board{})
-	ecs.SetResource(w, Score{})
-	ecs.SetResource(w, Controls{})
+	w.SetResource(Board{})
+	w.SetResource(Score{})
+	w.SetResource(Controls{})
 	bag := Bag{Random: rng.New(7)}
 	bag.Next = bag.Random.Intn(len(shapes))
-	ecs.SetResource(w, bag)
+	w.SetResource(bag)
 	var clock Clock
 	clock.Drop = clock.Timers.Every(0.6, func() { drop(w) })
-	ecs.SetResource(w, clock)
+	w.SetResource(clock)
 	spawnPiece(w)
 }
 
 // spawnPiece deals the next piece; if it cannot be placed the game is over.
 func spawnPiece(w *ecs.World) {
-	bag := ecs.Resource[Bag](w)
+	bag := w.Resource[Bag]()
 	p := newFalling(bag.Next)
 	bag.Next = bag.Random.Intn(len(shapes))
-	if !fits(ecs.Resource[Board](w), p) {
-		ecs.Resource[Score](w).Over = true
+	if !fits(w.Resource[Board](), p) {
+		w.Resource[Score]().Over = true
 	}
 	w.SpawnWith(p)
 }
@@ -209,9 +209,9 @@ func spawnPiece(w *ecs.World) {
 // boardSystem rebuilds the occupancy grid from the Cell entities, so the
 // other systems test collisions against a plain array.
 func boardSystem(w *ecs.World, dt float64) {
-	b := ecs.Resource[Board](w)
+	b := w.Resource[Board]()
 	b.Full = [rows][cols]bool{}
-	ecs.Each(w, func(e ecs.Entity, c *Cell) {
+	w.Each(func(e ecs.Entity, c *Cell) {
 		if c.Y >= 0 {
 			b.Full[c.Y][c.X] = true
 		}
@@ -220,7 +220,7 @@ func boardSystem(w *ecs.World, dt float64) {
 
 // try moves the piece to the candidate if it fits.
 func try(w *ecs.World, p *Falling, candidate Falling) bool {
-	if !fits(ecs.Resource[Board](w), candidate) {
+	if !fits(w.Resource[Board](), candidate) {
 		return false
 	}
 	*p = candidate
@@ -229,11 +229,11 @@ func try(w *ecs.World, p *Falling, candidate Falling) bool {
 
 // inputSystem applies the Controls resource to the falling piece.
 func inputSystem(w *ecs.World, dt float64) {
-	if ecs.Resource[Score](w).Over {
+	if w.Resource[Score]().Over {
 		return
 	}
-	in := ecs.Resource[Controls](w)
-	_, p, ok := ecs.NewQuery1[Falling](w).First()
+	in := w.Resource[Controls]()
+	_, p, ok := w.Query1[Falling]().First()
 	if !ok {
 		return
 	}
@@ -274,15 +274,15 @@ func inputSystem(w *ecs.World, dt float64) {
 
 // gravitySystem advances the clock; its timer calls drop.
 func gravitySystem(w *ecs.World, dt float64) {
-	if ecs.Resource[Score](w).Over {
+	if w.Resource[Score]().Over {
 		return
 	}
-	ecs.Resource[Clock](w).Timers.Update(dt)
+	w.Resource[Clock]().Timers.Update(dt)
 }
 
 // drop moves the piece down one row, or locks it when it cannot fall.
 func drop(w *ecs.World) {
-	_, p, ok := ecs.NewQuery1[Falling](w).First()
+	_, p, ok := w.Query1[Falling]().First()
 	if !ok {
 		return
 	}
@@ -296,7 +296,7 @@ func drop(w *ecs.World) {
 // lockPiece turns the falling piece into Cell entities, clears full
 // lines and emits an event saying what happened.
 func lockPiece(w *ecs.World) {
-	e, p, ok := ecs.NewQuery1[Falling](w).First()
+	e, p, ok := w.Query1[Falling]().First()
 	if !ok {
 		return
 	}
@@ -309,7 +309,7 @@ func lockPiece(w *ecs.World) {
 	}
 	w.Despawn(e)
 	boardSystem(w, 0)
-	b := ecs.Resource[Board](w)
+	b := w.Resource[Board]()
 	cleared := 0
 	for y := rows - 1; y >= 0; y-- {
 		full := true
@@ -321,7 +321,7 @@ func lockPiece(w *ecs.World) {
 		}
 		// Despawn this row's cells and let everything above fall one row.
 		// Despawning the visited entity inside a query is safe.
-		ecs.Each(w, func(e ecs.Entity, c *Cell) {
+		w.Each(func(e ecs.Entity, c *Cell) {
 			switch {
 			case c.Y == y:
 				w.Despawn(e)
@@ -334,12 +334,12 @@ func lockPiece(w *ecs.World) {
 		y++ // re-check the row that just fell into this slot
 	}
 	if cleared > 0 {
-		s := ecs.Resource[Score](w)
+		s := w.Resource[Score]()
 		s.Lines += cleared
 		s.Points += []int{0, 100, 300, 500, 800}[cleared]
-		ecs.Emit(w, Cleared{Rows: cleared})
+		w.Emit(Cleared{Rows: cleared})
 	} else {
-		ecs.Emit(w, Locked{})
+		w.Emit(Locked{})
 	}
 	spawnPiece(w)
 }
@@ -347,10 +347,10 @@ func lockPiece(w *ecs.World) {
 // effectsSystem turns events into sound and the line-clear flash.
 func (g *game) effectsSystem(mixer *audio.Mixer) ecs.System {
 	return func(w *ecs.World, dt float64) {
-		for range ecs.Events[Locked](w) {
+		for range w.Events[Locked]() {
 			mixer.Play(g.lock, audio.PlayOptions{Volume: 0.4})
 		}
-		for _, ev := range ecs.Events[Cleared](w) {
+		for _, ev := range w.Events[Cleared]() {
 			mixer.Play(g.clear, audio.PlayOptions{Volume: 0.5, Pitch: 1 + 0.2*float32(ev.Rows)})
 			g.flash = tween.New(1, 0, 0.4, tween.OutQuad)
 		}
@@ -376,7 +376,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	}
 	// Input becomes a resource so the input system stays a pure function
 	// of the world.
-	*ecs.Resource[Controls](g.world) = Controls{
+	*g.world.Resource[Controls]() = Controls{
 		Left: in.KeyPressed(input.KeyLeft), Right: in.KeyPressed(input.KeyRight), Rotate: in.KeyPressed(input.KeyUp),
 		Down: in.KeyPressed(input.KeyDown), Drop: in.KeyPressed(input.KeySpace),
 	}
@@ -403,7 +403,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	if _, p, ok := g.falling.First(); ok {
 		// The ghost shows where the piece will land.
 		ghost := *p
-		for fits(ecs.Resource[Board](w), ghost) {
+		for fits(w.Resource[Board](), ghost) {
 			ghost.Y++
 		}
 		ghost.Y--
@@ -423,14 +423,14 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	if g.flash != nil {
 		gr.FillRect(ox, oy, cols*cell, rows*cell, gfx.Color{R: 1, G: 1, B: 1, A: 0.35 * g.flash.Value()})
 	}
-	score := ecs.Resource[Score](w)
+	score := w.Resource[Score]()
 	u := g.ui
 	u.Begin(ctx.Input, func() {
 		u.Panel("Tetris", ui.Rect{X: ox + cols*cell + 24, Y: oy, W: 200, H: 300}, func() {
 			u.Label(fmt.Sprintf("Score %d", score.Points))
 			u.Label(fmt.Sprintf("Lines %d", score.Lines))
-			u.Label("Next: " + shapes[ecs.Resource[Bag](w).Next].name)
-			u.Label(fmt.Sprintf("%d entities", w.Count()))
+			u.Label("Next: " + shapes[w.Resource[Bag]().Next].name)
+			u.Label(fmt.Sprintf("%d entities", w.Len()))
 			u.Separator()
 			if score.Over {
 				u.Label("Game over")

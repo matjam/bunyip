@@ -33,15 +33,20 @@ height.Sample(0.25) // 90, on the way up
 
 A track applies a curve to one property of one component. Tracks exist
 for a 3D `gfx.Transform` (`Position`, `Rotation`, `Scale`) and for a 2D
-`gfx.Sprite` (`Position2`, `Size2`, `Rotation2`, `Tint`), and
-`Property` animates any field of any component through a getter and a
-setter, with no reflection:
+`gfx.Sprite` (`Position2`, `Size2`, `Rotation2`, `Tint`). A curve's
+`Field` method animates a custom component field through an accessor
+returning its address, with no reflection:
 
 ```go
-anim.Property(anim.Floats(anim.Num(0, 1), anim.Num(0.3, 0)),
-	func(l *Light) float32 { return l.Intensity },
-	func(l *Light, v float32) { l.Intensity = v })
+anim.Floats(anim.Num(0, 1), anim.Num(0.3, 0)).Field(
+	func(l *Light) *float32 { return &l.Intensity })
 ```
+
+The entity must already have the component; missing components are
+skipped. The accessor uses the current component on each application,
+so the track retains no pointer across structural changes. Use the
+curve's `Property(get, set)` method when a field needs conversion or
+normalization, such as animating an integer through a float curve.
 
 A clip bundles tracks with a loop mode: `Once` stops at the end and
 reports it, `Loop` starts over, `PingPong` runs back and forth.
@@ -101,7 +106,7 @@ event: land, then fade back to idle; explode, then despawn.
 
 ```go
 w.AddSystem("return", func(w *ecs.World, dt float64) {
-	for _, ev := range ecs.Events[anim.Finished](w) {
+	for _, ev := range w.Events[anim.Finished]() {
 		anim.PlayerOf(w, ev.Entity).CrossFade(idle, 0.3)
 	}
 })
@@ -155,7 +160,7 @@ with the entity, beside `Finished`.
 player.AddEvent("walk", 0.3, "step")
 player.AddEvent("walk", 0.8, "step")
 w.AddSystem("footsteps", func(w *ecs.World, dt float64) {
-	for _, ev := range ecs.Events[anim.SkeletonEvent](w) {
+	for _, ev := range w.Events[anim.SkeletonEvent]() {
 		if ev.Event.Name == "step" {
 			mixer.Play(footstep, audio.PlayOptions{})
 		}
@@ -264,7 +269,7 @@ to feed it; on its own, call `Advance` in place of the player's.
 ```go
 hero := w.SpawnWith(gfx.Transform{}, anim.Skeleton{Player: player, Blend: anim.NewBlend(tree)})
 // from the controller, each update
-skel, _ := ecs.Get[anim.Skeleton](w, hero)
+skel, _ := w.Get[anim.Skeleton](hero)
 skel.SetParameter("speed", velocity.Len())
 skel.SetParameter("crouch", crouchAmount)
 ```

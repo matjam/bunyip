@@ -71,7 +71,7 @@ func TestForkStateAndHelpers(t *testing.T) {
 		t.Fatal("fork shares the parent's sequence")
 	}
 	items := []int{0, 1, 2, 3, 4, 5, 6, 7}
-	Shuffle(r, items)
+	r.Shuffle(items)
 	seen := map[int]bool{}
 	for _, v := range items {
 		seen[v] = true
@@ -79,7 +79,7 @@ func TestForkStateAndHelpers(t *testing.T) {
 	if len(seen) != 8 {
 		t.Fatal("shuffle lost elements")
 	}
-	if p := Pick(r, items); p < 0 || p > 7 {
+	if p := r.Pick(items); p < 0 || p > 7 {
 		t.Fatal("Pick out of range")
 	}
 	hits := make([]int, 3)

@@ -91,7 +91,7 @@ func (c *Console) drawEntities(f Frame, area ui.Rect) {
 			shown = fmt.Sprintf("%d of %d matching shown", len(items), matched)
 		}
 		u.Label(fmt.Sprintf("%d entities, %s, %d systems, %d resources",
-			w.Count(), shown, len(w.Stats()), len(w.Resources())))
+			w.Len(), shown, len(w.Stats()), len(w.Resources())))
 		u.TextField("filter by component", &p.filter)
 		if u.ListBox("entities", listHeight, items, &p.entityAt) {
 			if p.entityAt >= 0 && p.entityAt < len(p.entities) {
@@ -104,7 +104,7 @@ func (c *Console) drawEntities(f Frame, area ui.Rect) {
 		if len(prefabs) > 0 {
 			u.Separator()
 			u.Label("prefabs")
-			lib := *ecs.Resource[Prefabs](w)
+			lib := *w.Resource[Prefabs]()
 			for _, name := range prefabs {
 				if u.Button("spawn " + name) {
 					p.selected = lib[name].Spawn(w)
@@ -165,7 +165,7 @@ func countValueFields(v reflect.Value, depth int) int {
 
 // prefabNames are the names in the world's Prefabs resource, sorted.
 func prefabNames(w *ecs.World) []string {
-	lib := ecs.Resource[Prefabs](w)
+	lib := w.Resource[Prefabs]()
 	if lib == nil {
 		return nil
 	}

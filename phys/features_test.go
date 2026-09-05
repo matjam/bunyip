@@ -85,7 +85,7 @@ func TestQueries2D(t *testing.T) {
 func TestCCD(t *testing.T) {
 	for _, ccd := range []bool{true, false} {
 		w := ecs.NewWorld()
-		ecs.SetResource(w, Settings3{})
+		w.SetResource(Settings3{})
 		w.AddSystem("phys", System3)
 		w.SpawnWith(gfx.At(5, 0, 0), Collider3{Shape: Box3{Half: lin.V3(0.05, 2, 2)}})
 		body := Dynamic3(1)
@@ -93,7 +93,7 @@ func TestCCD(t *testing.T) {
 		body.CCD = ccd
 		bullet := w.SpawnWith(gfx.At(0, 0, 0), body, Collider3{Shape: Sphere{0.1}})
 		run(w, 1)
-		tr, _ := ecs.Get[gfx.Transform](w, bullet)
+		tr, _ := w.Get[gfx.Transform](bullet)
 		if ccd && tr.Position.X > 5 {
 			t.Errorf("3D: bullet with CCD passed the wall: %v", tr.Position)
 		}
@@ -108,7 +108,7 @@ func TestCCD(t *testing.T) {
 		body2.CCD = ccd
 		bullet2 := w2.SpawnWith(gfx.At2(0, 0), body2, Collider2{Shape: Circle{0.1}})
 		run(w2, 1)
-		tr2, _ := ecs.Get[gfx.Transform2](w2, bullet2)
+		tr2, _ := w2.Get[gfx.Transform2](bullet2)
 		if ccd && tr2.Position.X > 5 {
 			t.Errorf("2D: bullet with CCD passed the wall: %v", tr2.Position)
 		}
@@ -121,7 +121,7 @@ func TestCCD(t *testing.T) {
 // TestSleep lets a stack settle and sleep, then drops a box on it.
 func TestSleep(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5, Substeps: 8, Iterations: 12})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5, Substeps: 8, Iterations: 12})
 	w.AddSystem("phys", System3)
 	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(10, 0.5, 10)}})
 	var stack []ecs.Entity
@@ -130,7 +130,7 @@ func TestSleep(t *testing.T) {
 	}
 	run(w, 3)
 	for i, e := range stack {
-		b, _ := ecs.Get[Body3](w, e)
+		b, _ := w.Get[Body3](e)
 		if !b.Asleep() || b.Vel != (lin.Vec3{}) {
 			t.Errorf("stack box %d should sleep: asleep=%v vel %v", i, b.Asleep(), b.Vel)
 		}
@@ -139,7 +139,7 @@ func TestSleep(t *testing.T) {
 	woke := false
 	for range 60 {
 		w.Update(step)
-		b, _ := ecs.Get[Body3](w, stack[2])
+		b, _ := w.Get[Body3](stack[2])
 		if !b.Asleep() {
 			woke = true
 		}
@@ -148,8 +148,8 @@ func TestSleep(t *testing.T) {
 		t.Error("the dropped box did not wake the top of the stack")
 	}
 	run(w, 3)
-	tr, _ := ecs.Get[gfx.Transform](w, dropped)
-	b, _ := ecs.Get[Body3](w, dropped)
+	tr, _ := w.Get[gfx.Transform](dropped)
+	b, _ := w.Get[Body3](dropped)
 	if !near(tr.Position.Y, 4, 0.1) || !b.Asleep() {
 		t.Errorf("dropped box should rest asleep on the stack at y 4: %v asleep=%v", tr.Position, b.Asleep())
 	}
@@ -159,12 +159,12 @@ func TestSleep(t *testing.T) {
 	}
 	// 2D: a resting box sleeps and a kinematic platform pushing it wakes it.
 	w2 := ecs.NewWorld()
-	ecs.SetResource(w2, Settings2{Gravity: lin.V2(0, -10), SleepTime: 0.5})
+	w2.SetResource(Settings2{Gravity: lin.V2(0, -10), SleepTime: 0.5})
 	w2.AddSystem("phys", System2)
 	w2.SpawnWith(gfx.At2(0, 0), Collider2{Shape: Box2{HalfW: 10, HalfH: 0.5}})
 	box := w2.SpawnWith(gfx.At2(0, 1), Dynamic2(1), Collider2{Shape: Box2{HalfW: 0.5, HalfH: 0.5}})
 	run(w2, 3)
-	b2, _ := ecs.Get[Body2](w2, box)
+	b2, _ := w2.Get[Body2](box)
 	if !b2.Asleep() {
 		t.Error("2D box should sleep")
 	}
@@ -172,7 +172,7 @@ func TestSleep(t *testing.T) {
 	pusher.Vel = lin.V2(1, 0)
 	w2.SpawnWith(gfx.At2(-2, 1), pusher, Collider2{Shape: Box2{HalfW: 0.5, HalfH: 0.5}})
 	run(w2, 2)
-	bt, _ := ecs.Get[gfx.Transform2](w2, box)
+	bt, _ := w2.Get[gfx.Transform2](box)
 	if bt.Position.X < 0.5 {
 		t.Errorf("the platform should have pushed the sleeping box: %v", bt.Position)
 	}
@@ -182,7 +182,7 @@ func TestSleep(t *testing.T) {
 // default solver quality and returns when they were all asleep, or -1.
 func stackSleepTime(n int, seconds float64) float64 {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5})
 	w.AddSystem("phys", System3)
 	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(10, 0.5, 10)}})
 	var stack []ecs.Entity
@@ -194,7 +194,7 @@ func stackSleepTime(n int, seconds float64) float64 {
 		w.Update(step)
 		all := true
 		for _, e := range stack {
-			if b, _ := ecs.Get[Body3](w, e); !b.Asleep() {
+			if b, _ := w.Get[Body3](e); !b.Asleep() {
 				all = false
 			}
 		}
@@ -218,7 +218,7 @@ func TestStackSleepsAtDefaults(t *testing.T) {
 	}
 	// 2D at the defaults settles as well.
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10), SleepTime: 0.5})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10), SleepTime: 0.5})
 	w.AddSystem("phys", System2)
 	w.SpawnWith(gfx.At2(0, 0), Collider2{Shape: Box2{HalfW: 10, HalfH: 0.5}})
 	var stack []ecs.Entity
@@ -228,7 +228,7 @@ func TestStackSleepsAtDefaults(t *testing.T) {
 	}
 	run(w, 2)
 	for i, e := range stack {
-		if b, _ := ecs.Get[Body2](w, e); !b.Asleep() {
+		if b, _ := w.Get[Body2](e); !b.Asleep() {
 			t.Errorf("2D stack box %d did not sleep within 2s", i)
 		}
 	}
@@ -239,7 +239,7 @@ func TestStackSleepsAtDefaults(t *testing.T) {
 // genuinely moving.
 func TestSlowSliderStaysAwake(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5})
 	w.AddSystem("phys", System3)
 	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(50, 0.5, 10)}})
 	slider := Dynamic3(1)
@@ -247,7 +247,7 @@ func TestSlowSliderStaysAwake(t *testing.T) {
 	slider.Vel = lin.V3(0.2, 0, 0)
 	e := w.SpawnWith(gfx.At(-8, 1, 0), slider, Collider3{Shape: Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
 	run(w, 5)
-	b, _ := ecs.Get[Body3](w, e)
+	b, _ := w.Get[Body3](e)
 	if b.Asleep() {
 		t.Error("a body sliding at 0.2 units per second went to sleep")
 	}
@@ -260,7 +260,7 @@ func TestSlowSliderStaysAwake(t *testing.T) {
 // hinges, welds two boxes and bounces a spring.
 func TestJoints3D(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 4, Iterations: 8})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 4, Iterations: 8})
 	w.AddSystem("phys", System3)
 	pivot := w.SpawnWith(gfx.At(0, 5, 0))
 	bob := w.SpawnWith(gfx.At(2, 5, 0), Dynamic3(1), Collider3{Shape: Sphere{0.2}})
@@ -268,7 +268,7 @@ func TestJoints3D(t *testing.T) {
 	swung := false
 	for i := range 240 {
 		w.Update(step)
-		bt, _ := ecs.Get[gfx.Transform](w, bob)
+		bt, _ := w.Get[gfx.Transform](bob)
 		if d := bt.Position.Sub(lin.V3(0, 5, 0)).Len(); !near(d, 2, 0.05) {
 			t.Fatalf("frame %d: pendulum length %.3f, want 2", i, d)
 		}
@@ -281,18 +281,18 @@ func TestJoints3D(t *testing.T) {
 	}
 	// A rope lets the bob fall until taut.
 	w = ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	bob = w.SpawnWith(gfx.At(0, 5, 0), Dynamic3(1), Collider3{Shape: Sphere{0.2}})
 	w.SpawnWith(DistanceJoint3{A: ecs.None, AnchorA: lin.V3(0, 5, 0), B: bob, Max: 3})
 	run(w, 2)
-	bt, _ := ecs.Get[gfx.Transform](w, bob)
+	bt, _ := w.Get[gfx.Transform](bob)
 	if !near(bt.Position.Y, 2, 0.1) {
 		t.Errorf("rope bob should hang 3 below the anchor: %v", bt.Position)
 	}
 	// A chain of hinged links hangs from a world anchor.
 	w = ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 4, Iterations: 12})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0), Substeps: 4, Iterations: 12})
 	w.AddSystem("phys", System3)
 	var links []ecs.Entity
 	prev := ecs.None
@@ -308,13 +308,13 @@ func TestJoints3D(t *testing.T) {
 	}
 	run(w, 8)
 	for i, link := range links {
-		lt, _ := ecs.Get[gfx.Transform](w, link)
+		lt, _ := w.Get[gfx.Transform](link)
 		wantY := 8 - 0.5 - float32(i)
 		if !near(lt.Position.Y, wantY, 0.15) || abs32(lt.Position.X) > 0.15 {
 			t.Errorf("link %d hangs at %v, want (0, %.1f, 0)", i, lt.Position, wantY)
 		}
 		if i > 0 {
-			pt, _ := ecs.Get[gfx.Transform](w, links[i-1])
+			pt, _ := w.Get[gfx.Transform](links[i-1])
 			end := pt.Position.Add(pt.Rotation.Rotate(lin.V3(0.5, 0, 0)))
 			start := lt.Position.Add(lt.Rotation.Rotate(lin.V3(-0.5, 0, 0)))
 			if end.Sub(start).Len() > 0.05 {
@@ -324,27 +324,27 @@ func TestJoints3D(t *testing.T) {
 	}
 	// A weld keeps two boxes together as they fall and land.
 	w = ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(10, 0.5, 10)}})
 	a := w.SpawnWith(gfx.At(0, 4, 0), Dynamic3(1), Collider3{Shape: Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
 	b := w.SpawnWith(gfx.At(1, 4, 0), Dynamic3(1), Collider3{Shape: Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
 	w.SpawnWith(FixedJoint3{A: a, B: b, AnchorA: lin.V3(0.5, 0, 0), AnchorB: lin.V3(-0.5, 0, 0)})
 	run(w, 3)
-	at, _ := ecs.Get[gfx.Transform](w, a)
-	btr, _ := ecs.Get[gfx.Transform](w, b)
+	at, _ := w.Get[gfx.Transform](a)
+	btr, _ := w.Get[gfx.Transform](b)
 	if !near(btr.Position.Sub(at.Position).Len(), 1, 0.05) || !near(at.Position.Y, 1, 0.1) {
 		t.Errorf("welded boxes at %v and %v", at.Position, btr.Position)
 	}
 	// A spring hangs a mass and settles to the stretched length.
 	w = ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	mass := Dynamic3(1)
 	m := w.SpawnWith(gfx.At(0, 3, 0), mass, Collider3{Shape: Sphere{0.1}})
 	w.SpawnWith(SpringJoint3{A: ecs.None, AnchorA: lin.V3(0, 5, 0), B: m, Stiffness: 50, Damping: 5})
 	run(w, 6)
-	mt, _ := ecs.Get[gfx.Transform](w, m)
+	mt, _ := w.Get[gfx.Transform](m)
 	if !near(mt.Position.Y, 3-0.2, 0.05) {
 		t.Errorf("spring mass settled at %v, want y 2.8", mt.Position)
 	}
@@ -353,19 +353,19 @@ func TestJoints3D(t *testing.T) {
 // TestJoints2D swings a pendulum and hangs a pinned chain in 2D.
 func TestJoints2D(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 	w.AddSystem("phys", System2)
 	bob := w.SpawnWith(gfx.At2(2, 5), Dynamic2(1), Collider2{Shape: Circle{0.2}})
 	w.SpawnWith(DistanceJoint2{A: ecs.None, AnchorA: lin.V2(0, 5), B: bob})
 	for i := range 240 {
 		w.Update(step)
-		bt, _ := ecs.Get[gfx.Transform2](w, bob)
+		bt, _ := w.Get[gfx.Transform2](bob)
 		if d := bt.Position.Sub(lin.V2(0, 5)).Len(); !near(d, 2, 0.05) {
 			t.Fatalf("frame %d: pendulum length %.3f, want 2", i, d)
 		}
 	}
 	w = ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10), Iterations: 12})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10), Iterations: 12})
 	w.AddSystem("phys", System2)
 	var links []ecs.Entity
 	prev := ecs.None
@@ -381,14 +381,14 @@ func TestJoints2D(t *testing.T) {
 	}
 	run(w, 8)
 	for i, link := range links {
-		lt, _ := ecs.Get[gfx.Transform2](w, link)
+		lt, _ := w.Get[gfx.Transform2](link)
 		if !near(lt.Position.Y, 8-0.5-float32(i), 0.15) || abs32(lt.Position.X) > 0.15 {
 			t.Errorf("link %d hangs at %v", i, lt.Position)
 		}
 	}
 	// Weld and spring.
 	w = ecs.NewWorld()
-	ecs.SetResource(w, Settings2{Gravity: lin.V2(0, -10)})
+	w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
 	w.AddSystem("phys", System2)
 	w.SpawnWith(gfx.At2(0, 0), Collider2{Shape: Box2{HalfW: 10, HalfH: 0.5}})
 	a := w.SpawnWith(gfx.At2(0, 4), Dynamic2(1), Collider2{Shape: Box2{HalfW: 0.5, HalfH: 0.5}})
@@ -397,9 +397,9 @@ func TestJoints2D(t *testing.T) {
 	m := w.SpawnWith(gfx.At2(5, 3), Dynamic2(1), Collider2{Shape: Circle{0.1}})
 	w.SpawnWith(SpringJoint2{A: ecs.None, AnchorA: lin.V2(5, 5), B: m, Stiffness: 50, Damping: 5})
 	run(w, 6)
-	at, _ := ecs.Get[gfx.Transform2](w, a)
-	bt, _ := ecs.Get[gfx.Transform2](w, b)
-	mt, _ := ecs.Get[gfx.Transform2](w, m)
+	at, _ := w.Get[gfx.Transform2](a)
+	bt, _ := w.Get[gfx.Transform2](b)
+	mt, _ := w.Get[gfx.Transform2](m)
 	if !near(bt.Position.Sub(at.Position).Len(), 1, 0.05) || !near(at.Position.Y, 1, 0.1) {
 		t.Errorf("welded boxes at %v and %v", at.Position, bt.Position)
 	}
@@ -422,12 +422,12 @@ func TestCharacter3D(t *testing.T) {
 	climbed := false
 	for range 240 {
 		ctrl.Move(w, e, lin.V3(2, -5, 0), step)
-		tr, _ := ecs.Get[gfx.Transform](w, e)
+		tr, _ := w.Get[gfx.Transform](e)
 		if tr.Position.X > 0.7 && tr.Position.X < 1.3 && tr.Position.Y > 1.65 {
 			climbed = true
 		}
 	}
-	tr, _ := ecs.Get[gfx.Transform](w, e)
+	tr, _ := w.Get[gfx.Transform](e)
 	if !climbed {
 		t.Errorf("the character did not climb the step: %v", tr.Position)
 	}
@@ -436,7 +436,7 @@ func TestCharacter3D(t *testing.T) {
 	}
 	// Moving into the wall at an angle slides along it.
 	ctrl.Move(w, e, lin.V3(2, 0, 2), 0.5)
-	tr2, _ := ecs.Get[gfx.Transform](w, e)
+	tr2, _ := w.Get[gfx.Transform](e)
 	if tr2.Position.Z < 0.9 || tr2.Position.X > 4.4 {
 		t.Errorf("the character should slide along the wall: %v", tr2.Position)
 	}
@@ -455,12 +455,12 @@ func TestCharacter2D(t *testing.T) {
 	climbed := false
 	for range 240 {
 		ctrl.Move(w, e, lin.V2(2, -5), step)
-		tr, _ := ecs.Get[gfx.Transform2](w, e)
+		tr, _ := w.Get[gfx.Transform2](e)
 		if tr.Position.X > 0.7 && tr.Position.X < 1.3 && tr.Position.Y > 1.65 {
 			climbed = true
 		}
 	}
-	tr, _ := ecs.Get[gfx.Transform2](w, e)
+	tr, _ := w.Get[gfx.Transform2](e)
 	if !climbed {
 		t.Errorf("the character did not climb the step: %v", tr.Position)
 	}
@@ -472,14 +472,14 @@ func TestCharacter2D(t *testing.T) {
 // TestCollisionImpulse checks that a landing reports a normal impulse.
 func TestCollisionImpulse(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Settings3{Gravity: lin.V3(0, -10, 0)})
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
 	w.AddSystem("phys", System3)
 	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(10, 0.5, 10)}})
 	w.SpawnWith(gfx.At(0, 3, 0), Dynamic3(2), Collider3{Shape: Sphere{0.5}})
 	var best float32
 	for range 120 {
 		w.Update(step)
-		for _, ev := range ecs.Events[Collision3](w) {
+		for _, ev := range w.Events[Collision3]() {
 			best = max(best, ev.Impulse)
 		}
 	}

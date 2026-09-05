@@ -87,7 +87,7 @@ func backoff(f, length, skin float32) float32 {
 // transform leaves the controller unchanged. Use nonnegative dt; even a
 // zero timestep may resolve overlaps and update ground contact.
 func (c *CharacterController3) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec3, dt float32) {
-	t, ok := ecs.Get[gfx.Transform](w, e)
+	t, ok := w.Get[gfx.Transform](e)
 	if !ok {
 		return
 	}

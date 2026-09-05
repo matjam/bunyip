@@ -81,8 +81,11 @@ func runOnce(cfg Config, game Game) error {
 	if cfg.FixedStep <= 0 {
 		cfg.FixedStep = time.Second / 60
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 {
-		cfg.Width, cfg.Height = 1280, 720
+	if cfg.Width <= 0 {
+		cfg.Width = 1280
+	}
+	if cfg.Height <= 0 {
+		cfg.Height = 720
 	}
 	if cfg.Title == "" {
 		cfg.Title = "Bunyip"
@@ -161,6 +164,7 @@ func runOnce(cfg Config, game Game) error {
 		servePprof(cfg.Pprof, l.ctx)
 	}
 	l.applySize()
+	defer l.ctx.cleanup()
 	if cfg.recovering {
 		if err := game.(Recoverer).Recover(l.ctx); err != nil {
 			return err
@@ -406,6 +410,9 @@ func (l *loop) draw() error {
 		if err := l.overlay.draw(l.ctx); err != nil {
 			return err
 		}
+	}
+	if err := l.ctx.Console.Draw(l.ctx); err != nil {
+		return err
 	}
 	capture := l.ctx.shot != ""
 	presentStart := time.Now()

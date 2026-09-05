@@ -179,7 +179,7 @@ func (s *System) emit() bool {
 	}
 	tint := gfx.White
 	if len(e.Palette) > 0 {
-		tint = rng.Pick(r, e.Palette)
+		tint = r.Pick(e.Palette)
 	}
 	s.live = append(s.live, Particle{
 		Pos:      pos,

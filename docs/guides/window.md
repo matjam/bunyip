@@ -287,12 +287,15 @@ change of scale arrives as a resize event, the same as a change of size.
 6. `Init` runs, if the game has one, then the loop.
 
 After successful setup, the game's `Shutdown` runs first on exit, while the context is
-still live and GPU resources can still be destroyed, then the debug
+still live and GPU resources can still be destroyed, then registered
+`Context.Cleanup` callbacks in reverse order, then the debug
 overlay and console, the audio device, the graphics context, the
 renderer, and last the window.
 
-If `Init` or `Recover` returns an error, `Shutdown` is not called. Clean
-up partially created game resources before returning that error.
+If `Init` or `Recover` returns an error, `Shutdown` is not called.
+Registered cleanup callbacks still run, and graphics releases all its
+remaining GPU resources. Register cleanup for other resources as they
+are acquired so partial setup uses the same teardown path.
 
 `Initer`, `Shutdowner` and `Recoverer` are all optional interfaces on the
 game. When the graphics driver reports a lost device, `Run` tears the

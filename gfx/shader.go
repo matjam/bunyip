@@ -84,14 +84,6 @@ func (g *Graphics) SetBlend(b Blend) { g.cur.blend = b }
 // Blend returns the current 2D blend mode.
 func (g *Graphics) Blend() Blend { return g.cur.blend }
 
-// Blended runs draw with the blend mode set, then restores the previous one.
-func (g *Graphics) Blended(b Blend, draw func()) {
-	prev := g.cur.blend
-	g.cur.blend = b
-	draw()
-	g.cur.blend = prev
-}
-
 // PushTransform composes a transform onto the 2D transform stack: later
 // sprites, text and paths are mapped through it (after their own
 // placement, before the camera). Pair with PopTransform.
@@ -108,14 +100,6 @@ func (g *Graphics) PopTransform() {
 		q.xform = q.xforms[n-1]
 		q.xforms = q.xforms[:n-1]
 	}
-}
-
-// Transformed runs draw with the transform pushed, the closure form of
-// PushTransform and PopTransform.
-func (g *Graphics) Transformed(m lin.Affine, draw func()) {
-	g.PushTransform(m)
-	draw()
-	g.PopTransform()
 }
 
 // Transform returns the current composed 2D transform.
@@ -235,9 +219,11 @@ func (g *Graphics) newShader(data []byte, mesh bool) (*Shader, error) {
 	}
 	for _, key := range keys {
 		if _, err := s.pipeline(key); err != nil {
+			s.Destroy()
 			return nil, err
 		}
 	}
+	g.owned.add(s)
 	return s, nil
 }
 
@@ -411,6 +397,8 @@ func (s *Shader) Reload(spirv []byte) error {
 	}
 	s.retirePipelines()
 	s.frag, s.oitFrag, s.stages, s.pipes = fresh.frag, fresh.oitFrag, fresh.stages, fresh.pipes
+	s.g.owned.remove(fresh)
+	s.g.owned.add(s)
 	return nil
 }
 
@@ -421,6 +409,7 @@ func (s *Shader) Destroy() {
 	if s == nil || s.pipes == nil {
 		return
 	}
+	s.g.owned.remove(s)
 	s.retirePipelines()
 	s.pipes = nil
 }
@@ -443,14 +432,6 @@ func (g *Graphics) SetShader(s *Shader) {
 		panic("gfx: SetShader wants a sprite shader; use Material.Shader for meshes")
 	}
 	g.cur.shader = s
-}
-
-// Shaded runs draw with the shader set, then restores the previous one.
-func (g *Graphics) Shaded(s *Shader, draw func()) {
-	prev := g.cur.shader
-	g.SetShader(s)
-	draw()
-	g.cur.shader = prev
 }
 
 // setTime tells the graphics context the game clock, which shaders read

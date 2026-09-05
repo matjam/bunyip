@@ -27,30 +27,30 @@ func (c *Console) drawPhysics(f Frame, area ui.Rect) {
 		p.sim = append(p.sim, simState{})
 	}
 	sim := &p.sim[p.world]
-	s3 := ecs.Resource[phys.Settings3](w)
-	s2 := ecs.Resource[phys.Settings2](w)
+	s3 := w.Resource[phys.Settings3]()
+	s2 := w.Resource[phys.Settings2]()
 	u.ScrollArea("physics", area, c.rowsH(22), func() {
 		if names := c.Worlds(); len(names) > 1 {
 			u.Dropdown("world", &p.world, names)
 		}
 		bodies3, asleep3 := 0, 0
-		ecs.Each(w, func(_ ecs.Entity, b *phys.Body3) {
+		w.Each(func(_ ecs.Entity, b *phys.Body3) {
 			bodies3++
 			if b.Asleep() {
 				asleep3++
 			}
 		})
 		bodies2, asleep2 := 0, 0
-		ecs.Each(w, func(_ ecs.Entity, b *phys.Body2) {
+		w.Each(func(_ ecs.Entity, b *phys.Body2) {
 			bodies2++
 			if b.Asleep() {
 				asleep2++
 			}
 		})
-		contacts := len(ecs.Events[phys.Collision3](w)) + len(ecs.Events[phys.Collision2](w))
-		triggers := len(ecs.Events[phys.Trigger3](w)) + len(ecs.Events[phys.Trigger2](w))
-		u.Label(fmt.Sprintf("3D: %d bodies (%d asleep), %d colliders", bodies3, asleep3, ecs.Count[phys.Collider3](w)))
-		u.Label(fmt.Sprintf("2D: %d bodies (%d asleep), %d colliders", bodies2, asleep2, ecs.Count[phys.Collider2](w)))
+		contacts := len(w.Events[phys.Collision3]()) + len(w.Events[phys.Collision2]())
+		triggers := len(w.Events[phys.Trigger3]()) + len(w.Events[phys.Trigger2]())
+		u.Label(fmt.Sprintf("3D: %d bodies (%d asleep), %d colliders", bodies3, asleep3, w.Count[phys.Collider3]()))
+		u.Label(fmt.Sprintf("2D: %d bodies (%d asleep), %d colliders", bodies2, asleep2, w.Count[phys.Collider2]()))
 		u.Label(fmt.Sprintf("%d contacts and %d triggers in the last update, %d joints", contacts, triggers, jointCount(w)))
 		u.Separator()
 		u.Row(3, func() {
@@ -91,10 +91,10 @@ func (c *Console) drawPhysics(f Frame, area ui.Rect) {
 
 // jointCount counts every kind of joint in a world.
 func jointCount(w *ecs.World) int {
-	return ecs.Count[phys.DistanceJoint3](w) + ecs.Count[phys.HingeJoint3](w) +
-		ecs.Count[phys.BallJoint3](w) + ecs.Count[phys.SpringJoint3](w) + ecs.Count[phys.FixedJoint3](w) +
-		ecs.Count[phys.DistanceJoint2](w) + ecs.Count[phys.RevoluteJoint2](w) +
-		ecs.Count[phys.SpringJoint2](w) + ecs.Count[phys.FixedJoint2](w)
+	return w.Count[phys.DistanceJoint3]() + w.Count[phys.HingeJoint3]() +
+		w.Count[phys.BallJoint3]() + w.Count[phys.SpringJoint3]() + w.Count[phys.FixedJoint3]() +
+		w.Count[phys.DistanceJoint2]() + w.Count[phys.RevoluteJoint2]() +
+		w.Count[phys.SpringJoint2]() + w.Count[phys.FixedJoint2]()
 }
 
 // setPaused turns every system in the world off, remembering which were

@@ -56,18 +56,18 @@ func TestStore(t *testing.T) {
 func TestLoadDefaults(t *testing.T) {
 	s, _ := OpenAt(t.TempDir())
 	defaults := settings{Version: 2, Volume: 0.8, Fullscreen: true, Name: "player"}
-	got, err := Load(s, "settings", defaults)
+	got, err := s.Load("settings", defaults)
 	if err != nil || got != defaults {
 		t.Fatalf("missing file should yield defaults: %+v %v", got, err)
 	}
 	// A partial file keeps defaults for the fields it lacks.
 	os.WriteFile(filepath.Join(s.Path(), "settings.json"), []byte(`{"Volume": 0.2}`), 0o644)
-	got, err = Load(s, "settings", defaults)
+	got, err = s.Load("settings", defaults)
 	if err != nil || got.Volume != 0.2 || !got.Fullscreen || got.Name != "player" {
 		t.Fatalf("partial load %+v %v", got, err)
 	}
 	os.WriteFile(filepath.Join(s.Path(), "settings.json"), []byte(`{broken`), 0o644)
-	if _, err = Load(s, "settings", defaults); err == nil {
+	if _, err = s.Load("settings", defaults); err == nil {
 		t.Fatal("corrupt file should error")
 	}
 }

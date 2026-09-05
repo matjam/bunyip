@@ -20,14 +20,14 @@ func Example() {
 	w.SpawnWith(Position{9, 9}) // no velocity: never moves
 
 	// A query walks every entity with both components; keep it and reuse it.
-	movers := ecs.NewQuery2[Position, Velocity](w)
+	movers := w.Query2[Position, Velocity]()
 	movers.Each(func(e ecs.Entity, p *Position, v *Velocity) {
 		p.X += v.X
 		p.Y += v.Y
 	})
 	// Iteration order is by table and then by row, not by spawn order.
-	ecs.Each(w, func(e ecs.Entity, p *Position) { fmt.Println(p.X, p.Y) })
-	fmt.Println(movers.Count(), "movers of", w.Count())
+	w.Each(func(e ecs.Entity, p *Position) { fmt.Println(p.X, p.Y) })
+	fmt.Println(movers.Count(), "movers of", w.Len())
 	// Output:
 	// 1 0
 	// 5 6
@@ -40,26 +40,26 @@ func ExampleWorld_AddSystem() {
 	type Killed struct{ Entity ecs.Entity }
 
 	w := ecs.NewWorld()
-	ecs.SetResource(w, Score{})
+	w.SetResource(Score{})
 	w.SpawnWith(Health{1})
 	w.SpawnWith(Health{5})
 
 	// Systems run in order; producers before consumers.
-	damage := ecs.NewQuery1[Health](w)
+	damage := w.Query1[Health]()
 	w.AddSystem("damage", func(w *ecs.World, dt float64) {
 		damage.Each(func(e ecs.Entity, h *Health) {
 			h.HP--
 			if h.HP <= 0 {
 				w.Despawn(e) // safe: the visited entity may be despawned
-				ecs.Emit(w, Killed{e})
+				w.Emit(Killed{e})
 			}
 		})
 	})
 	w.AddSystem("score", func(w *ecs.World, dt float64) {
-		ecs.Resource[Score](w).Points += 10 * len(ecs.Events[Killed](w))
+		w.Resource[Score]().Points += 10 * len(w.Events[Killed]())
 	})
 	w.Update(1.0 / 60)
-	fmt.Println(ecs.Resource[Score](w).Points, w.Count())
+	fmt.Println(w.Resource[Score]().Points, w.Len())
 	// Output:
 	// 10 1
 }
@@ -85,11 +85,11 @@ func ExamplePrefab() {
 	w := ecs.NewWorld()
 	a := tank.Spawn(w)
 	b := tank.Spawn(w)
-	if h, ok := ecs.Get[Health](w, a); ok {
+	if h, ok := w.Get[Health](a); ok {
 		h.HP = 3
 	}
-	hb, _ := ecs.Get[Health](w, b)
-	fmt.Println(hb.HP, len(ecs.ChildrenOf(w, a)), w.Count())
+	hb, _ := w.Get[Health](b)
+	fmt.Println(hb.HP, len(ecs.ChildrenOf(w, a)), w.Len())
 	// Output:
 	// 10 1 4
 }
@@ -110,7 +110,7 @@ func ExampleWorld_Save() {
 	if err := loaded.Load(&save); err != nil {
 		fmt.Println(err)
 	}
-	ecs.Each(loaded, func(e ecs.Entity, p *Position) { fmt.Println(p.X, p.Y) })
+	loaded.Each(func(e ecs.Entity, p *Position) { fmt.Println(p.X, p.Y) })
 	// Output:
 	// 1 2
 }
@@ -139,7 +139,7 @@ func ExampleWorld_Instantiate() {
 	}
 
 	w := ecs.NewWorld()
-	ecs.SetResource(w, ecs.PrefabLibrary{"orc": ecs.NewPrefab(Health{8}, gfx.Transform{})})
+	w.SetResource(ecs.PrefabLibrary{"orc": ecs.NewPrefab(Health{8}, gfx.Transform{})})
 
 	// Two copies of the camp, the second a hundred units east.
 	west, err := w.Instantiate(scene)
@@ -152,33 +152,33 @@ func ExampleWorld_Instantiate() {
 		return
 	}
 	chief, _ := west.Entity("chief")
-	h, _ := ecs.Get[Health](w, chief)
-	fmt.Println(scene.Properties["music"], h.HP, w.Count())
+	h, _ := w.Get[Health](chief)
+	fmt.Println(scene.Properties["music"], h.HP, w.Len())
 
 	// Removing one copy takes its entities and leaves the other whole.
 	west.Despawn(w)
-	fmt.Println(w.Count())
+	fmt.Println(w.Len())
 	// Output:
 	// wind.ogg 40 6
 	// 3
 }
 
-func ExampleCommands() {
+func ExampleWorld_Defer() {
 	w := ecs.NewWorld()
 	w.SpawnWith(Health{3})
 	w.SpawnWith(Health{0})
 
 	// Changing other entities while a query walks them is not allowed;
-	// record the changes and apply them after.
-	var cmd ecs.Commands
-	ecs.Each(w, func(e ecs.Entity, h *Health) {
-		if h.HP == 0 {
-			cmd.Spawn(Position{1, 1}) // a corpse
-			cmd.Despawn(e)
-		}
+	// the scope applies the recorded changes after the walk finishes.
+	w.Defer(func(cmd *ecs.Commands) {
+		w.Each(func(e ecs.Entity, h *Health) {
+			if h.HP == 0 {
+				cmd.Spawn(Position{1, 1}) // a corpse
+				cmd.Despawn(e)
+			}
+		})
 	})
-	cmd.Apply(w)
-	fmt.Println(ecs.Count[Health](w), ecs.Count[Position](w))
+	fmt.Println(w.Count[Health](), w.Count[Position]())
 	// Output:
 	// 1 1
 }

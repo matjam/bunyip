@@ -134,13 +134,24 @@ type Server struct {
 	once     sync.Once
 }
 
-// SetOnActivity runs fn on a network goroutine whenever an event is
-// queued for a connection accepted from now on; point it at
-// Context.Wake in a turn-based game.
+// SetOnActivity sets the wake callback for existing and future connections.
+// If events are pending, it calls fn before returning; later calls run on
+// network goroutines. Callbacks run outside locks and may replace the hook
+// or close the server. Keep them short; drain pending events before
+// registering again from a callback to avoid recursion. Nil disables
+// future captures; an already captured callback may still run.
 func (s *Server) SetOnActivity(fn func()) {
 	s.mu.Lock()
 	s.activity = fn
+	for _, c := range s.conns {
+		c.activityMu.Lock()
+		c.activity = fn
+		c.activityMu.Unlock()
+	}
 	s.mu.Unlock()
+	if fn != nil && len(s.events) > 0 {
+		fn()
+	}
 }
 
 // Listen starts a server on addr (":7777" for every interface).
@@ -170,6 +181,12 @@ func (s *Server) accept() {
 			default:
 				select {
 				case s.events <- Event{Kind: Disconnected, Err: fmt.Errorf("network: accept: %w", err)}:
+					s.mu.Lock()
+					activity := s.activity
+					s.mu.Unlock()
+					if activity != nil {
+						activity()
+					}
 				case <-s.closed:
 				}
 			}
@@ -280,15 +297,21 @@ func newClient(nc net.Conn, reg *Registry) *Client {
 	return cl
 }
 
-// SetOnActivity runs fn on a network goroutine whenever an event is
-// queued; point it at Context.Wake in a turn-based game.
+// SetOnActivity sets the wake callback; point it at Context.Wake in a
+// turn-based game. Pending events call fn before this returns; later
+// events call it on a network goroutine. Callbacks run outside locks.
 // It is safe to call concurrently, including from fn. A callback already
 // captured by the reader may still run after SetOnActivity returns.
 // A nil fn disables future callbacks.
+// Keep fn short and drain pending events before registering again from
+// a callback to avoid recursion.
 func (cl *Client) SetOnActivity(fn func()) {
 	cl.Conn.activityMu.Lock()
 	cl.Conn.activity = fn
 	cl.Conn.activityMu.Unlock()
+	if fn != nil && len(cl.events) > 0 {
+		fn()
+	}
 }
 
 // Poll returns the events queued since the last call without blocking.

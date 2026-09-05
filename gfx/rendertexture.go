@@ -223,6 +223,7 @@ func (rt *RenderTexture) SetView(width, height float32) { rt.queue.setView(width
 func (rt *RenderTexture) Destroy() {
 	g := rt.g
 	g.forget(rt)
+	g.owned.remove(rt)
 	if rt.tex != nil {
 		// The texture frees both its descriptor sets and marks itself
 		// destroyed, so a pointer a game kept from Texture cannot draw
@@ -254,25 +255,29 @@ func (rt *RenderTexture) Destroy() {
 // the first queued, with the first call's clear colour.
 // Camera and lighting state belong to the target; post-processing is
 // global and uses the final SetPost settings when the frame submits.
+// The previous output is restored even when draw panics; drawing already
+// queued is not rolled back. This call does not submit GPU work itself.
 func (g *Graphics) DrawTo(rt *RenderTexture, clear Color, draw func()) {
 	if g.frame == nil {
 		return
 	}
 	prev := g.cur
 	g.cur = rt.queue
+	defer func() {
+		g.cur = prev
+		// These uniforms live on shared shaders, so restore the outer
+		// queue's values along with its active output.
+		if prev.colorMatrix != nil {
+			g.matrixShader.SetUniforms(prev.colorMatrix)
+		}
+		prev.lightsDirty = true
+	}()
 	if !g.queuedTo(rt) {
 		rt.queue.reset()
 		rt.queue.clear = clear
 		g.subFrames = append(g.subFrames, subFrame{rt: rt, queue: rt.queue})
 	}
 	draw()
-	g.cur = prev
-	// The colour matrix and 2D light blocks live on their shaders, not on
-	// the queue, so what the inner draws set is put back for the outer.
-	if prev.colorMatrix != nil {
-		g.matrixShader.SetUniforms(prev.colorMatrix)
-	}
-	prev.lightsDirty = true
 }
 
 // queuedTo reports whether a render texture already has a pass this frame.

@@ -10,10 +10,10 @@ import (
 
 // SetResource stores a singleton value of type T on the world: the
 // rules, the score, the input state, anything there is one of.
-func SetResource[T any](w *World, v T) { w.resources[typeOf[T]()] = &v }
+func (w *World) SetResource[T any](v T) { w.resources[typeOf[T]()] = &v }
 
 // Resource returns a pointer to the world's T, or nil when unset.
-func Resource[T any](w *World) *T {
+func (w *World) Resource[T any]() *T {
 	if p, ok := w.resources[typeOf[T]()]; ok {
 		return p.(*T)
 	}
@@ -21,8 +21,8 @@ func Resource[T any](w *World) *T {
 }
 
 // MustResource returns the world's T and panics when it is missing.
-func MustResource[T any](w *World) *T {
-	p := Resource[T](w)
+func (w *World) MustResource[T any]() *T {
+	p := w.Resource[T]()
 	if p == nil {
 		panic("ecs: missing resource " + typeOf[T]().String())
 	}
@@ -126,7 +126,7 @@ func eventsOf[T any](w *World) *typedEvents[T] {
 }
 
 // Emit queues an event for systems to read with Events.
-func Emit[T any](w *World, ev T) {
+func (w *World) Emit[T any](ev T) {
 	q := eventsOf[T](w)
 	q.current = append(q.current, ev)
 }
@@ -134,7 +134,7 @@ func Emit[T any](w *World, ev T) {
 // Events returns the events of type T emitted since the start of this
 // Update. Draw sees what the last Update emitted. The slice belongs to
 // the event queue; copy it to retain events across Emit or Update calls.
-func Events[T any](w *World) []T { return eventsOf[T](w).current }
+func (w *World) Events[T any]() []T { return eventsOf[T](w).current }
 
 // Parent links an entity under another; SetParent maintains it.
 type Parent struct{ Entity Entity }
@@ -151,35 +151,35 @@ func SetParent(w *World, child, parent Entity) {
 		return
 	}
 	w.wmat.valid = false
-	if p, ok := Get[Parent](w, child); ok && w.Alive(p.Entity) {
+	if p, ok := w.Get[Parent](child); ok && w.Alive(p.Entity) {
 		detach(w, p.Entity, child)
 	}
 	if !w.Alive(parent) {
-		Remove[Parent](w, child)
+		w.Remove[Parent](child)
 		return
 	}
 	for a := parent; a.Valid(); {
 		if a == child {
-			Remove[Parent](w, child)
+			w.Remove[Parent](child)
 			return
 		}
-		p, ok := Get[Parent](w, a)
+		p, ok := w.Get[Parent](a)
 		if !ok {
 			break
 		}
 		a = p.Entity
 	}
-	Add(w, child, Parent{Entity: parent})
-	ch, ok := Get[Children](w, parent)
+	w.Add(child, Parent{Entity: parent})
+	ch, ok := w.Get[Children](parent)
 	if !ok {
-		Add(w, parent, Children{List: []Entity{child}})
+		w.Add(parent, Children{List: []Entity{child}})
 		return
 	}
 	ch.List = append(ch.List, child)
 }
 
 func detach(w *World, parent, child Entity) {
-	ch, ok := Get[Children](w, parent)
+	ch, ok := w.Get[Children](parent)
 	if !ok {
 		return
 	}
@@ -193,7 +193,7 @@ func detach(w *World, parent, child Entity) {
 
 // ParentOf returns the entity's parent, if it has one.
 func ParentOf(w *World, e Entity) (Entity, bool) {
-	if p, ok := Get[Parent](w, e); ok && w.Alive(p.Entity) {
+	if p, ok := w.Get[Parent](e); ok && w.Alive(p.Entity) {
 		return p.Entity, true
 	}
 	return None, false
@@ -201,7 +201,7 @@ func ParentOf(w *World, e Entity) (Entity, bool) {
 
 // ChildrenOf returns the entity's direct children; do not modify the slice.
 func ChildrenOf(w *World, e Entity) []Entity {
-	if ch, ok := Get[Children](w, e); ok {
+	if ch, ok := w.Get[Children](e); ok {
 		return ch.List
 	}
 	return nil
@@ -286,7 +286,7 @@ func WorldMatrix(w *World, e Entity) lin.Mat4 {
 		}
 	}
 	local := lin.Identity()
-	if t, ok := Get[gfx.Transform](w, e); ok {
+	if t, ok := w.Get[gfx.Transform](e); ok {
 		local = t.Matrix()
 	}
 	if p, ok := ParentOf(w, e); ok {
@@ -295,11 +295,32 @@ func WorldMatrix(w *World, e Entity) lin.Mat4 {
 	return local
 }
 
+// Defer records structural changes in fn and applies them, in order,
+// after fn returns normally. Wrap the whole query walk in this scope so
+// changes to other entities wait until the walk finishes. If fn panics,
+// pending commands are discarded and the panic propagates.
+//
+// Each scope has its own queue: a nested scope applies when its own fn
+// returns. This is not a transaction; direct world writes and changes
+// from completed nested scopes are not rolled back. Do not retain the
+// command buffer or call Apply on it inside fn. Use a separate Commands
+// value when commands need to survive beyond one closure.
+func (w *World) Defer(fn func(*Commands)) {
+	var cmd Commands
+	defer func() {
+		clear(cmd.ops[:cap(cmd.ops)])
+		cmd.ops = nil
+	}()
+	fn(&cmd)
+	cmd.Apply(w)
+}
+
 // Commands record structural changes to apply later with Apply, for
 // code running inside a query that must not change other entities'
 // tables mid-iteration. The zero value is ready to use. Component values
 // passed to Spawn and Add are retained until Apply, not deep-copied;
 // do not mutate their referenced storage or argument slices before then.
+// World.Defer manages a command buffer for a single closure.
 type Commands struct {
 	ops []func(w *World)
 }
@@ -326,10 +347,10 @@ func (c *Commands) Add(e Entity, comps ...any) {
 	})
 }
 
-// RemoveLater records detaching a T from an entity, the deferred form
-// of Remove; methods cannot be generic, so it is a function on Commands.
-func RemoveLater[T any](c *Commands, e Entity) {
-	c.ops = append(c.ops, func(w *World) { Remove[T](w, e) })
+// Remove records detaching a T from an entity, the deferred form of
+// World.Remove. Commands apply when their scope finishes or Apply is called.
+func (c *Commands) Remove[T any](e Entity) {
+	c.ops = append(c.ops, func(w *World) { w.Remove[T](e) })
 }
 
 // Apply runs the recorded changes in order and clears the buffer.

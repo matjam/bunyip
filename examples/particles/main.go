@@ -145,13 +145,14 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	ctx.Clear = gfx.RGB(18, 20, 30)
 	// The ground and a couple of logs under the fire.
 	hearth := g.fire.Position()
-	gr.SetLayer(0)
-	gr.FillRect(0, hearth.Y+8, ctx.Width, ctx.Height-hearth.Y-8, gfx.RGB(34, 40, 36))
-	log := gfx.Sprite{Pos: hearth.Add(lin.V2(0, 4)), Size: lin.V2(70, 12), Origin: lin.V2(0.5, 0.5), Color: gfx.RGB(90, 60, 35)}
-	log.Rotation = 0.35
-	gr.Draw(nil, log)
-	log.Rotation = -0.35
-	gr.Draw(nil, log)
+	gr.Layered(0, func() {
+		gr.FillRect(0, hearth.Y+8, ctx.Width, ctx.Height-hearth.Y-8, gfx.RGB(34, 40, 36))
+		log := gfx.Sprite{Pos: hearth.Add(lin.V2(0, 4)), Size: lin.V2(70, 12), Origin: lin.V2(0.5, 0.5), Color: gfx.RGB(90, 60, 35)}
+		log.Rotation = 0.35
+		gr.Draw(nil, log)
+		log.Rotation = -0.35
+		gr.Draw(nil, log)
+	})
 
 	g.rain.Draw(gr)
 	g.smoke.Draw(gr)
@@ -161,28 +162,28 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		b.Draw(gr)
 	}
 
-	gr.SetLayer(10)
-	alive := g.fire.Alive() + g.smoke.Alive() + g.rain.Alive() + g.sparks.Alive()
-	for _, b := range g.bursts {
-		alive += b.Alive()
-	}
-	gr.DebugText(12, ctx.Height-46, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
-	gr.DebugText(12, ctx.Height-28, fmt.Sprintf("%d of them are stateless rain, drawn as one instanced call.", g.rain.Alive()))
+	gr.Layered(10, func() {
+		alive := g.fire.Alive() + g.smoke.Alive() + g.rain.Alive() + g.sparks.Alive()
+		for _, b := range g.bursts {
+			alive += b.Alive()
+		}
+		gr.DebugText(12, ctx.Height-46, fmt.Sprintf("Click for sparks, Space for confetti. %d particles live.", alive))
+		gr.DebugText(12, ctx.Height-28, fmt.Sprintf("%d of them are stateless rain, drawn as one instanced call.", g.rain.Alive()))
 
-	u := g.ui
-	u.Begin(ctx.Input, func() {
-		u.Panel("Fire", ui.Rect{X: 12, Y: 12, W: 240, H: 150}, func() {
-			changed := u.Slider("Rate (per second)", &g.fireRate, 0, 400)
-			changed = u.Slider("Gravity", &g.gravity, -200, 200) || changed
-			if changed {
-				g.fireE.Rate = g.fireRate
-				g.fireE.Acceleration.Y = g.gravity
-				g.fire.SetEmitter(g.fireE)
-			}
-			u.Label(fmt.Sprintf("%d flames, %d smoke", g.fire.Alive(), g.smoke.Alive()))
+		u := g.ui
+		u.Begin(ctx.Input, func() {
+			u.Panel("Fire", ui.Rect{X: 12, Y: 12, W: 240, H: 150}, func() {
+				changed := u.Slider("Rate (per second)", &g.fireRate, 0, 400)
+				changed = u.Slider("Gravity", &g.gravity, -200, 200) || changed
+				if changed {
+					g.fireE.Rate = g.fireRate
+					g.fireE.Acceleration.Y = g.gravity
+					g.fire.SetEmitter(g.fireE)
+				}
+				u.Label(fmt.Sprintf("%d flames, %d smoke", g.fire.Alive(), g.smoke.Alive()))
+			})
 		})
 	})
-	gr.SetLayer(0)
 	return nil
 }
 

@@ -117,8 +117,8 @@ and registers the systems in the order they should run:
 
 ```go
 w := ecs.NewWorld()
-g.cells = ecs.NewQuery1[Cell](w)
-g.falling = ecs.NewQuery1[Falling](w)
+g.cells = w.Query1[Cell]()
+g.falling = w.Query1[Falling]()
 w.AddSystem("board", boardSystem)
 w.AddSystem("input", inputSystem)
 w.AddSystem("gravity", gravitySystem)
@@ -133,9 +133,9 @@ in the update must rebuild it again before testing occupancy:
 
 ```go
 func boardSystem(w *ecs.World, dt float64) {
-	b := ecs.Resource[Board](w)
+	b := w.Resource[Board]()
 	b.Full = [rows][cols]bool{}
-	ecs.Each(w, func(e ecs.Entity, c *Cell) {
+	w.Each(func(e ecs.Entity, c *Cell) {
 		if c.Y >= 0 {
 			b.Full[c.Y][c.X] = true
 		}
@@ -153,7 +153,7 @@ makes it testable and, later, replayable:
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
 	in := ctx.Input
-	*ecs.Resource[Controls](g.world) = Controls{
+	*g.world.Resource[Controls]() = Controls{
 		Left: in.KeyPressed(input.KeyLeft), Right: in.KeyPressed(input.KeyRight),
 		Rotate: in.KeyPressed(input.KeyUp), Down: in.KeyPressed(input.KeyDown),
 		Drop: in.KeyPressed(input.KeySpace),
@@ -169,8 +169,8 @@ wall still turns, the "wall kick" players expect:
 
 ```go
 func inputSystem(w *ecs.World, dt float64) {
-	in := ecs.Resource[Controls](w)
-	_, p, ok := ecs.NewQuery1[Falling](w).First()
+	in := w.Resource[Controls]()
+	_, p, ok := w.Query1[Falling]().First()
 	if !ok {
 		return
 	}
@@ -212,11 +212,11 @@ callback on game time, and the gravity system advances it:
 clock.Drop = clock.Timers.Every(0.6, func() { drop(w) })
 
 func gravitySystem(w *ecs.World, dt float64) {
-	ecs.Resource[Clock](w).Timers.Update(dt)
+	w.Resource[Clock]().Timers.Update(dt)
 }
 
 func drop(w *ecs.World) {
-	_, p, ok := ecs.NewQuery1[Falling](w).First()
+	_, p, ok := w.Query1[Falling]().First()
 	c := *p
 	c.Y++
 	if ok && !try(w, p, c) {
@@ -234,7 +234,7 @@ entity a query is visiting is safe, so this is one pass per row:
 
 ```go
 func lockPiece(w *ecs.World) {
-	e, p, _ := ecs.NewQuery1[Falling](w).First()
+	e, p, _ := w.Query1[Falling]().First()
 	for y, row := range p.Cells {
 		for x, on := range row {
 			if on && p.Y+y >= 0 {
@@ -244,7 +244,7 @@ func lockPiece(w *ecs.World) {
 	}
 	w.Despawn(e)
 	boardSystem(w, 0)
-	b := ecs.Resource[Board](w)
+	b := w.Resource[Board]()
 	cleared := 0
 	for y := rows - 1; y >= 0; y-- {
 		full := true
@@ -254,7 +254,7 @@ func lockPiece(w *ecs.World) {
 		if !full {
 			continue
 		}
-		ecs.Each(w, func(e ecs.Entity, c *Cell) {
+		w.Each(func(e ecs.Entity, c *Cell) {
 			switch {
 			case c.Y == y:
 				w.Despawn(e)
@@ -267,12 +267,12 @@ func lockPiece(w *ecs.World) {
 		y++ // re-check the row that fell into this slot
 	}
 	if cleared > 0 {
-		s := ecs.Resource[Score](w)
+		s := w.Resource[Score]()
 		s.Lines += cleared
 		s.Points += []int{0, 100, 300, 500, 800}[cleared]
-		ecs.Emit(w, Cleared{Rows: cleared})
+		w.Emit(Cleared{Rows: cleared})
 	} else {
-		ecs.Emit(w, Locked{})
+		w.Emit(Locked{})
 	}
 	spawnPiece(w)
 }
@@ -292,10 +292,10 @@ over 0.4 s:
 ```go
 func (g *game) effectsSystem(mixer *audio.Mixer) ecs.System {
 	return func(w *ecs.World, dt float64) {
-		for range ecs.Events[Locked](w) {
+		for range w.Events[Locked]() {
 			mixer.Play(g.lock, audio.PlayOptions{Volume: 0.4})
 		}
-		for _, ev := range ecs.Events[Cleared](w) {
+		for _, ev := range w.Events[Cleared]() {
 			mixer.Play(g.clear, audio.PlayOptions{Volume: 0.5, Pitch: 1 + 0.2*float32(ev.Rows)})
 			g.flash = tween.New(1, 0, 0.4, tween.OutQuad)
 		}
@@ -322,7 +322,7 @@ g.cells.Each(func(e ecs.Entity, c *Cell) {
 })
 if _, p, ok := g.falling.First(); ok {
 	ghost := *p
-	for fits(ecs.Resource[Board](w), ghost) {
+	for fits(w.Resource[Board](), ghost) {
 		ghost.Y++
 	}
 	ghost.Y--
@@ -340,12 +340,12 @@ every frame inside `Begin`, and widgets report what happened.
 Containers take closures, so their extent is visible in the code:
 
 ```go
-score := ecs.Resource[Score](w)
+score := w.Resource[Score]()
 u.Begin(ctx.Input, func() {
 	u.Panel("Tetris", ui.Rect{X: ox + cols*cell + 24, Y: oy, W: 200, H: 300}, func() {
 		u.Label(fmt.Sprintf("Score %d", score.Points))
 		u.Label(fmt.Sprintf("Lines %d", score.Lines))
-		u.Label(fmt.Sprintf("%d entities", w.Count()))
+		u.Label(fmt.Sprintf("%d entities", w.Len()))
 		if score.Over {
 			u.Label("Game over")
 		}

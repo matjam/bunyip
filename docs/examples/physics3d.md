@@ -165,8 +165,8 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.yaw, g.pitch, g.dist = 0.7, 0.4, 40
 	w := ecs.NewWorld()
 	g.world = w
-	g.cubes = ecs.NewQuery2[gfx.Transform, cube](w)
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0), Substeps: 4, Iterations: 8})
+	g.cubes = w.Query2[gfx.Transform, cube]()
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0), Substeps: 4, Iterations: 8})
 	// The ground and four low walls are static colliders: no body.
 	w.SpawnWith(gfx.Transform{}, phys.Collider3{Shape: phys.Box3{Half: lin.V3(30, 0.5, 30)}})
 	for _, wall := range []lin.Vec3{{X: 12, Y: 1.5, Z: 0}, {X: -12, Y: 1.5, Z: 0}} {

@@ -65,7 +65,7 @@ func entityRot2(w *ecs.World, e ecs.Entity) float32 {
 	if e == ecs.None {
 		return 0
 	}
-	if t, ok := ecs.Get[gfx.Transform2](w, e); ok {
+	if t, ok := w.Get[gfx.Transform2](e); ok {
 		return t.Rotation
 	}
 	return 0
@@ -196,12 +196,12 @@ func sideOf2(w *ecs.World, e ecs.Entity) (jointSide2, bool) {
 	if e == ecs.None {
 		return s, true
 	}
-	t, ok := ecs.Get[gfx.Transform2](w, e)
+	t, ok := w.Get[gfx.Transform2](e)
 	if !ok {
 		return s, false
 	}
 	s.t, s.pos, s.rot = t, t.Position, t.Rotation
-	if b, ok := ecs.Get[Body2](w, e); ok {
+	if b, ok := w.Get[Body2](e); ok {
 		s.body = b
 		if !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
 			s.b = b

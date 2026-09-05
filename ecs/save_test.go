@@ -47,7 +47,7 @@ func init() {
 
 func findTagged(t *testing.T, w *World) Entity {
 	t.Helper()
-	e, _, ok := NewQuery1[saveTag](w).First()
+	e, _, ok := w.Query1[saveTag]().First()
 	if !ok {
 		t.Fatal("no tagged entity")
 	}
@@ -60,14 +60,14 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	src.Despawn(gone)
 	a := src.SpawnWith(pos{1, 2}, saveTag{}) // reuses gone's slot with generation 1
 	b := src.Spawn()
-	Add(src, b, pos{3, 4})
-	Add(src, b, follows{Leader: a})
-	Add(src, b, target{Who: a, Others: []Entity{a, b, None}, ByName: map[string]Entity{"a": a}})
-	Add(src, b, inventory{Items: []string{"sword"}})
+	src.Add(b, pos{3, 4})
+	src.Add(b, follows{Leader: a})
+	src.Add(b, target{Who: a, Others: []Entity{a, b, None}, ByName: map[string]Entity{"a": a}})
+	src.Add(b, inventory{Items: []string{"sword"}})
 	root := src.SpawnWith(gfx.At(10, 0, 0))
 	child := src.SpawnWith(gfx.At(0, 5, 0))
 	SetParent(src, child, root)
-	SetResource(src, saveScore{N: 7, Player: b})
+	src.SetResource(saveScore{N: 7, Player: b})
 
 	var buf bytes.Buffer
 	if err := src.Save(&buf, SaveOptions{Indent: true}); err != nil {
@@ -82,28 +82,28 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err := dst.Load(bytes.NewReader(buf.Bytes())); err != nil {
 		t.Fatal(err)
 	}
-	if dst.Count() != src.Count()+1 {
-		t.Fatalf("count %d, want %d", dst.Count(), src.Count()+1)
+	if dst.Len() != src.Len()+1 {
+		t.Fatalf("count %d, want %d", dst.Len(), src.Len()+1)
 	}
 	na := findTagged(t, dst)
-	if p, ok := Get[pos](dst, na); !ok || *p != (pos{1, 2}) {
+	if p, ok := dst.Get[pos](na); !ok || *p != (pos{1, 2}) {
 		t.Fatalf("tagged pos %v", p)
 	}
-	nb, f, ok := NewQuery1[follows](dst).First()
+	nb, f, ok := dst.Query1[follows]().First()
 	if !ok || f.Leader != na {
 		t.Fatalf("follows leader %v, want %v", f, na)
 	}
-	tg, _ := Get[target](dst, nb)
+	tg, _ := dst.Get[target](nb)
 	if tg.Who != na || len(tg.Others) != 3 || tg.Others[0] != na || tg.Others[1] != nb || tg.Others[2] != None || tg.ByName["a"] != na {
 		t.Fatalf("target not remapped: %+v", tg)
 	}
-	if inv, _ := Get[inventory](dst, nb); len(inv.Items) != 1 || inv.Items[0] != "sword" {
+	if inv, _ := dst.Get[inventory](nb); len(inv.Items) != 1 || inv.Items[0] != "sword" {
 		t.Fatalf("inventory %v", inv)
 	}
-	if s := Resource[saveScore](dst); s == nil || s.N != 7 || s.Player != nb {
+	if s := dst.Resource[saveScore](); s == nil || s.N != 7 || s.Player != nb {
 		t.Fatalf("resource %+v, want player %v", s, nb)
 	}
-	nchild, _, ok := NewQuery1[gfx.Transform](dst, With[Parent]()).First()
+	nchild, _, ok := dst.Query1[gfx.Transform](With[Parent]()).First()
 	if !ok {
 		t.Fatal("child not loaded")
 	}
@@ -136,7 +136,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestSaveUnregistered(t *testing.T) {
 	w := NewWorld()
 	w.SpawnWith(pos{1, 1}, unregistered{1})
-	SetResource(w, hp{3})
+	w.SetResource(hp{3})
 	var buf bytes.Buffer
 	err := w.Save(&buf)
 	var ue *UnregisteredError
@@ -157,7 +157,7 @@ func TestSaveUnregistered(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := dst.Entities()[0]
-	if !Has[pos](dst, e) || Has[unregistered](dst, e) || Resource[hp](dst) != nil {
+	if !dst.Has[pos](e) || dst.Has[unregistered](e) || dst.Resource[hp]() != nil {
 		t.Fatal("skipped types came through")
 	}
 }
@@ -170,13 +170,13 @@ func TestLoadUnknownName(t *testing.T) {
 	if !errors.As(err, &ue) || len(ue.Names) != 2 || ue.Names[0] != "missing" || ue.Names[1] != "nope" {
 		t.Fatalf("error %v", err)
 	}
-	if w.Count() != 0 {
+	if w.Len() != 0 {
 		t.Fatal("entities added despite the error")
 	}
 	if err := w.Load(strings.NewReader(doc), LoadOptions{SkipUnknown: true}); err != nil {
 		t.Fatal(err)
 	}
-	if w.Count() != 1 || Count[pos](w) != 1 {
+	if w.Len() != 1 || w.Count[pos]() != 1 {
 		t.Fatal("entity not loaded")
 	}
 	if err := w.Load(strings.NewReader(`{"version":2,"entities":[]}`)); err == nil {

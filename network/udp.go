@@ -271,10 +271,16 @@ func (l *link) receiveReliable(rid uint32, data []byte) [][]byte {
 // may cover several events, including unreliable events dropped by a
 // full queue. Keep fn short. A callback captured before replacement
 // may still run afterward; nil disables future captures.
+// Pending events call fn before SetOnActivity returns. Callbacks run
+// outside locks and may close the peer or replace the hook. Drain pending
+// events before registering again from a callback to avoid recursion.
 func (p *Peer) SetOnActivity(fn func()) {
 	p.mu.Lock()
 	p.activity = fn
 	p.mu.Unlock()
+	if fn != nil && len(p.events) > 0 {
+		fn()
+	}
 }
 
 // SetTimeout sets how long an address may be silent before it is
@@ -559,12 +565,14 @@ func (p *Peer) receive(pkt []byte, from netip.AddrPort, now time.Time) {
 			p.transmit(l, 0, 0, nil, now)
 		}
 	}
-	activity := p.activity
 	p.evs = evs // keep the grown slice for the next packet
 	p.mu.Unlock()
 	for _, ev := range evs {
 		p.emit(ev, ev.Kind != Message || flags&flagReliable != 0)
 	}
+	p.mu.Lock()
+	activity := p.activity
+	p.mu.Unlock()
 	if len(evs) > 0 && activity != nil {
 		activity()
 	}
@@ -632,12 +640,14 @@ func (p *Peer) maintain(now time.Time) {
 			p.transmit(l, flagNeedAck, 0, nil, now)
 		}
 	}
-	activity := p.activity
 	p.evs = evs // keep the grown slice for the next tick
 	p.mu.Unlock()
 	for _, ev := range evs {
 		p.emit(ev, true)
 	}
+	p.mu.Lock()
+	activity := p.activity
+	p.mu.Unlock()
 	if len(evs) > 0 && activity != nil {
 		activity()
 	}

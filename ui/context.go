@@ -22,7 +22,7 @@ type widgetID uint64
 // Build it during the game's Draw on the rendering goroutine; it is
 // not safe for concurrent use and does not own fonts or skin textures.
 type Context struct {
-	Theme Theme // live widget styling; caller owns referenced fonts and textures
+	Theme Theme // live widget styling; referenced resources are managed separately
 	g     *gfx.Graphics
 	in    *input.State
 

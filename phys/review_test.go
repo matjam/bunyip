@@ -13,7 +13,7 @@ import (
 // the joint, as a contact would.
 func TestJointWakesPartner(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0), SleepTime: 0.3})
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0), SleepTime: 0.3})
 	w.AddSystem("phys", phys.System3)
 	w.SpawnWith(gfx.Transform{}, phys.Collider3{Shape: phys.Box3{Half: lin.V3(20, 0.5, 20)}})
 	a := w.SpawnWith(gfx.At(0, 1.0, 0), phys.Dynamic3(1), phys.Collider3{Shape: phys.Sphere{Radius: 0.5}})
@@ -22,8 +22,8 @@ func TestJointWakesPartner(t *testing.T) {
 	for range 240 {
 		w.Update(1.0 / 60)
 	}
-	ba, _ := ecs.Get[phys.Body3](w, a)
-	bb, _ := ecs.Get[phys.Body3](w, b)
+	ba, _ := w.Get[phys.Body3](a)
+	bb, _ := w.Get[phys.Body3](b)
 	if !ba.Asleep() || !bb.Asleep() {
 		t.Fatalf("expected both asleep: a=%v b=%v", ba.Asleep(), bb.Asleep())
 	}
@@ -31,7 +31,7 @@ func TestJointWakesPartner(t *testing.T) {
 	for range 30 {
 		w.Update(1.0 / 60)
 	}
-	bb, _ = ecs.Get[phys.Body3](w, b)
+	bb, _ = w.Get[phys.Body3](b)
 	if bb.Asleep() {
 		t.Error("the joint partner of a pushed body stayed asleep")
 	}
@@ -41,7 +41,7 @@ func TestJointWakesPartner(t *testing.T) {
 // by a contact measured from the face plane.
 func TestMeshEdgeDoesNotLaunch(t *testing.T) {
 	w := ecs.NewWorld()
-	ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
+	w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
 	w.AddSystem("phys", phys.System3)
 	verts := []lin.Vec3{lin.V3(-5, 0, -5), lin.V3(0, 0, -5), lin.V3(0, 0, 5), lin.V3(-5, 0, 5)}
 	idx := []uint32{0, 1, 2, 0, 2, 3}
@@ -52,7 +52,7 @@ func TestMeshEdgeDoesNotLaunch(t *testing.T) {
 	var maxUp float32
 	for range 240 {
 		w.Update(1.0 / 60)
-		b, _ := ecs.Get[phys.Body3](w, e)
+		b, _ := w.Get[phys.Body3](e)
 		maxUp = max(maxUp, b.Vel.Y)
 	}
 	if maxUp > 1 {

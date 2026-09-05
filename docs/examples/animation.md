@@ -160,8 +160,8 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.speed = 1
 	w := ecs.NewWorld()
 	g.world = w
-	g.sprites = ecs.NewQuery2[gfx.Sprite, sprite2D](w)
-	g.meshes = ecs.NewQuery2[gfx.Transform, mesh3D](w)
+	g.sprites = w.Query2[gfx.Sprite, sprite2D]()
+	g.meshes = w.Query2[gfx.Transform, mesh3D]()
 ```
 
 ## Init: the 2D clips
@@ -197,7 +197,7 @@ play, a rate and whether to loop; it needs no player and no clip.
 		p := anim.PlayerOf(w, e)
 		p.Play(bounce)
 		p.Time = float32(i) * 0.2
-		ecs.Add(w, e, offset{lin.V2(60+float32(i)*60, 200)})
+		w.Add(e, offset{lin.V2(60+float32(i)*60, 200)})
 	}
 	pulse := anim.NewClip("pulse", anim.PingPong,
 		anim.Size2(anim.Vec2s(anim.At(0, lin.V2(30, 30)), anim.AtEased(0.8, lin.V2(90, 90), tween.InOutSine))),
@@ -331,7 +331,7 @@ follows it.
 	w.AddSystem("anim", anim.System)
 	// When a one-shot clip finishes, fade the hero back to idle.
 	w.AddSystem("return", func(w *ecs.World, dt float64) {
-		for _, ev := range ecs.Events[anim.Finished](w) {
+		for _, ev := range w.Events[anim.Finished]() {
 			if ev.Entity == g.hero {
 				anim.PlayerOf(w, g.hero).CrossFade(g.idle, 0.3)
 				g.say("finished " + ev.Clip.Name + ", back to idle")
@@ -378,7 +378,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 
 ## Update: speeds, the world and the players
 
-`ecs.Each` walks every entity with an `anim.Player` and writes the speed
+`ecs.World.Each` walks every entity with an `anim.Player` and writes the speed
 multiplier from the slider. `g.world.Update(ctx.Delta)` runs the systems,
 which advances the clips and the flipbook.
 
@@ -402,7 +402,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	if g.seconds > 0 && ctx.Frame == 30 {
 		anim.PlayerOf(g.world, g.hero).CrossFade(g.jump, 0.2) // something to see in a screenshot
 	}
-	ecs.Each(g.world, func(e ecs.Entity, p *anim.Player) { p.Speed = g.speed })
+	g.world.Each(func(e ecs.Entity, p *anim.Player) { p.Speed = g.speed })
 	g.world.Update(ctx.Delta)
 	t := float32(ctx.Time)
 	g.target = lin.V3(0.9*float32(math.Cos(float64(t)*1.3)), 0.9+0.5*float32(math.Sin(float64(t)*0.7)), 0.7*float32(math.Sin(float64(t)*1.3)))
@@ -468,7 +468,7 @@ component the clip owns.
 	gr.ScreenSpace()
 	g.sprites.Each(func(e ecs.Entity, s *gfx.Sprite, d *sprite2D) {
 		draw := *s
-		if o, ok := ecs.Get[offset](w, e); ok {
+		if o, ok := w.Get[offset](e); ok {
 			draw.Pos = draw.Pos.Add(o.At)
 		}
 		if draw.UV1 == (lin.Vec2{}) {

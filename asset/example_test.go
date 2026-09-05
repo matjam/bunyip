@@ -59,7 +59,7 @@ func Example() {
 	// Decode on worker goroutines; poll Ready from the game loop, or Wait.
 	loader := asset.NewLoader(fs, 0)
 	defer loader.Close()
-	upper := asset.Load(loader, "text/intro.txt", func(b []byte) (string, error) { return strings.ToUpper(string(b)), nil })
+	upper := loader.Load("text/intro.txt", func(b []byte) (string, error) { return strings.ToUpper(string(b)), nil })
 	v, _ := upper.Get()
 	fmt.Println(v)
 	// Output:

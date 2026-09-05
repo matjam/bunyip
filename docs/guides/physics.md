@@ -15,7 +15,7 @@ per dimension steps the simulation.
 ## Setting up
 
 ```go
-ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
+w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0)})
 w.AddSystem("physics", phys.System3)
 
 // A static floor: a collider with no body never moves.
@@ -53,7 +53,7 @@ it again. Zero `GravityScale` means 1, so it does not disable gravity.
 // 2D: a paddle that moves under the game's control and pushes what it meets.
 paddle := w.SpawnWith(gfx.At2(700, 500), phys.Kinematic2(),
 	phys.Collider2{Shape: phys.Box2{HalfW: 90, HalfH: 10}})
-if b, ok := ecs.Get[phys.Body2](w, paddle); ok {
+if b, ok := w.Get[phys.Body2](paddle); ok {
 	b.Vel = lin.V2(200, 0)
 }
 
@@ -62,7 +62,7 @@ crate := phys.Dynamic3(2)
 crate.Restitution, crate.Friction, crate.LinearDamping = 0.4, 0.6, 0.1
 e := w.SpawnWith(gfx.At(0, 5, 0), crate,
 	phys.Collider3{Shape: phys.Box3{Half: lin.V3(0.5, 0.5, 0.5)}})
-if b, ok := ecs.Get[phys.Body3](w, e); ok {
+if b, ok := w.Get[phys.Body3](e); ok {
 	b.AddImpulse(lin.V3(0, 0, -6))
 }
 ```
@@ -120,7 +120,7 @@ distinguish contact begin and end. Read them in a later system:
 
 ```go
 w.AddSystem("damage", func(w *ecs.World, dt float64) {
-	for _, hit := range ecs.Events[phys.Collision3](w) {
+	for _, hit := range w.Events[phys.Collision3]() {
 		if hit.Impulse > 50 { /* a hard landing */ }
 	}
 })
@@ -187,7 +187,7 @@ if hit, ok := phys.Raycast3(w, phys.Ray3{Origin: ray.Origin, Dir: ray.Dir.Mul(20
 
 // Everything an explosion caught, pushed away from the blast.
 for _, h := range phys.OverlapSphere3(w, blast, 5, 0) {
-	if b, ok := ecs.Get[phys.Body3](w, h.Entity); ok {
+	if b, ok := w.Get[phys.Body3](h.Entity); ok {
 		b.AddImpulse(h.Point.Sub(blast).Norm().Mul(20))
 	}
 }
@@ -335,17 +335,17 @@ creeping into place for longer, and raising `Substeps` and `Iterations`
 settles it sooner.
 
 ```go
-ecs.SetResource(w, phys.Settings3{Gravity: lin.V3(0, -9.8, 0),
+w.SetResource(phys.Settings3{Gravity: lin.V3(0, -9.8, 0),
 	SleepTime: 0.5})
 
 // How much of the world has settled, for a debug readout.
 resting := 0
-ecs.Each(w, func(e ecs.Entity, b *phys.Body3) {
+w.Each(func(e ecs.Entity, b *phys.Body3) {
 	if b.Asleep() {
 		resting++
 	}
 })
-if b, ok := ecs.Get[phys.Body3](w, crate); ok {
+if b, ok := w.Get[phys.Body3](crate); ok {
 	b.Wake() // the player kicked it
 }
 ```
@@ -397,7 +397,7 @@ hundred or so of each other, as with every impulse solver.
 
 ```go
 // 2D at pixel scale, with a stiffer solver than the defaults.
-ecs.SetResource(w, phys.Settings2{Gravity: lin.V2(0, 900), Substeps: 6, Iterations: 12})
+w.SetResource(phys.Settings2{Gravity: lin.V2(0, 900), Substeps: 6, Iterations: 12})
 
 // Measure the cost of the step.
 step := ctx.Profile("physics")
@@ -416,7 +416,7 @@ world as the rigid bodies. Register it after `System3`, so soft bodies
 see where the rigid ones ended the update.
 
 ```go
-ecs.SetResource(w, soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
+w.SetResource(soft.Settings{Gravity3: lin.V3(0, -9.8, 0)})
 w.AddSystem("physics", phys.System3)
 w.AddSystem("soft", soft.System)
 ```
@@ -469,8 +469,8 @@ it repeatedly from a prefab shares that storage. `UpdateMesh` changes
 the mesh; it does not submit a draw call.
 
 ```go
-c, _ := ecs.Get[soft.Cloth](w, flag)
-mesh, err := c.NewMesh(ctx.Gfx) // in Init; Destroy it in Shutdown
+c, _ := w.Get[soft.Cloth](flag)
+mesh, err := c.NewMesh(ctx.Gfx) // graphics owns it; Destroy releases it early
 
 // In Draw, after the world has stepped.
 c.UpdateMesh(mesh)
@@ -494,7 +494,7 @@ jelly := w.SpawnWith(soft.NewSoftBody3(soft.SoftBody3Spec{
 	Mass: 3, Compliance: 0.001, ShapeMatch: 0.04,
 }))
 
-b, _ := ecs.Get[soft.SoftBody3](w, jelly)
+b, _ := w.Get[soft.SoftBody3](jelly)
 b.AddImpulse(lin.V3(-9, 16, 0)) // kicked
 b.Pressure = 1.3                // inflated
 ```

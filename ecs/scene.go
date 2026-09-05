@@ -23,7 +23,7 @@ type Name struct{ Text string }
 // NameOf returns the entity's name, and false when it has none or the
 // name is empty.
 func NameOf(w *World, e Entity) (string, bool) {
-	if n, ok := Get[Name](w, e); ok && n.Text != "" {
+	if n, ok := w.Get[Name](e); ok && n.Text != "" {
 		return n.Text, true
 	}
 	return "", false
@@ -343,7 +343,7 @@ func (w *World) Instantiate(scene *Scene, opts ...InstantiateOptions) (*SceneIns
 	}
 	lib := o.Prefabs
 	if lib == nil {
-		if p := Resource[PrefabLibrary](w); p != nil {
+		if p := w.Resource[PrefabLibrary](); p != nil {
 			lib = *p
 		}
 	}
@@ -425,11 +425,11 @@ func (w *World) Instantiate(scene *Scene, opts ...InstantiateOptions) (*SceneIns
 
 // offsetEntity moves an entity's transform, whichever dimension it has.
 func offsetEntity(w *World, e Entity, d lin.Vec3) {
-	if t, ok := Get[gfx.Transform](w, e); ok {
+	if t, ok := w.Get[gfx.Transform](e); ok {
 		t.Position = t.Position.Add(d)
 		return
 	}
-	if t, ok := Get[gfx.Transform2](w, e); ok {
+	if t, ok := w.Get[gfx.Transform2](e); ok {
 		t.Position = t.Position.Add(lin.V2(d.X, d.Y))
 	}
 }

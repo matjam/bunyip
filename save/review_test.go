@@ -24,7 +24,7 @@ func TestLoadLeavesDefaultsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defaults := reviewSettings{Keys: []string{"a", "b"}, Tags: map[string]int{"a": 1}}
-	got, err := save.Load(st, "cfg", defaults)
+	got, err := st.Load("cfg", defaults)
 	if err != nil {
 		t.Fatal(err)
 	}

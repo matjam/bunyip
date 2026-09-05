@@ -140,8 +140,10 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 		img.Destroy()
 		return nil, err
 	}
-	return &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat,
-		data: opts.Data, mipmapped: opts.Linear && !opts.NoMipmaps, g: g}, nil
+	t := &Texture{Width: w, Height: h, img: img, set: set, nearest: !opts.Linear, repeat: opts.Repeat,
+		data: opts.Data, mipmapped: opts.Linear && !opts.NoMipmaps, g: g}
+	g.owned.add(t)
+	return t, nil
 }
 
 // Replace swaps the texture's pixels for another image, keeping the
@@ -340,6 +342,7 @@ func (t *Texture) Destroy() {
 	t.destroyed = true
 	g := t.g
 	g.forget(t)
+	g.owned.remove(t)
 	// The cached material sets that name this texture leave the cache
 	// now, so no later frame can bind one; freeing them is deferred with
 	// everything else.

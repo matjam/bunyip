@@ -199,23 +199,22 @@ func (s *Store) List() ([]string, error) {
 // Load reads name.json over a copy of defaults, so fields the file lacks
 // keep their default values and a missing file yields the defaults
 // without error. Use it for settings.
-// Defaults are copied through JSON before applying a present file;
-// provide JSON-round-trippable defaults for independent maps and slices.
-// A missing file returns defaults directly, which can share their data.
-func Load[T any](s *Store, name string, defaults T) (T, error) {
+// Defaults are copied through JSON even when the file is missing, so
+// maps and slices are independent. Invalid JSON defaults return an error.
+func (s *Store) Load[T any](name string, defaults T) (T, error) {
 	// A deep copy: decoding into a value that shares the defaults'
 	// slices and maps would write into them.
 	var v T
-	if data, err := json.Marshal(defaults); err == nil {
-		if err := json.Unmarshal(data, &v); err != nil {
-			v = defaults
-		}
-	} else {
-		v = defaults
+	data, err := json.Marshal(defaults)
+	if err != nil {
+		return v, fmt.Errorf("save: encode defaults for %s: %w", name, err)
 	}
-	err := s.Read(name, &v)
+	if err := json.Unmarshal(data, &v); err != nil {
+		return v, fmt.Errorf("save: decode defaults for %s: %w", name, err)
+	}
+	err = s.Read(name, &v)
 	if errors.Is(err, os.ErrNotExist) {
-		return defaults, nil
+		return v, nil
 	}
 	return v, err
 }

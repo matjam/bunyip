@@ -24,12 +24,12 @@ func Example() {
 	}
 
 	// Load settings over defaults: a missing file yields the defaults.
-	settings, _ := save.Load(store, "settings", Settings{Volume: 0.8})
+	settings, _ := store.Load("settings", Settings{Volume: 0.8})
 	fmt.Println(settings.Volume, settings.Fullscreen)
 
 	settings.Fullscreen = true
 	store.Write("settings", settings)
-	again, _ := save.Load(store, "settings", Settings{Volume: 0.8})
+	again, _ := store.Load("settings", Settings{Volume: 0.8})
 	fmt.Println(again.Fullscreen)
 
 	names, _ := store.List()

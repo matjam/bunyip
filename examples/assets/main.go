@@ -79,7 +79,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.store, err = save.Open("bunyip-assets"); err != nil {
 		return err
 	}
-	if g.settings, err = save.Load(g.store, "settings", settings{Version: 1}); err != nil {
+	if g.settings, err = g.store.Load("settings", settings{Version: 1}); err != nil {
 		return err
 	}
 	g.settings.Runs++
@@ -101,7 +101,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.watcher = asset.NewWatcher(g.fs, 250*time.Millisecond)
 	for i := range count {
 		name := fmt.Sprintf("images/shape%02d.png", i)
-		g.items = append(g.items, &item{name: name, handle: asset.Load(g.loader, name, decode)})
+		g.items = append(g.items, &item{name: name, handle: g.loader.Load(name, decode)})
 		g.watcher.Add(name)
 	}
 	// Rewrite a random image now and then; the watcher reloads it.
@@ -220,7 +220,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 					it.tex.Destroy()
 					it.tex = nil
 				}
-				it.handle = asset.Load(g.loader, name, decode)
+				it.handle = g.loader.Load(name, decode)
 				g.status = "Reloaded " + name
 			}
 		}

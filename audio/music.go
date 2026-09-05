@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"sync"
 
 	"github.com/hajimehoshi/go-mp3"
@@ -16,7 +17,7 @@ import (
 // Music plays WAV, Ogg Vorbis or MP3 through a two-second PCM buffer
 // filled on a decoder goroutine. Ogg and MP3 decode incrementally; WAV
 // is decoded completely at open and retained in memory.
-// Open one with Mixer.OpenMusic, start it with
+// Open one with Mixer.OpenMusicFile or Mixer.OpenMusic, start it with
 // Mixer.PlayStream, and Close it when the game is done with it.
 type Music struct {
 	dec    decoder
@@ -25,16 +26,19 @@ type Music struct {
 	rate   int   // the mixer's
 	length int64 // source frames, 0 when unknown
 
-	mu    sync.Mutex
-	cond  *sync.Cond
-	ring  []float32 // stereo samples at the mixer rate
-	rd    int
-	count int
-	ended bool
-	close bool
-	err   error
-	seek  float64 // pending Seek target in seconds; negative when none
-	gen   int     // bumped by Seek so fill drops what it decoded before
+	mu         sync.Mutex
+	cond       *sync.Cond
+	ring       []float32 // stereo samples at the mixer rate
+	rd         int
+	count      int
+	ended      bool
+	close      bool
+	err        error
+	seek       float64 // pending Seek target in seconds; negative when none
+	gen        int     // bumped by Seek so fill drops what it decoded before
+	worker     sync.WaitGroup
+	owned      io.Closer
+	closeOwned sync.Once
 }
 
 // decoder yields interleaved samples at its own rate and channel count.
@@ -51,7 +55,7 @@ type decoder interface {
 // OpenMusic prepares a file for streaming; loop makes it start over at
 // the end. It sniffs the format from the start of r and waits for the
 // first decoded chunk or an error. The reader must support seeking and
-// remain available to the decoder. Music does not close r.
+// remain available until Music.Close returns. Music does not close r.
 func (m *Mixer) OpenMusic(r io.ReadSeeker, loop bool) (*Music, error) {
 	var head [4]byte
 	if _, err := io.ReadFull(r, head[:]); err != nil {
@@ -82,11 +86,36 @@ func (m *Mixer) OpenMusic(r io.ReadSeeker, loop bool) (*Music, error) {
 		ring: make([]float32, m.rate*2*2)} // two seconds
 	mu.cond = sync.NewCond(&mu.mu)
 	mu.rs = resampler{step: float64(dec.Rate()) / float64(m.rate)}
-	go mu.fill()
+	mu.worker.Go(mu.fill)
 	// Return with the first chunk in hand so playback starts immediately
 	// rather than with a moment of silence.
 	mu.wait(func() bool { return mu.count > 0 })
-	return mu, mu.Err()
+	if err := mu.Err(); err != nil {
+		mu.Close()
+		return nil, err
+	}
+	return mu, nil
+}
+
+// OpenMusicFile opens a WAV, Ogg Vorbis or MP3 file for streaming.
+// Music owns the file and closes it after the decoder stops. Failure
+// closes the file before returning. Loop restarts playback at the end.
+func (m *Mixer) OpenMusicFile(path string, loop bool) (*Music, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("audio: music: %w", err)
+	}
+	return m.openOwnedMusic(f, loop)
+}
+
+func (m *Mixer) openOwnedMusic(r io.ReadSeekCloser, loop bool) (*Music, error) {
+	music, err := m.OpenMusic(r, loop)
+	if err != nil {
+		r.Close()
+		return nil, err
+	}
+	music.owned = r
+	return music, nil
 }
 
 // Buffered reports how many seconds are decoded and waiting to play.
@@ -139,15 +168,23 @@ func (mu *Music) wait(cond func() bool) {
 	mu.mu.Unlock()
 }
 
-// Close requests decoder shutdown; subsequent Read calls return zero
-// and a voice ends when it next reads the stream. It is safe to repeat. Close does
-// not wait for an in-flight decoder read and does not close the reader
-// supplied to OpenMusic; callers retain ownership of that reader.
+// Close stops and joins the decoder, then closes an owned file.
+// Subsequent Read calls return zero; a voice ends when it next reads.
+// Repeated and concurrent calls are safe. Readers supplied to OpenMusic
+// remain borrowed and may be closed after this returns. Close waits for
+// an in-flight Read or Seek, which a custom reader must unblock itself.
+// Do not call Close from that reader or decoder, including its callbacks.
 func (mu *Music) Close() {
 	mu.mu.Lock()
 	mu.close = true
 	mu.cond.Broadcast()
 	mu.mu.Unlock()
+	mu.worker.Wait()
+	mu.closeOwned.Do(func() {
+		if mu.owned != nil {
+			mu.owned.Close()
+		}
+	})
 }
 
 // Err reports a decoding error, if one ended the music early.
