@@ -370,7 +370,7 @@ much of the grid it lands in.
 Plan around the limits. A frame keeps its first `MaxLights` (1024) point
 and spot lights, gives shadow maps to the first `MaxSpotShadows` (4)
 spot lights that ask and cube maps to the first `MaxPointShadows` (4)
-point lights; the rest shine without. One cluster keeps 32 lights, so a
+point lights; the rest shine without. One cluster keeps 64 lights, so a
 light past that in a crowded part of the view does not light it. Sort by
 distance to the camera and add the nearest first;
 `FrameStats.LightsDropped` counts the lights a frame refused and

@@ -116,7 +116,7 @@ tiles and 24 exponential depth slices each frame, sorts the frame's
 lights into the clusters they reach on the CPU, and writes the records,
 the per-cluster table and the index list into set 1. The fragment
 prelude finds its cluster from `gl_FragCoord` and the view depth and
-loops over that cluster's lights. A cluster keeps 32 lights and a frame
+loops over that cluster's lights. A cluster keeps 64 lights and a frame
 1024 (`MaxLights`).
 
 **Shadow maps share one atlas** (`shadowRegion` in `gfx/mesh_draw.go`,

@@ -164,7 +164,7 @@ repeating sampling for render textures are in.
 - Occlusion culling, and impostors (billboards baked from a model).
 - The cluster grid is built on the CPU and is fixed at 16 by 9 by 24,
   a light is bounded by the screen rectangle of its box rather than of
-  its sphere, and a cluster keeps 32 lights, so a light past that in a
+  its sphere, and a cluster keeps 64 lights, so a light past that in a
   crowded cluster does not light it. A compute pass over the grid, and
   tighter bounds, would raise all three.
 - The shader uniform arena and the joint storage buffer still wait for

@@ -463,7 +463,7 @@ func (g *Graphics) AddPoint(p PointLight) {
 // MaxLights is how many point and spot lights a frame keeps. The lights
 // are sorted into a grid of clusters over the view, and a fragment is
 // lit by its own cluster's lights alone, so a scene may add hundreds
-// without every one costing every pixel. A cluster keeps 32 lights, and
+// without every one costing every pixel. A cluster keeps 64 lights, and
 // a light past that in a crowded part of the view does not light it.
 const MaxLights = maxPointLights
 
