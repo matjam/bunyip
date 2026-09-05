@@ -104,7 +104,7 @@ https://matjam.github.io/bunyip/ by the Docs workflow on each push to
 the Markdown in `docs/guides` and the packages' godoc, so `go doc ./gfx`
 shows the same text and `go test ./...` runs every example that prints
 output. The guides are grouped: Start (introduction, getting started,
-Tetris and API migration), Engine (the window, input, entities and systems, game
+API design and Tetris), Engine (the window, input, entities and systems, game
 services), Graphics (2D graphics, 3D graphics, shaders, animation, the
 interface), Simulation (physics, orbits) and Audio.
 
@@ -115,8 +115,8 @@ and everything in one file at `llms-full.txt`. `CLAUDE.md` in the
 repository is written for a model working on the engine or writing a game
 with it.
 
-For existing games, the [API migration guide](docs/guides/api-migration.md)
-lists the replaced generic functions and the new resource-lifetime rules.
+The [API design guide](docs/guides/api-design.md) explains resource ownership,
+cleanup, defaults and scoped operations with examples.
 
 ## Packages
 
