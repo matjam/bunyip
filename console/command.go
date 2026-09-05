@@ -204,7 +204,7 @@ func (c *Console) registerBuiltins() {
 		return fmt.Sprintf("%.0f fps, %.2f ms/frame (update %.2f, draw %.2f, present %.2f)",
 			s.FPS, s.FrameMS, s.UpdateMS, s.DrawMS, s.PresentMS), nil
 	})
-	c.Register("stats", "stats: the frame timings, profile scopes and draw counts", c.cmdStats)
+	c.Register("stats", "stats: the frame timings, the GPU pass times, profile scopes and draw counts", c.cmdStats)
 	c.Register("log", "log <level>: show log records at this level and above (debug, info, warn, error)", c.cmdLog)
 	c.Register("timescale", "timescale [x]: read or set how fast game time runs", c.cmdTimescale)
 	c.Register("panels", "panels [tab]: open or close the debug panels, on a named tab", c.cmdPanels)
@@ -317,6 +317,12 @@ func (c *Console) cmdStats([]string) (string, error) {
 		gs := g.Stats()
 		fmt.Fprintf(&b, "2D %d draws %d verts (%d culled)\n", gs.Draws2D, gs.Vertices2D, gs.Culled2D)
 		fmt.Fprintf(&b, "3D %d draws %d instances (%d culled, %d lights dropped)\n", gs.Draws3D, gs.Instances, gs.Culled, gs.LightsDropped)
+	}
+	if len(s.GPU) > 0 {
+		fmt.Fprintf(&b, "gpu %.2f ms a frame\n", s.GPUFrameMS)
+		for _, sp := range s.GPU {
+			fmt.Fprintf(&b, "  %s %.2f ms\n", sp.Name, sp.MS)
+		}
 	}
 	for _, sc := range s.Scopes {
 		fmt.Fprintf(&b, "  %s %.2f ms\n", sc.Name, sc.MS)

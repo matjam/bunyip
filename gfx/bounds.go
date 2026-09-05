@@ -108,13 +108,13 @@ func skinBounds(m *Mesh, model lin.Mat4, joints []lin.Mat4) (centre lin.Vec3, ra
 }
 
 // shadowMask marks the draws that can reach one shadow map, so a caster
-// is recorded into the cascades and spot maps its bounds fall in rather
-// than into all seven. A cascade ignores its near plane, since a caster
-// in front of it still writes depth; a spot light uses its whole
-// frustum. Draws with a shader that may move a vertex anywhere are
-// always recorded. The result is the queue's own slice, valid until the
-// next call.
-func (q *drawQueue) shadowMask(draws drawList, index int, spots []lin.Mat4) []bool {
+// is recorded into the cascades, spot maps and cube faces its bounds
+// fall in rather than into every one. A cascade ignores its near plane,
+// since a caster in front of it still writes depth; a spot light and a
+// cube face use their whole frustum. Draws with a shader that may move a
+// vertex anywhere are always recorded. The result is the queue's own
+// slice, valid until the next call.
+func (q *drawQueue) shadowMask(draws drawList, index int, spots, points []lin.Mat4) []bool {
 	n := draws.len()
 	if cap(q.shadowVis) < n {
 		q.shadowVis = make([]bool, n)
@@ -122,10 +122,13 @@ func (q *drawQueue) shadowMask(draws drawList, index int, spots []lin.Mat4) []bo
 	vis := q.shadowVis[:n]
 	cascade := index < shadowCascades
 	var f Frustum
-	if cascade {
+	switch {
+	case cascade:
 		f = FrustumOf(q.cascadeMats[index])
-	} else {
+	case index < pointFaceBase:
 		f = FrustumOf(spots[index-shadowCascades])
+	default:
+		f = FrustumOf(points[index-pointFaceBase])
 	}
 	for i := range n {
 		d := draws.at(i)
