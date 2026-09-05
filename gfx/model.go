@@ -212,11 +212,30 @@ func (m *Model) SetMorphWeights(node int, weights []float32) error {
 
 // ModelPart is one primitive placed by one node.
 type ModelPart struct {
-	Mesh     *Mesh
+	Mesh *Mesh
+	// Name is the name glTF gave the primitive's material, empty when the
+	// file names none. Match on it to override one part's material.
+	Name     string
 	Material Material
 	World    lin.Mat4
 	node     int
 	skin     int
+}
+
+// MaterialOverride returns the material to draw one part of a model
+// with. i is the part's index in Model.Parts and part is the part
+// itself, so a game can decide by index or by part.Name, the name glTF
+// gave the material. Returning part.Material draws what the file asked
+// for.
+type MaterialOverride func(i int, part ModelPart) Material
+
+// apply returns the material a part is drawn with under an override; a
+// nil override is the file's own material.
+func (o MaterialOverride) apply(i int, part ModelPart) Material {
+	if o == nil {
+		return part.Material
+	}
+	return o(i, part)
 }
 
 // LoadModel uploads a parsed glTF document.
@@ -309,8 +328,10 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 				}
 			}
 			mat := Material{BaseColor: White, Roughness: 0.6}
+			name := ""
 			if p.Material >= 0 {
 				src := doc.Materials[p.Material]
+				name = src.Name
 				mat.BaseColor = Color{src.BaseColor[0], src.BaseColor[1], src.BaseColor[2], src.BaseColor[3]}
 				mat.Metallic, mat.Roughness = src.Metallic, max(src.Roughness, 0.04)
 				mat.Texture = m.texture(src.Image)
@@ -347,7 +368,7 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 					mat.Blend = true
 				}
 			}
-			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})
+			m.Parts = append(m.Parts, ModelPart{Mesh: mesh, Name: name, Material: mat, World: inst.World, node: inst.Node, skin: inst.Skin})
 		}
 	}
 	g.track(m, Resource{Kind: ResourceModel, Parts: len(m.Parts)})
@@ -409,10 +430,29 @@ func topoOrder(nodes []gltf.Node) []int {
 	return order
 }
 
-// DrawModel queues every part of the model under a world transform.
+// DrawModel queues every part of the model under a world transform,
+// each with the material its file gave it.
 func (g *Graphics) DrawModel(m *Model, world lin.Mat4) {
-	for _, p := range m.Parts {
-		g.DrawMesh(p.Mesh, p.Material, world.Mul(p.World))
+	g.DrawModelWith(m, world, nil)
+}
+
+// DrawModelWith queues every part of the model under a world transform,
+// passing each part through override to decide the material it is drawn
+// with: one material for the whole model, a different one for a named
+// part, or the file's own material with a field changed. A nil override
+// is DrawModel.
+//
+//	gr.DrawModelWith(ship, world, func(i int, p gfx.ModelPart) gfx.Material {
+//		if p.Name == "hull" {
+//			m := p.Material
+//			m.BaseColor = team
+//			return m
+//		}
+//		return p.Material
+//	})
+func (g *Graphics) DrawModelWith(m *Model, world lin.Mat4, override MaterialOverride) {
+	for i, p := range m.Parts {
+		g.DrawMesh(p.Mesh, override.apply(i, p), world.Mul(p.World))
 	}
 }
 
