@@ -48,6 +48,8 @@ func (c *Conn) Send(msg any) error {
 }
 
 // Close ends the connection; the other side sees a Disconnected event.
+// Locally queued events remain available to Poll. Pending events, including
+// Disconnected, may be discarded if the local event queue is full.
 func (c *Conn) Close() error {
 	var err error
 	c.once.Do(func() {
@@ -79,7 +81,9 @@ func (c *Conn) readLoop() {
 			err = derr
 			break
 		}
-		c.emit(Event{Kind: Message, Conn: c, Msg: msg})
+		if !c.emit(Event{Kind: Message, Conn: c, Msg: msg}) {
+			break
+		}
 	}
 	select {
 	case <-c.closed:
@@ -94,11 +98,22 @@ func (c *Conn) readLoop() {
 	c.emit(Event{Kind: Disconnected, Conn: c, Err: err})
 }
 
-func (c *Conn) emit(ev Event) {
-	c.events <- ev
+func (c *Conn) emit(ev Event) bool {
+	// Preserve events when there is room, even during local shutdown.
+	// A full queue must never keep a closed connection's reader alive.
+	select {
+	case c.events <- ev:
+	default:
+		select {
+		case c.events <- ev:
+		case <-c.closed:
+			return false
+		}
+	}
 	if c.activity != nil {
 		c.activity()
 	}
+	return true
 }
 
 // Server accepts TCP connections.
@@ -148,16 +163,34 @@ func (s *Server) accept() {
 			select {
 			case <-s.closed:
 			default:
-				s.events <- Event{Kind: Disconnected, Err: fmt.Errorf("network: accept: %w", err)}
+				select {
+				case s.events <- Event{Kind: Disconnected, Err: fmt.Errorf("network: accept: %w", err)}:
+				case <-s.closed:
+				}
 			}
 			return
 		}
 		s.mu.Lock()
+		// Accept may return a socket concurrently with listener shutdown.
+		// Registration and Close's shutdown marker share the same lock.
+		select {
+		case <-s.closed:
+			s.mu.Unlock()
+			nc.Close()
+			return
+		default:
+		}
 		s.nextID++
 		c := &Conn{c: nc, reg: s.reg, events: s.events, activity: s.activity, closed: make(chan struct{}), ID: s.nextID}
 		s.conns[c.ID] = c
 		s.mu.Unlock()
-		c.emit(Event{Kind: Connected, Conn: c})
+		if !c.emit(Event{Kind: Connected, Conn: c}) {
+			c.Close()
+			s.mu.Lock()
+			delete(s.conns, c.ID)
+			s.mu.Unlock()
+			continue
+		}
 		go func() {
 			c.readLoop()
 			s.mu.Lock()
@@ -196,10 +229,14 @@ func (s *Server) Broadcast(msg any, except ...*Conn) {
 }
 
 // Close stops accepting and closes every connection.
+// Pending events may be discarded if the local event queue is full,
+// as with Conn.Close. Already queued events remain available to Poll.
 func (s *Server) Close() error {
 	var err error
 	s.once.Do(func() {
+		s.mu.Lock()
 		close(s.closed)
+		s.mu.Unlock()
 		err = s.ln.Close()
 		for _, c := range s.Conns() {
 			c.Close()

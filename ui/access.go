@@ -25,7 +25,8 @@ func (c *Context) note(role, label, value string, state bool) {
 
 // noteAt records a widget at an explicit rectangle and identity.
 func (c *Context) noteAt(role, label, value string, state bool, r Rect, id widgetID) {
-	c.nodes = append(c.nodes, AccessibleNode{Role: role, Label: label, Value: value, Rect: r, State: state, Focused: c.navFocus == id || c.focus == id})
+	focused := (c.modal == 0 || c.inModal) && (c.navFocus == id || c.focus == id)
+	c.nodes = append(c.nodes, AccessibleNode{Role: role, Label: label, Value: value, Rect: r, State: state, Focused: focused})
 }
 
 // Accessible returns the widgets of the last finished frame in reading

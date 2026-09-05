@@ -40,3 +40,8 @@
 /vector
 /viewer
 /window
+
+# These names are also source package directories; keep new sources visible.
+!/audio/
+!/network/
+!/tiled/

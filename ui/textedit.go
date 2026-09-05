@@ -371,11 +371,19 @@ func abs32(v float32) float32 {
 	return v
 }
 
+// textFocused applies modal ownership to retained text focus. A blocked
+// editor does not mark focusSeen, so end releases its focus unless a
+// modal editor takes it during the frame.
+func (c *Context) textFocused(id widgetID) bool {
+	return c.focus == id && (c.modal == 0 || c.inModal)
+}
+
 // TextField edits *value on one line while focused and reports a change.
 // It has a caret, a selection (Shift with the arrows, or a drag), Home
 // and End, word jumps with Ctrl or Cmd and the arrows, select all, cut,
 // copy and paste through the Clipboard, and undo and redo (Ctrl or Cmd
-// with Z, Shift+Z or Y). Enter and Escape drop focus.
+// with Z, Shift+Z or Y). Enter and Escape drop focus. An open modal
+// releases focus from fields outside it.
 func (c *Context) TextField(label string, value *string) bool {
 	id := c.id(label)
 	r := c.next(c.Theme.RowHeight)
@@ -393,28 +401,28 @@ func (c *Context) TextField(label string, value *string) bool {
 			st.caret = i // dragging extends the selection
 		}
 	}
-	if c.focus == id {
+	if c.textFocused(id) {
 		c.focusSeen, c.focusRect = true, r
 	}
 	changed := false
-	if c.focus == id {
+	if c.textFocused(id) {
 		changed = c.edit(id, value, false, nil)
 	}
-	c.note("textfield", label, *value, c.focus == id)
+	c.note("textfield", label, *value, c.textFocused(id))
 	sk := c.skin()
 	border, slice := c.Theme.FieldBorder, sk.Field
-	if c.focus == id {
+	if c.textFocused(id) {
 		border, slice = c.Theme.Accent, or(sk.FieldFocus, sk.Field)
 	}
 	c.box(slice, r, c.Theme.Field, border)
 	_, h := c.Theme.Font.Measure("Ag", gfx.TextOptions{})
 	ty := r.Y + (r.H-h)/2
-	if *value == "" && c.focus != id {
+	if *value == "" && !c.textFocused(id) {
 		c.text(label, inner.X, ty, c.Theme.TextDim)
 		return false
 	}
 	// Keep the caret in view by scrolling the text horizontally.
-	if c.focus == id {
+	if c.textFocused(id) {
 		cx := c.caretX(*value, st.caret)
 		if cx-st.scroll > inner.W {
 			st.scroll = cx - inner.W
@@ -428,14 +436,14 @@ func (c *Context) TextField(label string, value *string) bool {
 	}
 	c.g.Clip(inner, func() {
 		x := inner.X - st.scroll
-		if c.focus == id {
+		if c.textFocused(id) {
 			if lo, hi := st.selection(); lo != hi {
 				x0, x1 := c.caretX(*value, lo), c.caretX(*value, hi)
 				c.fill(Rect{X: x + x0, Y: ty, W: x1 - x0, H: h}, c.Theme.Accent.WithAlpha(0.35))
 			}
 		}
 		c.text(*value, x, ty, c.Theme.Text)
-		if c.focus == id {
+		if c.textFocused(id) {
 			composing := c.in.Composition()
 			cx := x + c.caretX(*value, st.caret)
 			if composing != "" {
@@ -458,7 +466,8 @@ func (c *Context) TextField(label string, value *string) bool {
 
 // TextArea edits *value over several wrapped lines in a box of the given
 // height, with the same keys as TextField plus Up, Down and Enter for a
-// new line; it scrolls to keep the caret in view.
+// new line; it scrolls to keep the caret in view. An open modal releases
+// focus from areas outside it.
 func (c *Context) TextArea(label string, value *string, height float32) bool {
 	id := c.id("textarea:" + label)
 	r := c.next(height)
@@ -483,28 +492,28 @@ func (c *Context) TextArea(label string, value *string, height float32) bool {
 			st.caret = i
 		}
 	}
-	if c.focus == id {
+	if c.textFocused(id) {
 		c.focusSeen, c.focusRect = true, r
 	}
 	changed := false
-	if c.focus == id {
+	if c.textFocused(id) {
 		changed = c.edit(id, value, true, lines)
 		runes = []rune(*value)
 		ls = lines(*value)
 	}
-	c.note("textarea", label, *value, c.focus == id)
+	c.note("textarea", label, *value, c.textFocused(id))
 	sk := c.skin()
 	border, slice := c.Theme.FieldBorder, sk.Field
-	if c.focus == id {
+	if c.textFocused(id) {
 		border, slice = c.Theme.Accent, or(sk.FieldFocus, sk.Field)
 	}
 	c.box(slice, r, c.Theme.Field, border)
-	if *value == "" && c.focus != id {
+	if *value == "" && !c.textFocused(id) {
 		c.text(label, inner.X, inner.Y, c.Theme.TextDim)
 		return false
 	}
 	// Scroll to the caret's line.
-	if c.focus == id {
+	if c.textFocused(id) {
 		row := lineOf(ls, st.caret)
 		top := float32(row) * lineH
 		if top-st.scroll < 0 {
@@ -524,7 +533,7 @@ func (c *Context) TextArea(label string, value *string, height float32) bool {
 				continue
 			}
 			line := string(runes[l[0]:l[1]])
-			if c.focus == id && lo != hi && hi > l[0] && lo <= l[1] {
+			if c.textFocused(id) && lo != hi && hi > l[0] && lo <= l[1] {
 				a, b := max(lo, l[0]), min(hi, l[1])
 				x0 := c.caretX(line, a-l[0])
 				x1 := c.caretX(line, b-l[0])
@@ -534,7 +543,7 @@ func (c *Context) TextArea(label string, value *string, height float32) bool {
 				c.fill(Rect{X: inner.X + x0, Y: y, W: x1 - x0, H: lineH}, c.Theme.Accent.WithAlpha(0.35))
 			}
 			c.text(line, inner.X, y, c.Theme.Text)
-			if c.focus == id && lineOf(ls, st.caret) == n {
+			if c.textFocused(id) && lineOf(ls, st.caret) == n {
 				st.blink++
 				if st.blink%60 < 40 {
 					cx := inner.X + c.caretX(line, st.caret-l[0])
@@ -543,7 +552,7 @@ func (c *Context) TextArea(label string, value *string, height float32) bool {
 			}
 		}
 	})
-	if c.focus == id && c.OnTextInputRect != nil {
+	if c.textFocused(id) && c.OnTextInputRect != nil {
 		c.OnTextInputRect(r.X, r.Y, r.W, r.H)
 	}
 	_ = lin.Vec2{}

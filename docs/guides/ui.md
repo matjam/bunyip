@@ -119,6 +119,11 @@ composition underlined and report their rectangle through
 `OnTextInputRect` so the platform can place candidate windows; wire
 that to `ctx.SetTextInputRect` once.
 
+An open modal owns text input, clipboard shortcuts and composition.
+Fields behind it release text focus and cannot edit their values or move
+the input method's candidate rectangle. Closing the modal leaves them
+unfocused until the user selects a field again.
+
 ## State and identity
 
 Widgets keep no state of their own. Values live in the game's variables

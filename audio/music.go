@@ -186,15 +186,24 @@ func (mu *Music) fill() {
 	stereo := make([]float32, 4096*2)
 	var out []float32
 	rewound := false // the end was reached and nothing has decoded since
+	lastGen := -1
+	emptyReads := 0
 	for {
 		gen, ok := mu.applySeek()
 		if !ok {
 			return
 		}
+		if gen != lastGen {
+			rewound, emptyReads = false, 0
+			lastGen = gen
+		}
 		n, err := mu.dec.Read(src)
+		if n < 0 || n > len(src) || n%ch != 0 {
+			n, err = 0, io.ErrUnexpectedEOF
+		}
 		if n > 0 {
 			rewound = false
-			n -= n % ch
+			emptyReads = 0
 			stereo = toStereo(src[:n], ch, stereo[:0])
 			out = mu.rs.process(stereo, out[:0])
 			if !mu.push(out, gen) {
@@ -202,15 +211,31 @@ func (mu *Music) fill() {
 			}
 		}
 		if err == nil {
-			continue
+			if n > 0 {
+				continue
+			}
+			emptyReads++
+			if emptyReads < 100 {
+				continue
+			}
+			err = io.ErrNoProgress
 		}
 		// A looping track rewinds at its end, unless the rewind produced
 		// nothing: a track with no frames would otherwise spin forever.
 		if errors.Is(err, io.EOF) && mu.loop && !rewound {
 			if rerr := mu.dec.SeekFrame(0); rerr == nil {
-				mu.rs.reset()
+				// The next pass supplies the next interpolation frame. Keep
+				// the phase and last frame, even for a one-frame track.
 				rewound = true
 				continue
+			} else {
+				err = fmt.Errorf("audio: music: rewind: %w", rerr)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			out = mu.rs.finish(out[:0])
+			if !mu.push(out, gen) {
+				return
 			}
 		}
 		mu.mu.Lock()
@@ -307,6 +332,16 @@ type resampler struct {
 }
 
 func (r *resampler) reset() { r.primed = false; r.pos = 0 }
+
+// finish holds the last sample through its final source-frame interval.
+// A loop supplies its first frame instead; only terminal EOF drains here.
+func (r *resampler) finish(dst []float32) []float32 {
+	if r.primed {
+		dst = r.process(r.last[:], dst)
+	}
+	r.reset()
+	return dst
+}
 
 // process appends the resampled chunk to dst.
 func (r *resampler) process(in []float32, dst []float32) []float32 {

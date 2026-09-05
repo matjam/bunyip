@@ -380,6 +380,12 @@ over UDP for real-time state. A `Registry` names the message types both
 ends agree on; events arrive through `Poll` once per frame, and
 `SetOnActivity` can wake a sleeping turn-based game.
 
+Closing a local TCP connection or server cancels publication blocked by
+a full event queue. Already queued events remain available to `Poll`,
+but pending messages or disconnect notifications may be dropped during
+local shutdown. A remote disconnect is queued after its preceding
+messages as usual.
+
 Messages are plain structs. Both ends build the same registry in the
 same order:
 

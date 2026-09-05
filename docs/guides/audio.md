@@ -121,6 +121,9 @@ for _, b := range []*audio.Bus{ctx.Audio.Music(), ctx.Audio.Effects(), ctx.Audio
 `OpenMusic` streams a WAV, Ogg or MP3 file, decoding a couple of seconds
 ahead on its own goroutine; `PlayStream` plays it, and `Close` stops it.
 `Music.Duration` and `Music.Seek` work for all three formats.
+Looping retains resampling history across the track boundary, including
+tracks as short as one source frame. An explicit seek resets that history;
+nonlooping playback includes the final frame's interval.
 Anything implementing `Stream` (fill a buffer of stereo frames) plays the
 same way. Procedural music and the tracker player use that.
 
