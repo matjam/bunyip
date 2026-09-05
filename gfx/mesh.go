@@ -289,6 +289,56 @@ type Material struct {
 	// nil is the factor everywhere. Data, not colour.
 	TransmissionTexture *Texture
 
+	// Specular scales a dielectric's reflection and SpecularColor tints
+	// it, the KHR_materials_specular extension: zero means 1 and white,
+	// the plain material. A small Specular such as 0.01 all but removes
+	// the reflection, for chalk and unglazed clay. SpecularTexture
+	// carries the tint in its RGB and the strength in its alpha. Metals
+	// keep their own reflection, which is their base colour.
+	Specular        float32
+	SpecularColor   Color
+	SpecularTexture *Texture
+
+	// Iridescence (0..1) puts a thin film over the surface, whose
+	// interference shifts the reflection's hue with the viewing angle:
+	// soap bubbles, oil on water, beetle shells, tempered steel.
+	// IridescenceIOR is the film's index of refraction (zero means 1.3)
+	// and IridescenceThickness how thick it is in nanometres (zero means
+	// 400, and 100 to 800 is the range that shows colour).
+	// IridescenceTexture scales the strength by its red channel and mixes
+	// the thickness from IridescenceThicknessMin to IridescenceThickness
+	// by its green channel, the two maps glTF packs into one image.
+	Iridescence             float32
+	IridescenceIOR          float32
+	IridescenceThickness    float32
+	IridescenceThicknessMin float32
+	IridescenceTexture      *Texture
+
+	// Anisotropy (-1..1) stretches the specular highlight along the
+	// surface rather than leaving it round: brushed metal, hair, satin,
+	// vinyl records. AnisotropyRotation turns the direction it stretches
+	// in, in radians, and AnisotropyTexture holds a direction of its own
+	// in red and green (around a half, as glTF stores it) and a strength
+	// in blue. The direction comes from the mesh's texture coordinates,
+	// so an anisotropic mesh needs UVs but no tangents of its own.
+	Anisotropy         float32
+	AnisotropyRotation float32
+	AnisotropyTexture  *Texture
+
+	// Shells draws the mesh that many more times, each a little further
+	// out along its normals, for fur, grass, moss and hair; zero means
+	// none and eight to twenty-four look like fur. ShellLength is how far
+	// the outermost shell stands off in world units (zero means 0.05).
+	// FurTexture is the strand mask: a shell keeps a fragment where the
+	// map's red channel is above that shell's height, so a tiled noise
+	// image gives strands, and the material's UVTransform tiles it.
+	// Without a map the shells are solid and only fade outwards. Shells
+	// draw after the opaque scene, leave the depth buffer alone and cast
+	// no shadow, and each one costs an instance of the mesh.
+	Shells      int
+	ShellLength float32
+	FurTexture  *Texture
+
 	// Stencil masks the material against the stencil buffer: it draws only
 	// where the value already there compares to StencilRef the way the
 	// test says. StencilAlways, the zero value, draws everywhere.
@@ -424,7 +474,10 @@ type meshDraw struct {
 	depth      float32 // view-space distance for transparency sorting
 	blended    bool    // mat.blended(), resolved once by prepareDraws for the sort
 	culled     bool    // outside the camera's view; drawn only into shadows
-	skinned    bool
+	skinned bool
+	// shell is 0 for the mesh itself and rises to 1 on the outermost fur
+	// shell, which stands ShellLength world units off the surface.
+	shell      float32
 	jointBase  int // first joint matrix in the queue's joint list
 	jointCount int // how many joint matrices the draw's pose uses
 	// centre and radius are the draw's world bounding sphere, resolved by
@@ -451,9 +504,12 @@ type meshInstance struct {
 	// index a shader reads from here is the same across the draw, which
 	// is what indexing the sampler array needs.
 	atten [4]float32
+	spec  [4]float32 // specular colour, specular strength
+	irid  [4]float32 // iridescence strength, film ior, thickness minimum and maximum in nm
+	fur   [4]float32 // anisotropy strength, its rotation; a shell's offset in world units and its height
 }
 
-const meshInstanceSize = 176
+const meshInstanceSize = 224
 
 // blended reports whether a material draws after the opaque scene. The
 // receiver is a pointer because Material is large and this sits in the

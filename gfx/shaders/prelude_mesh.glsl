@@ -32,10 +32,17 @@ layout(set = 0, binding = 9) uniform textureCube tEnv;     // prefiltered enviro
 layout(set = 0, binding = 10) uniform texture2D tThickness; // R: 1 thick, 0 thin, for subsurface
 layout(set = 0, binding = 11) uniform texture2D tScene;     // the opaque scene, blurred down its mips, for transmission
 layout(set = 0, binding = 12) uniform texture2D tTransmission; // R scales the transmission factor
-layout(set = 0, binding = 13) uniform sampler samplers[4];
+layout(set = 0, binding = 13) uniform texture2D tIridescence;  // R the thin film's strength, G its thickness
+layout(set = 0, binding = 14) uniform texture2D tAnisotropy;   // RG the direction, B the strength
+layout(set = 0, binding = 15) uniform texture2D tSpecular;     // RGB the reflection's tint, A its strength
+layout(set = 0, binding = 16) uniform texture2D tFur;          // R the strand mask of a fur shell
+layout(set = 0, binding = 17) uniform sampler samplers[4];
 
-// LINEAR_CLAMP is the sampler the engine's own images always use.
+// LINEAR_CLAMP is the sampler the engine's own images always use, and
+// LINEAR_REPEAT the one the material maps added after the packed sampler
+// indices ran out use.
 const int LINEAR_CLAMP = 1;
+const int LINEAR_REPEAT = 0;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -86,6 +93,9 @@ layout(location = 10) flat in vec4 vUVT1;    // texture transform e, f; z clearc
 layout(location = 11) flat in vec4 vSheen;   // sheen colour, w sheen roughness
 layout(location = 12) flat in vec4 vVolume;  // x transmission, y ior, z thickness, w attenuation distance
 layout(location = 13) flat in vec4 vAtten;   // attenuation colour, w = packed sampler indices
+layout(location = 14) flat in vec4 vSpec;    // specular colour, w specular strength
+layout(location = 15) flat in vec4 vIrid;    // iridescence strength, film ior, thickness min and max in nm
+layout(location = 16) flat in vec4 vFur;     // anisotropy strength, its rotation; shell offset and shell height
 layout(location = 0) out vec4 outColor;
 
 // texSampler is the sampler for one of the material set's texture slots,
@@ -107,6 +117,13 @@ int texSampler(int slot) { return (int(vAtten.w) >> (2 * slot)) & 3; }
 #define transmissionTex sampler2D(tTransmission, samplers[texSampler(10)])
 #define envMap samplerCube(tEnv, samplers[LINEAR_CLAMP])
 #define sceneTex sampler2D(tScene, samplers[LINEAR_CLAMP])
+// The maps below are always read with linear filtering and repeat: the
+// packed index carries two bits for each of the first eleven slots and
+// has no room for more.
+#define iridescenceTex sampler2D(tIridescence, samplers[LINEAR_REPEAT])
+#define anisotropyTex sampler2D(tAnisotropy, samplers[LINEAR_REPEAT])
+#define specularTex sampler2D(tSpecular, samplers[LINEAR_REPEAT])
+#define furTex sampler2D(tFur, samplers[LINEAR_REPEAT])
 
 // Surface is what the lighting sees. surface() may change any field:
 // albedo and alpha (linear, not premultiplied), normal (world space),
@@ -115,7 +132,12 @@ int texSampler(int slot) { return (int(vAtten.w) >> (2 * slot)) & 3; }
 // clearcoat and clearcoatRoughness (a varnish layer), sheen and
 // sheenRoughness (cloth), subsurface and thickness (light through thin
 // parts), transmission, ior, volume (thickness in world units),
-// attenuation and attenuationDistance (light through glass and liquids).
+// attenuation and attenuationDistance (light through glass and liquids),
+// specular and specularColor (the strength and tint of a dielectric's
+// reflection), iridescence with iridescenceIOR and iridescenceThickness
+// in nanometres (a thin film over the surface), anisotropy with tangent
+// (a highlight stretched along the tangent), and shell (0 on the surface
+// itself, rising to 1 on the outermost fur shell).
 // color is the vertex colour, already multiplied into albedo.
 struct Surface {
     vec3 albedo;
@@ -142,6 +164,14 @@ struct Surface {
     float volume;
     vec3 attenuation;
     float attenuationDistance;
+    vec3 specularColor;
+    float specular;
+    float iridescence;
+    float iridescenceIOR;
+    float iridescenceThickness; // nanometres
+    float anisotropy;
+    vec3 tangent;               // world space, the direction a highlight stretches along
+    float shell;                // 0 on the surface, 1 on the outermost fur shell
 };
 
 // VertexData and model are the vertex stage's; they are here so a
@@ -176,6 +206,24 @@ vec3 perturbNormal(vec3 n, vec3 pos, vec2 uv) {
     mat3 tbn = mat3(t * invmax, b * invmax, n);
     vec3 nm = texture(normalTex, uv).xyz * 2.0 - 1.0;
     return normalize(tbn * nm);
+}
+
+// surfaceTangent is the surface's direction along the u axis of its
+// texture coordinates, turned in the surface's plane by an angle in
+// radians. It comes from screen-space derivatives, like perturbNormal,
+// so an anisotropic material needs texture coordinates but no tangents
+// of its own. dir turns it further, as an anisotropy map's red and green
+// channels ask.
+vec3 surfaceTangent(vec3 n, vec2 uv, vec2 dir) {
+    vec3 dp1 = dFdx(vWorldPos), dp2 = dFdy(vWorldPos);
+    vec2 duv1 = dFdx(uv), duv2 = dFdy(uv);
+    vec3 dp2perp = cross(dp2, n), dp1perp = cross(n, dp1);
+    vec3 t = dp2perp * duv1.x + dp1perp * duv2.x;
+    if (dot(t, t) < 1e-12) t = abs(n.y) < 0.99 ? cross(vec3(0.0, 1.0, 0.0), n) : vec3(1.0, 0.0, 0.0);
+    t = normalize(t - n * dot(n, t));
+    vec3 b = cross(n, t);
+    vec3 turned = t * dir.x + b * dir.y;
+    return dot(turned, turned) < 1e-12 ? t : normalize(turned);
 }
 
 // sampleAtlas takes nine comparisons around a point of one map in the
@@ -254,6 +302,54 @@ vec3 F_Schlick(float VoH, vec3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - VoH, 5.0);
 }
 
+// D_GGXAniso is the GGX distribution stretched along the tangent, with
+// one roughness across the tangent and another across the bitangent
+// (Burley, in the form Filament uses).
+float D_GGXAniso(float NoH, float ToH, float BoH, float at, float ab) {
+    vec3 d = vec3(ab * ToH, at * BoH, at * ab * NoH);
+    float d2 = max(dot(d, d), 1e-8);
+    float b2 = at * ab / d2;
+    return at * ab * b2 * b2 / PI;
+}
+
+// V_SmithGGXAniso is the visibility term that goes with D_GGXAniso.
+float V_SmithGGXAniso(float at, float ab, float ToV, float BoV, float ToL, float BoL, float NoV, float NoL) {
+    float lv = NoL * length(vec3(at * ToV, ab * BoV, NoV));
+    float ll = NoV * length(vec3(at * ToL, ab * BoL, NoL));
+    return 0.5 / max(lv + ll, 1e-5);
+}
+
+// thinFilm is how much a film of that many nanometres reflects at each
+// of three wavelengths, seen at an angle. The two reflections, off the
+// film's front and back, are out of phase by the extra distance the
+// second travels, and where they cancel that wavelength is missing from
+// the reflection: a soap bubble, an oil slick, tempered steel. It is a
+// cheap stand-in for the full Belcour and Barla model, with a mean of
+// 0.5, so the caller doubles it to keep the surface's average
+// reflectance.
+vec3 thinFilm(float cosTheta, float thickness, float filmIOR) {
+    float eta = max(filmIOR, 1.0);
+    float sin2 = (1.0 - cosTheta * cosTheta) / (eta * eta);
+    float cosT = sqrt(max(1.0 - sin2, 0.0));
+    float opd = 2.0 * eta * thickness * cosT; // optical path difference, nm
+    vec3 phase = 2.0 * PI * opd / vec3(650.0, 550.0, 450.0) + PI;
+    return 0.5 + 0.5 * cos(phase);
+}
+
+// baseF0 is the surface's reflectance at normal incidence: a dielectric's
+// 0.04 scaled and tinted by the specular colour, the albedo where the
+// surface is metal.
+vec3 baseF0(Surface s) {
+    return mix(vec3(0.04) * s.specularColor * s.specular, s.albedo, s.metallic);
+}
+
+// iridescent shifts a Fresnel colour through the thin film's
+// interference, keeping the average reflectance where it was.
+vec3 iridescent(Surface s, vec3 F, float cosTheta) {
+    if (s.iridescence <= 0.0) return F;
+    return mix(F, F * 2.0 * thinFilm(cosTheta, s.iridescenceThickness, s.iridescenceIOR), s.iridescence);
+}
+
 // D_Charlie is the sheen distribution (Estevez and Kulla).
 float D_Charlie(float NoH, float roughness) {
     float a = max(roughness, 0.05);
@@ -300,6 +396,36 @@ vec3 shadeVolume(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metal
     return (kd * albedo / PI + spec) * radiance * NoL;
 }
 
+// baseLayer is one light's contribution to a surface's base layer: the
+// diffuse lobe, scaled down by what passes through the surface instead,
+// and the specular lobe, stretched along the tangent where the material
+// is anisotropic and shifted by the thin film where it is iridescent.
+// It is what the engine's own lighting uses; shade and shadeVolume are
+// the plain forms a game shader may call.
+vec3 baseLayer(Surface s, vec3 n, vec3 v, vec3 l, vec3 radiance) {
+    vec3 h = normalize(l + v);
+    float NoL = max(dot(n, l), 0.0);
+    float NoV = max(dot(n, v), 1e-4);
+    float NoH = max(dot(n, h), 0.0);
+    float VoH = max(dot(v, h), 0.0);
+    float a = s.roughness * s.roughness;
+    float a2 = a * a;
+    vec3 F = iridescent(s, F_Schlick(VoH, baseF0(s)), VoH);
+    float D = D_GGX(NoH, a2);
+    float V = V_SmithGGX(NoV, NoL, a2);
+    if (s.anisotropy != 0.0) {
+        float at = max(a * (1.0 + s.anisotropy), 1e-3);
+        float ab = max(a * (1.0 - s.anisotropy), 1e-3);
+        vec3 t = normalize(s.tangent - n * dot(n, s.tangent));
+        vec3 b = cross(n, t);
+        D = D_GGXAniso(NoH, dot(t, h), dot(b, h), at, ab);
+        V = V_SmithGGXAniso(at, ab, dot(t, v), dot(b, v), dot(t, l), dot(b, l), NoV, NoL);
+    }
+    vec3 spec = D * V * F;
+    vec3 kd = (1.0 - F) * (1.0 - s.metallic) * (1.0 - s.transmission);
+    return (kd * s.albedo / PI + spec) * radiance * NoL;
+}
+
 // transmitted is the light arriving through a transmissive surface: the
 // opaque scene behind it, refracted across the volume, blurred by the
 // roughness and absorbed by the attenuation colour over the distance,
@@ -321,7 +447,7 @@ vec3 transmitted(Surface s, vec3 n, vec3 v) {
 // lobes is one light's contribution to a surface: the base layer plus
 // sheen, clearcoat and subsurface transmission.
 vec3 lobes(Surface s, vec3 n, vec3 v, vec3 l, vec3 radiance) {
-    vec3 color = shadeVolume(n, v, l, radiance, s.albedo, s.metallic, s.roughness, s.transmission);
+    vec3 color = baseLayer(s, n, v, l, radiance);
     vec3 h = normalize(l + v);
     float NoL = max(dot(n, l), 0.0);
     float NoV = max(dot(n, v), 1e-4);
@@ -452,15 +578,23 @@ vec3 envDiffuse(vec3 n) {
 // every lobe.
 vec3 ambient(Surface s, vec3 n, vec3 v) {
     float NoV = max(dot(n, v), 1e-4);
-    vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
+    vec3 f0 = baseF0(s);
     vec3 kS = f0 + (max(vec3(1.0 - s.roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
     vec3 kD = (1.0 - kS) * (1.0 - s.metallic);
     vec3 r = reflect(-v, n);
+    if (s.anisotropy != 0.0) {
+        // An anisotropic surface reflects the environment along a normal
+        // bent towards the direction the highlight stretches in.
+        vec3 t = normalize(s.tangent - n * dot(n, s.tangent));
+        vec3 dir = s.anisotropy >= 0.0 ? cross(n, t) : t;
+        vec3 bent = normalize(mix(n, cross(cross(dir, v), dir), abs(s.anisotropy)));
+        r = reflect(-v, bent);
+    }
     vec3 color = kD * s.albedo * envDiffuse(n) * (1.0 - s.transmission);
     if (s.transmission > 0.0) {
         color += kD * s.transmission * transmitted(s, n, v);
     }
-    color += envSpecular(r, s.roughness) * envBRDF(f0, s.roughness, NoV);
+    color += envSpecular(r, s.roughness) * iridescent(s, envBRDF(f0, s.roughness, NoV), NoV);
     if (dot(s.sheen, s.sheen) > 0.0) {
         color += s.sheen * envDiffuse(n) * 0.25 * (1.0 - s.sheenRoughness * 0.5);
     }

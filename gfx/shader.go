@@ -152,12 +152,14 @@ type pipeKey struct {
 
 // meshKey is the pipeline variant a material needs. It takes a pointer
 // because Material is large and this sits in the draw loop.
-func meshKey(mat *Material, skinned bool) pipeKey {
+func meshKey(mat *Material, skinned, shell bool) pipeKey {
 	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0}
 	if !key.stencil {
 		key.stencilTest, key.stencilOp, key.stencilRef = mat.Stencil, mat.StencilWrite, mat.StencilRef
 	}
-	if mat.blended() {
+	// A fur shell is blended and leaves the depth buffer alone whatever
+	// the material says, so the shells under it still draw.
+	if mat.blended() || shell {
 		key.blend = BlendAlpha
 	}
 	return key

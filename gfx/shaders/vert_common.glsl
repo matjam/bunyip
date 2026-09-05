@@ -56,6 +56,11 @@ layout(location = 12) in vec4 iUVT1;    // texture transform e, f; z clearcoat, 
 layout(location = 13) in vec4 iSheen;   // sheen colour, w sheen roughness
 layout(location = 14) in vec4 iVolume;  // x transmission, y ior, z thickness, w attenuation distance
 layout(location = 15) in vec4 iAtten;   // attenuation colour, w = packed sampler indices
+// Locations 16 and 17 are a skinned mesh's joints and weights, so the
+// instance stream carries on at 18.
+layout(location = 18) in vec4 iSpec;    // specular colour, w specular strength
+layout(location = 19) in vec4 iIrid;    // iridescence strength, film ior, thickness min and max in nm
+layout(location = 20) in vec4 iFur;     // anisotropy strength, its rotation; shell offset and shell height
 
 // The material's textures and the shader's images are visible here too,
 // for displacement maps. Set 0 keeps images and samplers apart, and the
@@ -74,9 +79,14 @@ layout(set = 0, binding = 9) uniform textureCube tEnv;
 layout(set = 0, binding = 10) uniform texture2D tThickness;
 layout(set = 0, binding = 11) uniform texture2D tScene;
 layout(set = 0, binding = 12) uniform texture2D tTransmission;
-layout(set = 0, binding = 13) uniform sampler samplers[4];
+layout(set = 0, binding = 13) uniform texture2D tIridescence;
+layout(set = 0, binding = 14) uniform texture2D tAnisotropy;
+layout(set = 0, binding = 15) uniform texture2D tSpecular;
+layout(set = 0, binding = 16) uniform texture2D tFur;
+layout(set = 0, binding = 17) uniform sampler samplers[4];
 
 const int LINEAR_CLAMP = 1;
+const int LINEAR_REPEAT = 0;
 
 // texSampler is the sampler for one of the material set's texture slots,
 // two bits apiece in this instance's packed index.
@@ -95,6 +105,10 @@ int texSampler(int slot) { return (int(iAtten.w) >> (2 * slot)) & 3; }
 #define transmissionTex sampler2D(tTransmission, samplers[texSampler(10)])
 #define envMap samplerCube(tEnv, samplers[LINEAR_CLAMP])
 #define sceneTex sampler2D(tScene, samplers[LINEAR_CLAMP])
+#define iridescenceTex sampler2D(tIridescence, samplers[LINEAR_REPEAT])
+#define anisotropyTex sampler2D(tAnisotropy, samplers[LINEAR_REPEAT])
+#define specularTex sampler2D(tSpecular, samplers[LINEAR_REPEAT])
+#define furTex sampler2D(tFur, samplers[LINEAR_REPEAT])
 
 #define UNIFORMS layout(set = 4, binding = 0)
 
@@ -134,6 +148,14 @@ struct Surface {
     float volume;
     vec3 attenuation;
     float attenuationDistance;
+    vec3 specularColor;
+    float specular;
+    float iridescence;
+    float iridescenceIOR;
+    float iridescenceThickness;
+    float anisotropy;
+    vec3 tangent;
+    float shell;
 };
 
 // time is seconds since the game started.
@@ -151,6 +173,7 @@ vec2 uvTransform(vec2 uv) {
 // Fragment-stage helpers, stubbed so shader code that calls them still
 // compiles here; they are never called from the vertex stage.
 vec3 perturbNormal(vec3 n, vec3 pos, vec2 uv) { return n; }
+vec3 surfaceTangent(vec3 n, vec2 uv, vec2 dir) { return n; }
 float shadowFactor(vec3 n, vec3 l) { return 1.0; }
 vec3 shade(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metallic, float roughness) { return vec3(0.0); }
 vec3 light(Surface s) { return vec3(0.0); }
