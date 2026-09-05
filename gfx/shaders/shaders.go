@@ -48,6 +48,10 @@ var (
 //go:generate glslangValidator -V -o skyparam.frag.spv skyparam.frag
 //go:generate glslangValidator -V -o line.vert.spv line.vert
 //go:generate glslangValidator -V -o line.frag.spv line.frag
+//go:generate glslangValidator -V -o particle.vert.spv particle.vert
+//go:generate glslangValidator -V -o particle.frag.spv particle.frag
+//go:generate glslangValidator -V -o particle3d.vert.spv particle3d.vert
+//go:generate glslangValidator -V -o particle3d.frag.spv particle3d.frag
 //go:generate glslangValidator -V -o outline.vert.spv outline.vert
 //go:generate glslangValidator -V -o solid.frag.spv solid.frag
 //go:generate glslangValidator -V -o decal.vert.spv decal.vert
@@ -62,6 +66,14 @@ var (
 	LineVert []byte
 	//go:embed line.frag.spv
 	LineFrag []byte
+	//go:embed particle.vert.spv
+	ParticleVert []byte
+	//go:embed particle.frag.spv
+	ParticleFrag []byte
+	//go:embed particle3d.vert.spv
+	Particle3DVert []byte
+	//go:embed particle3d.frag.spv
+	Particle3DFrag []byte
 	//go:embed outline.vert.spv
 	OutlineVert []byte
 	//go:embed solid.frag.spv

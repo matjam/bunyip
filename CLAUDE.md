@@ -74,6 +74,20 @@ runs the shadow atlas pass, the HDR pass (sky, opaque, blended,
 debug lines), decals, then the post pass composites. Colours are linear
 and non-premultiplied in the API, premultiplied in the 2D stream.
 
+**Instanced particles** (`gfx/particles.go`) are their own path, not the
+sprite stream. `ParticleQuad` is exactly the GPU instance layout, so a
+slice of them uploads as a memcpy and the fragment program does the
+premultiply; the quad's six vertices come from `gl_VertexIndex`, so
+there is no vertex buffer. `DrawParticles` records a batch into the
+queue and `flush2D` interleaves the batches with the 2D stream by layer,
+which is why `draw2D` carries the layer of its first item; within one
+layer particles draw over sprites. `DrawParticles3D` records into
+`parts.scene`, which `renderScene` draws after decals in a `NoDepth`
+pass over `t.hdr`, sampling `t.depthSet` and doing the depth test in the
+fragment program, which is what gives the soft fade. Its push block is
+its own 128 bytes carrying the camera basis, so the shared `Frame` block
+is untouched.
+
 **Descriptor sets for meshes.** Set 0 is the material: thirteen
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
 the environment cube, the thickness map, the scene copy for

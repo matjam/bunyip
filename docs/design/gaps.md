@@ -93,6 +93,11 @@ against the 2D camera by the sprite's own corners and under the
 transform stack, a sort key within a layer (`SetSortKey`), camera
 follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
+So are GPU-instanced particles: `particle.GPUSystem` simulates over
+parallel arrays and draws through `gfx.DrawParticles` in 2D or
+`gfx.DrawParticles3D` in the scene, interleaved with the sprite stream
+by layer, with a soft depth fade in 3D and a stateless mode that keeps
+no per-particle state at all.
 
 - 2D shadows are cast by the occluder outlines a frame adds, not by the
   sprites themselves: nothing derives an occluder from a sprite's alpha,
@@ -110,9 +115,16 @@ follow, clamp and shake on `Camera2D`, tiled nine-slices,
   `renderQueue` skips when the frame has no 3D draws, no background and
   no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
   `RenderTexture` and blits it with its own sprite shader instead.
-- GPU-instanced particles for very large counts; the system is CPU
-  simulated and drawn through the sprite stream, which is fine for
-  thousands.
+- Stateless emitters are evaluated on the CPU, not in the vertex shader.
+  Every particle is a closed form of its seed and the clock, so the
+  vertex program could compute it from `gl_InstanceIndex` and upload
+  nothing at all; that needs a third pipeline and the emitter's curves
+  in a uniform block. Radial and tangential acceleration have no closed
+  form and would stay unsupported either way.
+- Instanced particles are drawn in the order the system holds them, with
+  no depth sort, in 2D or 3D. Additive effects do not care; a game with
+  overlapping alpha-blended particles orders the slice itself.
+- 3D particles are not lit and cast no shadows.
 - A particle editor in the gallery.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.

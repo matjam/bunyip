@@ -49,6 +49,10 @@ type item2D struct {
 type draw2D struct {
 	state        state2D
 	first, count uint32
+	// layer is the layer of the run's first item, which is its lowest
+	// because items are in layer order by the time draws are built.
+	// flush2D uses it to interleave instanced particles by layer.
+	layer int32
 }
 
 // stream2D collects a queue's 2D vertices for a frame and turns them into
@@ -219,7 +223,7 @@ func (s *stream2D) build() {
 			if n := len(s.draws); n > 0 && s.draws[n-1].state == it.state {
 				s.draws[n-1].count += uint32(it.count)
 			} else {
-				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count)})
+				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count), layer: it.layer})
 			}
 		}
 		return
@@ -230,7 +234,7 @@ func (s *stream2D) build() {
 		if n := len(s.draws); n > 0 && s.draws[n-1].state == it.state {
 			s.draws[n-1].count += uint32(it.count)
 		} else {
-			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count)})
+			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count), layer: it.layer})
 		}
 		s.orderedBuf = append(s.orderedBuf, s.verts[it.first:it.first+it.count]...)
 	}

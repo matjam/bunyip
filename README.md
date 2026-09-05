@@ -28,7 +28,8 @@ window.
   clamp and shake that culls what it cannot see, sort keys within a
   layer, atlases with tag animations, Aseprite files read as they are
   saved, vector paths
-  with gradients and dashes, particles, HarfBuzz-shaped text with colour
+  with gradients and dashes, particles on the CPU or as instanced quads
+  for hundreds of thousands, HarfBuzz-shaped text with colour
   glyphs (COLR, SVG and bitmap emoji), rich markup and hyphenation in
   thirteen languages, colour matrices, lit sprites with shadows cast
   from occluders, blend modes and
@@ -104,7 +105,7 @@ with it.
 | `gfx` | textures, sprites, paths, text, meshes, materials, cameras, lights, fog, culling, LOD, billboards, models, post-processing |
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
 | `console` | in-game debug console: commands, variables, log capture, and panels for the engine, graphics, entities, physics, audio, input and services |
-| `particle` | CPU particle systems drawn through the sprite batch |
+| `particle` | particle systems: `System` draws through the sprite batch, `GPUSystem` as instanced quads in 2D or 3D for hundreds of thousands |
 | `tiled` | maps from the Tiled editor in JSON or XML form, built into drawable levels |
 | `audio` | mixer, voices, streams, microphone capture; WAV, Ogg Vorbis and MP3 decoding; tone synthesis |
 | `audio/tracker` | MOD, S3M, XM and IT loader and player |

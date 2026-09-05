@@ -14,6 +14,15 @@
 // particles are cheap. Tens of thousands still draw as one batch but
 // cost CPU in Update.
 //
+// For hundreds of thousands, use GPUSystem instead. NewGPU takes the
+// same Emitter and offers the same methods, but keeps its particles as
+// numbers in parallel arrays, moves them with plain loops, and draws
+// them as one instanced call rather than as sprites; Draw3D puts the
+// same system in the 3D scene as camera-facing quads. Setting
+// Emitter.Stateless drops the per-particle state as well, computing
+// every particle from the seed and the clock, for effects whose
+// particles never interact.
+//
 // Emitter fields follow "zero means the default". An empty Emitter emits
 // nothing but is valid, and every preset is an Emitter a game can tweak
 // before or after New. Sizes and positions are in view units, angles in

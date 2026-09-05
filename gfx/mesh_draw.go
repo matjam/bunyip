@@ -1101,7 +1101,13 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if len(q.decals) > 0 {
 		g.drawDecals(cb, fr, q, t)
 	}
-	return nil
+	// Instanced particles last, over the finished scene: they read the
+	// depth image rather than testing against it, which is what lets
+	// them fade softly into the geometry behind them.
+	if err := g.prepareParticles(q, fr.Slot); err != nil {
+		return err
+	}
+	return g.drawSceneParticles(cb, q, t, aspect)
 }
 
 // drawSolid draws the outline shells and x-ray tints of draws that ask

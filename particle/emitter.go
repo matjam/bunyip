@@ -150,6 +150,20 @@ type Emitter struct {
 	// Prewarm simulates this many seconds at Start so a fire is already
 	// burning on its first frame. Zero is none.
 	Prewarm float32
+
+	// Stateless makes a GPUSystem keep no per-particle state: every
+	// particle is a closed-form function of the seed, its index in the
+	// stream and the clock, so memory is constant however many there
+	// are, the effect is exactly the same on every run, and it is
+	// already running at time zero with no Prewarm. It suits the effects
+	// whose particles never interact: rain, snow, sparks, dust, stars.
+	//
+	// A stateless emitter ignores Burst, Prewarm, WorldSpace,
+	// RadialAccel and TangentialAccel, which have no closed form, and it
+	// needs a Rate and a Lifetime. Damping and Acceleration work. The
+	// plain System ignores the field. Zero simulates each particle step
+	// by step, which is the default.
+	Stateless bool
 }
 
 // max returns the live particle cap.
