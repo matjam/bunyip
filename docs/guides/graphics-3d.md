@@ -116,8 +116,10 @@ you can transform and merge them first: `CubeMesh`, `SphereMesh(rings,
 segments)`, `PlaneMesh(segments)`, `QuadMesh`, `CylinderMesh(segments)`,
 `ConeMesh(segments)`, `CapsuleMesh(rings, segments, halfHeight)`,
 `TorusMesh(tube, rings, segments)` and `HeightfieldMesh(heights, cols,
-rows, cell)`. Use `HeightfieldMesh` for terrain. It takes a grid of
-heights, its size in samples, and the world units between samples.
+rows, cell)`. `HeightfieldMesh` turns a grid of heights, its size in
+samples and the world units between samples into one mesh; for ground a
+game walks about on, the `Terrain` type below builds on the same idea and
+does the chunking and the levels of detail as well.
 
 ```go
 verts, idx := gfx.HeightfieldMesh(g.heights, cols, rows, 1.0)
@@ -174,6 +176,59 @@ atlas over a material per object.
 `NewSkinnedMesh` takes `SkinVertex` values with four joint indices and
 weights, and `DrawSkinned(mesh, material, model, joints)` draws it with
 joint matrices the game computed itself, as the `lighting` example does.
+
+## Terrain
+
+`NewTerrain(opts)` takes a heightfield and does what a game would
+otherwise write itself: it splits the field into square chunks, builds
+each chunk's mesh at several resolutions, and `DrawTerrain(terrain)`
+queues each chunk at the resolution its distance from the camera
+deserves. Chunks are ordinary draws, so the frustum and the frame's
+occluders cull them, and each carries a skirt around its edge deep
+enough to hide the crack where it meets a coarser neighbour.
+
+`TerrainOptions` takes the `Heights` row by row with `Cols` and `Rows`,
+the `Cell` between samples and the `Centre` the field sits on. `Cols-1`
+and `Rows-1` must be whole multiples of `ChunkSize`, which is a power of
+two and 32 by default; `Levels` is how many resolutions each chunk keeps
+(4) and `LODDistance` how far the finest one reaches, each level after
+covering twice the distance of the one before. Every chunk at every level
+is uploaded at once, so a terrain costs about a third more device memory
+than its finest level alone.
+
+The ground is shaded by a built-in terrain shader. `Splat` is an RGBA
+image stretched over the whole field whose four channels weight the four
+tiling `Layers` textures, each repeating every `LayerScale` world units
+with its own `LayerRoughness`. Give the layers `TextureOptions.Repeat`,
+since they tile. `SetSplat(img)` replaces the weights later, for a map
+painted from the terrain's own height and slope or repainted as the
+ground changes, and `Shader()` reaches the shader to rebind a layer.
+
+`Height(x, z)` and `Normal(x, z)` say where the ground is and which way
+it faces, for scattering trees, dropping items and refusing to build on a
+slope. `Raycast(ray, reach)` finds where a ray first goes under the
+ground, which is what a click that digs needs. `Heights()` is the
+terrain's own sample grid: write into it and call `Update(minX, minZ,
+maxX, maxZ)` to rebuild the chunks that changed. `Bounds`, `Size`,
+`Chunks`, `Levels`, `ChunkLevel` and `ChunkCentre` report what it holds
+and what the last frame drew.
+
+```go
+g.ground, err = ctx.Gfx.NewTerrain(gfx.TerrainOptions{
+	Heights: heights, Cols: 129, Rows: 129, Cell: 1, ChunkSize: 32,
+	Levels: 4, LODDistance: 45,
+	Layers: [4]*gfx.Texture{sand, grass, rock, snow},
+	LayerScale: [4]float32{6, 5, 4, 7},
+})
+g.ground.SetSplat(weightsFromHeightAndSlope(g.ground))
+
+// Digging: edit the samples, then rebuild what they cover.
+h := g.ground.Heights()
+h[z*cols+x] -= 2
+g.ground.Update(x, z, x, z)
+
+gr.DrawTerrain(g.ground) // one draw per chunk, culled and refined for you
+```
 
 ## Models
 

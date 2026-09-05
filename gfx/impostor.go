@@ -54,9 +54,12 @@ type ImpostorOptions struct {
 	// Pitch is how far above the model each view looks down, in radians;
 	// zero means 15 degrees. Match it to the camera's usual elevation.
 	Pitch float32
-	// Light lights the bake. Its Background and Environment are ignored,
-	// since the atlas must keep the sky out of its transparent parts. The
-	// zero value is a sun from over the viewer's left shoulder.
+	// Light lights the bake. Pass the light the scene draws under, so the
+	// impostor matches the model it replaces; its Background, Environment,
+	// Shadows and Fog are ignored, since the sky must stay out of the
+	// atlas's transparent parts and the fog is applied again when the
+	// impostor is drawn. The zero value is a sun over the viewer's left
+	// shoulder against a pale sky.
 	Light Light
 	// Upright is what the drawn quad's Upright becomes; it is on by
 	// default, which is what a ring of views around a model wants. Set
@@ -71,6 +74,24 @@ const MaxImpostorViews = 64
 // counts as covered by the model. The mask is drawn unlit white on
 // black with no anti-aliasing, so every texel is far from the middle.
 const impostorMaskCut = 40
+
+// untonemap inverts the ACES curve post.frag applies, so a baked colour
+// goes back to the radiance it came from. The curve is
+// (x(2.51x+0.03))/(x(2.43x+0.59)+0.14), whose inverse is the positive
+// root of the quadratic it rearranges to. Values at or above the curve's
+// ceiling come back as 1, since an eight-bit atlas cannot hold what was
+// brighter than white.
+func untonemap(y float32) float32 {
+	y = lin.Clamp(y, 0, 0.99)
+	a := 2.43*y - 2.51
+	b := 0.59*y - 0.03
+	c := 0.14 * y
+	d := b*b - 4*a*c
+	if d <= 0 || a >= 0 {
+		return 1
+	}
+	return lin.Clamp((-b-float32(math.Sqrt(float64(d))))/(2*a), 0, 1)
+}
 
 // Texture returns the baked atlas, for a game that wants to draw the
 // views itself or to inspect the bake.
@@ -130,10 +151,13 @@ func (g *Graphics) BakeImpostor(m *Model, opts ImpostorOptions) (*Impostor, erro
 	}
 	light := opts.Light
 	if light.Color == (Color{}) && light.Direction == (lin.Vec3{}) {
-		light = Light{Direction: lin.V3(-0.45, -0.75, -0.5), Color: Color{1.6, 1.55, 1.45, 1},
+		light = Light{Direction: lin.V3(-0.45, -0.75, -0.5), Color: Color{1, 0.98, 0.92, 1},
 			Sky: Sky{Zenith: Color{0.28, 0.34, 0.45, 1}, Ground: Color{0.16, 0.15, 0.13, 1}}}
 	}
-	light.Background, light.Environment, light.Shadows = false, nil, false
+	// The sky must stay out of the atlas's transparent parts, shadows
+	// need casters the bake does not have, and fog is applied again when
+	// the impostor is drawn.
+	light.Background, light.Environment, light.Shadows, light.Fog = false, nil, false, Fog{}
 
 	cols := int(math.Ceil(math.Sqrt(float64(views))))
 	rows := (views + cols - 1) / cols
@@ -146,106 +170,129 @@ func (g *Graphics) BakeImpostor(m *Model, opts ImpostorOptions) (*Impostor, erro
 	// must be lifted by however far that centre is above the model's feet.
 	im.Offset = lin.V2(0, (centre.Y-m.Min.Y)/cell-0.5)
 
-	colour, mask, err := g.bakeViews(m, im, cell, radius, res, light)
-	if err != nil {
+	atlas := image.NewRGBA(image.Rect(0, 0, cols*res, rows*res))
+	if err := g.bakeViews(m, im, radius, res, light, atlas); err != nil {
 		return nil, err
 	}
-	atlas := image.NewRGBA(image.Rect(0, 0, cols*res, rows*res))
-	for i := 0; i+3 < len(atlas.Pix); i += 4 {
-		a := uint8(0)
-		if mask.Pix[i] >= impostorMaskCut {
-			a = 255
-		}
-		atlas.Pix[i], atlas.Pix[i+1], atlas.Pix[i+2], atlas.Pix[i+3] = colour.Pix[i], colour.Pix[i+1], colour.Pix[i+2], a
-	}
+	var err error
 	if im.tex, err = g.NewTexture(atlas, TextureOptions{}); err != nil {
 		return nil, err
 	}
 	return im, nil
 }
 
-// bakeViews renders the colour and mask atlases in one frame of their
-// own and reads both back. The model is drawn once per view, rotated so
-// that the view's direction faces the fixed camera and moved into that
-// view's cell, which puts every view in one orthographic pass.
-func (g *Graphics) bakeViews(m *Model, im *Impostor, cell, radius float32, res int, light Light) (colour, mask *image.RGBA, err error) {
-	w, h := im.cols*res, im.rows*res
-	colourRT, err := g.NewRenderTexture(w, h)
+// bakeViews renders one view per frame into the atlas. Each view keeps
+// the model at the origin and turns it so the view's direction faces a
+// camera on the +z axis, because the lighting reads the camera's
+// position: a model moved into a corner of one big pass would be shaded
+// as if seen from the side, which turns a dielectric's Fresnel into a
+// white sheen it should not have.
+//
+// A view is two passes in the frame: the model with its own materials
+// for the colour, and the model unlit and white for the shape. The
+// composite writes an opaque alpha, so the silhouette cannot be read
+// back out of the colour pass, and keying it against a background
+// colour would eat any texel of the model that matched.
+func (g *Graphics) bakeViews(m *Model, im *Impostor, radius float32, res int, light Light, atlas *image.RGBA) error {
+	colourRT, err := g.NewRenderTexture(res, res)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	defer colourRT.Destroy()
-	maskRT, err := g.NewRenderTexture(w, h)
+	maskRT, err := g.NewRenderTexture(res, res)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	defer maskRT.Destroy()
 	centre := m.Min.Add(m.Max).Mul(0.5)
-	dist := radius * 3
+	// Far enough back that the direction to the camera is near enough the
+	// same over the whole model, which is what a distant view looks like,
+	// and orthographic so the silhouette does not splay.
+	dist := radius * 8
 	cam := Camera{Position: lin.V3(0, 0, dist), Target: lin.Vec3{}, Up: lin.V3(0, 1, 0),
-		Ortho: float32(im.rows) * cell * 0.5, Near: radius, Far: radius * 5}
-	models := make([]lin.Mat4, im.views)
-	halfW := float32(im.cols) * cell * 0.5
-	halfH := float32(im.rows) * cell * 0.5
+		Ortho: radius * 1.01, Near: dist - radius*1.5, Far: dist + radius*1.5}
+	// The bake must not inherit the game's grade, bloom or occlusion:
+	// bloom would bleed the model into its own transparent edge, and the
+	// tone curve the atlas is built to undo is the plain one. The two
+	// passes of a view share these settings, because a render texture is
+	// drawn with whatever the settings are when the frame ends rather
+	// than with what they were when DrawTo queued it.
+	post := g.Post()
+	defer g.SetPost(post)
+	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
+	white := Material{BaseColor: White, Unlit: true}
+
 	for k := range im.views {
 		theta := 2 * math.Pi * float64(k) / float64(im.views)
 		// Turning the model by the view's inverse rotation leaves the
 		// camera where it is: yaw back by theta, then pitch the top
 		// towards the camera.
 		rot := lin.AxisAngle(lin.V3(1, 0, 0), im.pitch).Mul(lin.AxisAngle(lin.V3(0, 1, 0), -float32(theta)))
-		cx, cy := k%im.cols, k/im.cols
-		at := lin.V3(-halfW+(float32(cx)+0.5)*cell, halfH-(float32(cy)+0.5)*cell, 0)
-		models[k] = lin.TRS(at, rot, lin.V3(1, 1, 1)).Mul(lin.Translate(centre.Neg()))
-	}
-	// The bake must not inherit the game's grade, bloom or occlusion:
-	// bloom would bleed one view into the next.
-	post := g.Post()
-	defer g.SetPost(post)
-	white := Material{BaseColor: White, Unlit: true}
-
-	// A swapchain rebuilt between the acquire and now skips the frame, so
-	// the bake is worth one retry before it gives up.
-	for attempt := range 2 {
-		ok, err := g.begin(Color{})
-		if err != nil {
-			return nil, nil, err
-		}
-		if !ok {
-			if attempt == 1 {
-				return nil, nil, fmt.Errorf("gfx: the swapchain was rebuilt twice while baking an impostor")
+		model := lin.TRS(lin.Vec3{}, rot, lin.V3(1, 1, 1)).Mul(lin.Translate(centre.Neg()))
+		// A swapchain rebuilt between the acquire and now skips the frame,
+		// so a view is worth one retry before the bake gives up.
+		for attempt := range 2 {
+			ok, err := g.begin(Color{})
+			if err != nil {
+				return err
 			}
-			continue
-		}
-		g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
-		g.DrawTo(colourRT, Color{}, func() {
-			g.SetCamera(cam)
-			g.SetLight(light)
-			for _, model := range models {
+			if !ok {
+				if attempt == 1 {
+					return fmt.Errorf("gfx: the swapchain was rebuilt twice while baking an impostor")
+				}
+				continue
+			}
+			g.DrawTo(colourRT, Color{}, func() {
+				g.SetCamera(cam)
+				g.SetLight(light)
 				g.DrawModel(m, model)
-			}
-		})
-		g.SetPost(PostSettings{Exposure: 4, Saturation: 1, Contrast: 1, NoAntiAlias: true})
-		g.DrawTo(maskRT, Color{}, func() {
-			g.SetCamera(cam)
-			g.SetLight(light)
-			for _, model := range models {
+			})
+			g.DrawTo(maskRT, Color{}, func() {
+				g.SetCamera(cam)
+				g.SetLight(light)
 				for _, p := range m.Parts {
 					g.DrawMesh(p.Mesh, white, model.Mul(p.World))
 				}
+			})
+			if _, err := g.end(false); err != nil {
+				return err
 			}
-		})
-		if _, err := g.end(false); err != nil {
-			return nil, nil, err
+			break
 		}
-		break
+		colour, err := colourRT.Read()
+		if err != nil {
+			return err
+		}
+		mask, err := maskRT.Read()
+		if err != nil {
+			return err
+		}
+		im.blit(atlas, colour, mask, k, res)
 	}
-	if colour, err = colourRT.Read(); err != nil {
-		return nil, nil, err
+	return nil
+}
+
+// blit copies one baked view into its cell of the atlas, taking the
+// colour from the lit pass and the alpha from the mask. The colour comes
+// out of the post pass tone mapped, and the frame that draws the
+// impostor tone maps again, so the curve is undone here: the atlas
+// stores the radiance the model had, and the second pass lands where the
+// model itself would.
+func (im *Impostor) blit(atlas, colour, mask *image.RGBA, k, res int) {
+	x0, y0 := (k%im.cols)*res, (k/im.cols)*res
+	for y := range res {
+		for x := range res {
+			src := colour.PixOffset(x, y)
+			dst := atlas.PixOffset(x0+x, y0+y)
+			for c := range 3 {
+				atlas.Pix[dst+c] = linearToSRGB8(untonemap(srgbToLinear(colour.Pix[src+c])))
+			}
+			atlas.Pix[dst+3] = 0
+			if mask.Pix[mask.PixOffset(x, y)] >= impostorMaskCut {
+				atlas.Pix[dst+3] = 255
+			}
+		}
 	}
-	if mask, err = maskRT.Read(); err != nil {
-		return nil, nil, err
-	}
-	return colour, mask, nil
 }
 
 // view picks the atlas cell nearest a direction from the model to the

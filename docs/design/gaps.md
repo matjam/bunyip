@@ -156,13 +156,19 @@ meshes culling cannot bound on its own, software occlusion culling from
 `AddOccluder3D`, a static bounding volume hierarchy behind
 `NewStaticBatch`, levels of detail and impostors baked from a model, spot
 and point lights with shadows, per-light culling in the shadow pass,
-clustered forward lighting for a thousand lights a frame, heightfield and
-primitive meshes, dynamic mesh updates, colour grading LUTs, and nearest
-or repeating sampling for render textures are in.
+clustered forward lighting for a thousand lights a frame, a chunked
+`Terrain` with per-chunk levels of detail, a splat map and height, normal
+and ray queries, heightfield and primitive meshes, dynamic mesh updates,
+colour grading LUTs, and nearest or repeating sampling for render
+textures are in.
 
 - Soft shadows beyond the fixed nine-tap filter: no contact hardening,
   and a cube face's filter is clamped inside the face, so a point light's
   shadow hardens over the seam between faces.
+- `Terrain` holds one heightfield of a fixed size, uploads every chunk at
+  every level at once, and rebuilds a whole chunk when one sample of it
+  changes. Streaming tiles in and out around a moving camera, and paging
+  the coarse levels only, are a game's job.
 - Impostors bake a ring of views around a model, not an octahedral set,
   so one seen from far above shows the wrong picture, and their lighting
   is baked the same way relative to every view, so it does not turn with
@@ -177,8 +183,6 @@ or repeating sampling for render textures are in.
   frame in flight may have bound. Both double, so it happens a handful
   of times at most, and `FrameStats.Waits` counts it; new descriptor
   sets retired with the old buffers would remove it.
-- Terrain splat maps and heightfield LOD as built-ins; a game does both
-  with `HeightfieldMesh`, a mesh shader and `LOD` today.
 - Baked lightmaps: light arriving at a surface, stored per texel on the
   second UV set rather than sampled on a lattice. `LightProbeGrid` bakes
   irradiance at points and `ReflectionProbe` reflections in a volume, so
@@ -204,7 +208,10 @@ or repeating sampling for render textures are in.
 - Depth of field, motion blur and lens effects.
 - Order-independent transparency; blended draws are sorted per mesh.
 - Render texture options beyond sampling: colour format, no depth,
-  multisampling, and reading the depth back.
+  multisampling, and reading the depth back. Post settings are also one
+  set for the whole frame, read when it ends rather than when `DrawTo`
+  queued the pass, so two render textures in one frame cannot be graded
+  differently.
 - Culling a draw that was queued on its own is by bounding sphere and
   costs one test each; only the geometry a game puts in a
   `NewStaticBatch` is behind a hierarchy, and the hierarchy is built

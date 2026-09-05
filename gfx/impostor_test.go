@@ -114,6 +114,59 @@ func TestImpostor(t *testing.T) {
 	}
 }
 
+// TestImpostorMatchesTheModel bakes under the same light the frame draws
+// under and compares the two: an impostor that stands in for a model must
+// be about the colour the model is, or it will pop when the distance
+// swaps them.
+func TestImpostorMatchesTheModel(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	model := redCubeModel(t, g)
+	defer model.Destroy()
+	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
+	light := Light{Direction: lin.V3(-0.45, -0.75, -0.5), Color: Color{1, 0.98, 0.92, 1},
+		Sky: Sky{Zenith: Color{0.28, 0.34, 0.45, 1}, Ground: Color{0.16, 0.15, 0.13, 1}}}
+	im, err := g.BakeImpostor(model, ImpostorOptions{Views: 8, Resolution: 64, Pitch: 0, Light: light})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer im.Destroy()
+	scene := func(draw func()) *image.RGBA {
+		return frames(t, g, func() {
+			g.SetCamera(Camera{Position: lin.V3(0, 0, 3), Target: lin.Vec3{}})
+			g.SetLight(light)
+			draw()
+		})
+	}
+	cube := scene(func() { g.DrawModel(model, lin.Identity()) })
+	fake := scene(func() { g.DrawImpostor(im, lin.Vec3{}, 0, White) })
+	// Average the pixels the two have in common, so the comparison is of
+	// the model's face rather than of its silhouette.
+	var sum [2][3]int
+	n := 0
+	for y := range 64 {
+		for x := range 64 {
+			if !reddish(cube, x, y) || !reddish(fake, x, y) {
+				continue
+			}
+			i := cube.PixOffset(x, y)
+			for c := range 3 {
+				sum[0][c] += int(cube.Pix[i+c])
+				sum[1][c] += int(fake.Pix[i+c])
+			}
+			n++
+		}
+	}
+	if n < 50 {
+		t.Fatalf("only %d pixels are red in both frames", n)
+	}
+	for c := range 3 {
+		a, b := sum[0][c]/n, sum[1][c]/n
+		if a-b > 24 || b-a > 24 {
+			t.Errorf("channel %d averages %d on the model and %d on the impostor", c, a, b)
+		}
+	}
+}
+
 // TestDrawModelImpostor checks the swap: inside Distance the call draws
 // exactly what DrawModel draws, beyond it exactly what DrawImpostor
 // draws.

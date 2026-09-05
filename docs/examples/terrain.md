@@ -1,25 +1,31 @@
 ---
 title: Terrain
 example: terrain
-summary: an outdoor scene with a heightfield, billboards, levels of detail, point and spot lights, fog, world text, picking and live mesh edits
+summary: a chunked terrain with levels of detail and a splat map, impostors, billboards, point and spot lights, fog, world text and live edits
 ---
 
 This is the outdoor scene a strategy or survival game draws. A
-heightfield mesh with a lake and a ridge, five hundred billboard trees,
-eighty rocks drawn at whichever level of detail their distance calls
-for, four campfires as flickering point lights, a watchtower whose
-searchlight is a spot light, distance and height fog, labels standing in
-the world, a second camera's view volume drawn as lines, and terrain the
-player digs into with a click, which rebuilds the mesh and uploads it
-while the scene is running.
+`gfx.Terrain` holds the heightfield, splits it into chunks, keeps four
+resolutions of each and draws every chunk at the one its distance
+deserves, shading the ground through a splat map that blends sand,
+grass, rock and snow. On top of it: a lake, a hundred and twenty pines
+that are models up close and baked impostors further out, four hundred
+billboard trees, eighty rocks at whichever level of detail their
+distance calls for, four campfires as flickering point lights, a
+watchtower whose searchlight is a spot light, distance and height fog,
+labels standing in the world, a second camera's view volume drawn as
+lines, and terrain the player digs into with a click, which rebuilds
+the chunks it touched while the scene is running.
 
-It uses the 3D half of [gfx](../pkg/gfx.html) broadly:
-`HeightfieldMesh`, `Mesh.Update`, `Mesh.Intersect` with `ScreenRay` for
-picking, `LOD` and `DrawLODAt`, `DrawBillboard`, `AddPointLight` and
-`AddSpotLight`, `Sky` and `Fog` on the light, `DrawText3D`,
-`DrawWireFrustum`, `Frustum().ContainsSphere` for culling by hand,
-`PostSettings`, and `Stats` for the counts in the corner. The guide for
-this material is [3D graphics](../guides/graphics-3d.html).
+It uses the 3D half of [gfx](../pkg/gfx.html) broadly: `Terrain` with
+`SetSplat`, `Height`, `Normal`, `Raycast`, `Heights` and `Update`,
+`BakeImpostor` and `DrawModelImpostor`, `LoadModel` from a document
+built in memory, `LOD` and `DrawLODAt`, `DrawBillboard`,
+`AddPointLight` and `AddSpotLight`, `Sky` and `Fog` on the light,
+`DrawText3D`, `DrawWireFrustum`, `Frustum().ContainsSphere` for culling
+by hand, `PostSettings`, and `Stats` for the counts in the corner. The
+guide for this material is
+[3D graphics](../guides/graphics-3d.html).
 
 Run it with:
 
@@ -34,19 +40,21 @@ on its own.
 
 ## Constants and the game type
 
-The heightfield is 97 by 97 samples at one world unit apart, so the
-terrain is 96 units square. An odd count puts a sample exactly at the
-origin, which keeps the arithmetic in `heightAt` and `dig` symmetric.
+The heightfield is 129 by 129 samples a world unit apart, so the terrain
+is 128 units square and splits into sixteen chunks of 32 samples.
+`Terrain` needs the sample count minus one to be a whole number of
+chunks, which is why the odd numbers are there.
 
-The game keeps the heights as a flat `[]float32` as well as the mesh,
-because digging edits the heights and rebuilds the mesh from them. The
-rest is the meshes, the tree texture, the scattered positions and the
-camera's three numbers.
+The game keeps the terrain, the four tiling ground textures the splat
+map chooses between, the pine model and its impostor, and the scattered
+placements. It no longer keeps the heights: the terrain owns them.
 
 ```go
 const (
-	cols, rows = 97, 97 // height samples across and deep
-	cell       = 1.0    // world units per sample
+	cols, rows = 129, 129 // height samples across and deep
+	cell       = 1.0      // world units per sample
+	chunk      = 32       // samples across one terrain chunk
+	splatSize  = 128      // the splat map's pixels a side
 )
 
 type game struct {
@@ -55,14 +63,17 @@ type game struct {
 	shotDone bool
 
 	font    *gfx.Font
-	terrain *gfx.Mesh
-	heights []float32
+	terrain *gfx.Terrain
+	layers  [4]*gfx.Texture
 	water   *gfx.Mesh
 	tower   *gfx.Mesh
 	roof    *gfx.Mesh
 	ember   *gfx.Mesh
 	rocks   *gfx.LOD
 	rockAt  []gfx.Transform
+	pine    *gfx.Model
+	pineFar *gfx.Impostor
+	pineAt  []gfx.Transform
 	tree    *gfx.Texture
 	trees   []lin.Vec3
 	fires   []lin.Vec3
@@ -76,17 +87,10 @@ type game struct {
 
 ## The shape of the ground
 
-`height` is the terrain's generator: three sine and cosine products at
-falling amplitudes for rolling hills, a Gaussian dip that carves the
-lake basin, and a Gaussian ridge to the north. Anything smooth works
-here; the point is that the terrain is a function, so it can be sampled
-anywhere without a lookup table.
-
-`heightAt` reads the current heights, which is a different thing: after
-a dig the mesh no longer matches `height`, and everything placed on the
-ground must follow what the heights say. It is a bilinear sample of the
-four surrounding grid points, returning -10 outside the map so callers
-reject the position.
+Three sine waves at different frequencies make rolling hills, a
+gaussian well digs the lake basin, and another gaussian ridge runs
+along the north edge. `heights` samples it into the flat grid
+`NewTerrain` takes, row by row.
 
 ```go
 // height is the terrain's shape: rolling hills with a lake basin in the
@@ -101,59 +105,88 @@ func height(x, z float32) float32 {
 	return h + 1
 }
 
-// heightAt reads the current heights at a world point, bilinearly.
-func (g *game) heightAt(x, z float32) float32 {
-	fx, fz := x/cell+float32(cols-1)/2, z/cell+float32(rows-1)/2
-	ix, iz := int(fx), int(fz)
-	if ix < 0 || iz < 0 || ix >= cols-1 || iz >= rows-1 {
-		return -10
+// heights fills the sample grid from height, centred on the origin.
+func heights() []float32 {
+	h := make([]float32, cols*rows)
+	for z := range rows {
+		for x := range cols {
+			h[z*cols+x] = height(float32(x-cols/2)*cell, float32(z-rows/2)*cell)
+		}
 	}
-	tx, tz := fx-float32(ix), fz-float32(iz)
-	h00, h10 := g.heights[iz*cols+ix], g.heights[iz*cols+ix+1]
-	h01, h11 := g.heights[(iz+1)*cols+ix], g.heights[(iz+1)*cols+ix+1]
-	return lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), tz)
+	return h
 }
-
-func lerp(a, b, t float32) float32 { return a + (b-a)*t }
 ```
 
-## Building the terrain mesh
+## The splat map
 
-`gfx.HeightfieldMesh` turns a grid of heights into vertices and indices
-with the normals already computed. The colours are then written per
-vertex from the height and the slope: sand below the waterline, snow
-above six units, and rock wherever the normal has tilted far enough from
-vertical. Vertex colour multiplies the material's base colour, so a
-plain material with no texture gives a terrain that reads correctly.
-
-The function returns the two slices rather than a mesh, because it is
-called twice: once in `Init` to create the mesh and once per dig to
-update it.
+The terrain shader blends four tiling layers by the four channels of a
+splat map stretched over the whole field. This one is painted from the
+terrain's own `Height` and `Normal`, so the ground textures follow the
+shape rather than a second copy of it: sand where the land is low
+enough to be beach, snow on the peaks, rock wherever the surface leans
+more than about ten degrees, and grass with whatever weight the other
+three leave over. Because the weights are normalised in the shader,
+they need not sum to one; they only have to be in proportion.
 
 ```go
-// buildTerrain makes the terrain mesh from the heights, coloured by
-// height and slope: sand by the water, grass, rock on steep faces, snow
-// on the peaks.
-func (g *game) buildTerrain() ([]gfx.Vertex, []uint32) {
-	verts, idx := gfx.HeightfieldMesh(g.heights, cols, rows, cell)
-	sand, grass, rock, snow := gfx.RGB(194, 178, 128), gfx.RGB(86, 125, 50), gfx.RGB(110, 105, 100), gfx.RGB(235, 240, 245)
-	for i := range verts {
-		v := &verts[i]
-		c := grass
-		switch {
-		case v.Pos.Y < 0.5:
-			c = sand
-		case v.Pos.Y > 6:
-			c = snow
+// splatImage weights the four ground layers by height and slope: sand by
+// the water, grass on gentle land, rock on steep faces and snow on the
+// peaks. Each pixel's channels are the weights of layers one to four, so
+// the terrain shader blends them where they meet.
+func (g *game) splatImage() *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, splatSize, splatSize))
+	span := float32(cols-1) * cell
+	for py := range splatSize {
+		for px := range splatSize {
+			x := (float32(px)/(splatSize-1) - 0.5) * span
+			z := (float32(py)/(splatSize-1) - 0.5) * span
+			h := g.terrain.Height(x, z)
+			slope := 1 - g.terrain.Normal(x, z).Y
+			sand := clamp01(1.5 - h)
+			snow := clamp01((h - 4.5) * 0.5)
+			rock := clamp01((slope - 0.18) * 6)
+			grass := clamp01(1 - sand - snow - rock)
+			img.SetRGBA(px, py, color.RGBA{scale8(sand), scale8(grass), scale8(rock), scale8(snow)})
 		}
-		if v.Normal.Y < 0.75 {
-			c = rock
-		}
-		v.Color = c
 	}
-	return verts, idx
+	return img
 }
 
+func clamp01(v float32) float32 { return lin.Clamp(v, 0, 1) }
+func scale8(v float32) uint8    { return uint8(clamp01(v)*255 + 0.5) }
+```
+
+The layers themselves are generated rather than loaded: a flat colour
+with a little per-pixel grain, which is enough for them to read as
+different materials at the scale the ground is seen from. Each one is
+uploaded with `Repeat`, since the shader tiles it every few world units.
+
+```go
+// groundLayer makes one tiling ground texture: a flat colour with a
+// little per-pixel grain, so the layers read as different materials
+// without any art.
+func groundLayer(base color.RGBA, grain int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	r := rand.New(rand.NewSource(int64(base.R) + 31*int64(base.G)))
+	for y := range 32 {
+		for x := range 32 {
+			d := r.Intn(2*grain+1) - grain
+			img.SetRGBA(x, y, color.RGBA{shade(base.R, d), shade(base.G, d), shade(base.B, d), 255})
+		}
+	}
+	return img
+}
+
+func shade(v uint8, d int) uint8 { return uint8(min(max(int(v)+d, 0), 255)) }
+```
+
+## The billboard tree
+
+The four hundred distant trees are one cutout texture drawn as
+camera-facing quads: a green canopy widening down the image over a
+brown trunk, with everything else left at zero alpha.
+
+```go
 // treeImage draws a cutout tree: a green canopy over a brown trunk.
 func treeImage() *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, 64, 96))
@@ -174,34 +207,94 @@ func treeImage() *image.RGBA {
 }
 ```
 
-The tree image leaves everything outside the canopy and trunk fully
-transparent, which is what makes it a cutout: the billboard is drawn
-with `Cutout: true`, so those texels are discarded rather than blended,
-and the tree casts a shaped shadow.
+## One light, used twice
 
-## Init: meshes, levels of detail and scattering
+The scene's light lives in a function because two things need it: the
+frame, and the impostor bake. An impostor is a picture of the model, so
+it only matches the models beside it if it was lit the same way.
+`BakeImpostor` ignores the parts of the light that belong to the frame
+rather than to the model, so the same value can be handed to both.
 
-The heights are filled from `height` and the terrain mesh is built. Then
-a plane for the water, a cylinder for the tower, a cone for its roof and
-a small sphere for the campfire embers.
+```go
+// sunlight is the scene's directional light, sky and fog. The impostor
+// bake takes the same light, so a pine baked into the atlas is lit the
+// way the pine models beside it are; BakeImpostor drops the background,
+// the shadows and the fog, which the frame applies again.
+func sunlight() gfx.Light {
+	haze := gfx.Color{R: 0.72, G: 0.78, B: 0.88, A: 1}
+	return gfx.Light{
+		Direction:      lin.V3(-0.4, -0.7, -0.35),
+		Color:          gfx.Color{R: 1, G: 0.95, B: 0.85, A: 1},
+		Sky:            gfx.Sky{Zenith: gfx.Color{R: 0.2, G: 0.42, B: 0.85, A: 1}, Horizon: haze, Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}},
+		Shadows:        true,
+		ShadowDistance: 90,
+		Background:     true,
+		Fog:            gfx.Fog{Color: haze, Start: 45, End: 170, Height: 0.6, HeightFalloff: 0.4},
+	}
+}
+```
 
-The rocks are a `gfx.LOD`: a list of meshes and the distances at which
-each takes over. Here a 16 by 32 sphere is used up to 25 units, a
-flat-shaded 5 by 8 sphere from there to 70, and nothing beyond, because
-the third entry is `nil`. `gfx.FlatShaded` splits the shared vertices so
-each face gets its own normal, which is what makes the far rocks read as
-faceted stone rather than a smooth ball.
+## A model built in memory
 
-Trees and rocks are scattered with a seeded `rand` and rejected until
-they land somewhere sensible: above the waterline, below the snow, and
-on ground that is not too steep, tested by sampling the height one unit
-away. Rocks are given a random scale and a random rotation about the
-vertical, and `gfx.Transform.Rotated` returns a copy with that rotation
-applied.
+An impostor is baked from a `gfx.Model`, and a model comes from a glTF
+document. The document does not have to come from a file: `gltf.Document`
+is plain Go slices, so the pine is assembled here from a cylinder and
+three cones, each transformed into place and appended as its own
+primitive with its own material. `gltf.Load` produces exactly this shape
+from a `.glb`.
 
-`SetPost` sets the post-processing for the whole run: exposure 1, a
-touch of extra saturation, and bloom at 0.15 so the fires and the
-searchlight glow.
+```go
+// pineDocument builds a pine as a glTF document in memory: a brown trunk
+// and three green skirts of foliage, each a cone. A file loads the same
+// way through gltf.Load; this keeps the example to one program.
+func pineDocument() *gltf.Document {
+	doc := &gltf.Document{
+		Materials: []gltf.Material{
+			{Name: "bark", BaseColor: [4]float32{0.22, 0.14, 0.08, 1}, Roughness: 1, Image: -1, MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1, OcclusionImage: -1, TransmissionImage: -1, ThicknessImage: -1, UVScale: [2]float32{1, 1}},
+			{Name: "needles", BaseColor: [4]float32{0.07, 0.24, 0.09, 1}, Roughness: 1, Image: -1, MetalRoughImage: -1, NormalImage: -1, EmissiveImage: -1, OcclusionImage: -1, TransmissionImage: -1, ThicknessImage: -1, UVScale: [2]float32{1, 1}},
+		},
+	}
+	part := func(verts []gfx.Vertex, idx []uint32, material int, m lin.Mat4) gltf.Primitive {
+		p := gltf.Primitive{Indices: idx, Material: material}
+		nm := m.NormalMatrix()
+		for _, v := range verts {
+			p.Positions = append(p.Positions, m.MulPoint(v.Pos))
+			p.Normals = append(p.Normals, nm.MulVec(v.Normal).Norm())
+			p.UVs = append(p.UVs, v.UV)
+		}
+		return p
+	}
+	cv, ci := gfx.CylinderMesh(8)
+	kv, ki := gfx.ConeMesh(10)
+	mesh := gltf.Mesh{Name: "pine", Primitives: []gltf.Primitive{
+		part(cv, ci, 0, lin.Translate(lin.V3(0, 1.1, 0)).Mul(lin.Scale(lin.V3(0.16, 1.1, 0.16)))),
+	}}
+	for i, y := range []float32{1.6, 2.6, 3.5} {
+		s := 1.3 - float32(i)*0.35
+		mesh.Primitives = append(mesh.Primitives, part(kv, ki, 1, lin.Translate(lin.V3(0, y, 0)).Mul(lin.Scale(lin.V3(s, 1.1, s)))))
+	}
+	doc.Meshes = []gltf.Mesh{mesh}
+	doc.Nodes = []gltf.Node{{Name: "pine", Parent: -1, Rotation: lin.QuatIdentity(), Scale: lin.V3(1, 1, 1), Mesh: 0, Skin: -1}}
+	doc.Instances = []gltf.Instance{{Name: "pine", Mesh: 0, Node: 0, Skin: -1, World: lin.Identity()}}
+	return doc
+}
+```
+
+## Building the world
+
+`Init` makes the four ground textures, then the terrain. `NewTerrain`
+copies the heights, builds every chunk at every level and makes the
+splat texture and the shader; the splat is filled in afterwards, because
+its weights are read out of the terrain that does not exist yet when the
+options are written.
+
+The rocks are the usual `LOD`: a fine sphere near, a faceted one far and
+nothing at all beyond seventy units. The pines get an impostor instead,
+baked from twelve directions at 96 pixels each, under the same light the
+frame uses, and swapped in beyond thirty units.
+
+`BakeImpostor` runs a frame of its own to render the views and reads
+them back, which is why it belongs in `Init` rather than in `Draw`.
 
 ```go
 func (g *game) Init(ctx *bunyip.Context) error {
@@ -209,14 +302,25 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 28, gfx.FontOptions{}); err != nil {
 		return err
 	}
-	g.heights = make([]float32, cols*rows)
-	for z := range rows {
-		for x := range cols {
-			g.heights[z*cols+x] = height(float32(x-cols/2)*cell, float32(z-rows/2)*cell)
+	for i, c := range [4]color.RGBA{{194, 178, 128, 255}, {86, 125, 50, 255}, {110, 105, 100, 255}, {235, 240, 245, 255}} {
+		if g.layers[i], err = ctx.Gfx.NewTexture(groundLayer(c, 14), gfx.TextureOptions{Repeat: true}); err != nil {
+			return err
 		}
 	}
-	tv, ti := g.buildTerrain()
-	if g.terrain, err = ctx.Gfx.NewMesh(tv, ti); err != nil {
+	// The terrain owns the heightfield, the chunk meshes at four
+	// resolutions each, the splat texture and the shader that blends the
+	// layers. It is built once with a flat splat, then given the real one
+	// through its shader, because the weights are computed from the
+	// terrain's own height and slope queries.
+	if g.terrain, err = ctx.Gfx.NewTerrain(gfx.TerrainOptions{
+		Heights: heights(), Cols: cols, Rows: rows, Cell: cell, ChunkSize: chunk,
+		Levels: 4, LODDistance: 45,
+		Layers: g.layers, LayerScale: [4]float32{6, 5, 4, 7},
+		LayerRoughness: [4]float32{0.95, 0.9, 0.85, 0.75},
+	}); err != nil {
+		return err
+	}
+	if err := g.terrain.SetSplat(g.splatImage()); err != nil {
 		return err
 	}
 	pv, pi := gfx.PlaneMesh(1)
@@ -250,36 +354,83 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.tree, err = ctx.Gfx.NewTexture(treeImage(), gfx.TextureOptions{}); err != nil {
 		return err
 	}
-	// Scatter trees and rocks on gentle land above the water.
+	// The pines are a model up close and a baked impostor beyond thirty
+	// units: twelve views around the tree in one atlas, so the far half
+	// of the wood costs one quad each and one instanced draw between them.
+	if g.pine, err = ctx.Gfx.LoadModel(pineDocument()); err != nil {
+		return err
+	}
+	if g.pineFar, err = ctx.Gfx.BakeImpostor(g.pine, gfx.ImpostorOptions{Views: 12, Resolution: 96, Pitch: lin.Radians(20), Light: sunlight()}); err != nil {
+		return err
+	}
+	g.pineFar.Distance = 30
+	g.scatter()
+	for _, p := range [][2]float32{{-30, 20}, {25, -12}, {12, 30}, {-25, -25}} {
+		g.fires = append(g.fires, lin.V3(p[0], g.terrain.Height(p[0], p[1])+0.3, p[1]))
+	}
+	g.towerAt = lin.V3(0, g.terrain.Height(0, -30), -30)
+	g.yaw, g.pitch, g.dist = 0.6, 0.42, 48
+	ctx.Gfx.SetPost(gfx.PostSettings{Exposure: 1, Saturation: 1.05, Contrast: 1, Bloom: 0.15})
+	return nil
+}
+```
+
+## Scattering by asking the ground
+
+Nothing here knows the height function. Everything placed on the
+terrain asks it: `Height` for where the ground is at a point and
+`Normal` for which way it faces, so a tree only lands where the ground
+is above the waterline, below the snow and no steeper than about
+twenty-five degrees. That is the same pair of queries a game uses to
+drop an item, stand a unit or refuse to build.
+
+```go
+// scatter places the trees, pines and rocks on gentle land above the
+// water, asking the terrain where the ground is and which way it faces.
+func (g *game) scatter() {
 	r := rand.New(rand.NewSource(7))
-	for len(g.trees) < 500 {
-		x, z := (r.Float32()-0.5)*90, (r.Float32()-0.5)*90
-		h := g.heightAt(x, z)
-		if h > 0.8 && h < 5.5 && g.heightAt(x+1, z)-h < 0.6 {
+	gentle := func(x, z float32) (float32, bool) {
+		h := g.terrain.Height(x, z)
+		return h, h > 0.8 && h < 5.5 && g.terrain.Normal(x, z).Y > 0.9
+	}
+	for len(g.trees) < 400 {
+		x, z := (r.Float32()-0.5)*110, (r.Float32()-0.5)*110
+		if h, ok := gentle(x, z); ok {
 			g.trees = append(g.trees, lin.V3(x, h-0.1, z))
 		}
 	}
+	for len(g.pineAt) < 120 {
+		x, z := (r.Float32()-0.5)*110, (r.Float32()-0.5)*110
+		if h, ok := gentle(x, z); ok {
+			s := 0.8 + r.Float32()*0.6
+			g.pineAt = append(g.pineAt, gfx.Transform{Position: lin.V3(x, h, z), Scale: lin.V3(s, s, s)}.
+				Rotated(lin.V3(0, 1, 0), r.Float32()*6.28))
+		}
+	}
 	for len(g.rockAt) < 80 {
-		x, z := (r.Float32()-0.5)*92, (r.Float32()-0.5)*92
-		h := g.heightAt(x, z)
-		if h > 0.3 {
+		x, z := (r.Float32()-0.5)*112, (r.Float32()-0.5)*112
+		if h := g.terrain.Height(x, z); h > 0.3 {
 			s := 0.4 + r.Float32()*1.2
 			t := gfx.Transform{Position: lin.V3(x, h-s*0.3, z), Scale: lin.V3(s, s*0.6, s*(0.7+r.Float32()*0.6))}
 			g.rockAt = append(g.rockAt, t.Rotated(lin.V3(0, 1, 0), r.Float32()*6.28))
 		}
 	}
-	for _, p := range [][2]float32{{-30, 20}, {25, -12}, {12, 30}, {-25, -25}} {
-		g.fires = append(g.fires, lin.V3(p[0], g.heightAt(p[0], p[1])+0.3, p[1]))
-	}
-	g.towerAt = lin.V3(0, g.heightAt(0, -30), -30)
-	g.yaw, g.pitch, g.dist = 0.6, 0.42, 48
-	ctx.Gfx.SetPost(gfx.PostSettings{Exposure: 1, Saturation: 1.05, Contrast: 1, Bloom: 0.15})
-	return nil
 }
+```
 
+## Shutdown
+
+The terrain frees its chunk meshes, its shader and its splat texture,
+and the impostor frees its atlas. The layer textures belong to the game,
+so it destroys those itself, and so does everything else it made.
+
+```go
 func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
-	for _, m := range []*gfx.Mesh{g.terrain, g.water, g.tower, g.roof, g.ember} {
+	g.terrain.Destroy()
+	g.pineFar.Destroy()
+	g.pine.Destroy()
+	for _, m := range []*gfx.Mesh{g.water, g.tower, g.roof, g.ember} {
 		m.Destroy()
 	}
 	for _, l := range g.rocks.Levels {
@@ -287,53 +438,55 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 			l.Mesh.Destroy()
 		}
 	}
+	for _, t := range g.layers {
+		t.Destroy()
+	}
 	g.tree.Destroy()
 }
 ```
 
-`Shutdown` walks the LOD's levels and skips the nil one, since the LOD
-does not own its meshes.
-
 ## Digging
 
-`dig` lowers every height within a radius of a point by a smooth falloff
-and calls `Mesh.Update` with a freshly built mesh. `Update` replaces the
-geometry in place, keeping the same `*gfx.Mesh` so nothing that
-references it has to change, and retires the old GPU buffers until the
-frames that might still use them have been submitted.
+`Terrain.Heights` hands back the terrain's own sample grid, so an edit
+is a plain write into a `[]float32`. `Update` then rebuilds only the
+chunks covering the samples that changed, at every one of their levels,
+and recomputes their normals and bounds. The loop tracks the rectangle
+it touched so the rebuild is four chunks rather than sixteen.
 
 ```go
-// dig lowers the terrain around a point and uploads the new geometry.
+// dig lowers the terrain around a point and rebuilds the chunks it
+// touched. Terrain.Heights is the terrain's own sample grid, so the edit
+// is a write into it followed by Update over the samples that changed.
 func (g *game) dig(at lin.Vec3, radius, depth float32) error {
+	h := g.terrain.Heights()
+	minX, minZ, maxX, maxZ := cols, rows, 0, 0
 	for z := range rows {
 		for x := range cols {
 			wx, wz := float32(x-cols/2)*cell, float32(z-rows/2)*cell
 			d := float32(math.Hypot(float64(wx-at.X), float64(wz-at.Z)))
-			if d < radius {
-				t := 1 - d/radius
-				g.heights[z*cols+x] -= depth * t * t
+			if d >= radius {
+				continue
 			}
+			t := 1 - d/radius
+			h[z*cols+x] -= depth * t * t
+			minX, minZ = min(minX, x), min(minZ, z)
+			maxX, maxZ = max(maxX, x), max(maxZ, z)
 		}
 	}
-	return g.terrain.Update(g.buildTerrain())
+	if minX > maxX {
+		return nil
+	}
+	return g.terrain.Update(minX, minZ, maxX, maxZ)
 }
 ```
 
-## Update: camera and picking
+## Update: the camera and the click
 
-The right button orbits and the scroll wheel zooms, both clamped. With
-no drag the yaw advances slowly, so a screenshot from an unattended run
-shows the scene from a slightly different angle each time.
-
-Picking is two calls. `ScreenRay(mx, my)` turns a pointer position into
-a world ray using the camera the last frame set, and `Mesh.Intersect`
-tests the ray against the mesh under a model matrix and returns the hit
-point. Picking against the terrain mesh rather than against the height
-function means the ray meets what is actually drawn, including previous
-craters.
-
-The second dig, one second in, is there so a headless screenshot shows a
-crater without anyone clicking.
+The camera is three numbers driven by the mouse. A left click turns the
+cursor into a world ray with `Camera.ScreenRay`, which takes the view
+size and so works from `Update`, and `Terrain.Raycast` walks that ray
+over the heightfield to find where it first passes under the ground.
+One crater is dug a second in, so a screenshot has something to show.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -353,8 +506,10 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	}
 	if in.MousePressed(input.MouseLeft) {
 		mx, my := in.Mouse()
-		if hit, ok := g.terrain.Intersect(lin.Identity(), ctx.Gfx.ScreenRay(mx, my)); ok {
-			if err := g.dig(hit.Point, 5, 2); err != nil {
+		vw, vh := ctx.Gfx.View()
+		ray := gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist).ScreenRay(mx, my, vw, vh)
+		if hit, ok := g.terrain.Raycast(ray, 0); ok {
+			if err := g.dig(hit, 5, 2); err != nil {
 				return err
 			}
 		}
@@ -373,42 +528,27 @@ func (g *game) Update(ctx *bunyip.Context) error {
 }
 ```
 
-## Draw: sky, fog and the lights
+## Draw
 
-`gfx.OrbitCamera(target, yaw, pitch, distance)` builds the camera from
-the three numbers, which saves writing the spherical coordinates by
-hand.
+The frame sets the camera and the shared light, adds the flickering
+campfires and the sweeping searchlight, then draws. `DrawTerrain` is one
+call that queues a draw per chunk at the level its distance deserves;
+the frustum then culls the chunks behind the camera like any other
+draws.
 
-The `Light` carries more than a direction here. `Sky` gives the ambient
-term a gradient with a zenith, a horizon and a ground colour, so
-surfaces facing up pick up blue and surfaces facing down pick up brown.
-`Background: true` draws that sky behind the scene. `Fog` has a colour,
-a start and an end distance, and a height falloff, so the fog thickens
-in the valleys as well as with distance. Using the same haze colour for
-the horizon and the fog is what makes the far hills meet the sky.
-
-The campfires add a point light each frame with a flicker, plus a small
-emissive sphere so the source is visible. The searchlight is
-`AddSpotLight` with a position, a direction, a colour, a range and two
-cone angles: the inner angle where it is at full strength and the outer
-where it has fallen to nothing. Both are given in radians through
-`lin.Radians`.
+The pines go through `DrawModelImpostor`, which picks the model or the
+impostor per tree by its distance from the camera. The billboard trees
+are culled by hand first, because the cheapest draw is the one never
+built: `Frustum().ContainsSphere` on each tree's own bounding sphere
+skips more than a third of them from most angles, and the corner counts
+say how many.
 
 ```go
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist))
-	haze := gfx.Color{R: 0.72, G: 0.78, B: 0.88, A: 1}
-	gr.SetLight(gfx.Light{
-		Direction:      lin.V3(-0.4, -0.7, -0.35),
-		Color:          gfx.Color{R: 1, G: 0.95, B: 0.85, A: 1},
-		Sky:            gfx.Sky{Zenith: gfx.Color{R: 0.2, G: 0.42, B: 0.85, A: 1}, Horizon: haze, Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}},
-		Shadows:        true,
-		ShadowDistance: 90,
-		Background:     true,
-		Fog:            gfx.Fog{Color: haze, Start: 45, End: 170, Height: 0.6, HeightFalloff: 0.4},
-	})
+	gr.SetLight(sunlight())
 	// Campfires flicker; the tower's searchlight sweeps.
 	for i, f := range g.fires {
 		flick := 0.8 + 0.2*float32(math.Sin(float64(t)*9+float64(i)))
@@ -418,36 +558,10 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	beam := lin.V3(float32(math.Cos(float64(t)*0.6)), -0.45, float32(math.Sin(float64(t)*0.6)))
 	top := g.towerAt.Add(lin.V3(0, 6.2, 0))
 	gr.AddSpotLight(top, beam, gfx.Color{R: 9, G: 8.5, B: 6, A: 1}, 60, lin.Radians(14), lin.Radians(28))
-```
 
-## The scene, the billboards and the debug overlay
-
-`DrawMesh` takes a matrix and `DrawMeshAt` takes a `gfx.Transform`,
-which is the same thing written as a position, a rotation and a scale.
-The water is a plane scaled to 200 units with a translucent base colour
-and `Blend: true`, which puts it in the blended pass after the opaque
-one.
-
-`DrawText3D` draws shaped text standing in the world at a scale in world
-units per view unit. The fourth argument says whether the text always
-faces the camera; here it is false, so the labels stay fixed to the
-scene.
-
-The rocks are drawn with `DrawLODAt`, which picks a level from the
-distance to the camera. The trees are culled by hand: `gr.Frustum()`
-returns the camera's view volume and `ContainsSphere` rejects a tree
-whose bounding sphere is outside it, so those are never queued at all.
-The engine culls meshes itself; this loop shows the same test being done
-before the call, which is what a game does when it has more instances
-than it wants to submit.
-
-`DrawWireFrustum` draws a second camera's view volume as lines, with the
-aspect ratio it would be rendered at, and `DebugText3D` labels a point
-in the world. `Stats()` returns the frame's counts, and `DebugText`
-prints them in the corner.
-
-```go
-	gr.DrawMesh(g.terrain, gfx.Material{Roughness: 0.95}, lin.Identity())
+	// The terrain queues one draw per chunk, each at the resolution its
+	// distance deserves; the frustum culls the chunks behind the camera.
+	gr.DrawTerrain(g.terrain)
 	gr.DrawMesh(g.water, gfx.Material{BaseColor: gfx.Color{R: 0.1, G: 0.32, B: 0.6, A: 0.65}, Blend: true, Roughness: 0.12}, lin.Translate(lin.V3(0, 0, 0)).Mul(lin.Scale(lin.V3(200, 1, 200))))
 	gr.DrawMeshAt(g.tower, gfx.Material{BaseColor: gfx.RGB(120, 100, 80), Roughness: 0.8}, gfx.Transform{Position: g.towerAt.Add(lin.V3(0, 3, 0)), Scale: lin.V3(0.9, 3, 0.9)})
 	gr.DrawMeshAt(g.roof, gfx.Material{BaseColor: gfx.RGB(150, 50, 40), Roughness: 0.7}, gfx.Transform{Position: g.towerAt.Add(lin.V3(0, 7, 0)), Scale: lin.V3(1.5, 1, 1.5)})
@@ -458,7 +572,12 @@ prints them in the corner.
 	for _, at := range g.rockAt {
 		gr.DrawLODAt(g.rocks, rock, at)
 	}
-	// Trees the camera cannot see are not even queued.
+	// Each pine is a model within thirty units and its baked impostor
+	// beyond, chosen per tree by DrawModelImpostor.
+	for _, at := range g.pineAt {
+		gr.DrawModelImpostor(g.pine, g.pineFar, at)
+	}
+	// Billboard trees the camera cannot see are not even queued.
 	fr := gr.Frustum()
 	g.skipped = 0
 	for _, p := range g.trees {
@@ -474,19 +593,18 @@ prints them in the corner.
 	gr.DebugText3D(scout.Position, "scout")
 
 	s := gr.Stats()
-	gr.DebugText(10, 10, fmt.Sprintf("draws %d  instances %d  culled %d  trees skipped %d", s.Draws3D, s.Instances, s.Culled, g.skipped))
+	gr.DebugText(10, 10, fmt.Sprintf("draws %d  instances %d  culled %d  trees skipped %d  near chunk level %d",
+		s.Draws3D, s.Instances, s.Culled, g.skipped, g.terrain.ChunkLevel(g.terrain.Chunks()/2)))
 	gr.DebugText(10, 28, "right-drag orbits, scroll zooms, click digs")
 	return nil
 }
 ```
 
-A billboard with `Upright: true` turns about the vertical axis only, so
-a tree stays standing rather than tipping to face a camera looking down.
-`Lit: true` puts it through the lighting instead of drawing it at full
-brightness, and `Offset` moves its anchor so the position is the foot of
-the trunk.
-
 ## main
+
+Validation layers are on, since this is a development scene, and the
+window is resizable so the letterboxing and the aspect handling get
+exercised.
 
 ```go
 func main() {
@@ -501,17 +619,3 @@ func main() {
 	}
 }
 ```
-
-## What to try
-
-- Change the LOD distances in `Init` to `[]float32{5, 12}` and watch the
-  rocks switch level close to the camera, then read the culled count in
-  the corner.
-- Raise the fog `Start` and `End` in `Draw`, or set `HeightFalloff` to
-  0, and see how much of the depth in the scene comes from the fog.
-- Give the dig in `Update` a negative depth so a click raises the ground
-  instead, which turns the same code into a terrain sculptor.
-- Add a second `AddSpotLight` in `Draw` pointing along the beam from the
-  camera, so the scene has a torch.
-- Remove the frustum test in `Draw` and compare the frame time and the
-  culled count with five hundred trees always queued.

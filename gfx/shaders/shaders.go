@@ -36,6 +36,7 @@ var (
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage skinvert -o pbr_skin.vert.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage shadowvert -o shadow.vert.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage shadowskinvert -o shadow_skin.vert.spv pbr_default.glsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -stage frag -o terrain.frag.spv terrain_default.glsl
 //go:generate glslangValidator -V -o shadow.frag.spv shadow.frag
 //go:generate glslangValidator -V -o post.vert.spv post.vert
 //go:generate glslangValidator -V -o post.frag.spv post.frag
@@ -73,6 +74,9 @@ var (
 	DecalFrag []byte
 	//go:embed pbr.frag.spv
 	PBRFrag []byte
+	// TerrainFrag blends four tiling layers by a splat map, for gfx.Terrain.
+	//go:embed terrain.frag.spv
+	TerrainFrag []byte
 	//go:embed pbr.vert.spv
 	PBRVert []byte
 	//go:embed pbr_skin.vert.spv
