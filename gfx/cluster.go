@@ -21,8 +21,10 @@ const (
 	// clusterLights is how many lights one cluster keeps. A fragment
 	// loops over its own cluster's list, so this bounds the shading work
 	// one pixel can be asked for; lights past it in the densest clusters
-	// do not light them.
-	clusterLights = 32
+	// do not light them. A cluster is a long wedge, so a view down a
+	// floor covered in lights fills one faster than the tile size
+	// suggests.
+	clusterLights = 64
 	// clusterIndices is the light index list's capacity, which every
 	// cluster can fill.
 	clusterIndices = clusterCount * clusterLights
