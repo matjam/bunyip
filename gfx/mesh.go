@@ -289,6 +289,20 @@ type Material struct {
 	// nil is the factor everywhere. Data, not colour.
 	TransmissionTexture *Texture
 
+	// Stencil masks the material against the stencil buffer: it draws only
+	// where the value already there compares to StencilRef the way the
+	// test says. StencilAlways, the zero value, draws everywhere.
+	// StencilWrite is what a drawn fragment stores, StencilKeep leaving
+	// the buffer alone. One material marks a shape with StencilReplace
+	// and another draws only inside it with StencilEqual: portals,
+	// cutaways, magic windows. The buffer starts each frame at zero, and
+	// materials that write it draw before those that do not, whatever
+	// order they were queued in. A material with an Outline uses the
+	// stencil buffer for the outline itself and ignores these three.
+	Stencil      StencilTest
+	StencilRef   uint8
+	StencilWrite StencilOp
+
 	// Outline draws a line of that many pixels around the mesh's
 	// silhouette in OutlineColor (zero means black): selection rings,
 	// cartoon edges. It needs a depth format with stencil, which every
@@ -445,6 +459,90 @@ const meshInstanceSize = 176
 // receiver is a pointer because Material is large and this sits in the
 // draw sort's comparator.
 func (m *Material) blended() bool { return m.Blend || m.Transmission > 0 }
+
+// marksStencil reports whether a material writes the stencil buffer, so
+// the draws that do come first.
+func (m *Material) marksStencil() bool { return m.StencilWrite != StencilKeep && m.Outline <= 0 }
+
+// StencilTest is when a material's fragments pass the stencil test: how
+// the value already in the stencil buffer must compare to the material's
+// StencilRef. The zero value draws everywhere.
+type StencilTest uint8
+
+const (
+	StencilAlways   StencilTest = iota // no test at all: the default
+	StencilEqual                       // only where the buffer holds StencilRef
+	StencilNotEqual                    // only where it holds anything else
+	StencilLess                        // only where it holds less than StencilRef
+	StencilGreater                     // only where it holds more than StencilRef
+	StencilNever                       // nowhere: mark the buffer and draw nothing
+	stencilTestCount
+)
+
+// String names the stencil test.
+func (s StencilTest) String() string {
+	names := [...]string{"always", "equal", "not-equal", "less", "greater", "never"}
+	if int(s) < len(names) {
+		return names[s]
+	}
+	return fmt.Sprintf("StencilTest(%d)", int(s))
+}
+
+// compareOp is the Vulkan comparison for the test. Vulkan compares the
+// reference against the stored value, so the sense is the other way
+// round from the way a material reads.
+func (s StencilTest) compareOp() vk.VkCompareOp {
+	switch s {
+	case StencilEqual:
+		return vk.VK_COMPARE_OP_EQUAL
+	case StencilNotEqual:
+		return vk.VK_COMPARE_OP_NOT_EQUAL
+	case StencilLess:
+		return vk.VK_COMPARE_OP_GREATER
+	case StencilGreater:
+		return vk.VK_COMPARE_OP_LESS
+	case StencilNever:
+		return vk.VK_COMPARE_OP_NEVER
+	}
+	return vk.VK_COMPARE_OP_ALWAYS
+}
+
+// StencilOp is what a fragment that passes both the stencil and the
+// depth test does to the stencil buffer. The zero value leaves it alone.
+type StencilOp uint8
+
+const (
+	StencilKeep      StencilOp = iota // leave the value alone: the default
+	StencilReplace                    // store StencilRef
+	StencilIncrement                  // add one, stopping at 255
+	StencilDecrement                  // subtract one, stopping at 0
+	StencilZero                       // store zero
+	stencilOpCount
+)
+
+// String names the stencil operation.
+func (o StencilOp) String() string {
+	names := [...]string{"keep", "replace", "increment", "decrement", "zero"}
+	if int(o) < len(names) {
+		return names[o]
+	}
+	return fmt.Sprintf("StencilOp(%d)", int(o))
+}
+
+// vkOp is the Vulkan operation.
+func (o StencilOp) vkOp() vk.VkStencilOp {
+	switch o {
+	case StencilReplace:
+		return vk.VK_STENCIL_OP_REPLACE
+	case StencilIncrement:
+		return vk.VK_STENCIL_OP_INCREMENT_AND_CLAMP
+	case StencilDecrement:
+		return vk.VK_STENCIL_OP_DECREMENT_AND_CLAMP
+	case StencilZero:
+		return vk.VK_STENCIL_OP_ZERO
+	}
+	return vk.VK_STENCIL_OP_KEEP
+}
 
 // drawList is a queue's mesh draws in the order they are drawn, held as
 // a permutation of the queue's draws. Ordering moves four-byte indices

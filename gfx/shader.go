@@ -144,12 +144,19 @@ type pipeKey struct {
 	noDepthWrite bool
 	shadow       bool // the depth-only shadow pass
 	stencil      bool // mark the stencil buffer, for outlines
+	// The material's own stencil state, when it has one and no outline.
+	stencilTest StencilTest
+	stencilOp   StencilOp
+	stencilRef  uint8
 }
 
 // meshKey is the pipeline variant a material needs. It takes a pointer
 // because Material is large and this sits in the draw loop.
 func meshKey(mat *Material, skinned bool) pipeKey {
 	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0}
+	if !key.stencil {
+		key.stencilTest, key.stencilOp, key.stencilRef = mat.Stencil, mat.StencilWrite, mat.StencilRef
+	}
 	if mat.blended() {
 		key.blend = BlendAlpha
 	}
@@ -254,6 +261,11 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 		}
 		if key.stencil {
 			desc.Stencil = render.StencilWrite(1)
+		} else if key.stencilTest != StencilAlways || key.stencilOp != StencilKeep {
+			desc.Stencil = &render.StencilState{
+				Compare: key.stencilTest.compareOp(), Ref: uint32(key.stencilRef),
+				Write: key.stencilOp != StencilKeep, Pass: key.stencilOp.vkOp(),
+			}
 		}
 	} else {
 		bindings, attrs := vertex2DLayout()
