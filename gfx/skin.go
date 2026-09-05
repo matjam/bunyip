@@ -90,9 +90,10 @@ func packSkin(verts []SkinVertex) ([]Vertex, []byte) {
 func skinVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInputAttributeDescription) {
 	bindings, attrs := meshVertexLayout()
 	bindings[0].Stride = skinVertexSize
+	// The instance stream holds locations 5 to 16, so the joints follow it.
 	attrs = append(attrs,
-		vk.VkVertexInputAttributeDescription{Location: 16, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UINT, Offset: 44},
-		vk.VkVertexInputAttributeDescription{Location: 17, Binding: 0, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 48},
+		vk.VkVertexInputAttributeDescription{Location: 17, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UINT, Offset: 44},
+		vk.VkVertexInputAttributeDescription{Location: 18, Binding: 0, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: 48},
 	)
 	return bindings, attrs
 }

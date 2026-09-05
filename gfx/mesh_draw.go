@@ -176,6 +176,16 @@ type frameUniforms struct {
 	fogRange      lin.Vec4                 // linear start, end; ground fog height, falloff
 	spotViewProj  [maxSpotShadows]lin.Mat4 // each shadowed spot light's projection
 	spotInfo      [maxPointLights]lin.Vec4 // x = shadow map index or -1, y = range
+	// The global illumination block, appended after everything the older
+	// shaders read so that only the files reading it need regenerating.
+	probePos    [maxProbes]lin.Vec4 // xyz where the probe was captured, w = kind (1 box, 2 sphere)
+	probeMin    [maxProbes]lin.Vec4 // xyz the box's minimum corner, w = the sphere's radius
+	probeMax    [maxProbes]lin.Vec4 // xyz the box's maximum corner, w = the blend margin
+	probeParams [maxProbes]lin.Vec4 // x intensity, y mip count, z box projection
+	gridOrigin  lin.Vec4            // xyz the probe grid's origin, w = intensity (0 no grid)
+	gridSpacing lin.Vec4            // xyz the distance between cells
+	gridCounts  lin.Vec4            // xyz how many cells on each axis
+	reflect     lin.Vec4            // x strength, y max roughness, z max distance, w steps
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -193,7 +203,10 @@ func (g *Graphics) initMeshPass() error {
 	mp.matSets = map[materialKey]vk.VkDescriptorSet{}
 	dev := g.r.Device
 	var err error
-	layout, err := dev.NewUniformSets(frameUniformsSize, meshStages)
+	// The pipelines are built against this layout and bound with each
+	// queue's own sets, so both are made the same way: the frame block at
+	// binding 0 and the light probe grid at binding 1.
+	layout, err := dev.NewUniformStorageSets(frameUniformsSize, gridStorageSize, meshStages)
 	if err != nil {
 		return err
 	}
@@ -362,7 +375,7 @@ func meshVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 		{Location: 3, Binding: 0, Format: vk.VK_FORMAT_R32G32_SFLOAT, Offset: 32},
 		{Location: 4, Binding: 0, Format: vk.VK_FORMAT_R8G8B8A8_UNORM, Offset: 40},
 	}
-	for i := range 11 { // the instance stream: eleven vec4s
+	for i := range 12 { // the instance stream: twelve vec4s
 		attrs = append(attrs, vk.VkVertexInputAttributeDescription{Location: uint32(5 + i), Binding: 1, Format: vk.VK_FORMAT_R32G32B32A32_SFLOAT, Offset: uint32(16 * i)})
 	}
 	return bindings, attrs
@@ -796,7 +809,7 @@ func abs32(v float32) float32 {
 // writeUniforms fills the queue's frame block for the slot. It runs
 // after prepareDraws, whose caster bounds the cascades need, and keeps
 // the cascade matrices for the shadow pass to cull against.
-func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
+func (q *drawQueue) writeUniforms(slot int, aspect, time float32, refl lin.Vec4) error {
 	q.ensureCamera()
 	l := q.light
 	strength := l.ShadowStrength
@@ -822,7 +835,24 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		skyUp:         sky.Up.Vec4(sky.Stars),
 		sun:           l.Direction.Norm().Mul(-1).Vec4(sky.SunSize),
 		sunColor:      lin.V4(sky.Sun.R, sky.Sun.G, sky.Sun.B, 1),
+		reflect:       refl,
 	}
+	for i, p := range q.probes {
+		intensity := p.Intensity
+		if intensity == 0 {
+			intensity = 1
+		}
+		u.probePos[i] = p.Position.Vec4(p.kind())
+		if p.kind() == 2 {
+			u.probeMin[i] = p.Position.Vec4(p.Radius)
+			u.probeMax[i] = p.Position.Vec4(p.Margin)
+		} else {
+			u.probeMin[i] = p.Position.Sub(p.Extent).Vec4(0)
+			u.probeMax[i] = p.Position.Add(p.Extent).Vec4(p.Margin)
+		}
+		u.probeParams[i] = lin.V4(intensity, float32(p.env.mips), boolFloat(p.BoxProjection), 0)
+	}
+	u.gridOrigin, u.gridSpacing, u.gridCounts = q.grid.gridUniforms()
 	for i, p := range q.points {
 		u.pointPos[i] = p.pos.Vec4(p.rng)
 		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 2)
@@ -855,6 +885,9 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		u.env = lin.V4(1, 0, 2, 0)
 	}
 	u.invViewProj = q.invViewProjJ
+	if err := q.writeGrid(slot); err != nil {
+		return err
+	}
 	return q.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u)))
 }
 
@@ -888,10 +921,13 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	lightDir := q.light.Direction.Norm()
 	for i := range q.draws {
 		d := &q.draws[i]
-		if d.set, d.samplers, err = g.materialSet(&d.mat, env, scene); err != nil {
+		d.centre, d.radius, d.cullable = q.drawBounds(d)
+		// The probe holding the draw's centre supplies its reflections, so
+		// its cube map is what the material set binds.
+		d.probe = q.probeFor(d.centre)
+		if d.set, d.samplers, err = g.materialSet(&d.mat, q.probeEnv(d.probe, env), scene); err != nil {
 			return drawList{}, drawList{}, err
 		}
-		d.centre, d.radius, d.cullable = q.drawBounds(d)
 		d.depth = -view.MulPoint(d.centre).Z
 		d.blended = d.mat.blended()
 		d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
@@ -961,6 +997,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			sheen:     [4]float32{m.Sheen.R, m.Sheen.G, m.Sheen.B, sheenRough},
 			volume:    [4]float32{m.Transmission, ior, m.Thickness, m.AttenuationDistance},
 			atten:     [4]float32{atten.R, atten.G, atten.B, d.samplers},
+			gi:        [4]float32{float32(d.probe), boolFloat(!d.blended), 0, 0},
 		})
 	}
 	if err := q.inst.upload(g, slot); err != nil {
@@ -1099,13 +1136,18 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	mp := &g.meshes
 	cb := fr.CB
 	aspect := float32(t.extent.Width) / float32(t.extent.Height)
+	// The matrices every pass after this one rasterises and reprojects
+	// with. A probe bake runs outside a frame and wants an exact face, so
+	// it takes no jitter and needs no motion vectors.
+	presenting := g.frame != nil
+	q.jitterFrame(t.extent, g.frameNo, presenting && g.post.settings.TemporalAA)
 	// The draws are prepared first: the cascades' near planes need the
 	// caster bounds, and the shadow pass culls against every light.
 	opaque, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
 	if err != nil {
 		return err
 	}
-	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
+	if err := q.writeUniforms(fr.Slot, aspect, g.time, g.reflectParams()); err != nil {
 		return err
 	}
 	seen, seenBlended := opaque.slice(0, q.visOpaque), blended.slice(0, q.visBlended)
@@ -1157,11 +1199,16 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		return err
 	}
 	g.drawSolid(cb, fr, q, seen, 0, t.extent)
-	if transmissive(seenBlended) {
-		// Glass reads what is behind it: snapshot the opaque scene, with
-		// blurred mips for rough glass, then carry on into the same images.
+	reflections := g.reflections(seen)
+	if reflections || transmissive(seenBlended) {
+		// Glass reads what is behind it and a reflection ray reads what the
+		// screen already shows: snapshot the opaque scene, with blurred
+		// mips for rough glass, then carry on into the same images.
 		render.EndTargetPass(cb, t.hdr)
 		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
+		if reflections {
+			g.drawReflections(cb, fr, q, t)
+		}
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
 	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil, nil); err != nil {
@@ -1176,7 +1223,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	}
 	// The motion vectors go in last, over the finished depth buffer, so a
 	// moved mesh hidden behind something else writes nothing.
-	if s := g.post.settings; s.TemporalAA || s.MotionBlur > 0 {
+	if s := g.post.settings; presenting && (s.TemporalAA || s.MotionBlur > 0) {
 		if err := t.needVelocity(g); err != nil {
 			return err
 		}

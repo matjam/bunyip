@@ -423,6 +423,10 @@ type meshDraw struct {
 	centre   lin.Vec3
 	radius   float32
 	cullable bool
+	// probe is the reflection probe whose cube map the draw's material set
+	// binds, as an index into the queue's probes plus one; zero means the
+	// frame's own environment.
+	probe int
 }
 
 // meshInstance is the per-instance vertex stream: see pbr.vert.
@@ -441,13 +445,18 @@ type meshInstance struct {
 	// index a shader reads from here is the same across the draw, which
 	// is what indexing the sampler array needs.
 	atten [4]float32
+	// gi is what global illumination the draw uses: x the reflection
+	// probe's index plus one (0 for the frame's own environment), y 1 for
+	// an opaque draw, whose alpha channel carries the screen-space
+	// reflection weight instead of a coverage.
+	gi [4]float32
 	// prevModel is the model matrix's three rows as they were last frame,
 	// read by the velocity pass alone. The lit and shadow programs do not
 	// declare it; it only has to be in the stride they share.
 	prevModel [3]lin.Vec4
 }
 
-const meshInstanceSize = 224
+const meshInstanceSize = 240
 
 // blended reports whether a material draws after the opaque scene. The
 // receiver is a pointer because Material is large and this sits in the

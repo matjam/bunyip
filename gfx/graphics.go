@@ -247,6 +247,9 @@ func newGraphics(r *render.Renderer) (*Graphics, error) {
 	if err := g.initPost(); err != nil {
 		return nil, err
 	}
+	if err := g.initReflections(); err != nil {
+		return nil, err
+	}
 	if err := g.initLines(); err != nil {
 		return nil, err
 	}
@@ -448,6 +451,9 @@ type FrameStats struct {
 	// MaxLights. The directional light is not counted: every frame has
 	// one.
 	Lights int
+	// ProbesDropped counts reflection probes added past MaxProbes, which
+	// a frame keeps none of.
+	ProbesDropped int
 }
 
 // Stats returns the last finished frame's counts.
@@ -542,7 +548,6 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	cb := fr.CB
 	s := g.post.settings
 	has3D := len(q.draws) > 0 || q.light.Background || len(q.lines.items) > 0
-	q.jitterFrame(t.extent, g.frameNo, has3D && s.TemporalAA)
 	// A frame with nothing 3D in it can still go through the composite,
 	// so bloom, the grade, the LUT and the lens effects reach a 2D game.
 	flat := !has3D && s.Post2D && len(q.stream.items) > 0
