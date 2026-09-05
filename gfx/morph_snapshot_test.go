@@ -77,84 +77,92 @@ func TestMorphDrawSnapshotsRendered(t *testing.T) {
 		}
 		return weights
 	}
-	for _, skinned := range []bool{false, true} {
-		for _, tc := range []struct {
-			name    string
-			weights [][]float32
-		}{
-			{"gpu", [][]float32{few(0, 0.25), few(8, 0.75)}},
-			{"cpu", [][]float32{all(0.25), all(0.75)}},
-			{"gpu to cpu", [][]float32{few(0, 0.25), all(0.75)}},
-			{"cpu to gpu", [][]float32{all(0.25), few(8, 0.75)}},
-			{"gpu cpu gpu", [][]float32{few(0, 0.25), all(0.75), few(8, 0.5)}},
-		} {
-			name := map[bool]string{false: "plain/", true: "skinned/"}[skinned] + tc.name
-			t.Run(name, func(t *testing.T) {
-				g := newHeadless(t, 192, 96)
-				enableGeometryReadback(t)
-				g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
-				load := func() *Model {
-					m, err := g.LoadModel(morphSnapshotDoc(skinned))
-					if err != nil {
-						t.Fatal(err)
-					}
-					t.Cleanup(m.Destroy)
-					return m
+	for _, dedicated := range []bool{false, true} {
+		for _, skinned := range []bool{false, true} {
+			for _, tc := range []struct {
+				name    string
+				weights [][]float32
+			}{
+				{"gpu", [][]float32{few(0, 0.25), few(8, 0.75)}},
+				{"cpu", [][]float32{all(0.25), all(0.75)}},
+				{"gpu to cpu", [][]float32{few(0, 0.25), all(0.75)}},
+				{"cpu to gpu", [][]float32{all(0.25), few(8, 0.75)}},
+				{"gpu cpu gpu", [][]float32{few(0, 0.25), all(0.75), few(8, 0.5)}},
+			} {
+				name := map[bool]string{false: "plain/", true: "skinned/"}[skinned] + tc.name
+				if dedicated {
+					name = "dedicated/" + name
 				}
-				shared := load()
-				models := make([]*Model, len(tc.weights))
-				players := make([]*AnimPlayer, len(tc.weights))
-				for i, w := range tc.weights {
-					models[i] = load()
-					if err := models[i].SetMorphWeights(0, w); err != nil {
-						t.Fatal(err)
+				t.Run(name, func(t *testing.T) {
+					g := newHeadless(t, 192, 96)
+					enableGeometryReadback(t)
+					if dedicated {
+						dedicateGeometryBuffers(t)
 					}
-					players[i] = shared.NewAnimPlayer()
-					players[i].SetMorphWeights(0, w)
-				}
-				var snapshots []*Mesh
-				render := func(sharedModel bool) *image.RGBA {
-					return frames(t, g, func() {
-						snapshots = snapshots[:0]
-						g.SetCamera(Camera{Position: lin.V3(0, 3, 5), Target: lin.V3(0, 0.2, 0)})
-						g.SetLight(Light{Direction: lin.V3(-0.4, -1, -0.3), Color: Color{2, 2, 2, 1}})
-						for i, w := range tc.weights {
-							at := Transform{Position: lin.V3((float32(i)-float32(len(tc.weights)-1)/2)*2.1, 0, 0)}
-							if sharedModel {
-								if skinned {
-									g.DrawModelAnimated(shared, at, players[i])
-								} else {
-									if err := shared.SetMorphWeights(0, w); err != nil {
-										t.Fatal(err)
-									}
-									g.DrawModel(shared, at.Matrix())
-								}
-							} else if skinned {
-								p := models[i].NewAnimPlayer()
-								p.SetMorphWeights(0, w)
-								g.DrawModelAnimated(models[i], at, p)
-							} else {
-								g.DrawModel(models[i], at.Matrix())
-							}
-							snapshots = append(snapshots, g.cur.draws[len(g.cur.draws)-1].mesh)
+					g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
+					load := func() *Model {
+						m, err := g.LoadModel(morphSnapshotDoc(skinned))
+						if err != nil {
+							t.Fatal(err)
 						}
-					})
-				}
-				want := render(false)
-				independent := append([]*Mesh(nil), snapshots...)
-				got := render(true)
-				if diff := imageDiff(want, got); diff != 0 {
-					t.Errorf("shared morph instances differ from independent models in %d pixels", diff)
-					morphImageDiagnostic(t, "independent", want)
-					morphImageDiagnostic(t, "shared", got)
-					for i, mesh := range independent {
-						morphBufferDiagnostic(t, "independent", i, mesh)
+						t.Cleanup(m.Destroy)
+						return m
 					}
-					for i, mesh := range snapshots {
-						morphBufferDiagnostic(t, "shared", i, mesh)
+					shared := load()
+					models := make([]*Model, len(tc.weights))
+					players := make([]*AnimPlayer, len(tc.weights))
+					for i, w := range tc.weights {
+						models[i] = load()
+						if err := models[i].SetMorphWeights(0, w); err != nil {
+							t.Fatal(err)
+						}
+						players[i] = shared.NewAnimPlayer()
+						players[i].SetMorphWeights(0, w)
 					}
-				}
-			})
+					var snapshots []*Mesh
+					render := func(sharedModel bool) *image.RGBA {
+						return frames(t, g, func() {
+							snapshots = snapshots[:0]
+							g.SetCamera(Camera{Position: lin.V3(0, 3, 5), Target: lin.V3(0, 0.2, 0)})
+							g.SetLight(Light{Direction: lin.V3(-0.4, -1, -0.3), Color: Color{2, 2, 2, 1}})
+							for i, w := range tc.weights {
+								at := Transform{Position: lin.V3((float32(i)-float32(len(tc.weights)-1)/2)*2.1, 0, 0)}
+								if sharedModel {
+									if skinned {
+										g.DrawModelAnimated(shared, at, players[i])
+									} else {
+										if err := shared.SetMorphWeights(0, w); err != nil {
+											t.Fatal(err)
+										}
+										g.DrawModel(shared, at.Matrix())
+									}
+								} else if skinned {
+									p := models[i].NewAnimPlayer()
+									p.SetMorphWeights(0, w)
+									g.DrawModelAnimated(models[i], at, p)
+								} else {
+									g.DrawModel(models[i], at.Matrix())
+								}
+								snapshots = append(snapshots, g.cur.draws[len(g.cur.draws)-1].mesh)
+							}
+						})
+					}
+					want := render(false)
+					independent := append([]*Mesh(nil), snapshots...)
+					got := render(true)
+					if diff := imageDiff(want, got); diff != 0 {
+						t.Errorf("shared morph instances differ from independent models in %d pixels", diff)
+						morphImageDiagnostic(t, "independent", want)
+						morphImageDiagnostic(t, "shared", got)
+						for i, mesh := range independent {
+							morphBufferDiagnostic(t, "independent", i, mesh)
+						}
+						for i, mesh := range snapshots {
+							morphBufferDiagnostic(t, "shared", i, mesh)
+						}
+					}
+				})
+			}
 		}
 	}
 }

@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"unsafe"
 
@@ -9,6 +10,69 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
 )
+
+// TestDenseSphereAllocationRendered holds geometry and buffer sizes fixed
+// while selecting the allocator's shared-block or separate-memory path.
+func TestDenseSphereAllocationRendered(t *testing.T) {
+	for _, dedicated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dedicated=%t", dedicated), func(t *testing.T) {
+			g := newHeadless(t, 96, 96)
+			geometryAllocationProbe(t, dedicated)
+			verts, indices := SphereMesh(32, 64)
+			mesh, err := g.NewMesh(verts, indices)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(mesh.Destroy)
+			img := renderMaterial(t, g, func() {
+				g.DrawMesh(mesh, Material{BaseColor: White, Unlit: true}, lin.Scale(lin.V3(1.3, 1.3, 1.3)))
+			})
+			if !bright(img, 48, 48) {
+				t.Errorf("sphere centre %v, culled %d, draws %d; want visible sphere", img.RGBAAt(48, 48), g.stats.Culled, g.stats.Draws3D)
+			}
+		})
+	}
+}
+
+// dedicateGeometryBuffers keeps each geometry VkBuffer unchanged but
+// forces its allocation through the separate-memory path, bound at zero.
+func dedicateGeometryBuffers(t *testing.T) { geometryAllocationProbe(t, true) }
+
+func geometryAllocationProbe(t *testing.T, dedicated bool) {
+	t.Helper()
+	create, requirements, bind := vk.VkCreateBuffer, vk.VkGetBufferMemoryRequirements, vk.VkBindBufferMemory
+	sizes := make(map[vk.VkBuffer]vk.VkDeviceSize)
+	vk.VkCreateBuffer = func(device vk.VkDevice, info *vk.VkBufferCreateInfo, allocator *vk.VkAllocationCallbacks, buffer *vk.VkBuffer) vk.VkResult {
+		result := create(device, info, allocator, buffer)
+		if result == vk.VK_SUCCESS {
+			delete(sizes, *buffer)
+			if info.Usage&vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT != 0 && info.Usage&(vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT) != 0 {
+				sizes[*buffer] = info.Size
+			}
+		}
+		return result
+	}
+	vk.VkGetBufferMemoryRequirements = func(device vk.VkDevice, buffer vk.VkBuffer, req *vk.VkMemoryRequirements) {
+		requirements(device, buffer, req)
+		if size, ok := sizes[buffer]; ok {
+			t.Logf("geometry size=%d required=%d alignment=%d dedicated=%t", size, req.Size, req.Alignment, dedicated)
+			if dedicated {
+				// This is the allocator's dedicated threshold. Enlarging the
+				// allocation is valid; VkBufferCreateInfo.Size stays unchanged.
+				req.Size = max(req.Size, 16<<20)
+			}
+		}
+	}
+	vk.VkBindBufferMemory = func(device vk.VkDevice, buffer vk.VkBuffer, memory vk.VkDeviceMemory, offset vk.VkDeviceSize) vk.VkResult {
+		if size, ok := sizes[buffer]; ok {
+			t.Logf("geometry size=%d bound at offset=%d dedicated=%t", size, offset, dedicated)
+		}
+		return bind(device, buffer, memory, offset)
+	}
+	t.Cleanup(func() {
+		vk.VkCreateBuffer, vk.VkGetBufferMemoryRequirements, vk.VkBindBufferMemory = create, requirements, bind
+	})
+}
 
 // TestDenseSphereGeometryRendered distinguishes buffer size from indexed
 // draw size without changing the geometry visible in the frame.
