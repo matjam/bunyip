@@ -64,6 +64,7 @@ type Context struct {
 	focusables     []focusable
 	lastFocusables []focusable // the previous frame's, for scrolling into view
 	navFocus       widgetID
+	navTextFocus   widgetID // this frame's navigation destination, claimed only by a submitted editor
 	activate       bool     // the focused widget was activated this frame
 	group          navGroup // the container whose items are being submitted
 	groupFocus     map[widgetID]widgetID

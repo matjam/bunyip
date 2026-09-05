@@ -378,17 +378,29 @@ func (c *Context) textFocused(id widgetID) bool {
 	return c.focus == id && (c.modal == 0 || c.inModal)
 }
 
+// focusNavigatedText claims this frame's navigation destination without
+// moving its caret to the pointer or restoring a previously released focus.
+func (c *Context) focusNavigatedText(id widgetID) {
+	if c.navTextFocus == id && (c.modal == 0 || c.inModal) {
+		c.focus = id
+		c.navTextFocus = 0
+		c.editFor(id).blink = 0
+	}
+}
+
 // TextField edits *value on one line while focused and reports a change.
 // It has a caret, a selection (Shift with the arrows, or a drag), Home
 // and End, word jumps with Ctrl or Cmd and the arrows, select all, cut,
 // copy and paste through the Clipboard, and undo and redo (Ctrl or Cmd
 // with Z, Shift+Z or Y). Enter and Escape drop focus. An open modal
-// releases focus from fields outside it.
+// releases focus from fields outside it. Tab and gamepad navigation
+// transfer text focus while preserving each field's caret and selection.
 func (c *Context) TextField(label string, value *string) bool {
 	id := c.id(label)
 	r := c.next(c.Theme.RowHeight)
 	_, held, clicked := c.interact(id, r)
 	st := c.editFor(id)
+	c.focusNavigatedText(id)
 	inner := Rect{X: r.X + c.Theme.Padding, Y: r.Y, W: r.W - 2*c.Theme.Padding, H: r.H}
 	if clicked || (held && c.focus == id) {
 		i := c.indexAt(*value, c.mouseX-inner.X+st.scroll)
@@ -467,12 +479,14 @@ func (c *Context) TextField(label string, value *string) bool {
 // TextArea edits *value over several wrapped lines in a box of the given
 // height, with the same keys as TextField plus Up, Down and Enter for a
 // new line; it scrolls to keep the caret in view. An open modal releases
-// focus from areas outside it.
+// focus from areas outside it. Tab and gamepad navigation transfer text
+// focus while preserving each area's caret and selection.
 func (c *Context) TextArea(label string, value *string, height float32) bool {
 	id := c.id("textarea:" + label)
 	r := c.next(height)
 	_, held, clicked := c.interact(id, r)
 	st := c.editFor(id)
+	c.focusNavigatedText(id)
 	inner := Rect{X: r.X + c.Theme.Padding, Y: r.Y + c.Theme.Padding, W: r.W - 2*c.Theme.Padding, H: r.H - 2*c.Theme.Padding}
 	lineH := c.Theme.Font.LineHeight
 	lines := func(s string) [][2]int { return st.wrapped(c.Theme.Font, s, inner.W) }

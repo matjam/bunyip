@@ -8,6 +8,7 @@ import "github.com/matjam/bunyip/input"
 // Within a container the arrows, Home, End, PageUp and PageDown move
 // between its items and the d-pad's left and right do the same.
 func (c *Context) navigate() {
+	c.navTextFocus = 0
 	c.navMoved = c.navMovedNext
 	c.navMovedNext = false
 	if c.in == nil || len(c.focusables) == 0 {
@@ -110,6 +111,11 @@ func (c *Context) navigate() {
 	if to >= 0 && to != idx {
 		f := c.focusables[to]
 		c.navFocus = f.id
+		// Release the old editor before any widget processes this frame's
+		// input. The destination claims text focus only if it is an editor
+		// submitted this frame and modal ownership permits it.
+		c.focus = 0
+		c.navTextFocus = f.id
 		c.navMoved = true
 		if f.group != 0 {
 			c.groupFocus[f.group] = f.id

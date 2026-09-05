@@ -223,9 +223,11 @@ type Context struct {
 	Width, Height float32
 	Scale         float32
 
-	// Delta is the seconds this Update covers (the fixed step in real-time
-	// mode, wall-clock time since the previous update in turn-based mode).
-	// Time is seconds since Run started. Frame counts drawn frames.
+	// Delta is the seconds this Update covers, scaled by TimeScale: the
+	// fixed step in real-time mode, active wall time in turn-based mode.
+	// Configured pauses contribute no elapsed time; a turn-based resume
+	// update has zero Delta. Time is seconds since Run started and continues
+	// during pauses. Frame counts drawn frames.
 	Delta float64
 	Time  float64
 	Frame uint64

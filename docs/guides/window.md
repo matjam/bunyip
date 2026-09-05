@@ -90,6 +90,12 @@ display's full resolution and text stays sharp.
 
 The loop turns window events into a few things a game reads.
 
+The pause settings apply to both fixed-step and turn-based games.
+Paused wall time does not accumulate into catch-up updates or the next
+turn-based delta. The turn-based update that resumes the game has zero
+`Delta`; later active intervals use the current time scale. `Time`
+continues to measure elapsed wall time during a pause.
+
 - `ctx.Focused` reports keyboard focus. `Config.PauseUnfocused` stops
   updates and silences the mixer while another window has focus; frames
   still draw.

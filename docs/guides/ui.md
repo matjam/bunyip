@@ -167,6 +167,10 @@ if !u.WantsKeyboard() && ctx.Input.KeyPressed(input.KeyEscape) {
 Tab and Shift-Tab move a focus ring between widgets; Enter, Space or a
 gamepad's A button activate the focused one, and the d-pad's up and
 down move focus.
+Moving to a `TextField` or `TextArea` transfers text input to that editor
+at its retained caret and selection; moving to another kind of widget
+releases text input. Enter or Escape can still release a field's focus
+without its retained navigation ring taking the keyboard back.
 
 A `ListBox`, a `ReorderableList`, a row of `Tabs`, a `Table`'s rows, a
 `Tree`, a `RadioGroup` and an open `Dropdown` are each one Tab stop.

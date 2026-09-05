@@ -12,16 +12,17 @@ import (
 
 // Conn is one TCP peer. Messages sent on it arrive in order.
 type Conn struct {
-	c        net.Conn
-	reg      *Registry
-	events   chan Event
-	activity func()
-	sendMu   sync.Mutex
-	closed   chan struct{}
-	once     sync.Once
-	ID       int // server-assigned, 1 upward; 0 on the client side
-	Data     any // for the game: player state, name, anything
-	closeErr error
+	c          net.Conn
+	reg        *Registry
+	events     chan Event
+	activityMu sync.Mutex
+	activity   func()
+	sendMu     sync.Mutex
+	closed     chan struct{}
+	once       sync.Once
+	ID         int // server-assigned, 1 upward; 0 on the client side
+	Data       any // for the game: player state, name, anything
+	closeErr   error
 }
 
 // Addr returns the peer's address.
@@ -110,8 +111,12 @@ func (c *Conn) emit(ev Event) bool {
 			return false
 		}
 	}
-	if c.activity != nil {
-		c.activity()
+	c.activityMu.Lock()
+	activity := c.activity
+	c.activityMu.Unlock()
+	// The callback may register another callback or close the connection.
+	if activity != nil {
+		activity()
 	}
 	return true
 }
@@ -274,7 +279,14 @@ func newClient(nc net.Conn, reg *Registry) *Client {
 
 // SetOnActivity runs fn on a network goroutine whenever an event is
 // queued; point it at Context.Wake in a turn-based game.
-func (cl *Client) SetOnActivity(fn func()) { cl.Conn.activity = fn }
+// It is safe to call concurrently, including from fn. A callback already
+// captured by the reader may still run after SetOnActivity returns.
+// A nil fn disables future callbacks.
+func (cl *Client) SetOnActivity(fn func()) {
+	cl.Conn.activityMu.Lock()
+	cl.Conn.activity = fn
+	cl.Conn.activityMu.Unlock()
+}
 
 // Poll returns the events queued since the last call without blocking.
 func (cl *Client) Poll() []Event { return drain(cl.events) }

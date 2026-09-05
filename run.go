@@ -274,6 +274,7 @@ func (l *loop) run() error {
 		catchUp = step // clamping below one step would never run an update
 	}
 	for !l.ctx.quit && !l.win.Closed() {
+		wasPaused := l.paused()
 		wait := l.cfg.TurnBased && !l.ctx.redraw
 		l.ctx.redraw = false
 		l.handleEvents(l.app.Poll(wait))
@@ -285,6 +286,15 @@ func (l *loop) run() error {
 		}
 		l.overlay.toggle(l.ctx.Input)
 		now := time.Now()
+		elapsed := now.Sub(last)
+		last = now
+		paused := l.paused()
+		if wasPaused || paused {
+			// Poll can block until the event that resumes the game. Its
+			// waiting time still belongs to the pause, even on that frame.
+			elapsed = 0
+			accumulator = 0
+		}
 		l.beginFrame(now)
 		l.ctx.Time = now.Sub(start).Seconds()
 		if l.cfg.FixedClock && !l.cfg.TurnBased {
@@ -296,7 +306,7 @@ func (l *loop) run() error {
 			l.ctx.Time = float64(frames) * step.Seconds()
 			l.ctx.Delta = step.Seconds() * l.ctx.timeScale
 			frames++
-			if !l.paused() {
+			if !paused {
 				if err := l.update(); err != nil {
 					return err
 				}
@@ -308,18 +318,15 @@ func (l *loop) run() error {
 			continue
 		}
 		if l.cfg.TurnBased {
-			l.ctx.Delta = now.Sub(last).Seconds() * l.ctx.timeScale
-			last = now
-			if err := l.update(); err != nil {
-				return err
+			l.ctx.Delta = elapsed.Seconds() * l.ctx.timeScale
+			if !paused {
+				if err := l.update(); err != nil {
+					return err
+				}
 			}
 			l.ctx.Alpha = 1
 		} else {
-			accumulator += now.Sub(last)
-			last = now
-			if l.paused() {
-				accumulator = 0 // the game stands still while it is paused
-			}
+			accumulator += elapsed
 			if accumulator > catchUp { // do not spiral after a stall
 				accumulator = catchUp
 			}

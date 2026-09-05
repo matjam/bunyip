@@ -386,6 +386,11 @@ but pending messages or disconnect notifications may be dropped during
 local shutdown. A remote disconnect is queued after its preceding
 messages as usual.
 
+A TCP client's `SetOnActivity` may be changed while messages arrive,
+including from inside its callback. Each event invokes one captured
+callback after releasing the registration lock. A server's setter
+continues to affect only connections accepted afterward.
+
 Messages are plain structs. Both ends build the same registry in the
 same order:
 
