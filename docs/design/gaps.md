@@ -184,8 +184,25 @@ in.
   sets retired with the old buffers would remove it.
 - Terrain splat maps and heightfield LOD as built-ins; a game does both
   with `HeightfieldMesh`, a mesh shader and `LOD` today.
-- Global illumination beyond one environment map: light probes, baked
-  lightmaps, reflection probes per area, screen-space reflections.
+- Baked lightmaps: light arriving at a surface, stored per texel on the
+  second UV set rather than sampled on a lattice. `LightProbeGrid` bakes
+  irradiance at points and `ReflectionProbe` reflections in a volume, so
+  a room's bounce light and reflections are there, but neither resolves
+  the shadow of a chair leg on the floor beneath it.
+- Two reflection probes are never blended over the space between them:
+  one cube map is bound per draw, so the deepest containing probe wins
+  and `ReflectionProbe.Margin` fades its reflection towards the frame's
+  average environment at the volume's edge. Blending would need a second
+  cube binding in the material set.
+- A probe bake reads the scene back to the host and prefilters it on the
+  CPU, so a probe of any size costs a stall and a fraction of a second.
+  Prefiltering on the GPU would make probes cheap enough to refresh as a
+  scene changes.
+- Screen-space reflections trace against the depth buffer with normals
+  reconstructed from it, so a surface reflects as flat as its triangles,
+  and what is off screen or hidden falls back to the probe or the
+  environment. There is no temporal accumulation, so a rough surface's
+  rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
 - Volumetrics: god rays, and atmospheric scattering for the sky rather
   than the parametric gradient. Fog is a per-pixel fade, not a medium.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.

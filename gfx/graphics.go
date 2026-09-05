@@ -248,6 +248,9 @@ func newGraphics(r *render.Renderer) (*Graphics, error) {
 	if err := g.initPost(); err != nil {
 		return nil, err
 	}
+	if err := g.initReflections(); err != nil {
+		return nil, err
+	}
 	if err := g.initLines(); err != nil {
 		return nil, err
 	}
@@ -453,6 +456,9 @@ type FrameStats struct {
 	// DrawParticles3D. Each batch is one draw call however many
 	// instances it holds, counted in Draws2D or Draws3D.
 	Particles int
+	// ProbesDropped counts reflection probes added past MaxProbes, which
+	// a frame keeps none of.
+	ProbesDropped int
 }
 
 // Stats returns the last finished frame's counts.
