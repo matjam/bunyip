@@ -190,10 +190,14 @@ func TestCompressedRejects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = g.NewCompressedTexture(data, TextureOptions{})
+	tex, err := g.NewCompressedTexture(data, TextureOptions{})
 	if g.r.Device.SupportsFormat(vk.VK_FORMAT_ASTC_4x4_UNORM_BLOCK) {
+		// Apple GPUs sample ASTC, so here the upload succeeds and the
+		// texture must be freed, or the device teardown reports a leak.
 		if err != nil {
 			t.Errorf("a device that samples ASTC refused the file: %v", err)
+		} else {
+			tex.Destroy()
 		}
 		return
 	}

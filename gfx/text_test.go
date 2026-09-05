@@ -25,7 +25,10 @@ func TestShapeKerning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Destroy()
+	// f is reassigned below, so the cleanup must read it then, not now:
+	// a plain defer would destroy the first font twice and leak the
+	// second, which the validation layers report at device teardown.
+	defer func() { f.Destroy() }()
 	// HarfBuzz applies the font's kern pairs: "AV" is narrower than "AA"
 	// less the difference between V and A alone.
 	av, _ := f.Measure("AV", TextOptions{})
