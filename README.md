@@ -54,8 +54,11 @@ window.
   ragdolls, character controllers and queries; cloth, volumetric soft
   bodies and 2D fluids on the same colliders; celestial mechanics for
   any star system.
-- Services: assets and pack files with background loading and hot
-  reload, saves and settings, translation with plural rules, seeded
+- Services: assets and pack files with background loading, an offline
+  texture pipeline that compresses to the BC formats with their mip
+  chains, and hot reload that swaps a changed texture or shader into the
+  objects a game already holds, saves and settings, translation with
+  plural rules, seeded
   random numbers, timers and cutscene sequences, tweens, grids with
   pathfinding and field of view, and networking over TCP (with TLS) and
   UDP (with reliable channels, prediction and interpolation helpers).
@@ -64,9 +67,10 @@ window.
   unfocused or hidden, gamepads, IME text input, action maps with
   rebinding, a frame-timing overlay on F3, and optional pprof.
 - Debugging: an in-game console with commands, variables, key bindings
-  and the log, and panels for the frame timings, the GPU resources and
-  post-processing, a world's entities and systems, the physics
-  simulation, the mixer, the input devices and a game's own services.
+  and the log, and panels for the frame timings, per-pass GPU times from
+  timestamp queries, the GPU resources and post-processing, a world's
+  entities and systems, the physics simulation, the mixer, the input
+  devices and a game's own services.
 
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
 (Wayland or X11, ALSA, joystick devices) layers sit behind the same
@@ -104,6 +108,7 @@ with it.
 |---|---|
 | `bunyip` | `Run`, `Config`, `Game`, `Context`: the loop and the values a game uses |
 | `gfx` | textures, sprites, paths, text, meshes, materials, cameras, lights, fog, culling, LOD, billboards, models, post-processing |
+| `gfx/ktx2` | KTX2 texture files and the BC1, BC3, BC4, BC5 and BC7 block formats they carry: encoding, decoding and offline mip chains |
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
 | `console` | in-game debug console: commands, variables, log capture, and panels for the engine, graphics, entities, physics, audio, input and services |
 | `particle` | CPU particle systems drawn through the sprite batch |
@@ -118,7 +123,7 @@ with it.
 | `phys` | 2D and 3D rigid bodies: circles, boxes, polygons, capsules, edges and chains, spheres, hulls, meshes, compounds; impulse solver with friction and restitution; joints, sleeping, continuous collision, character controllers; triggers, layers, rays, overlaps, shape casts and signed distance to a placed shape |
 | `phys/soft` | cloth, volumetric soft bodies and 2D fluids as particles: extended position-based dynamics, distance, bending, volume and density constraints, shape matching, wind, mesh helpers; collides with the static and kinematic `phys` colliders |
 | `orbit`, `orbit/sol` | celestial mechanics for any star system: orbital elements, exact two-body propagation, N-body leapfrog, ships under thrust; real-world constants |
-| `asset` | files from directories and pack files, one-call loaders, async loading, hot reload |
+| `asset` | files from directories and pack files, one-call loaders, async loading, hot reload of textures and shaders in place |
 | `save` | JSON saves and settings in the platform's data directory |
 | `rng` | seeded PCG32 with forks, dice, picks and shuffles |
 | `timer`, `tween` | game-time timers and step sequences for cutscenes; eased value animation |
@@ -203,6 +208,7 @@ whole program and explains it section by section:
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |
 | `go run ./cmd/bunyip-pack -o assets.pak assets/` | bundles an asset directory into a pack file |
+| `go run ./cmd/bunyip-tex -format bc7 art/*.png` | compresses images to BC1, BC3, BC4, BC5 or BC7 with their mip chains, as KTX2 files the GPU takes as they are |
 | `go run ./cmd/bunyip-shader [-kind mesh] -o out.spv in.glsl` | compiles a game's sprite or mesh shader against the engine's prelude |
 | `go run ./cmd/bunyip-bundle -name "Game" -exe ./game -assets assets/` | makes a macOS .app with MoltenVK inside, or a folder elsewhere |
 
