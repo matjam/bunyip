@@ -354,7 +354,9 @@ render pass, so text tests draw one frame.
   `deferDestroy` waits the device and frees at once. A `Texture` or
   `Mesh` destroyed inside a frame keeps its image or buffers (and sets
   `destroyed`) until the retire runs, so draws already queued still
-  draw. `FrameStats.Waits` counts the stalls a frame caused; a running
+  draw. A model's morph descriptor set and buffer retire together;
+  destruction captures their values before clearing the model's store.
+  `FrameStats.Waits` counts the stalls a frame caused; a running
   game reports zero.
 - `internal/render` has a retire ring of its own for objects `gfx`
   cannot reach: `Device.Retire` records a closure against the device's

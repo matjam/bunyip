@@ -54,7 +54,7 @@ type soa struct {
 	age, life  []float32
 	size       []float32
 	rot, spin  []float32
-	pal        []uint8 // palette entry plus one; zero is white
+	tint       []gfx.Color // palette colour chosen at birth; white without a palette
 }
 
 func (p *soa) grow(n int) {
@@ -64,7 +64,7 @@ func (p *soa) grow(n int) {
 	p.age, p.life = make([]float32, n), make([]float32, n)
 	p.size = make([]float32, n)
 	p.rot, p.spin = make([]float32, n), make([]float32, n)
-	p.pal = make([]uint8, n)
+	p.tint = make([]gfx.Color, n)
 }
 
 // move copies particle i onto slot j, which compaction uses to close the
@@ -76,7 +76,7 @@ func (p *soa) move(j, i int) {
 	p.age[j], p.life[j] = p.age[i], p.life[i]
 	p.size[j] = p.size[i]
 	p.rot[j], p.spin[j] = p.rot[i], p.spin[i]
-	p.pal[j] = p.pal[i]
+	p.tint[j] = p.tint[i]
 }
 
 // lookup holds an emitter's curves sampled onto small tables, so the
@@ -157,8 +157,9 @@ func (s *GPUSystem) SetPlane(origin, xAxis, yAxis lin.Vec3) {
 func (s *GPUSystem) Plane() (origin, xAxis, yAxis lin.Vec3) { return s.origin, s.xAxis, s.yAxis }
 
 // SetEmitter retunes the system: later births use the new emitter and
-// every live particle is drawn with its look. The random stream, the
-// position and the particles are kept. Raising Max reallocates.
+// every live particle is drawn with its look. Stateful particles keep
+// the palette tint chosen at birth. The random stream, the position
+// and the particles are kept. Raising Max reallocates.
 func (s *GPUSystem) SetEmitter(e Emitter) {
 	s.e = e
 	if n := e.max(); n > len(s.p.posX) {
@@ -176,7 +177,7 @@ func (s *GPUSystem) SetEmitter(e Emitter) {
 		copy(s.p.size, old.size[:old.n])
 		copy(s.p.rot, old.rot[:old.n])
 		copy(s.p.spin, old.spin[:old.n])
-		copy(s.p.pal, old.pal[:old.n])
+		copy(s.p.tint, old.tint[:old.n])
 	}
 	s.p.n = min(s.p.n, e.max())
 	s.tables.build(&s.e)
@@ -384,9 +385,9 @@ func (s *GPUSystem) emit() bool {
 	if size <= 0 {
 		size, _ = e.baseSize()
 	}
-	var pal uint8
+	tint := gfx.White
 	if n := len(e.Palette); n > 0 {
-		pal = uint8(r.Intn(n)) + 1
+		tint = e.Palette[r.Intn(n)]
 	}
 	i := p.n
 	p.posX[i], p.posY[i] = pos.X, pos.Y
@@ -396,7 +397,7 @@ func (s *GPUSystem) emit() bool {
 	p.age[i], p.life[i] = 0, life
 	p.size[i] = size
 	p.rot[i], p.spin[i] = e.Rotation.pick(r), e.Spin.pick(r)
-	p.pal[i] = pal
+	p.tint[i] = tint
 	p.n++
 	return true
 }
@@ -443,10 +444,7 @@ func (s *GPUSystem) buildQuads(offset lin.Vec2) {
 	for i := range n {
 		t := p.age[i] / p.life[i]
 		w := p.size[i] * tableAt(s.tables.size[:], t)
-		c := tableAt(s.tables.color[:], t)
-		if pal := p.pal[i]; pal > 0 {
-			c = c.Mul(e.Palette[pal-1])
-		}
+		c := tableAt(s.tables.color[:], t).Mul(p.tint[i])
 		c.A *= tableAt(s.tables.alpha[:], t)
 		if c.A <= 0 || w <= 0 {
 			continue

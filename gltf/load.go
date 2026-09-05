@@ -37,7 +37,8 @@ func Load(path string) (*Document, error) {
 }
 
 // Parse decodes .gltf JSON or a .glb container from memory. resolve may be
-// nil when every buffer and image is embedded.
+// nil when every buffer and image is embedded. Invalid buffer bounds and
+// animation accessor shapes or key counts return an error.
 func Parse(data []byte, resolve Resolver) (*Document, error) {
 	l := &loader{resolve: resolve}
 	jsonData := data
@@ -195,53 +196,63 @@ func (l *loader) animations() ([]Animation, error) {
 			}
 			sm := a.Samplers[ch.Sampler]
 			times, n, err := l.floats(sm.Input)
-			if err != nil || n != 1 {
-				return nil, fmt.Errorf("animation %d: input: %v", ai, err)
+			if err != nil {
+				return nil, fmt.Errorf("animation %d: input: %w", ai, err)
+			}
+			if n != 1 || len(times) == 0 {
+				return nil, fmt.Errorf("animation %d: input must contain SCALAR key times", ai)
 			}
 			vals, width, err := l.floats(sm.Output)
 			if err != nil {
-				return nil, fmt.Errorf("animation %d: output: %v", ai, err)
+				return nil, fmt.Errorf("animation %d: output: %w", ai, err)
 			}
 			c := Channel{Node: *ch.Target.Node, Step: sm.Interpolation == "STEP"}
 			cubic := sm.Interpolation == "CUBICSPLINE"
+			wantWidth := 3
 			switch ch.Target.Path {
 			case "translation":
 				c.Path = PathTranslation
 			case "rotation":
 				c.Path = PathRotation
+				wantWidth = 4
 			case "scale":
 				c.Path = PathScale
 			case "weights":
 				c.Path = PathWeights
+				wantWidth = 1
 			default:
 				continue
+			}
+			if width != wantWidth {
+				return nil, fmt.Errorf("animation %d: %s output has %d components, want %d", ai, ch.Target.Path, width, wantWidth)
+			}
+			samples := len(times)
+			if cubic {
+				samples *= 3
 			}
 			if c.Path == PathWeights {
 				// The output holds one scalar per target per key (three
 				// per key for cubic splines: in-tangent, value, out-tangent).
-				per := len(vals) / max(len(times), 1)
-				if cubic {
-					per /= 3
+				if len(vals) == 0 || len(vals)%samples != 0 {
+					return nil, fmt.Errorf("animation %d: weights output count %d is not a positive multiple of %d samples", ai, len(vals), samples)
 				}
-				if width != 1 || per == 0 {
-					continue
-				}
+				per := len(vals) / samples
 				for i := range times {
 					base := i * per
 					if cubic {
 						base = i*per*3 + per
 					}
-					if base+per > len(vals) {
-						break
-					}
 					c.Weights = append(c.Weights, vals[base:base+per]...)
 				}
-				c.Times = times[:len(c.Weights)/per]
+				c.Times = times
 				if len(c.Times) > 0 {
 					anim.Duration = max(anim.Duration, c.Times[len(c.Times)-1])
 				}
 				anim.Channels = append(anim.Channels, c)
 				continue
+			}
+			if len(vals)/width != samples {
+				return nil, fmt.Errorf("animation %d: %s output count %d, want %d", ai, ch.Target.Path, len(vals)/width, samples)
 			}
 			stride := width
 			offset := 0
@@ -250,9 +261,6 @@ func (l *loader) animations() ([]Animation, error) {
 			}
 			for i := range times {
 				base := i*stride + offset
-				if base+width > len(vals) {
-					break
-				}
 				var v lin.Vec4
 				v.X, v.Y, v.Z = vals[base], vals[base+1], vals[base+2]
 				if width == 4 {
@@ -260,7 +268,7 @@ func (l *loader) animations() ([]Animation, error) {
 				}
 				c.Values = append(c.Values, v)
 			}
-			c.Times = times[:len(c.Values)]
+			c.Times = times
 			if len(c.Times) > 0 {
 				anim.Duration = max(anim.Duration, c.Times[len(c.Times)-1])
 			}
@@ -294,6 +302,9 @@ func decompose(m lin.Mat4) (t lin.Vec3, r lin.Quat, s lin.Vec3) {
 
 func (l *loader) loadBuffers() error {
 	for i, b := range l.j.Buffers {
+		if b.ByteLength < 0 {
+			return fmt.Errorf("buffer %d: negative byteLength %d", i, b.ByteLength)
+		}
 		var data []byte
 		switch {
 		case b.URI == "":
@@ -339,7 +350,7 @@ func (l *loader) bufferView(i int) ([]byte, int, error) {
 		return nil, 0, fmt.Errorf("bufferView %d: buffer %d out of range", i, v.Buffer)
 	}
 	buf := l.buffers[v.Buffer]
-	if v.ByteOffset < 0 || v.ByteLength < 0 || v.ByteStride < 0 || v.ByteOffset+v.ByteLength > len(buf) {
+	if v.ByteOffset < 0 || v.ByteLength < 0 || v.ByteStride < 0 || v.ByteOffset > len(buf) || v.ByteLength > len(buf)-v.ByteOffset {
 		return nil, 0, fmt.Errorf("bufferView %d overruns buffer", i)
 	}
 	return buf[v.ByteOffset : v.ByteOffset+v.ByteLength], v.ByteStride, nil

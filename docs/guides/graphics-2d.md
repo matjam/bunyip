@@ -596,6 +596,11 @@ matches the CPU path particle for particle, so switching between them
 does not change the effect. Raise `Emitter.Max`, which defaults to the
 1000 the CPU path assumes.
 
+`SetEmitter` retunes the appearance and future births. Existing stateful
+particles retain the palette tint selected when they were born, even
+when the palette is replaced, shortened or removed; new particles use
+the new palette. Colour curves still apply to all live particles.
+
 On a desktop machine, two hundred thousand particles cost about 0.3 ms
 to simulate, 1.1 ms to pack into instance records and 1.8 ms to upload
 and draw, against about 15 ms to draw the same count through the sprite

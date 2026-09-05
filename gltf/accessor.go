@@ -38,8 +38,8 @@ func (l *loader) floats(index int) ([]float32, int, error) {
 	if a.BufferView == nil {
 		// All zeros, per spec; the count is bounded so a file cannot ask
 		// for gigabytes of nothing.
-		if a.Count*n > maxAccessorFloats {
-			return nil, 0, fmt.Errorf("accessor %d: %d values without a buffer view", index, a.Count*n)
+		if a.Count > maxAccessorFloats/n {
+			return nil, 0, fmt.Errorf("accessor %d: too many values without a buffer view", index)
 		}
 		out = make([]float32, a.Count*n)
 	} else {
@@ -52,7 +52,7 @@ func (l *loader) floats(index int) ([]float32, int, error) {
 		}
 		// The overrun check runs before the output is allocated, so the
 		// buffer bounds the memory a file can claim.
-		if a.ByteOffset+(a.Count-1)*stride+n*size > len(data) && a.Count > 0 {
+		if !accessorFits(len(data), a.ByteOffset, a.Count, stride, n*size) {
 			return nil, 0, fmt.Errorf("accessor %d overruns its buffer view", index)
 		}
 		out = make([]float32, a.Count*n)
@@ -69,6 +69,19 @@ func (l *loader) floats(index int) ([]float32, int, error) {
 		return nil, 0, err
 	}
 	return out, n, nil
+}
+
+// accessorFits checks the final element without adding or multiplying file
+// offsets, counts or strides, which could overflow before the bounds check.
+func accessorFits(length, offset, count, stride, elementSize int) bool {
+	if offset < 0 || offset > length || count < 0 || stride < elementSize {
+		return false
+	}
+	if count == 0 {
+		return true
+	}
+	remaining := length - offset
+	return elementSize <= remaining && count-1 <= (remaining-elementSize)/stride
 }
 
 // sparseIndexSizes is what an element index in a sparse accessor may be
@@ -105,10 +118,10 @@ func (l *loader) applySparse(index int, a jsonAccessor, n, size int, set func(el
 	if s.Indices.ByteOffset < 0 || s.Values.ByteOffset < 0 {
 		return fmt.Errorf("accessor %d: negative sparse offset", index)
 	}
-	if s.Indices.ByteOffset+s.Count*isize > len(idxData) {
+	if !accessorFits(len(idxData), s.Indices.ByteOffset, s.Count, isize, isize) {
 		return fmt.Errorf("accessor %d: sparse indices overrun their buffer view", index)
 	}
-	if s.Values.ByteOffset+s.Count*n*size > len(valData) {
+	if !accessorFits(len(valData), s.Values.ByteOffset, s.Count, n*size, n*size) {
 		return fmt.Errorf("accessor %d: sparse values overrun their buffer view", index)
 	}
 	vals := make([]float32, n)
@@ -183,11 +196,15 @@ func (l *loader) indices(index int) ([]uint32, error) {
 	if a.Count < 0 || a.ByteOffset < 0 || a.Count > 1<<28 {
 		return nil, fmt.Errorf("index accessor %d: bad count %d or offset %d", index, a.Count, a.ByteOffset)
 	}
-	out := make([]uint32, a.Count)
+	var out []uint32
 	if a.BufferView == nil {
 		if a.Sparse == nil {
 			return nil, fmt.Errorf("index accessor %d has no data", index)
 		}
+		if a.Count > maxAccessorFloats {
+			return nil, fmt.Errorf("index accessor %d: too many values without a buffer view", index)
+		}
+		out = make([]uint32, a.Count)
 	} else {
 		data, stride, err := l.bufferView(*a.BufferView)
 		if err != nil {
@@ -196,9 +213,10 @@ func (l *loader) indices(index int) ([]uint32, error) {
 		if stride == 0 {
 			stride = size
 		}
-		if a.Count > 0 && a.ByteOffset+(a.Count-1)*stride+size > len(data) {
+		if !accessorFits(len(data), a.ByteOffset, a.Count, stride, size) {
 			return nil, fmt.Errorf("index accessor %d overruns its buffer view", index)
 		}
+		out = make([]uint32, a.Count)
 		for i := range a.Count {
 			b := data[a.ByteOffset+i*stride:]
 			switch size {

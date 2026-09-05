@@ -87,14 +87,19 @@ func (s *morphStore) upload() error {
 	return nil
 }
 
-// destroy frees the buffer and its set.
+// destroy retires the buffer and its set together, after queued and
+// submitted draws have finished reading them. Capture both resources
+// before clearing the store so repeated destruction is harmless.
 func (s *morphStore) destroy() {
 	if s == nil || s.buf == nil {
 		return
 	}
-	s.g.meshes.morphDesc.Free(s.set)
-	s.g.deferDestroy(func() { s.buf.Destroy() })
+	buf, set, desc := s.buf, s.set, s.g.meshes.morphDesc
 	s.buf, s.set = nil, 0
+	s.g.deferDestroy(func() {
+		desc.Free(set)
+		buf.Destroy()
+	})
 }
 
 // vertices is how many vertices a morph mesh has, which is the stride

@@ -239,6 +239,11 @@ extensions the renderer supports, skins, clips and morph targets.
 `asset.Model` does both through the [asset](../pkg/asset.html) package,
 from a loose directory, a pack file or an embedded FS.
 
+Malformed buffer bounds and animation accessor shapes or key counts
+return errors from the glTF loader. Translation and scale outputs are
+three-component vectors, rotations are four-component vectors, and
+morph weights are scalars; cubic keys include both tangent records.
+
 ```go
 doc, err := gltf.Load("assets/ship.glb")
 if err != nil {
@@ -1188,7 +1193,9 @@ fonts all hold GPU memory and all have `Destroy`. Call it from `Init`,
 `Update`, `Draw` or `Shutdown` on the same goroutine, never from another.
 Destroying inside a frame costs no wait: the object goes on that frame
 slot's retire list and is freed a couple of frames later, once the GPU
-has finished with it, so what was already queued still draws. Uploads
+has finished with it, so what was already queued still draws. A model's
+morph buffers and their descriptor sets follow the same lifetime, and
+calling `Destroy` again is harmless. Uploads
 inside a frame are the same shape: `NewMesh`, `Mesh.Update`,
 `NewTexture`, `Texture.Write` and `NewEnvironment` copy through a
 staging arena into the frame's own command buffer, and what a frame
