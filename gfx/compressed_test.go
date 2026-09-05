@@ -234,4 +234,7 @@ func TestReplaceCompressed(t *testing.T) {
 	if err := tex.Replace(solidImage(4, 4, color.RGBA{1, 2, 3, 255})); err == nil {
 		t.Error("replaced a compressed texture with an image")
 	}
+	if _, err := tex.Read(); err == nil {
+		t.Error("read texels back from a compressed texture")
+	}
 }

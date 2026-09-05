@@ -307,10 +307,15 @@ func (t *Texture) Write(x, y int, src image.Image) error {
 
 // Read copies the texture's pixels back from the GPU, premultiplied as
 // they are stored. It waits for the GPU first; use it for screenshots of
-// render textures and tests, not per frame.
+// render textures and tests, not per frame. A compressed texture holds
+// blocks rather than texels, so reading one is an error; decode its
+// KTX2 file with gfx/ktx2 instead.
 func (t *Texture) Read() (*image.RGBA, error) {
 	if t.img == nil || t.destroyed {
 		return nil, fmt.Errorf("gfx: read from a destroyed texture")
+	}
+	if t.compressed {
+		return nil, fmt.Errorf("gfx: a compressed texture holds blocks, not texels; decode the KTX2 file with gfx/ktx2 instead")
 	}
 	if err := t.g.r.Device.WaitIdle(); err != nil {
 		return nil, err
