@@ -8,6 +8,7 @@
 // AStar finds one path with four or eight-way movement and a cost per
 // step, including zero and fractional costs. It uses a zero heuristic
 // because the callback provides no positive lower bound on step costs.
+// To guide the search when a lower bound is known, call AStarWithMinCost.
 // Dijkstra fills a map of distances from many sources at once, and
 // units descend that map with Downhill, which moves many units towards
 // the player for the cost of one fill. FOV computes which cells are
@@ -121,8 +122,21 @@ type Cost func(from, to Point) float32
 // The search uses a zero heuristic to support every nonnegative cost;
 // this can explore more cells than a heuristic with a known cost bound.
 func AStar(w, h int, start, goal Point, diagonal bool, cost Cost) []Point {
+	return AStarWithMinCost(w, h, start, goal, diagonal, cost, 0)
+}
+
+// AStarWithMinCost finds a path as AStar does, using minCost to guide the
+// search. A finite positive minCost promises a lower bound on every
+// traversable step returned by cost, including diagonals. The heuristic
+// scales Manhattan distance for four-way moves and Chebyshev distance
+// for eight-way moves. The search does not scan the map to check the bound;
+// overstating it loses the cheapest-path guarantee. Zero, negative, NaN
+// and infinite bounds use the same zero heuristic as AStar.
+// Only the returned path is allocated; use Pathfinder.AStarWithMinCost
+// with a reusable output buffer for repeated searches without allocations.
+func AStarWithMinCost(w, h int, start, goal Point, diagonal bool, cost Cost, minCost float32) []Point {
 	pf := getPathfinder(w, h)
-	path, ok := pf.AStar(nil, start, goal, diagonal, cost)
+	path, ok := pf.AStarWithMinCost(nil, start, goal, diagonal, cost, minCost)
 	putPathfinder(pf)
 	if !ok {
 		return nil
@@ -211,6 +225,25 @@ func (p *Pathfinder) in(q Point) bool {
 // A zero heuristic preserves cheapest paths for zero and fractional
 // costs, ordering the search by accumulated cost as in Dijkstra.
 func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost Cost) ([]Point, bool) {
+	return p.aStar(out, start, goal, diagonal, cost, 0)
+}
+
+// AStarWithMinCost appends a path to out as AStar does, using minCost to
+// guide the search. A finite positive minCost must be no greater than
+// every traversable step cost, including diagonals. It scales Manhattan
+// distance for four-way moves and Chebyshev distance for eight-way moves.
+// The bound is not checked against the map; overstating it loses the
+// cheapest-path guarantee. Zero, negative, NaN and infinite bounds fall
+// back to AStar's zero heuristic. When no path exists, out is unchanged
+// and the result is false. Pass buf[:0] to reuse the output storage.
+func (p *Pathfinder) AStarWithMinCost(out []Point, start, goal Point, diagonal bool, cost Cost, minCost float32) ([]Point, bool) {
+	if !(minCost > 0 && minCost <= math.MaxFloat32) {
+		minCost = 0
+	}
+	return p.aStar(out, start, goal, diagonal, cost, minCost)
+}
+
+func (p *Pathfinder) aStar(out []Point, start, goal Point, diagonal bool, cost Cost, minCost float32) ([]Point, bool) {
 	if !p.in(start) || !p.in(goal) {
 		return out, false
 	}
@@ -227,7 +260,7 @@ func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost C
 	p.g[si] = 0
 	p.came[si] = -1
 	p.seen[si] = p.gen
-	p.open.push(item{i: int32(si), f: 0})
+	p.open.push(item{i: int32(si), f: pathHeuristic(start, goal, diagonal, minCost)})
 	for len(p.open) > 0 {
 		cur := p.open.pop()
 		ci := int(cur.i)
@@ -267,11 +300,21 @@ func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost C
 				p.seen[ni] = p.gen
 				p.g[ni] = ng
 				p.came[ni] = int32(ci)
-				p.open.push(item{i: int32(ni), f: ng})
+				p.open.push(item{i: int32(ni), f: ng + pathHeuristic(n, goal, diagonal, minCost)})
 			}
 		}
 	}
 	return out, false
+}
+
+func pathHeuristic(from, goal Point, diagonal bool, minCost float32) float32 {
+	if minCost == 0 {
+		return 0
+	}
+	if diagonal {
+		return float32(from.Chebyshev(goal)) * minCost
+	}
+	return float32(from.Manhattan(goal)) * minCost
 }
 
 // DijkstraInto fills dist with the cost from the nearest source to

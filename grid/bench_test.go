@@ -63,16 +63,38 @@ func BenchmarkAStarPathfinder(b *testing.B) {
 	const w, h = 256, 256
 	cost, _ := benchMap(w, h)
 	start, goal := grid.Point{X: 0, Y: 0}, grid.Point{X: w - 1, Y: h - 1}
-	pf := grid.NewPathfinder(w, h)
-	out := make([]grid.Point, 0, 1024)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		path, ok := pf.AStar(out[:0], start, goal, false, cost)
-		if !ok {
-			b.Fatal("no path")
-		}
-		out = path
+	want := grid.Dijkstra(w, h, []grid.Point{start}, false, cost).At(goal.X, goal.Y)
+	for _, name := range []string{"safe_default", "min_cost_1"} {
+		b.Run(name, func(b *testing.B) {
+			pf := grid.NewPathfinder(w, h)
+			search := pf.AStar
+			if name == "min_cost_1" {
+				search = func(out []grid.Point, start, goal grid.Point, diagonal bool, cost grid.Cost) ([]grid.Point, bool) {
+					return pf.AStarWithMinCost(out, start, goal, diagonal, cost, 1)
+				}
+			}
+			out := make([]grid.Point, 0, 1024)
+			out, ok := search(out, start, goal, false, cost)
+			if !ok {
+				b.Fatal("no path")
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				out, ok = search(out[:0], start, goal, false, cost)
+				if !ok {
+					b.Fatal("no path")
+				}
+			}
+			b.StopTimer()
+			var total float32
+			for i := 1; i < len(out); i++ {
+				total += cost(out[i-1], out[i])
+			}
+			if total != want {
+				b.Fatalf("path cost %g, want %g", total, want)
+			}
+		})
 	}
 }
 

@@ -325,7 +325,8 @@ cost := func(from, to grid.Point) float32 {
 	return 1
 }
 
-path := grid.AStar(64, 48, g.player, g.exit, true, cost) // true is eight-way
+// Every traversable step costs at least 1; true enables eight-way movement.
+path := grid.AStarWithMinCost(64, 48, g.player, g.exit, true, cost, 1)
 
 // One Dijkstra map moves the whole crowd: every monster steps downhill.
 dist := grid.Dijkstra(64, 48, []grid.Point{g.player}, true, cost)
@@ -343,16 +344,25 @@ grid.FOV(g.player, 9, opaque, func(p grid.Point) { seen[p] = true })
 
 The algorithms take a cost or passability function over points, not a
 `Grid`, so they work against whatever the game keeps its map in.
-Costs may be zero or fractional. `AStar` uses a zero heuristic because
-the callback supplies no positive lower bound on a step's cost; this
-preserves the cheapest-path guarantee but can explore more cells than
-a search with a known admissible distance estimate.
+Costs may be zero or fractional. `AStar` uses a zero heuristic, so it
+finds cheapest paths without needing a lower bound on step costs.
+When that bound is known, `AStarWithMinCost` can explore fewer cells:
+pass `1` for unit-cost movement, or `0.1` if every traversable step
+costs at least `0.1`. The bound applies to diagonal steps too. The
+search scales Manhattan distance for four-way movement or Chebyshev
+distance for eight-way movement by that bound.
+
+A positive finite bound must never exceed any traversable step's cost;
+overstating it can produce a more expensive path. Pass zero when the
+minimum is unknown or zero-cost moves exist. Zero, negative and
+nonfinite bounds all use the safe zero heuristic.
 
 `AStar`, `Dijkstra` and `FOV` allocate only their result. To search or
 cast sight every frame without allocating at all, keep a `Pathfinder`
 for the map and a `Vision` for the viewer and call their methods.
-`Pathfinder.AStar` appends the path to a slice the game owns and reports
-whether there was one, `Pathfinder.DijkstraInto` fills a map the game
+`Pathfinder.AStar` and `Pathfinder.AStarWithMinCost` append the path to
+a slice the game owns and report whether there was one.
+`Pathfinder.DijkstraInto` fills a map the game
 already has, and `Vision.FOV` reuses the scratch space a cast needs.
 
 ```go
@@ -361,7 +371,7 @@ g.pf = grid.NewPathfinder(64, 48)
 g.dist = grid.New[float32](64, 48)
 
 // Each frame, searching into the game's own buffers.
-if path, ok := g.pf.AStar(g.path[:0], g.player, g.exit, true, cost); ok {
+if path, ok := g.pf.AStarWithMinCost(g.path[:0], g.player, g.exit, true, cost, 1); ok {
 	g.path = path
 }
 g.pf.DijkstraInto(g.dist, []grid.Point{g.player}, true, cost)

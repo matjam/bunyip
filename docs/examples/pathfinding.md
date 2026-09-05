@@ -365,6 +365,10 @@ func main() {
 - Keep a `grid.Pathfinder` on the game type and call its `AStar` method
   from `Draw` instead of the package function, which is what a game with
   many actors does.
+- Use `AStarWithMinCost` with a final argument of `1` to speed up the
+  search: every traversable move in this example costs at least one.
+  If cheaper terrain is added, lower that bound to its minimum step
+  cost; use zero when the minimum is unknown or zero-cost moves exist.
 - Move the searches into `Update` and keep their results on the game, so
   they run at the fixed step rather than once per frame.
 - Add a `Version` check to the load in `Update` and refuse a file from a
