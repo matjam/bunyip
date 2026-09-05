@@ -2,8 +2,10 @@
 // with a coloured grid behind them. The panel in the bottom-right corner is
 // the 2D lighting: a brick floor drawn with DrawLit under a moving lamp and
 // a fixed blue light, with the crates registered as occluders so the lamp
-// throws shadows from them. Escape quits; -seconds and -shot make it
-// self-verifying.
+// throws shadows from them. P runs the frame through the post pass, which
+// a 2D game gets with PostSettings.Post2D: bloom, a vignette, a little
+// chromatic aberration and film grain. Escape quits; -seconds and -shot
+// make it self-verifying.
 package main
 
 import (
@@ -36,7 +38,19 @@ type game struct {
 	floor      *gfx.Texture
 	floorNorm  *gfx.Texture
 	balls      []ball
+	post       bool // run the 2D frame through the post pass
 	shotTaken  bool
+}
+
+// post2D is the grade P turns on. Post2D is what lets a frame with no 3D
+// draws in it reach the composite at all; the rest are the settings that
+// work without a depth buffer. Saturation and Contrast are 1 because
+// their zero would drain the colour out of the frame.
+func post2D() gfx.PostSettings {
+	return gfx.PostSettings{
+		Post2D: true, NoAntiAlias: true, Exposure: 1, Saturation: 1.1, Contrast: 1,
+		Bloom: 0.3, BloomThreshold: 0.9, Vignette: 0.3, Aberration: 0.6, Grain: 0.03,
+	}
 }
 
 // The lit panel: a floor a few bricks across with three crates on it.
@@ -101,6 +115,9 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	if ctx.Input.KeyPressed(input.KeyC) {
 		ctx.SetCursorCaptured(!ctx.CursorCaptured())
 	}
+	if ctx.Input.KeyPressed(input.KeyP) {
+		g.post = !g.post
+	}
 	if dx, dy := ctx.Input.MouseDelta(); ctx.CursorCaptured() && (dx != 0 || dy != 0) {
 		ctx.Log.Info("sprites: captured mouse", "dx", dx, "dy", dy)
 	}
@@ -128,6 +145,13 @@ func (g *game) Update(ctx *bunyip.Context) error {
 }
 
 func (g *game) Draw(ctx *bunyip.Context) error {
+	// Post settings are replaced every frame, like everything else drawn
+	// here. With Post2D off the frame goes straight to the screen.
+	if g.post {
+		ctx.Gfx.SetPost(post2D())
+	} else {
+		ctx.Gfx.SetPost(gfx.PostSettings{NoAntiAlias: true})
+	}
 	const cell = 40
 	for y := float32(0); y < ctx.Height; y += cell {
 		for x := float32(0); x < ctx.Width; x += cell {
@@ -144,7 +168,17 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		})
 	}
 	g.drawLitRoom(ctx)
+	ctx.Gfx.SetLayer(20)
+	ctx.Gfx.Debugf(12, 12, "P: 2D post-processing %s", onOff(g.post))
 	return nil
+}
+
+// onOff names a toggle for the overlay.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // drawLitRoom draws the lit panel: the lamp circles the room, the crates
@@ -249,9 +283,10 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	fullscreen := flag.Bool("fullscreen", false, "start full screen (F toggles)")
 	capture := flag.Bool("capture", false, "start with the cursor captured (C toggles)")
+	post := flag.Bool("post", false, "start with 2D post-processing on (P toggles)")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture})
+		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture, post: *post})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sprites:", err)
 		os.Exit(1)

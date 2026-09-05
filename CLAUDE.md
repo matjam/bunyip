@@ -71,8 +71,20 @@ merged into draws by texture, shader, uniforms, blend, clip and
 projection. 3D draws go into `meshDraw` records that `prepareDraws`
 resolves, culls, sorts and uploads as an instance stream; `renderScene`
 runs the shadow atlas pass, the HDR pass (sky, opaque, blended,
-debug lines), decals, then the post pass composites. Colours are linear
-and non-premultiplied in the API, premultiplied in the 2D stream.
+debug lines), decals and the velocity pass, then the post chain and the
+composite. Colours are linear and non-premultiplied in the API,
+premultiplied in the 2D stream.
+
+**The post chain.** `postChain` in `gfx/posteffects.go` runs the effects
+that read the scene and its depth, each through `chainPass`: a
+fullscreen pass from `t.hdr` into `t.pong`, copied back over `t.hdr`.
+Every pass therefore has one input set to keep and the composite always
+finds its scene in `t.hdr`. The optional images (velocity, history,
+pong, rays, the second LDR image) are made by the `need*` methods the
+first time a setting asks for them and freed with the target set, so a
+game that turns none of them on pays nothing. The composite reads four
+samplers (scene, bloom, occlusion, rays) plus the LUT, with a set per
+combination of bloom and rays in `sceneTargets.finals`.
 
 **Descriptor sets for meshes.** Set 0 is the material: thirteen
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
@@ -240,6 +252,30 @@ render pass, so text tests draw one frame.
 - `prepareDraws` runs before `writeUniforms`: the cascades need the
   caster bounds it resolves, and the shadow pass culls each draw against
   each cascade and spot light before recording it.
+- `renderQueue` calls `q.jitterFrame` before anything else, which fills
+  `q.projJ`, `q.viewProjJ` and `q.invViewProjJ` with the sub-pixel
+  offset temporal anti-aliasing needs (zero when it is off). Everything
+  that rasterises the HDR pass or reads the depth buffer afterwards uses
+  those and not `Camera.Projection`: the Frame block, the sky, the debug
+  lines, SSAO, the velocity pass and the reprojection matrices. The
+  cascades, the culling frustum and `gfx/pick.go` stay unjittered.
+  `q.prevViewProj` is the previous frame's unjittered view-projection,
+  set at the end of `renderQueue` and used by everything that reprojects.
+- The velocity image holds the object's own motion only, in texture
+  coordinates: `ndc(prevViewProj * currentWorld) - ndc(prevViewProj *
+  previousWorld)`. A draw the game did not mark as moved writes nothing,
+  and the resolve passes reconstruct the camera's part from depth and
+  add it. The velocity programs are standalone (`velocity.vert`,
+  `velocity_skin.vert`, `velocity.frag`), take their matrices in a
+  128-byte push block rather than the Frame block, and declare their own
+  vertex layout (`velocityVertexLayout`), so the Frame block and the
+  mesh preludes are untouched. The instance stream carries `prevModel`
+  in the three vec4s past `atten`, which no other program declares.
+- A 2D frame that goes through the post pass (`PostSettings.Post2D`)
+  draws its stream into `t.ldr`, the swapchain-format image, and the
+  composite reads it from there through `final2DSet`. That is why no 2D
+  pipeline needs an HDR-format variant. The composite's `pc.d.y` flag
+  skips exposure and tone mapping in that mode.
 - Immediate-mode identity comes from the label plus the enclosing
   containers plus call order; overlays (menus, modals, drag ghosts) are
   drawn deferred at `end`, and overlays may add overlays, so that list

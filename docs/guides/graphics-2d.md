@@ -595,13 +595,48 @@ gr.ScreenSpace()
 gr.Draw(g.mini.Texture(), gfx.Sprite{Pos: lin.V2(ctx.Width-232, 12), Size: lin.V2(220, 124)})
 ```
 
-For a post effect, render the whole game into a render texture and draw
-it back as one sprite with a sprite shader on that draw, which gives a
-vignette, a CRT curve or a palette swap. `PostSettings` and its bloom,
-ambient occlusion and LUT grading apply to the 3D scene's HDR pass, not
-to 2D drawing. `RenderTexture.Read` copies the pixels back, and
-`ctx.Screenshot(path)` writes the whole frame to a PNG, which is what
-every example does with `-shot`.
+A render texture also gives a game its own post effect: render the whole
+game into one and draw it back as a single sprite with a sprite shader on
+that draw, for a CRT curve, a palette swap or anything else the engine's
+own post pass does not offer. `RenderTexture.Read` copies the pixels
+back, and `ctx.Screenshot(path)` writes the whole frame to a PNG, which
+is what every example does with `-shot`.
+
+## Post-processing on a 2D frame
+
+A frame with no 3D draws in it goes straight to the screen and skips the
+post pass, which is what a 2D game usually wants and costs nothing. Set
+`PostSettings.Post2D` to send it through the composite instead:
+
+```go
+p := gfx.PostSettings{
+	Post2D: true, Exposure: 1, Saturation: 1.1, Contrast: 1,
+	Bloom: 0.3, BloomThreshold: 0.9, Vignette: 0.3,
+	Aberration: 0.6, Grain: 0.03,
+}
+gr.SetPost(p)
+```
+
+Bloom, the vignette, saturation and contrast, the LUT grade, chromatic
+aberration, lens distortion, lens ghosts, film grain and FXAA all apply.
+The effects that need a depth buffer or a velocity buffer do not:
+ambient occlusion, depth of field, motion blur, temporal anti-aliasing
+and god rays stay off however they are set.
+
+Two things to know about the mode. Exposure and tone mapping are skipped,
+so a frame with `Post2D` on and nothing else turned up comes back with
+the colours the game drew; that also means bloom needs
+`BloomThreshold` below 1 to catch anything, since 2D colours are already
+inside the displayable range. And `Saturation` and `Contrast` are
+absolute values whose zero drains the frame, so start from
+`gfx.DefaultPost()` or write both as 1, the way the example above does.
+FXAA follows `NoAntiAlias` as it does in 3D; a game of hard-edged pixel
+art wants `NoAntiAlias: true`.
+
+Post applies to everything in the frame, including text and the interface,
+because there is one image and one grade. The
+[sprites example](https://github.com/matjam/bunyip/tree/main/examples/sprites)
+puts this on the P key.
 
 ## Shaders
 

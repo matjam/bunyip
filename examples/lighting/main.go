@@ -1,8 +1,11 @@
 // Command lighting is the renderer playground: a skinned mesh bent by
 // joint matrices computed each frame, cascaded shadows, point lights, and
 // every post-processing setting on a slider (exposure, bloom, vignette,
-// saturation, contrast, ambient occlusion, FXAA). With -model it loads a
-// glTF file and plays its animation clips (Space cycles them).
+// saturation, contrast, ambient occlusion, FXAA, temporal anti-aliasing,
+// depth of field, motion blur, god rays and the lens effects). A sphere
+// orbits the scene and reports where it was last frame, so the velocity
+// buffer has something in it. With -model it loads a glTF file and plays
+// its animation clips (Space cycles them).
 package main
 
 import (
@@ -49,6 +52,7 @@ type game struct {
 	useEnv   bool
 	envPath  string
 	yaw      float32
+	prevT    float32 // the time the last frame drew at, for the moving sphere
 	shotDone bool
 }
 
@@ -171,6 +175,13 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr.DrawMesh(g.floor, gfx.Material{BaseColor: gfx.RGB(150, 150, 160), Roughness: 0.9}, lin.Translate(lin.V3(0, -0.1, 0)).Mul(lin.Scale(lin.V3(12, 0.2, 12))))
 	gr.DrawMesh(g.sphere, gfx.Material{BaseColor: gfx.RGB(230, 200, 120), Metallic: 1, Roughness: 0.2}, lin.Translate(lin.V3(3.5, 1, -2)))
 	gr.DrawMesh(g.sphere, gfx.Material{BaseColor: gfx.RGB(90, 200, 255), Emissive: 2.5}, lin.Translate(lin.V3(-3.5, 0.6, 2)).Mul(lin.Scale(lin.V3(0.6, 0.6, 0.6))))
+	// A sphere on a fast orbit, drawn with the transform it had last
+	// frame as well as this one. That difference is what goes into the
+	// velocity buffer, so temporal anti-aliasing reprojects the sphere
+	// instead of smearing it and motion blur streaks it the right way.
+	gr.DrawMeshMoved(g.sphere, gfx.Material{BaseColor: gfx.RGB(255, 130, 90), Roughness: 0.35},
+		orbitAt(t), orbitAt(g.prevT))
+	g.prevT = t
 	if g.model != nil {
 		gr.DrawModelAnimated(g.model, gfx.At(0, 0, 0), g.player)
 	} else {
@@ -185,7 +196,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 510}, func() {
+		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 250, H: 510}, func() {
 			u.Slider("Vacuum (up to orbit)", &g.vacuum, 0, 1)
 			u.Slider("Exposure", &g.post.Exposure, 0.1, 4)
 			u.Slider("Bloom", &g.post.Bloom, 0, 1)
@@ -208,8 +219,31 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				u.Label("Tentacles are skinned meshes; pass -model file.glb to animate a glTF.")
 			}
 		})
+		// The second panel is everything that needs the depth buffer or
+		// the velocity buffer, plus the lens. Each slider's zero is off.
+		u.Panel("Camera and lens", ui.Rect{X: 752, Y: 12, W: 260, H: 604}, func() {
+			u.Checkbox("Temporal anti-alias", &g.post.TemporalAA)
+			u.Slider("Temporal blend", &g.post.TemporalBlend, 0.02, 0.5)
+			u.Slider("Focus distance (0 off)", &g.post.FocusDistance, 0, 25)
+			u.Slider("Focus range", &g.post.FocusRange, 0.2, 10)
+			u.Slider("Bokeh radius", &g.post.BokehRadius, 1, 40)
+			u.Slider("Motion blur", &g.post.MotionBlur, 0, 1)
+			u.Slider("God rays", &g.post.GodRays, 0, 2)
+			u.Slider("Chromatic aberration", &g.post.Aberration, 0, 6)
+			u.Slider("Lens distortion", &g.post.Distortion, -1, 1)
+			u.Slider("Lens ghosts", &g.post.Ghosts, 0, 1)
+			u.Slider("Film grain", &g.post.Grain, 0, 0.2)
+		})
 	})
 	return nil
+}
+
+// orbitAt is the moving sphere's transform at a moment in time. Draw
+// calls it twice, for now and for the previous frame.
+func orbitAt(t float32) lin.Mat4 {
+	a := float64(t) * 1.3
+	return lin.Translate(lin.V3(3.2*float32(math.Cos(a)), 2.2, 3.2*float32(math.Sin(a)))).
+		Mul(lin.Scale(lin.V3(0.55, 0.55, 0.55)))
 }
 
 // tentacleMesh builds a tapered tube whose rings belong to successive

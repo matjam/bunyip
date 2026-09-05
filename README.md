@@ -38,8 +38,10 @@ window.
   targets; cascaded shadows, spot lights with shadows, a procedural sky
   or image-based lighting, fog; instancing, frustum culling and levels of
   detail; billboards, decals, outlines and x-ray; dynamic meshes and
-  terrain; SSAO, bloom, FXAA, tone mapping and colour grading; render
-  textures and picking.
+  terrain; SSAO, bloom, tone mapping and colour grading, FXAA or
+  temporal anti-aliasing with a velocity buffer, depth of field, motion
+  blur, god rays and lens effects, and the same post pass over a 2D-only
+  frame; render textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.
@@ -167,7 +169,7 @@ whole program and explains it section by section:
 
 | Command | Shows |
 |---|---|
-| `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites, and a lit brick floor where a moving lamp throws shadows from three crates |
+| `go run ./examples/sprites [-post]` | 300 tinted, rotating, alpha-blended sprites, a lit brick floor where a moving lamp throws shadows from three crates, and P to run the 2D frame through the post pass |
 | `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
@@ -176,7 +178,7 @@ whole program and explains it section by section:
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
 | `go run ./examples/audio [-music file.ogg] [-zone] [-mic]` | positional voices with panning or the binaural head model, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream, streamed music files and a microphone level meter |
 | `go run ./examples/solar` | the ECS driving a scene: a scene document and a prefab loaded from embedded files, hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
-| `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, a procedural sky with a slider that raises the altitude to orbit, image-based lighting from a panorama, every post-processing setting on a slider, glTF animation clips |
+| `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, point lights, a procedural sky with a slider that raises the altitude to orbit, image-based lighting from a panorama, every post-processing setting on a slider including temporal anti-aliasing, depth of field, motion blur, god rays and the lens effects, glTF animation clips |
 | `go run ./examples/pathfinding` | A*, Dijkstra maps, field of view, flood fill and lines on a paintable grid; save and load through the save package |
 | `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic; `-reliable` sends chat over reliable UDP and shows the link's round trip and loss |
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |

@@ -195,7 +195,7 @@ func TestLensEffects(t *testing.T) {
 		t.Fatalf("without aberration the channels should agree: red %d, blue %d", r, b)
 	}
 	ab := base
-	ab.Aberration = 8
+	ab.Aberration = 30 // far past anything a game would want, so the split is unmistakable
 	on := postShot(t, g, ab, 1, draw)
 	c := on.RGBAAt(100, 64)
 	// Red is sampled further out, into the background; blue further in,

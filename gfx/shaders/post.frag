@@ -59,7 +59,7 @@ void main() {
     if (pc.c.x > 0.0) {
         // Chromatic aberration: red and blue sampled either side of green,
         // further apart towards the edge of the frame.
-        vec2 shift = off * pc.c.x * 0.02;
+        vec2 shift = off * pc.c.x * 0.005;
         c = vec3(texture(scene, uv + shift).r, texture(scene, uv).g, texture(scene, uv - shift).b);
     } else {
         c = texture(scene, uv).rgb;

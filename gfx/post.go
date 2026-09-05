@@ -66,8 +66,8 @@ type PostSettings struct {
 	MotionSamples int
 
 	// Aberration splits the red and blue channels apart towards the edge
-	// of the frame, as a cheap lens does; zero means off, 1 is about two
-	// pixels at the corner of a 1080-wide frame.
+	// of the frame, as a cheap lens does; zero means off, 1 is about three
+	// pixels at the edge of a 1080-wide frame and 0.5 is a subtle fringe.
 	Aberration float32
 	// Distortion bends the image about the centre: positive is barrel,
 	// negative pincushion; zero means off.
