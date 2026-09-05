@@ -21,21 +21,23 @@ const vertex2DSize = 32
 
 // push2D is the 2D push-constant block: the projection and frame data.
 type push2D struct {
-	proj  lin.Mat4
-	frame lin.Vec4 // time, view width, view height, pixels per view unit
+	proj                   lin.Mat4
+	frame                  lin.Vec4 // time, view width, view height, pixels per view unit
+	transformX, transformY lin.Vec4
 }
 
-const push2DSize = 80
+const push2DSize = 112
 
 // state2D is everything a run of 2D vertices needs to be drawn. Runs
 // with equal state become one draw call.
 type state2D struct {
-	set     vk.VkDescriptorSet // the texture and the shader's images
-	shader  *Shader
-	uniform int32 // arena offset of the shader's uniforms, -1 for none
-	blend   Blend
-	clip    lin.Rect
-	proj    *lin.Mat4
+	set       vk.VkDescriptorSet // the texture and the shader's images
+	shader    *Shader
+	uniform   int32 // arena offset of the shader's uniforms, -1 for none
+	blend     Blend
+	clip      lin.Rect
+	proj      *lin.Mat4
+	transform lin.Affine
 }
 
 // item2D is a submitted run of vertices with its sort keys.
@@ -44,6 +46,8 @@ type item2D struct {
 	first, count int32
 	layer        int32
 	key          float32 // order within the layer; equal keys keep submission order
+	seq          int32
+	geometry     *geometry2DData
 	// breaks says an instanced particle batch was submitted just before
 	// this run, so it must start a draw of its own however well it
 	// matches the one before: the batch is recorded between them.
@@ -55,12 +59,13 @@ type draw2D struct {
 	first, count uint32
 	// layer is the layer of the run's first item, which is its lowest
 	// because items are in layer order by the time draws are built.
-	// seq is that item's offset in the stream as submitted, which orders
+	// seq is that item's submission sequence, which orders
 	// it against everything else submitted in the same layer. flush2D
 	// uses the pair to interleave instanced particles, which carry the
 	// same two numbers.
-	layer int32
-	seq   int32
+	layer    int32
+	seq      int32
+	geometry *geometry2DData
 }
 
 // stream2D collects a queue's 2D vertices for a frame and turns them into
@@ -85,6 +90,7 @@ type stream2D struct {
 	// instanced particle path sets so a batch can be recorded between
 	// two sprite draws that would otherwise become one.
 	breakRun bool
+	sequence int32
 }
 
 const initialVertexCapacity = 6 * 4096
@@ -116,6 +122,7 @@ func (s *stream2D) proj(m lin.Mat4) *lin.Mat4 {
 // add appends vertices under a state, merging with the previous item
 // when nothing changed.
 func (s *stream2D) add(st state2D, layer int32, key float32, verts []vertex2D) {
+	seq := s.nextSequence()
 	first := int32(len(s.verts))
 	s.verts = append(s.verts, verts...)
 	// A run that would merge across an instanced particle batch has to
@@ -125,12 +132,29 @@ func (s *stream2D) add(st state2D, layer int32, key float32, verts []vertex2D) {
 	s.breakRun = false
 	if n := len(s.items); !breaks && n > 0 {
 		last := &s.items[n-1]
-		if last.state == st && last.layer == layer && last.key == key && last.first+last.count == first {
+		if last.geometry == nil && last.state == st && last.layer == layer && last.key == key && last.first+last.count == first {
 			last.count += int32(len(verts))
 			return
 		}
 	}
-	s.items = append(s.items, item2D{state: st, first: first, count: int32(len(verts)), layer: layer, key: key, breaks: breaks})
+	s.items = append(s.items, item2D{state: st, first: first, count: int32(len(verts)), layer: layer, key: key, breaks: breaks, seq: seq})
+	if layer != 0 {
+		s.sorted = false
+	}
+	if key != 0 {
+		s.sorted, s.keyed = false, true
+	}
+}
+
+func (s *stream2D) nextSequence() int32 {
+	seq := s.sequence
+	s.sequence++
+	return seq
+}
+
+func (s *stream2D) addGeometry(st state2D, layer int32, key float32, data *geometry2DData) {
+	s.items = append(s.items, item2D{state: st, first: int32(len(s.verts)), layer: layer, key: key, seq: s.nextSequence(), geometry: data, breaks: s.breakRun})
+	s.breakRun = false
 	if layer != 0 {
 		s.sorted = false
 	}
@@ -149,6 +173,7 @@ func (s *stream2D) reset() {
 	s.sorted = true
 	s.keyed = false
 	s.breakRun = false
+	s.sequence = 0
 }
 
 // maxLayerSpread is how many layers wide a frame may be before the
@@ -238,10 +263,12 @@ func (s *stream2D) build() {
 		s.ordered = s.verts
 		for i := range s.items {
 			it := &s.items[i]
-			if n := len(s.draws); n > 0 && !it.breaks && s.draws[n-1].state == it.state {
+			if it.geometry != nil {
+				s.draws = append(s.draws, draw2D{state: it.state, count: it.geometry.count, layer: it.layer, seq: it.seq, geometry: it.geometry})
+			} else if n := len(s.draws); n > 0 && s.draws[n-1].geometry == nil && !it.breaks && s.draws[n-1].state == it.state {
 				s.draws[n-1].count += uint32(it.count)
 			} else {
-				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count), layer: it.layer, seq: it.first})
+				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count), layer: it.layer, seq: it.seq})
 			}
 		}
 		return
@@ -249,10 +276,14 @@ func (s *stream2D) build() {
 	s.orderedBuf = s.orderedBuf[:0]
 	for i := range s.items {
 		it := &s.items[i]
-		if n := len(s.draws); n > 0 && !it.breaks && s.draws[n-1].state == it.state {
+		if it.geometry != nil {
+			s.draws = append(s.draws, draw2D{state: it.state, count: it.geometry.count, layer: it.layer, seq: it.seq, geometry: it.geometry})
+			continue
+		}
+		if n := len(s.draws); n > 0 && s.draws[n-1].geometry == nil && !it.breaks && s.draws[n-1].state == it.state {
 			s.draws[n-1].count += uint32(it.count)
 		} else {
-			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count), layer: it.layer, seq: it.first})
+			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count), layer: it.layer, seq: it.seq})
 		}
 		s.orderedBuf = append(s.orderedBuf, s.verts[it.first:it.first+it.count]...)
 	}
@@ -310,6 +341,17 @@ func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
 		return
 	}
 	q := g.cur
+	if !q.xform.IsIdentity() {
+		for i := range verts {
+			verts[i].pos = q.xform.Apply(verts[i].pos)
+		}
+	}
+	q.stream.add(g.state2D(tex, filter), q.layer, q.sortKey, verts)
+}
+
+// state2D snapshots shared drawing state for streamed and persistent geometry.
+func (g *Graphics) state2D(tex *Texture, filter Filter) state2D {
+	q := g.cur
 	if tex == nil {
 		tex = g.white
 	}
@@ -323,12 +365,7 @@ func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
 			shader = g.matrixShader
 		}
 	}
-	if !q.xform.IsIdentity() {
-		for i := range verts {
-			verts[i].pos = q.xform.Apply(verts[i].pos)
-		}
-	}
-	st := state2D{shader: shader, uniform: shader.uniformOffset(), blend: q.blend, proj: q.stream.proj(q.spriteProj)}
+	st := state2D{shader: shader, uniform: shader.uniformOffset(), blend: q.blend, proj: q.stream.proj(q.spriteProj), transform: lin.Identity2()}
 	if n := len(q.clips); n > 0 {
 		st.clip = q.clips[n-1]
 	}
@@ -337,7 +374,7 @@ func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
 	} else {
 		st.set = tex.setFor(filter)
 	}
-	q.stream.add(st, q.layer, q.sortKey, verts)
+	return st
 }
 
 // imageSet returns a descriptor set binding a texture plus a shader's
@@ -377,25 +414,10 @@ func (g *Graphics) textureSet(view vk.VkImageView, sampler vk.VkSampler) (vk.VkD
 	return g.descriptors.AllocateMany(bindings)
 }
 
-// spriteCorners returns a sprite's four corners, clockwise from the
-// top-left, after its origin and rotation are applied. The transform
-// stack is not included; emit and spriteVisible apply that.
-func spriteCorners(s Sprite) [4]lin.Vec2 {
-	// Corners relative to the origin, then rotated about it.
-	ox, oy := s.Origin.X*s.Size.X, s.Origin.Y*s.Size.Y
-	x0, y0, x1, y1 := -ox, -oy, s.Size.X-ox, s.Size.Y-oy
-	if s.Rotation == 0 {
-		return [4]lin.Vec2{{X: s.Pos.X + x0, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y1}, {X: s.Pos.X + x0, Y: s.Pos.Y + y1}}
-	}
-	sn, cs := sin32(s.Rotation), cos32(s.Rotation)
-	rot := func(x, y float32) lin.Vec2 { return lin.V2(s.Pos.X+x*cs-y*sn, s.Pos.Y+x*sn+y*cs) }
-	return [4]lin.Vec2{rot(x0, y0), rot(x1, y0), rot(x1, y1), rot(x0, y1)}
-}
-
 // spriteVertices appends a sprite's two triangles.
 func spriteVertices(s Sprite, out []vertex2D) []vertex2D {
 	c := s.Color.premultiplied()
-	p := spriteCorners(s)
+	p := s.Corners()
 	uv := [4]lin.Vec2{s.UV0, {X: s.UV1.X, Y: s.UV0.Y}, s.UV1, {X: s.UV0.X, Y: s.UV1.Y}}
 	return append(out,
 		vertex2D{p[0], uv[0], c}, vertex2D{p[1], uv[1], c}, vertex2D{p[2], uv[2], c},

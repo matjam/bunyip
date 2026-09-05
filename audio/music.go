@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/hajimehoshi/go-mp3"
 	"github.com/jfreymuth/oggvorbis"
@@ -26,19 +27,23 @@ type Music struct {
 	rate   int   // the mixer's
 	length int64 // source frames, 0 when unknown
 
-	mu         sync.Mutex
-	cond       *sync.Cond
-	ring       []float32 // stereo samples at the mixer rate
-	rd         int
-	count      int
-	ended      bool
-	close      bool
-	err        error
-	seek       float64 // pending Seek target in seconds; negative when none
-	gen        int     // bumped by Seek so fill drops what it decoded before
-	worker     sync.WaitGroup
-	owned      io.Closer
-	closeOwned sync.Once
+	mu                 sync.Mutex
+	cond               *sync.Cond
+	ring               []float32 // stereo samples at the mixer rate
+	rd                 int
+	count              int
+	ended              bool
+	close              bool
+	err                error
+	seek               float64 // pending Seek target in seconds; negative when none
+	gen                int     // bumped by Seek so fill drops what it decoded before
+	worker             sync.WaitGroup
+	owned              io.Closer
+	closeOwned         sync.Once
+	loopStart, loopEnd int64   // source frames; zero end means the whole track
+	playFrame          float64 // source position of the next buffered frame handed out
+	decodeFrame        int64   // decoder goroutine only
+	voiceBuffered      float64 // mixer-rate frames prefetched but not yet played
 }
 
 // decoder yields interleaved samples at its own rate and channel count.
@@ -143,6 +148,9 @@ func (mu *Music) Duration() float64 {
 // its Position follows. Music whose voice has already ended can be sought
 // and played again with PlayStream.
 func (mu *Music) Seek(seconds float64) error {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds >= float64(math.MaxInt64)/float64(mu.dec.Rate()) {
+		return errors.New("audio: music: seek time must be finite")
+	}
 	mu.mu.Lock()
 	defer mu.mu.Unlock()
 	if mu.close {
@@ -151,12 +159,111 @@ func (mu *Music) Seek(seconds float64) error {
 	if mu.err != nil {
 		return mu.err
 	}
-	mu.seek = max(seconds, 0)
+	mu.setSeekLocked(max(seconds, 0))
+	return nil
+}
+
+func (mu *Music) setSeekLocked(seconds float64) {
+	mu.setSeekFrameLocked(math.Floor(seconds * float64(mu.dec.Rate())))
+}
+
+func (mu *Music) setSeekFrameLocked(frame float64) {
+	if mu.length > 0 {
+		frame = min(frame, float64(mu.length))
+	}
+	if mu.loop && mu.loopEnd > 0 && (frame < float64(mu.loopStart) || frame >= float64(mu.loopEnd)) {
+		frame = float64(mu.loopStart)
+	}
+	mu.playFrame = math.Floor(frame)
+	mu.seek = mu.playFrame / float64(mu.dec.Rate())
+	mu.voiceBuffered = 0
 	mu.gen++
 	mu.rd, mu.count = 0, 0
 	mu.ended = false
 	mu.cond.Broadcast()
+}
+
+// Looping reports whether Music repeats. This is independent of whether
+// any Voice is currently playing the music.
+func (mu *Music) Looping() bool { mu.mu.Lock(); defer mu.mu.Unlock(); return mu.loop }
+
+// SetLooping changes repetition and flushes prefetched samples at the
+// next playback position, accounting for voice lookahead. Enabling it
+// after all samples reach EOF restarts at the loop
+// start; a Voice that already stopped must be played again. Closed or
+// failed music is unchanged. The next read may briefly underrun.
+func (mu *Music) SetLooping(loop bool) {
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+	if mu.close || mu.err != nil || mu.loop == loop {
+		return
+	}
+	frame := mu.playFrame - mu.voiceBuffered*float64(mu.dec.Rate())/float64(mu.rate)
+	end := mu.loopEnd
+	if end == 0 {
+		end = mu.length
+	}
+	if mu.loop && end > mu.loopStart {
+		width := float64(end - mu.loopStart)
+		frame = float64(mu.loopStart) + math.Mod(math.Mod(frame-float64(mu.loopStart), width)+width, width)
+	}
+	frame = max(frame, 0)
+	mu.loop = loop
+	if loop && mu.ended && mu.count == 0 && mu.voiceBuffered == 0 {
+		frame = float64(mu.loopStart)
+	}
+	mu.setSeekFrameLocked(frame)
+}
+
+// SetLoopRange selects [start,end) and restarts decoding at start,
+// flushing prefetched audio. (0,0) restores the whole track. Nonzero
+// ranges must contain at least one source frame and fit a known duration;
+// unknown-length music accepts a finite range and also wraps at early EOF.
+// Boundaries round down to source frames. The range repeats only while
+// Looping; without looping playback continues from start to the file's end.
+func (mu *Music) SetLoopRange(start, end time.Duration) error {
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+	if mu.close {
+		return errors.New("audio: music: closed")
+	}
+	if mu.err != nil {
+		return mu.err
+	}
+	if start < 0 || end < 0 || ((start != 0 || end != 0) && end <= start) {
+		return errors.New("audio: music: invalid loop range")
+	}
+	rate := float64(mu.dec.Rate())
+	if end.Seconds() >= float64(math.MaxInt64)/rate {
+		return errors.New("audio: music: loop range exceeds source frame limit")
+	}
+	a, b := int64(start.Seconds()*rate), int64(end.Seconds()*rate)
+	if (start != 0 || end != 0) && (b <= a || a < 0 || b < 0 || (mu.length > 0 && b > mu.length)) {
+		return errors.New("audio: music: loop range outside source frames")
+	}
+	mu.loopStart, mu.loopEnd = a, b
+	mu.setSeekFrameLocked(float64(a))
 	return nil
+}
+
+// LoopRange returns configured, source-frame-aligned boundaries; (0,0)
+// means the whole track. Values round up to a nanosecond so passing the
+// result back to SetLoopRange preserves source-frame boundaries.
+func (mu *Music) LoopRange() (start, end time.Duration) {
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+	rate := float64(mu.dec.Rate())
+	return time.Duration(math.Ceil(float64(mu.loopStart) / rate * float64(time.Second))), time.Duration(math.Ceil(float64(mu.loopEnd) / rate * float64(time.Second)))
+}
+
+func (mu *Music) streamRevision() uint64 { mu.mu.Lock(); defer mu.mu.Unlock(); return uint64(mu.gen) }
+
+func (mu *Music) streamLookahead(revision uint64, frames float64) {
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+	if uint64(mu.gen) == revision {
+		mu.voiceBuffered = frames
+	}
 }
 
 // wait blocks until cond holds, the music ends, or it is closed.
@@ -176,6 +283,9 @@ func (mu *Music) wait(cond func() bool) {
 // Do not call Close from that reader or decoder, including its callbacks.
 func (mu *Music) Close() {
 	mu.mu.Lock()
+	if !mu.close {
+		mu.gen++
+	}
 	mu.close = true
 	mu.cond.Broadcast()
 	mu.mu.Unlock()
@@ -200,8 +310,25 @@ func (mu *Music) Err() error {
 func (mu *Music) Read(out []float32) int {
 	mu.mu.Lock()
 	defer mu.mu.Unlock()
+	n, _ := mu.readSourceLocked(out)
+	return n
+}
+
+func (mu *Music) readSource(out []float32, revision uint64) (int, int) {
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+	if uint64(mu.gen) != revision {
+		// A control changed during the current mixer block. Do not consume
+		// the new generation until the voice discards its old lookahead.
+		clear(out)
+		return len(out) / 2, 0
+	}
+	return mu.readSourceLocked(out)
+}
+
+func (mu *Music) readSourceLocked(out []float32) (int, int) {
 	if mu.close {
-		return 0
+		return 0, 0
 	}
 	want := len(out) &^ 1
 	n := min(mu.count, want)
@@ -210,14 +337,22 @@ func (mu *Music) Read(out []float32) int {
 	copy(out[first:n], mu.ring[:n-first])
 	mu.rd = (mu.rd + n) % len(mu.ring)
 	mu.count -= n
+	mu.playFrame += float64(n/2) * float64(mu.dec.Rate()) / float64(mu.rate)
+	end := mu.loopEnd
+	if end == 0 {
+		end = mu.length
+	}
+	if mu.loop && end > mu.loopStart && mu.playFrame >= float64(end) {
+		mu.playFrame = float64(mu.loopStart) + math.Mod(mu.playFrame-float64(mu.loopStart), float64(end-mu.loopStart))
+	}
 	mu.cond.Signal()
 	if n < want {
 		if mu.ended {
-			return n / 2
+			return n / 2, n / 2
 		}
 		clear(out[n:want]) // underrun: the decoder is behind, keep going
 	}
-	return want / 2
+	return want / 2, n / 2
 }
 
 // fill decodes on its own goroutine, waiting whenever the ring is full.
@@ -240,11 +375,22 @@ func (mu *Music) fill() {
 			rewound, emptyReads = false, 0
 			lastGen = gen
 		}
-		n, err := mu.dec.Read(src)
-		if n < 0 || n > len(src) || n%ch != 0 {
+		mu.mu.Lock()
+		loop, loopStart, loopEnd := mu.loop, mu.loopStart, mu.loopEnd
+		mu.mu.Unlock()
+		limit := len(src) / ch
+		if loop && loopEnd > 0 {
+			limit = min(limit, int(max(0, loopEnd-mu.decodeFrame)))
+		}
+		n, err := 0, error(io.EOF)
+		if limit > 0 {
+			n, err = mu.dec.Read(src[:limit*ch])
+		}
+		if n < 0 || n > limit*ch || n%ch != 0 {
 			n, err = 0, io.ErrUnexpectedEOF
 		}
 		if n > 0 {
+			mu.decodeFrame += int64(n / ch)
 			rewound = false
 			emptyReads = 0
 			stereo = toStereo(src[:n], ch, stereo[:0])
@@ -252,6 +398,9 @@ func (mu *Music) fill() {
 			if !mu.push(out, gen) {
 				return
 			}
+		}
+		if err == nil && loop && loopEnd > 0 && mu.decodeFrame >= loopEnd {
+			err = io.EOF
 		}
 		if err == nil {
 			if n > 0 {
@@ -265,8 +414,9 @@ func (mu *Music) fill() {
 		}
 		// A looping track rewinds at its end, unless the rewind produced
 		// nothing: a track with no frames would otherwise spin forever.
-		if errors.Is(err, io.EOF) && mu.loop && !rewound {
-			if rerr := mu.dec.SeekFrame(0); rerr == nil {
+		if errors.Is(err, io.EOF) && loop && !rewound {
+			if rerr := mu.dec.SeekFrame(loopStart); rerr == nil {
+				mu.decodeFrame = loopStart
 				// The next pass supplies the next interpolation frame. Keep
 				// the phase and last frame, even for a one-frame track.
 				rewound = true
@@ -315,7 +465,8 @@ func (mu *Music) applySeek() (int, bool) {
 	if target < 0 {
 		return gen, true
 	}
-	if err := mu.dec.SeekFrame(int64(target * float64(mu.dec.Rate()))); err != nil {
+	frame := int64(math.Round(target * float64(mu.dec.Rate())))
+	if err := mu.dec.SeekFrame(frame); err != nil {
 		mu.mu.Lock()
 		mu.err = fmt.Errorf("audio: music: seek: %w", err)
 		mu.ended = true
@@ -324,6 +475,7 @@ func (mu *Music) applySeek() (int, bool) {
 		return 0, false
 	}
 	mu.rs.reset()
+	mu.decodeFrame = frame
 	return gen, true
 }
 

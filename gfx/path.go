@@ -375,7 +375,11 @@ func (g *Graphics) fringe() float32 {
 
 // FillPath fills the path's interior with a colour.
 func (g *Graphics) FillPath(p *Path, c Color, opts FillOptions) {
-	fr := g.fringe()
+	tex, verts := g.fillPath(p, c, opts, g.fringe())
+	g.emit(tex, verts)
+}
+
+func (g *Graphics) fillPath(p *Path, c Color, opts FillOptions, fr float32) (*Texture, []vertex2D) {
 	g.pathSubs = p.flattenInto(fr*0.25, g.pathSubs)
 	subs := g.pathSubs
 	// The filler is kept on Graphics so a frame of paths reuses its
@@ -400,7 +404,7 @@ func (g *Graphics) FillPath(p *Path, c Color, opts FillOptions) {
 		}
 	}
 	b.run(subs)
-	g.emit(b.tex, b.verts)
+	return b.tex, b.verts
 }
 
 // bounds is the box around flattened sub-paths.
@@ -612,7 +616,11 @@ func (b *filler) run(subs []subpath) {
 
 // StrokePath outlines the path with a colour.
 func (g *Graphics) StrokePath(p *Path, c Color, opts StrokeOptions) {
-	fr := g.fringe()
+	tex, verts := g.strokePath(p, c, opts, g.fringe())
+	g.emit(tex, verts)
+}
+
+func (g *Graphics) strokePath(p *Path, c Color, opts StrokeOptions, fr float32) (*Texture, []vertex2D) {
 	g.pathSubs = p.flattenInto(fr*0.25, g.pathSubs)
 	subs := g.pathSubs
 	// The stroker is kept on Graphics so its vertex storage is reused.
@@ -644,7 +652,7 @@ func (g *Graphics) StrokePath(p *Path, c Color, opts StrokeOptions) {
 		}
 		s.run(sub)
 	}
-	g.emit(tex, s.verts)
+	return tex, s.verts
 }
 
 // stroker expands polylines into triangles with joins and caps.

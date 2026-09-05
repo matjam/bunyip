@@ -43,6 +43,12 @@ the voice ends, for chaining clips.
 `Volume: 0` and `Pitch: 0` in `PlayOptions` both mean 1. Use
 `SetVolume(0)` after starting a voice to silence it. `Playing` includes
 muted, paused and out-of-range voices; it does not measure audibility.
+Use `Voice.State()` to distinguish `PlaybackPlaying`, `PlaybackPaused`
+and `PlaybackStopped`. It includes pauses applied by the bus or mixer;
+mute leaves the state playing. Stop reports stopped immediately during
+its final gain ramp. States have readable `String()` values for a UI or log.
+Pitch applies to sounds and streams, defaults to 1 and is clamped to
+0.01 through 64. Zero and non-finite pitch values select 1.
 An `OnDone` callback normally runs on the mixing thread after its locks
 are released. `StopAll` and voice stealing run it on their caller before
 the final ramp, and registration on an already finished voice calls it
@@ -145,6 +151,11 @@ frame count, not a sample count: each frame has two interleaved samples.
 A short return ends the voice. For a temporary underrun, fill with
 silence and report a full buffer. Procedural music and the tracker
 player use this contract.
+Stream pitch conversion retains interpolation and lookahead across mixer
+blocks without allocating during steady playback. A voice can read ahead
+up to 513 source frames; `Voice.Seek` clears that lookahead. For streams,
+`Voice.Position` reports source-rate elapsed time, including pitch,
+Doppler and underrun silence, without wrapping at loop boundaries.
 
 ```go
 if g.music, err = ctx.Audio.OpenMusicFile("music/theme.ogg", true); err != nil { // true loops
@@ -155,6 +166,23 @@ g.theme = ctx.Audio.PlayStream(g.music, audio.PlayOptions{Bus: ctx.Audio.Music()
 ...
 g.theme.Seek(30)  // move playback and the voice's reported position
 ```
+
+`Music.SetLooping(bool)` changes repetition at runtime; `Looping()` reads
+it. `SetLoopRange(start, end time.Duration)` selects an exclusive end
+boundary and restarts at start. `(0, 0)` restores the whole track. A range
+must contain at least one source frame and fit the duration when known.
+Boundaries round down to source frames; `LoopRange()` returns the aligned
+boundaries rounded up to nanoseconds so they can be passed back unchanged.
+Seeking outside an enabled explicit range returns to its start. With
+looping disabled, playback continues from start through the file's end.
+
+Loop changes flush prefetched audio and can briefly produce silence while
+the decoder refills. Toggling repetition resumes at the next source frame,
+rounded down, accounting for unread samples but excluding underrun padding.
+A mixer block already in progress can finish with its previous settings.
+Changing a range intentionally restarts it. Enabling looping after EOF
+restarts the decoder; an already stopped voice needs a new `PlayStream`
+call. Direct music controls do not reset `Voice.Position`.
 
 `asset.Music(ctx.Audio, fs, "music/theme.ogg", true)` does the same
 through the asset sources, so a packed or embedded track opens the same
@@ -187,6 +215,28 @@ torch := ctx.Audio.Play(g.fire, audio.PlayOptions{
 })
 torch.SetPosition(lin.V3(6, 1, -8)) // when the source moves
 ```
+
+`RelativeToListener: true` interprets position, direction and velocity in
+the listener's local basis: +X right, +Y up, -Z forward. Listener motion
+is added to local velocity, so a stationary attached source has no
+relative Doppler shift. Set it later with `SetRelativeToListener`.
+
+For a directional source, set `Direction` and `Cone` in `PlayOptions`,
+or use `SetDirection` and `SetCone`. Cone angles are full apertures in
+radians: gain is 1 inside `InnerAngle`, interpolates to `OuterGain` at
+`OuterAngle`, and stays there outside. The zero cone is omnidirectional.
+Angles must satisfy `0 <= inner <= outer <= 2*pi`, and outer gain is 0..1.
+Directions must be finite and nonzero; they are normalized.
+
+`Attenuation` selects `AttenuationDefault` (the existing inverse-distance
+curve multiplied by a linear cutoff), `AttenuationLinear`,
+`AttenuationInverse`, `AttenuationExponential`, or `AttenuationNone`.
+Rolloff defaults to 1; a larger value makes distance loss steeper.
+All distance models reach silence at MaxDistance except None, which
+ignores distance. `SetAttenuation` and `SetDistanceRange` validate finite
+values; the distance range requires `0 < min < max`. Direction, cone,
+attenuation, distance-range and relative-mode setters enable positional
+audio. Matching getters expose the current settings for editing interfaces.
 
 ### Binaural rendering
 
@@ -231,8 +281,8 @@ and `Voice.SetVelocity` (or `PlayOptions.Velocity`), in world units per
 second. They are measured against the speed of sound, 343 by default,
 which suits metres; a game in pixels sets `SetSpeedOfSound` higher to
 keep the effect subtle. The factor scales the shift, so 0.5 halves it and
-0 (the default) is off. Streams have no pitch, so Doppler does not apply
-to them.
+0 (the default) is off. Doppler applies to both sound and stream voices,
+combining with their configured pitch within the 0.01 through 64 rate range.
 
 ```go
 ctx.Audio.SetDoppler(1)

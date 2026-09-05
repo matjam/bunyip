@@ -49,6 +49,20 @@ func (m Affine) ApplyVec(v Vec2) Vec2 {
 	return Vec2{m.A*v.X + m.B*v.Y, m.D*v.X + m.E*v.Y}
 }
 
+// TransformRect returns the axis-aligned bounds of r's four transformed
+// corners. Negative dimensions and zero-width or zero-height rectangles
+// are treated geometrically, so a transformed line can have nonzero bounds.
+func (m Affine) TransformRect(r Rect) Rect {
+	p := [4]Vec2{r.Min(), {r.X + r.W, r.Y}, r.Max(), {r.X, r.Y + r.H}}
+	lo, hi := m.Apply(p[0]), m.Apply(p[0])
+	for _, v := range p[1:] {
+		v = m.Apply(v)
+		lo = Vec2{min(lo.X, v.X), min(lo.Y, v.Y)}
+		hi = Vec2{max(hi.X, v.X), max(hi.Y, v.Y)}
+	}
+	return R(lo.X, lo.Y, hi.X-lo.X, hi.Y-lo.Y)
+}
+
 // Inverse returns the transform that undoes m; a singular transform
 // (zero scale) returns the zero Affine.
 func (m Affine) Inverse() Affine {

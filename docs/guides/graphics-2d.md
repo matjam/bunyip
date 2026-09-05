@@ -2,7 +2,7 @@
 title: 2D graphics
 group: Graphics
 order: 1
-summary: sprites, atlases and Aseprite files, the camera, layers and sorting, tilemaps, autotiling, text, vector paths, particles, lights and shadows, and render textures for a 2D game
+summary: sprites, bounds, reusable geometry, atlases, cameras, tilemaps, text, vector paths, particles, lights and render textures
 ---
 
 The [gfx](../pkg/gfx.html) package is one drawing context for a window.
@@ -218,6 +218,87 @@ batch, so a hundred sprites from one atlas cost one draw and alternating
 between two textures costs a hundred. Pack sprites into one atlas to
 keep them grouped by texture, and use `SetLayer` to control what draws
 in front without breaking that grouping.
+
+### Bounds and placement
+
+`Sprite.Pos` is the pivot position. With `Origin: lin.V2(0.5, 0.5)`,
+that position is the sprite's centre. `Transform2.Apply` places a sprite
+template at the transform's centre, with its rotation and scale.
+
+`Sprite.Corners` returns the four placed corners; `Sprite.Bounds` encloses
+them in an axis-aligned rectangle. Both include the sprite's size, origin
+and rotation, but exclude the graphics transform stack and camera.
+`lin.Affine.TransformRect` bounds a rectangle after a transform:
+
+```go
+func spriteWorldBounds(sprite gfx.Sprite, transform lin.Affine) lin.Rect {
+	return transform.TransformRect(sprite.Bounds())
+}
+```
+
+This encloses the sprite after the transform. For the tightest bounds
+after combining rotations, transform each point from `sprite.Corners()`
+and enclose those points instead of transforming its already axis-aligned
+bounds. Bounds are useful for selection and broad collision checks;
+they do not test the texture's transparent pixels.
+
+## Reusable 2D geometry
+
+`DrawTriangles` and `DrawIndexed` copy supplied vertices into the current
+frame. For geometry reused over many frames, `NewGeometry2D` uploads it
+once. Drawing it uses the same layers, sort keys, camera, transforms,
+clipping, blending and shaders as sprites, without copying or uploading
+the vertices again. Create it during `Init`:
+
+```go
+func newBadge(gr *gfx.Graphics) (*gfx.Geometry2D, error) {
+	vertices := []gfx.Vertex2D{
+		{Pos: lin.V2(24, 0), Color: gfx.RGB(255, 180, 60)},
+		{Pos: lin.V2(48, 24), Color: gfx.RGB(255, 80, 40)},
+		{Pos: lin.V2(24, 48), Color: gfx.RGB(180, 40, 80)},
+		{Pos: lin.V2(0, 24), Color: gfx.RGB(255, 180, 60)},
+	}
+	return gr.NewGeometry2D(vertices, []uint32{0, 1, 2, 0, 2, 3})
+}
+
+func drawBadge(gr *gfx.Graphics, badge *gfx.Geometry2D) {
+	gr.Transformed(lin.Translate2(100, 80), func() {
+		gr.DrawGeometry(nil, badge)
+	})
+}
+```
+
+A nil texture draws the vertex colours. Supply a texture and vertex `UV`
+coordinates for textured geometry. Nil indices mean consecutive triangles,
+three vertices each. Invalid indices and incomplete triangles return an
+error. Empty geometry is valid and draws nothing. `Geometry2D.Bounds`
+reports the local bounds of all uploaded vertices, including unused ones.
+You can reuse the input slices as soon as creation or `Update` returns.
+
+`Update` replaces the GPU geometry. Each queued draw keeps the version
+that existed when it was queued, so this draws the old shape on the left
+and the replacement on the right:
+
+```go
+func replaceAndDraw(gr *gfx.Graphics, shape *gfx.Geometry2D,
+	vertices []gfx.Vertex2D, indices []uint32) error {
+	gr.DrawGeometry(nil, shape)
+	if err := shape.Update(vertices, indices); err != nil {
+		return err
+	}
+	gr.Transformed(lin.Translate2(80, 0), func() {
+		gr.DrawGeometry(nil, shape)
+	})
+	return nil
+}
+```
+
+Graphics owns the geometry and releases it at shutdown, including after
+setup or drawing fails. `Destroy` releases it earlier; queued and in-flight
+draws still finish using their captured buffers. Later draws of destroyed
+geometry do nothing, and updating it returns an error. A failed `Update`
+leaves the existing geometry intact. Textures supplied to `DrawGeometry`
+have their own lifetime and are not destroyed with the geometry.
 
 ## Tint, blending and transforms
 
@@ -588,6 +669,55 @@ g.sky, err = ctx.Gfx.NewGradient(
 g.sky.Linear(lin.V2(0, 0), lin.V2(0, 180))
 gr.FillGradient(lin.R(0, 0, ctx.Width, 180), g.sky)
 ```
+
+`Path.Bounds` computes the bounds of the stored lines and Bézier curves,
+including their extrema and isolated `MoveTo` points. It excludes stroke
+width, antialias fringes and drawing transforms; an empty path has zero
+bounds. Circles and arcs are bounded as the cubic curves stored by `Path`.
+
+### Compile paths that stay the same
+
+`CompilePath` tessellates a path once into GPU geometry. `DrawPath` reuses
+those triangles with the current drawing state. This avoids flattening
+curves and rebuilding fills and strokes every frame:
+
+```go
+func newPanel(gr *gfx.Graphics) (*gfx.CompiledPath, error) {
+	path := new(gfx.Path).RoundRect(0, 0, 180, 64, 12)
+	return gr.CompilePath(path, gfx.PathOptions{
+		Fill:        &gfx.FillOptions{},
+		FillColor:   gfx.RGB(30, 70, 120),
+		Stroke:      &gfx.StrokeOptions{Width: 2, Join: gfx.JoinRound},
+		StrokeColor: gfx.White,
+	})
+}
+
+func drawPanel(gr *gfx.Graphics, panel *gfx.CompiledPath) {
+	gr.Transformed(lin.Translate2(20, 20), func() {
+		gr.DrawPath(panel)
+	})
+}
+```
+
+`PathOptions{}` means a white fill. If either `Fill` or `Stroke` is
+non-nil, only those explicitly selected paints are compiled; a lone
+`Stroke` therefore makes an outline. Fill draws before stroke. Zero
+colours mean white; omit an unwanted paint, or use a nonzero colour with
+zero alpha for a transparent paint.
+
+`PixelsPerUnit` chooses tessellation precision and antialias fringe width.
+Zero selects one framebuffer pixel per local path unit. For a path drawn
+at twice that density, set `PixelsPerUnit: 2`; include framebuffer density,
+camera zoom and drawing scale when choosing it. Recompile when the expected
+density changes substantially. Drawing a compiled path never retessellates it.
+
+The result captures the path, paint coordinates and colours. Changing the
+source path or options afterwards does not change it. Paint textures are
+borrowed: keep them alive while drawing the compiled path. Graphics owns
+the compiled triangles; `CompiledPath.Destroy` releases those triangles
+early without destroying the textures, and queued draws still finish.
+`CompiledPath.Bounds` encloses the resulting triangles, including stroke
+and antialias fringes, before the drawing transform and camera.
 
 ## Particles
 

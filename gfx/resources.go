@@ -12,6 +12,7 @@ const (
 	ResourceFont
 	ResourceRenderTexture
 	ResourceEnvironment
+	ResourceGeometry2D
 )
 
 // String names the kind in lower case, for a debug listing.
@@ -29,6 +30,8 @@ func (k ResourceKind) String() string {
 		return "render texture"
 	case ResourceEnvironment:
 		return "environment"
+	case ResourceGeometry2D:
+		return "2D geometry"
 	}
 	return "resource"
 }

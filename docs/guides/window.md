@@ -26,15 +26,19 @@ methods change it afterwards.
 
 | Fixed at start | Changed at run time |
 |---|---|
-| `Title` (the first one), `Width`, `Height`, `Resizable` | `SetTitle`, `SetIcon`, `SetSizeLimits` |
+| `Title`, `Width`, `Height` (initial values), `Resizable` | `SetTitle`, `SetIcon`, `SetSize`, `SetSizeLimits` |
 | `Icon` | `SetCursor`, `SetCursorVisible`, `SetCursorImage`, `SetCursorCaptured` |
 | `ViewWidth`, `ViewHeight`, `Scaling` | `SetFullscreen`, `Fullscreen` |
 | `Headless`, `FixedClock`, `NoVSync`, `HandleClose`, `PauseUnfocused`, `PauseHidden` | `SetPosition`, `Position`, `SetAlwaysOnTop` |
 
-Two things are missing on purpose. There is no programmatic resize.
-Nothing in the API sets the window's size after it opens, so the player
-and the window manager control it. There is also no `Config` field to
-start full screen. To start full screen, call `ctx.SetFullscreen(true)`
+`ctx.SetSize(width, height)` requests a positive content size in window
+points. The desktop may constrain it, and the new view size appears after
+the resize event is processed. `Show`, `Hide`, and `RequestFocus` request
+visibility or focus; a focus request can be declined by desktop policy.
+Check returned errors and `ctx.WindowCapabilities()` before presenting
+controls that need optional native support.
+
+There is no `Config` field to start full screen. Call `ctx.SetFullscreen(true)`
 from `Init`. Full-screen state is read back from the operating system
 rather than remembered by the engine, so `ctx.Fullscreen` is still right
 after the player uses the system's own full-screen button.
@@ -207,19 +211,54 @@ backend`.
 | `SetTitle` | yes | yes | yes | yes |
 | `SetIcon` | yes | yes | with `xdg-toplevel-icon-v1` | yes |
 | `SetSizeLimits` | yes | yes | yes | yes |
+| `SetSize` | yes | yes | normal windows; compositor can constrain | WM request |
+| `Show`, `Hide` | yes | yes | unsupported | yes |
+| `RequestFocus` | desktop request | desktop request | unsupported | WM request |
 | `SetCursor`, `SetCursorVisible` | yes | yes | yes | yes |
 | `SetCursorCaptured` | yes | yes | yes | yes |
 | `SetFullscreen`, `Fullscreen` | yes | yes | yes | yes |
 | `SetTextInputRect` | yes | recorded, no IME yet | recorded, no IME yet | recorded, no IME yet |
 | `SetPosition`, `Position` | yes | no-op | no-op | no-op |
-| `SetAlwaysOnTop` | yes | no-op | no-op | no-op |
-| `SetCursorImage` | yes | no-op | no-op | no-op |
+| `SetAlwaysOnTop` | yes | yes | compositor policy; unsupported | WM request |
+| `SetCursorImage` | yes | yes | SHM cursor surface | Render ARGB32 |
+| `SetPointerPosition` | yes | yes | unsupported | yes |
+| `Displays` | screens and modes | active adapters and modes | advertised outputs and modes | active RandR outputs and modes |
 | `Clipboard`, `SetClipboard` | yes | yes | yes | yes |
 | `ctx.Visible` | miniaturised and occluded | minimised | suspended (xdg_toplevel 6) | unmapped, minimised and obscured |
 | DPI scale (`ctx.Scale`) | the display's factor | the window's DPI over 96 | the compositor's fractional scale, or the output's integer scale | always 1 |
 
 Where a control is a no-op, the call returns and nothing happens.
 `Position` returns (0, 0) where it is not implemented.
+
+The new optional controls, `SetAlwaysOnTop`, and `SetCursorImage` return
+errors, including `bunyip.ErrUnsupported` for an unavailable backend feature.
+Their capabilities describe requests the engine can issue, not permission
+to override desktop policy. Linux placement remains under compositor/window
+manager control. Wayland has no arbitrary pointer-warp or always-on-top
+request. The current Wayland backend does not implement focus activation or
+hide/remap coordination with the Vulkan presentation surface, so `Show`,
+`Hide`, and `RequestFocus` return `ErrUnsupported`. A resize of a fullscreen
+or maximized Wayland window is rejected because its compositor owns that size.
+
+`SetCursorImage` copies the image and releases its native cursor on replacement
+or window close. Hotspots are relative to the image's top-left, even when its
+Go image bounds start elsewhere. A system `SetCursor` replaces the image;
+leaving and re-entering the window preserves it. Image dimensions must be
+1 through 4096 pixels and the hotspot must be inside the image. Cursor units
+are logical points on macOS/Wayland and desktop pixels on Windows/X11.
+
+`ctx.Displays()` returns snapshots of system-reported displays and modes;
+it does not change video modes. `VideoMode.Width` and `Height` are physical
+pixels, and a zero `RefreshHz` means no rate was reported. Wayland may expose
+only the current mode. `Display.Bounds` uses macOS logical points or
+Windows/X11 desktop pixels; `BoundsKnown` is false on Wayland because
+`wl_output` does not provide dependable logical desktop bounds. `Scale` is
+zero if unknown (Windows), one for this engine's unscaled X11 coordinates,
+and the reported screen/output scale on macOS/Wayland. Names and ordering
+are not stable device identifiers. Headless runs return `ErrUnsupported`.
+
+These native additions have pure/API tests and cross-build coverage. They
+have not yet been exercised interactively on macOS, Windows, or Linux.
 
 The clipboard is not a place the system keeps text on X11. One program
 owns the CLIPBOARD selection and hands the text over when another asks,

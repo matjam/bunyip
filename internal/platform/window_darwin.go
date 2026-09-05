@@ -129,6 +129,10 @@ func (w *Window) Close() {
 	}
 	w.closed = true
 	w.SetCursorCaptured(false)
+	if w.cursorImage != 0 {
+		w.cursorImage.Send(w.app.c.sel.release)
+		w.cursorImage = 0
+	}
 	c := w.app.c
 	delete(w.app.windows, w.nsWindow)
 	w.nsWindow.Send(c.sel.setDelegate, objc.ID(0))

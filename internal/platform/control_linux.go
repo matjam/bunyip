@@ -105,6 +105,7 @@ func (w *Window) SetCursorVisible(on bool) {
 // and from the X cursor font under X11.
 func (w *Window) SetCursor(shape CursorShape) {
 	if w.wl != nil {
+		w.wl.dropCursorImage()
 		if shape >= cursorShapeCount {
 			shape = CursorArrow
 		}
@@ -149,14 +150,10 @@ func (w *Window) SetCursor(shape CursorShape) {
 	}
 }
 
-// SetPosition, Position, SetAlwaysOnTop and SetCursorImage are not
-// implemented on either Linux backend. Wayland has no protocol that gives a
-// client its own position or puts a window above others, and the X11 layer
-// leaves placement to the window manager.
-func (w *Window) SetPosition(x, y int)                 {}
-func (w *Window) Position() (int, int)                 { return 0, 0 }
-func (w *Window) SetAlwaysOnTop(bool)                  {}
-func (w *Window) SetCursorImage(image.Image, int, int) {}
+// Window placement is controlled by the compositor or window manager. The
+// engine does not request or report absolute placement on Linux.
+func (w *Window) SetPosition(x, y int) {}
+func (w *Window) Position() (int, int) { return 0, 0 }
 
 // SetIcon sets _NET_WM_ICON under X11: width, height and ARGB pixels as
 // cardinals. Under Wayland it sends the pixels through

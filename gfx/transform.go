@@ -2,8 +2,8 @@ package gfx
 
 import "github.com/matjam/bunyip/lin"
 
-// Transform is a position, rotation and scale in 3D; the zero value with
-// Scale set is identity. Use it instead of building matrices by hand.
+// Transform is a position, rotation and scale in 3D; its zero value is
+// identity. Use it instead of building matrices by hand.
 type Transform struct {
 	Position lin.Vec3
 	Rotation lin.Quat // zero means no rotation
@@ -34,7 +34,7 @@ func (t Transform2) Apply(s Sprite) Sprite {
 		scale = lin.V2(1, 1)
 	}
 	s.Size = lin.V2(s.Size.X*scale.X, s.Size.Y*scale.Y)
-	s.Pos = t.Position.Sub(s.Size.Mul(0.5))
+	s.Pos = t.Position
 	s.Rotation = t.Rotation
 	s.Origin = lin.V2(0.5, 0.5)
 	return s

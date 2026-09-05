@@ -271,8 +271,32 @@ func wlInitCallbacks() {
 	// wl_output.
 	cbOutputGeometry = purego.NewCallback(func(data, proxy unsafe.Pointer, x, y, physWidth, physHeight, subpixel int32,
 		make, model *byte, transform int32) {
+		if a := wlCurrent; a != nil {
+			if o := a.outputs[proxy]; o != nil && o.description == "" {
+				o.description = goString(make) + " " + goString(model)
+			}
+		}
 	})
-	cbOutputMode = purego.NewCallback(func(data, proxy unsafe.Pointer, flags uint32, width, height, refresh int32) {})
+	cbOutputMode = purego.NewCallback(func(data, proxy unsafe.Pointer, flags uint32, width, height, refresh int32) {
+		if a := wlCurrent; a != nil {
+			if o := a.outputs[proxy]; o != nil {
+				v := VideoMode{Width: int(width), Height: int(height), RefreshHz: float64(refresh) / 1000}
+				found := false
+				for _, m := range o.modes {
+					if m == v {
+						found = true
+						break
+					}
+				}
+				if !found {
+					o.modes = append(o.modes, v)
+				}
+				if flags&1 != 0 {
+					o.current = v
+				}
+			}
+		}
+	})
 	cbOutputDone = purego.NewCallback(func(data, proxy unsafe.Pointer) {
 		a := wlCurrent
 		if a == nil {
@@ -293,8 +317,20 @@ func wlInitCallbacks() {
 			o.scale = int(factor)
 		}
 	})
-	cbOutputName = purego.NewCallback(func(data, proxy unsafe.Pointer, name *byte) {})
-	cbOutputDescription = purego.NewCallback(func(data, proxy unsafe.Pointer, description *byte) {})
+	cbOutputName = purego.NewCallback(func(data, proxy unsafe.Pointer, name *byte) {
+		if a := wlCurrent; a != nil {
+			if o := a.outputs[proxy]; o != nil {
+				o.description = goString(name)
+			}
+		}
+	})
+	cbOutputDescription = purego.NewCallback(func(data, proxy unsafe.Pointer, description *byte) {
+		if a := wlCurrent; a != nil {
+			if o := a.outputs[proxy]; o != nil {
+				o.description = goString(description)
+			}
+		}
+	})
 
 	// xdg_wm_base and the toplevel it makes.
 	cbWMBasePing = purego.NewCallback(func(data, proxy unsafe.Pointer, serial uint32) {

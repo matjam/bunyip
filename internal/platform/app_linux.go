@@ -39,9 +39,6 @@ const clipboardWait = time.Second
 // until one of those has happened there is no serial to quote.
 var ErrNoInputYet = errors.New("platform: the Wayland clipboard cannot be set before the window has had input")
 
-// ErrUnsupported is returned when neither window system can be reached.
-var ErrUnsupported = errors.New("platform: cannot reach a Wayland compositor or an X server (is WAYLAND_DISPLAY or DISPLAY set?)")
-
 // App is the process's connection to the window system. Create one per
 // process.
 type App struct {
@@ -56,12 +53,13 @@ type App struct {
 	mu         sync.Mutex
 
 	// X11.
-	x       *xlib
-	conn    unsafe.Pointer
-	screen  *xcbScreen
-	windows map[uint32]*Window
-	wakeWin atomic.Uint32 // the window Wake targets; read off the main goroutine
-	mods    Mods
+	x        *xlib
+	controls *xControls
+	conn     unsafe.Pointer
+	screen   *xcbScreen
+	windows  map[uint32]*Window
+	wakeWin  atomic.Uint32 // the window Wake targets; read off the main goroutine
+	mods     Mods
 
 	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
 	atomNetWMHidden                                                                                       uint32

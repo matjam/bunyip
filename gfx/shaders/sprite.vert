@@ -10,6 +10,8 @@ layout(location = 2) in vec4 iColor;
 layout(push_constant) uniform PC {
     mat4 proj;
     vec4 frame; // x time in seconds, y view width, z view height, w pixels per view unit
+    vec4 transformX;
+    vec4 transformY;
 } pc;
 
 layout(location = 0) out vec2 vUV;
@@ -17,8 +19,10 @@ layout(location = 1) out vec4 vColor;
 layout(location = 2) out vec2 vPos;
 
 void main() {
-    gl_Position = pc.proj * vec4(iPos, 0.0, 1.0);
+    vec2 pos = vec2(dot(pc.transformX.xyz, vec3(iPos, 1.0)),
+                    dot(pc.transformY.xyz, vec3(iPos, 1.0)));
+    gl_Position = pc.proj * vec4(pos, 0.0, 1.0);
     vUV = iUV;
     vColor = iColor;
-    vPos = iPos;
+    vPos = pos;
 }

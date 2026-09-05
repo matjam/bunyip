@@ -382,7 +382,7 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 // axes, so a long thin rotated sprite is culled as soon as its own quad
 // clears the view rather than when the circle around it does.
 func spriteVisible(s Sprite, xform lin.Affine, view lin.Rect) bool {
-	p := spriteCorners(s)
+	p := s.Corners()
 	if !xform.IsIdentity() {
 		for i := range p {
 			p[i] = xform.Apply(p[i])
@@ -814,9 +814,10 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	render.SetViewportRect(cb, vp)
 	rec := &g.rec
 	rec.offset = 0
-	vk.CmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &rec.offset)
 	var bound *render.Pipeline
 	var boundProj *lin.Mat4
+	var boundTransform lin.Affine
+	var boundVertices *render.Buffer
 	var boundClip lin.Rect
 	boundUniform := int32(-2)
 	scaleX, scaleY := float32(vp.Extent.Width)/q.viewW, float32(vp.Extent.Height)/q.viewH
@@ -824,6 +825,9 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	g.particles.push = push2D{frame: rec.push.frame}
 	part := 0 // the next instanced particle batch to record
 	for _, d := range st.draws {
+		if d.geometry != nil {
+			g.stats.Vertices2D += int(d.count)
+		}
 		if part < len(q.parts.flat) {
 			// Particles submitted before this run, by layer and then by
 			// order, go under it. They bind their own pipeline and
@@ -837,11 +841,19 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 				part = next
 				bound, boundProj, boundUniform = nil, nil, -2
 				boundClip = lin.Rect{} // the particles restored the full scissor
-				rec.offset = 0
-				vk.CmdBindVertexBuffers(cb, 0, 1, &st.buffers[fr.Slot].Handle, &rec.offset)
+				boundVertices = nil
 			}
 		}
 		s := d.state
+		vertices := st.buffers[fr.Slot]
+		if d.geometry != nil {
+			vertices = d.geometry.vertices
+		}
+		if vertices != boundVertices {
+			boundVertices = vertices
+			rec.offset = 0
+			vk.CmdBindVertexBuffers(cb, 0, 1, &vertices.Handle, &rec.offset)
+		}
 		if s.clip != boundClip {
 			boundClip = s.clip
 			if s.clip == (lin.Rect{}) {
@@ -859,9 +871,12 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 			vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 			boundProj, boundUniform = nil, -2
 		}
-		if s.proj != boundProj {
+		if s.proj != boundProj || s.transform != boundTransform {
 			boundProj = s.proj
+			boundTransform = s.transform
 			rec.push.proj = *s.proj
+			rec.push.transformX = lin.V4(s.transform.A, s.transform.B, s.transform.C, 0)
+			rec.push.transformY = lin.V4(s.transform.D, s.transform.E, s.transform.F, 0)
 			vk.CmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
 				0, push2DSize, unsafe.Pointer(&rec.push))
 		}
@@ -872,7 +887,12 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 		}
 		rec.set = s.set
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
-		vk.CmdDraw(cb, d.count, 1, d.first, 0)
+		if d.geometry != nil && d.geometry.indices != nil {
+			vk.CmdBindIndexBuffer(cb, d.geometry.indices.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+			vk.CmdDrawIndexed(cb, d.count, 1, 0, 0, 0)
+		} else {
+			vk.CmdDraw(cb, d.count, 1, d.first, 0)
+		}
 	}
 	// Then whatever was submitted after the last sprite run.
 	if _, err := g.drawFlatParticles(cb, q, part, draw2D{}, true, vp); err != nil {

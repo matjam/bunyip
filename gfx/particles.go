@@ -256,7 +256,7 @@ func (g *Graphics) drawParticlesBlend(tex *Texture, quads []ParticleQuad, blend 
 	q := g.cur
 	first, count := q.parts.add(quads)
 	q.parts.flat = append(q.parts.flat, particleBatch{
-		set: tex.setFor(FilterDefault), blend: blend, layer: q.layer, seq: int32(len(q.stream.verts)),
+		set: tex.setFor(FilterDefault), blend: blend, layer: q.layer, seq: q.stream.nextSequence(),
 		proj: q.spriteProj, first: first, count: count,
 	})
 	// The sprite run that follows must not merge into the one before, or

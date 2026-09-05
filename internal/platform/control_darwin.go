@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"image"
 	"image/draw"
 	"sync"
@@ -99,6 +100,10 @@ func (w *Window) SetCursorVisible(on bool) {
 // SetCursor picks the pointer's shape. The loop calls it again when the
 // pointer re-enters the window, since the system resets the shape.
 func (w *Window) SetCursor(shape CursorShape) {
+	if w.cursorImage != 0 {
+		w.cursorImage.Send(w.app.c.sel.release)
+		w.cursorImage = 0
+	}
 	s := controls()
 	sel := s.arrowCursor
 	switch shape {
@@ -159,36 +164,41 @@ func (w *Window) SetIcon(img image.Image) {
 
 // SetCursorImage makes the pointer an image with a hot spot; a later
 // SetCursor restores a system shape.
-func (w *Window) SetCursorImage(img image.Image, hotX, hotY int) {
-	if img == nil {
-		return
+func (w *Window) SetCursorImage(img image.Image, hotX, hotY int) error {
+	if _, _, _, err := cursorPixels(img, hotX, hotY); err != nil {
+		return err
 	}
 	s := controls()
 	ns := w.nsImage(img)
 	if ns == 0 {
-		return
+		return errors.New("platform: create cursor image failed")
 	}
 	cursor := objc.ID(w.app.c.NSCursor).Send(w.app.c.sel.alloc).Send(s.initWithImageHotSpot, ns, nsPoint{X: float64(hotX), Y: float64(hotY)})
 	ns.Send(w.app.c.sel.release)
 	if cursor == 0 {
-		return
+		return errors.New("platform: create cursor failed")
 	}
 	if w.cursorImage != 0 {
 		w.cursorImage.Send(w.app.c.sel.release)
 	}
 	w.cursorImage = cursor
 	cursor.Send(s.set)
+	return nil
 }
 
 // screenHeight is the main screen's height in points, for flipping
 // between AppKit's bottom-up coordinates and top-down ones.
 func (w *Window) screenHeight() float64 {
 	s := controls()
-	screen := objc.ID(s.NSScreen).Send(s.mainScreen)
-	if screen == 0 {
+	screens := objc.ID(s.NSScreen).Send(objc.RegisterName("screens"))
+	if objc.Send[uint](screens, w.app.c.sel.count) == 0 {
 		return 0
 	}
-	return objc.Send[nsRect](screen, w.app.c.sel.frame).Size.Height
+	// mainScreen follows keyboard focus. The first screen is the desktop's
+	// fixed coordinate origin, even when this window is on another display.
+	screen := screens.Send(w.app.c.sel.objectAtIndex, uint(0))
+	frame := objc.Send[nsRect](screen, w.app.c.sel.frame)
+	return frame.Origin.Y + frame.Size.Height
 }
 
 // SetPosition moves the window's frame so its top-left is at (x, y)
@@ -207,12 +217,13 @@ func (w *Window) Position() (int, int) {
 }
 
 // SetAlwaysOnTop floats the window above other applications' windows.
-func (w *Window) SetAlwaysOnTop(on bool) {
+func (w *Window) SetAlwaysOnTop(on bool) error {
 	level := 0 // NSNormalWindowLevel
 	if on {
 		level = 3 // NSFloatingWindowLevel
 	}
 	w.nsWindow.Send(controls().setLevel, level)
+	return nil
 }
 
 // Clipboard returns the text on the general pasteboard.

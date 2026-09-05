@@ -62,6 +62,14 @@ together. Capture belongs to the window rather than the input state:
 `ctx.SetCursorCaptured` hides the pointer and delivers relative motion
 only, which is what a first-person camera needs.
 
+`ctx.SetPointerPosition(x, y)` requests an absolute pointer location in
+view units, accounting for letterboxing and display scale. It returns an
+error; inspect `ctx.WindowCapabilities().PointerPosition` before offering
+this feature. macOS, Windows, and X11 support it. Wayland forbids arbitrary
+pointer warping and returns `bunyip.ErrUnsupported`. Pointer input reflects
+the change after native events are polled, rather than being overwritten
+immediately by the request.
+
 ```go
 in := ctx.Input
 p := in.MousePos() // view units, a lin.Vec2

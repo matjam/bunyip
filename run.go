@@ -504,7 +504,9 @@ func (l *loop) handleEvents(events []platform.Event) {
 			l.applyPause()
 		case platform.EventMouseEnter:
 			// The system resets the pointer's shape at the window's edge.
-			if l.ctx.cursor != CursorArrow {
+			if w, ok := l.win.(interface{ RefreshCursor() }); ok {
+				w.RefreshCursor()
+			} else if l.ctx.cursor != CursorArrow {
 				l.win.SetCursor(platform.CursorShape(l.ctx.cursor))
 			}
 		case platform.EventKeyDown:

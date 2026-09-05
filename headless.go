@@ -35,25 +35,25 @@ type headlessWindow struct {
 	captured bool
 }
 
-func (w *headlessWindow) Size() (int, int)                     { return w.w, w.h }
-func (w *headlessWindow) PixelSize() (int, int)                { return w.w, w.h }
-func (w *headlessWindow) Scale() float64                       { return 1 }
-func (w *headlessWindow) Closed() bool                         { return w.closed }
-func (w *headlessWindow) Close()                               { w.closed = true }
-func (w *headlessWindow) Fullscreen() bool                     { return w.full }
-func (w *headlessWindow) SetFullscreen(on bool)                { w.full = on }
-func (w *headlessWindow) CursorCaptured() bool                 { return w.captured }
-func (w *headlessWindow) SetCursorCaptured(on bool)            { w.captured = on }
-func (w *headlessWindow) SetTextInputRect(_, _, _, _ float64)  {}
-func (w *headlessWindow) SetTitle(string)                      {}
-func (w *headlessWindow) SetSizeLimits(_, _, _, _ int)         {}
-func (w *headlessWindow) SetCursorVisible(bool)                {}
-func (w *headlessWindow) SetCursor(platform.CursorShape)       {}
-func (w *headlessWindow) SetIcon(image.Image)                  {}
-func (w *headlessWindow) SetPosition(x, y int)                 {}
-func (w *headlessWindow) Position() (int, int)                 { return 0, 0 }
-func (w *headlessWindow) SetAlwaysOnTop(bool)                  {}
-func (w *headlessWindow) SetCursorImage(image.Image, int, int) {}
+func (w *headlessWindow) Size() (int, int)                           { return w.w, w.h }
+func (w *headlessWindow) PixelSize() (int, int)                      { return w.w, w.h }
+func (w *headlessWindow) Scale() float64                             { return 1 }
+func (w *headlessWindow) Closed() bool                               { return w.closed }
+func (w *headlessWindow) Close()                                     { w.closed = true }
+func (w *headlessWindow) Fullscreen() bool                           { return w.full }
+func (w *headlessWindow) SetFullscreen(on bool)                      { w.full = on }
+func (w *headlessWindow) CursorCaptured() bool                       { return w.captured }
+func (w *headlessWindow) SetCursorCaptured(on bool)                  { w.captured = on }
+func (w *headlessWindow) SetTextInputRect(_, _, _, _ float64)        {}
+func (w *headlessWindow) SetTitle(string)                            {}
+func (w *headlessWindow) SetSizeLimits(_, _, _, _ int)               {}
+func (w *headlessWindow) SetCursorVisible(bool)                      {}
+func (w *headlessWindow) SetCursor(platform.CursorShape)             {}
+func (w *headlessWindow) SetIcon(image.Image)                        {}
+func (w *headlessWindow) SetPosition(x, y int)                       {}
+func (w *headlessWindow) Position() (int, int)                       { return 0, 0 }
+func (w *headlessWindow) SetAlwaysOnTop(bool) error                  { return platform.ErrUnsupported }
+func (w *headlessWindow) SetCursorImage(image.Image, int, int) error { return platform.ErrUnsupported }
 
 // headlessApp delivers no events; a waiting poll sleeps one step so a
 // turn-based headless game still ticks.

@@ -316,36 +316,42 @@ type windowControl interface {
 	SetIcon(image.Image)
 	SetPosition(x, y int)
 	Position() (x, y int)
-	SetAlwaysOnTop(bool)
-	SetCursorImage(img image.Image, hotX, hotY int)
+	SetAlwaysOnTop(bool) error
+	SetCursorImage(img image.Image, hotX, hotY int) error
 }
 
 // Window controls. Every method from here to Screenshot must be called
 // from Update or Draw, on the goroutine that called Run; Wake above is
 // the exception and is safe from any goroutine.
 
-// SetPosition moves the window so its content's top-left corner sits at
+// SetPosition moves the window so its frame's top-left corner sits at
 // a point on the screen, in points from the screen's top-left: a
 // remembered position from a settings file, a tool window beside the
-// main one. macOS today; the other platforms ignore it.
+// main one. Implemented on macOS. Linux placement belongs to the compositor
+// or window manager; Windows and headless positioning are not implemented.
 func (c *Context) SetPosition(x, y int) { c.win.SetPosition(x, y) }
 
-// Position returns the window content's top-left corner on the screen,
+// Position returns the window frame's top-left corner on the screen,
 // in points from the screen's top-left, for saving with the settings.
 // Platforms other than macOS and headless runs return (0, 0).
 func (c *Context) Position() (x, y int) { return c.win.Position() }
 
 // SetAlwaysOnTop keeps the window above other applications' windows, for
-// an overlay or a companion tool. macOS today; the other platforms
-// ignore it.
-func (c *Context) SetAlwaysOnTop(on bool) { c.win.SetAlwaysOnTop(on) }
+// an overlay or a companion tool. macOS and Windows support it; X11 sends a
+// window-manager request. Wayland leaves stacking to compositor policy and
+// returns ErrUnsupported, as does headless mode.
+func (c *Context) SetAlwaysOnTop(on bool) error { return c.win.SetAlwaysOnTop(on) }
 
 // SetCursorImage replaces the pointer with an image, its hot spot at
 // (hotX, hotY) pixels from the image's top-left: a crosshair, a hand, a
-// sword. SetCursor with a shape puts the system pointer back. macOS
-// today; the other platforms keep the system pointer.
-func (c *Context) SetCursorImage(img image.Image, hotX, hotY int) {
-	c.win.SetCursorImage(img, hotX, hotY)
+// sword. SetCursor with a shape puts the system pointer back. The image is
+// copied and owned by the window until replacement or close. Nil/empty images,
+// dimensions above 4096 pixels, and out-of-bounds hotspots return an error.
+// Supported on macOS, Windows, Wayland with SHM, and X11 with Render ARGB32.
+// Headless or unavailable cursor support returns ErrUnsupported. Image pixels
+// map to logical cursor units on macOS/Wayland and desktop pixels on X11/Windows.
+func (c *Context) SetCursorImage(img image.Image, hotX, hotY int) error {
+	return c.win.SetCursorImage(img, hotX, hotY)
 }
 
 // Cursor is a pointer shape for SetCursor.

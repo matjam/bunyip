@@ -1,7 +1,6 @@
 package platform
 
 import (
-	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -263,6 +262,7 @@ type Window struct {
 	cursorHidden           bool
 	shape                  CursorShape
 	hcursor                uintptr
+	customCursor           uintptr
 	hicon                  uintptr
 }
 
@@ -595,6 +595,16 @@ func (w *Window) Closed() bool { return w.closed }
 
 // Close destroys the window.
 func (w *Window) Close() {
+	defer func() {
+		if w.customCursor != 0 {
+			procDestroyCursor.Call(w.customCursor)
+			w.customCursor = 0
+		}
+		if w.hicon != 0 {
+			procDestroyIcon.Call(w.hicon)
+			w.hicon = 0
+		}
+	}()
 	if !w.closed {
 		procDestroyWindow.Call(w.hwnd)
 		w.closed = true
@@ -653,6 +663,3 @@ func (w *Window) CursorCaptured() bool { return w.captured }
 func (w *Window) SetTextInputRect(x, y, width, height float64) {
 	w.inputRect = textRect{X: x, Y: y, W: width, H: height}
 }
-
-// ErrUnsupported is kept for API parity with other platforms.
-var ErrUnsupported = errors.New("platform: unsupported")

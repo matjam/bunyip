@@ -130,18 +130,17 @@ func (w *Window) SetCursor(shape CursorShape) {
 	w.shape = shape
 	w.hcursor, _, _ = procLoadCursorW.Call(0, id)
 	procSetCursor.Call(w.hcursor)
+	if w.customCursor != 0 {
+		procDestroyCursor.Call(w.customCursor)
+		w.customCursor = 0
+	}
 }
 
-// SetIcon builds an HICON from the image and gives it to the window for
-// both its title bar and the taskbar.
-// SetPosition, Position, SetAlwaysOnTop and SetCursorImage are not
-// implemented on Windows yet; the window stays where the system put it
-// and keeps the system pointer.
-func (w *Window) SetPosition(x, y int)                 {}
-func (w *Window) Position() (int, int)                 { return 0, 0 }
-func (w *Window) SetAlwaysOnTop(bool)                  {}
-func (w *Window) SetCursorImage(image.Image, int, int) {}
+// Window placement queries and requests are not implemented on Windows.
+func (w *Window) SetPosition(x, y int) {}
+func (w *Window) Position() (int, int) { return 0, 0 }
 
+// SetIcon builds an HICON for both the title bar and the taskbar.
 func (w *Window) SetIcon(img image.Image) {
 	if img == nil {
 		return

@@ -19,6 +19,33 @@ type Sprite struct {
 	Filter Filter
 }
 
+// Corners returns the four corners in texture order: top-left, top-right,
+// bottom-right, bottom-left, after placement, origin and rotation. Negative
+// sizes reverse the corresponding axis. The graphics transform and camera
+// are not included, and texture flips do not move the corners.
+func (s Sprite) Corners() [4]lin.Vec2 {
+	ox, oy := s.Origin.X*s.Size.X, s.Origin.Y*s.Size.Y
+	x0, y0, x1, y1 := -ox, -oy, s.Size.X-ox, s.Size.Y-oy
+	if s.Rotation == 0 {
+		return [4]lin.Vec2{{X: s.Pos.X + x0, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y0}, {X: s.Pos.X + x1, Y: s.Pos.Y + y1}, {X: s.Pos.X + x0, Y: s.Pos.Y + y1}}
+	}
+	sn, cs := sin32(s.Rotation), cos32(s.Rotation)
+	rot := func(x, y float32) lin.Vec2 { return lin.V2(s.Pos.X+x*cs-y*sn, s.Pos.Y+x*sn+y*cs) }
+	return [4]lin.Vec2{rot(x0, y0), rot(x1, y0), rot(x1, y1), rot(x0, y1)}
+}
+
+// Bounds returns the axis-aligned rectangle enclosing Corners. It includes
+// placement, origin and rotation, but not the graphics transform or camera.
+func (s Sprite) Bounds() lin.Rect {
+	p := s.Corners()
+	lo, hi := p[0], p[0]
+	for _, v := range p[1:] {
+		lo = lin.V2(min(lo.X, v.X), min(lo.Y, v.Y))
+		hi = lin.V2(max(hi.X, v.X), max(hi.Y, v.Y))
+	}
+	return lin.R(lo.X, lo.Y, hi.X-lo.X, hi.Y-lo.Y)
+}
+
 // Filter is how a draw samples its texture.
 type Filter uint8
 

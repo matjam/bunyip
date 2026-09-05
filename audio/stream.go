@@ -12,8 +12,9 @@ type Stream interface {
 	Read(out []float32) int
 }
 
-// PlayStream starts a stream as a voice. Loop and Pitch have no effect; a
-// looping stream loops itself.
+// PlayStream starts a stream as a voice. Pitch and Doppler resample its
+// frames continuously across blocks. Loop has no effect: a looping stream
+// loops itself. The voice buffers up to 513 source frames of lookahead.
 // The mixer does not close the stream when the voice ends. The caller
 // owns its lifetime and must not share a stateful stream between voices
 // unless the stream explicitly supports that use.

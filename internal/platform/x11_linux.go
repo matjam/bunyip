@@ -1408,6 +1408,11 @@ func (w *Window) closeX11() {
 		return
 	}
 	w.closed = true
+	for _, cursor := range []uint32{w.shapeCursor, w.blankCursor, w.cursor} {
+		if cursor != 0 {
+			w.app.x.freeCursor(w.app.conn, cursor)
+		}
+	}
 	delete(w.app.windows, w.id)
 	w.app.x.destroyWindow(w.app.conn, w.id)
 	w.app.x.flush(w.app.conn)

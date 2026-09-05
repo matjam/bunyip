@@ -146,9 +146,12 @@ type wlCursorImage struct {
 
 // wlOutput is one display the compositor advertised.
 type wlOutput struct {
-	proxy unsafe.Pointer
-	name  uint32
-	scale int
+	proxy       unsafe.Pointer
+	name        uint32
+	scale       int
+	description string
+	current     VideoMode
+	modes       []VideoMode
 }
 
 // wlApp is the Wayland half of App. Exactly one exists per process, in
@@ -270,10 +273,12 @@ type wlWindow struct {
 	title *byte // C strings owned by this window
 	appID *byte
 
-	cursorHidden  bool
-	shape         CursorShape
-	cursorSurface unsafe.Pointer
-	cursorScale   int
+	cursorHidden                          bool
+	shape                                 CursorShape
+	cursorSurface                         unsafe.Pointer
+	cursorScale                           int
+	customCursor                          unsafe.Pointer
+	customWidth, customHeight, hotX, hotY int
 
 	icon       unsafe.Pointer // the xdg_toplevel_icon_v1 in force, or nil
 	iconBuffer unsafe.Pointer // the shm buffer it holds, kept alive with it
@@ -1342,6 +1347,7 @@ func (w *wlWindow) destroy() {
 	a, l := w.app, w.app.l
 	w.setCaptured(false)
 	w.dropIcon()
+	w.dropCursorImage()
 	if w.cursorSurface != nil {
 		l.marshal(w.cursorSurface, opSurfaceDestroy, nil, wlMarshalFlagDestroy)
 		w.cursorSurface = nil
@@ -1595,6 +1601,20 @@ func (w *wlWindow) applyCursor() {
 	}
 	if w.cursorHidden || w.captured {
 		l.send(a.pointer, opPointerSetCursor, uintptr(a.enterSerial), 0, 0, 0)
+		return
+	}
+	if w.customCursor != nil {
+		if w.cursorSurface == nil {
+			w.cursorSurface = l.marshal(a.compositor, opCompositorCreateSurface, a.iface["wl_surface"], 0, 0)
+		}
+		if a.compositorVer >= 3 {
+			l.send(w.cursorSurface, opSurfaceSetBufferScale, 1)
+			w.cursorScale = 1
+		}
+		l.send(w.cursorSurface, opSurfaceAttach, uintptr(w.customCursor), 0, 0)
+		l.send(w.cursorSurface, opSurfaceDamage, 0, 0, uintptr(w.customWidth), uintptr(w.customHeight))
+		l.send(w.cursorSurface, opSurfaceCommit)
+		l.send(a.pointer, opPointerSetCursor, uintptr(a.enterSerial), uintptr(w.cursorSurface), uintptr(w.hotX), uintptr(w.hotY))
 		return
 	}
 	scale := w.pointerScale()

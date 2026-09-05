@@ -131,7 +131,7 @@ type PlayOptions struct {
 	Volume   float32 // 1
 	Pan      float32 // -1 left .. +1 right; ignored when Positional
 	Loop     bool    // repeat a Sound; streams control their own looping
-	Pitch    float32 // playback rate multiplier for sounds; 1
+	Pitch    float32 // playback rate for sounds and streams; default 1, clamped to 0.01..64
 	Priority int     // higher survives when the mixer is full
 	FadeIn   float32 // seconds to rise from silence
 	Reverb   float32 // 0..1 send into the bus's reverb, or the mixer's (see SetReverb)
@@ -147,11 +147,15 @@ type PlayOptions struct {
 	// full volume within MinDistance (1), fading to silence at
 	// MaxDistance (100), panned by direction. Velocity, in world units per
 	// second, drives Doppler once SetDoppler turns it on.
-	Positional  bool
-	Position    lin.Vec3 // source position in listener world units
-	Velocity    lin.Vec3 // source velocity in world units per second
-	MinDistance float32  // full-volume radius; zero means 1
-	MaxDistance float32  // silent at this distance; zero means 100
+	Positional         bool
+	Position           lin.Vec3    // source position in listener world units
+	Velocity           lin.Vec3    // source velocity in world units per second
+	MinDistance        float32     // full-volume radius; zero means 1
+	MaxDistance        float32     // silent at this distance; zero means 100
+	RelativeToListener bool        // listener-local position/direction/velocity; also enables Positional
+	Direction          lin.Vec3    // cone direction; nonzero enables Positional; zero or invalid means (0,0,-1)
+	Cone               Cone        // nonzero enables Positional; zero is omnidirectional; invalid values use the default
+	Attenuation        Attenuation // nonzero enables Positional; zero preserves the original curve; invalid values use the default
 }
 
 // Play starts a sound made for this mixer's rate and returns its voice.
@@ -164,20 +168,40 @@ func (m *Mixer) Play(s *Sound, opts PlayOptions) *Voice {
 }
 
 func (m *Mixer) newVoice(opts PlayOptions) *Voice {
+	positional := opts.Positional || opts.RelativeToListener || opts.Direction != (lin.Vec3{}) || opts.Cone != (Cone{}) || opts.Attenuation != (Attenuation{})
 	if opts.Volume == 0 {
 		opts.Volume = 1
 	}
-	if opts.Pitch == 0 {
-		opts.Pitch = 1
-	}
-	if opts.MinDistance == 0 {
+	opts.Pitch = validPitch(opts.Pitch)
+	if !finite(opts.MinDistance) || opts.MinDistance <= 0 {
 		opts.MinDistance = 1
 	}
-	if opts.MaxDistance == 0 {
-		opts.MaxDistance = 100
+	if !finite(opts.MaxDistance) || opts.MaxDistance <= opts.MinDistance {
+		opts.MaxDistance = max(100, opts.MinDistance*2)
+	}
+	if !finite(opts.MaxDistance) {
+		opts.MinDistance, opts.MaxDistance = 1, 100
+	}
+	if !finiteVec(opts.Position) {
+		opts.Position = lin.Vec3{}
+	}
+	if !finiteVec(opts.Velocity) {
+		opts.Velocity = lin.Vec3{}
+	}
+	if !finiteVec(opts.Direction) || opts.Direction.Len() == 0 || !finite(opts.Direction.Len()) {
+		opts.Direction = lin.Vec3{Z: -1}
+	}
+	cone, err := opts.Cone.normalized()
+	if err != nil {
+		cone, _ = (Cone{}).normalized()
+	}
+	attenuation, err := opts.Attenuation.normalized()
+	if err != nil {
+		attenuation, _ = (Attenuation{}).normalized()
 	}
 	v := &Voice{m: m, bus: opts.Bus, vol: opts.Volume, pan: opts.Pan, loop: opts.Loop, pitch: opts.Pitch,
-		priority: opts.Priority, reverb: opts.Reverb, positional: opts.Positional,
+		priority: opts.Priority, reverb: opts.Reverb, positional: positional,
+		relative: opts.RelativeToListener, direction: opts.Direction.Norm(), cone: cone, attenuation: attenuation,
 		position: opts.Position, velocity: opts.Velocity, minDist: opts.MinDistance, maxDist: opts.MaxDistance}
 	if opts.LowPass > 0 {
 		v.lp, v.lpc = &lowPass{}, newBiquad(opts.LowPass, m.rate)
@@ -461,9 +485,11 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 		return sn, true
 	}
 	sn.step = v.pitch
+	position, velocity, direction := v.sourceSpace(m.listener)
 	if v.positional && m.doppler > 0 {
-		sn.step *= m.listener.doppler(v.position, v.velocity, m.doppler, m.speedOfSound)
+		sn.step *= m.listener.doppler(position, velocity, m.doppler, m.speedOfSound)
 	}
+	sn.step = validPitch(sn.step)
 	vol := v.vol
 	if v.fade != nil {
 		vol = v.fade.value()
@@ -483,8 +509,9 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 	}
 	pan := v.pan
 	if v.positional {
-		att, p := m.listener.attenuate(v.position, v.minDist, v.maxDist)
-		gain *= att
+		_, p := m.listener.attenuate(position, v.minDist, v.maxDist)
+		gain *= v.attenuation.gain(position.Sub(m.listener.Position).Len(), v.minDist, v.maxDist)
+		gain *= v.cone.gain(direction, m.listener.Position.Sub(position))
 		pan = p
 	}
 	switch {
@@ -495,7 +522,7 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 			v.bin = newBinaural(m.rate)
 		}
 		sn.bin = v.bin
-		sn.ear = m.listener.headModel(v.position, m.spatial.headRadius(), m.rate)
+		sn.ear = m.listener.headModel(position, m.spatial.headRadius(), m.rate)
 		sn.tl, sn.tr = gain*sn.ear.gainL, gain*sn.ear.gainR
 	default:
 		if v.bin != nil {
@@ -522,10 +549,6 @@ func (m *Mixer) apply() []func() {
 		if !sn.skip && sn.frames > 0 {
 			v.pos = sn.pos
 			v.posPub.Store(math.Float64bits(sn.pos))
-			if sn.stream != nil {
-				v.played += int64(sn.frames)
-				v.playedPub.Store(v.played)
-			}
 			v.curL, v.curR, v.started = sn.tl, sn.tr, true
 			if sn.stopping {
 				v.stopLeft = max(v.stopLeft-sn.frames, 0)
@@ -571,17 +594,16 @@ func (m *Mixer) apply() []func() {
 
 // Voice is one playing sound or stream.
 type Voice struct {
-	m      *Mixer
-	bus    *Bus
-	snd    *Sound
-	stream Stream
-	pos    float64 // frames into the sound, fractional under pitch
-	played int64   // frames taken from a stream since it started or last sought
-	onDone func()
-	// pos and played belong to the mixer's thread while a block runs, so
+	m          *Mixer
+	bus        *Bus
+	snd        *Sound
+	stream     Stream
+	pos        float64 // frames into the sound, fractional under pitch
+	streamRate streamRate
+	onDone     func()
+	// pos belongs to the mixer's thread while a block runs, so
 	// Position reads these copies instead of taking a lock behind it.
-	posPub    atomic.Uint64 // pos as float64 bits
-	playedPub atomic.Int64
+	posPub atomic.Uint64 // pos as float64 bits
 
 	vol      float32
 	pan      float32
@@ -606,6 +628,10 @@ type Voice struct {
 	positional       bool
 	position         lin.Vec3
 	velocity         lin.Vec3
+	relative         bool
+	direction        lin.Vec3
+	cone             Cone
+	attenuation      Attenuation
 	minDist, maxDist float32
 	bin              *binaural // head-model state, nil until spatialised
 
@@ -646,9 +672,16 @@ func (v *Voice) SetVolume(vol float32) { v.set(func() { v.vol = vol; v.fade = ni
 // SetPan moves the voice between -1 (left) and +1 (right).
 func (v *Voice) SetPan(pan float32) { v.set(func() { v.pan = pan }) }
 
-// SetPitch changes a sound's playback rate; 2 plays an octave up at
-// double speed. Streams ignore it.
-func (v *Voice) SetPitch(p float32) { v.set(func() { v.pitch = max(p, 0.01) }) }
+// SetPitch changes playback rate; 2 plays an octave up at double speed.
+// Values are clamped to 0.01..64; zero or nonfinite values restore 1.
+func (v *Voice) SetPitch(p float32) { v.set(func() { v.pitch = validPitch(p) }) }
+
+func validPitch(p float32) float32 {
+	if p == 0 || p != p || p > math.MaxFloat32 || p < -math.MaxFloat32 {
+		return 1
+	}
+	return max(0.01, min(64, p))
+}
 
 // SetPaused holds the voice in place, silent, until resumed. The block
 // the pause lands in fades out, so it never clicks.
@@ -762,14 +795,12 @@ func (v *Voice) Playing() bool {
 }
 
 // Position is how far into the sound the voice is, in seconds. For a
-// stream it counts the frames taken since the voice started or last
-// sought, which for Music is what the listener has heard. It reads the
+// stream it counts source-rate time since the voice started or last
+// sought, including pitch, Doppler and underrun silence, without wrapping
+// at stream loop boundaries. Direct Music controls do not reset it. It reads the
 // position the last finished block reached, so it takes no lock and
 // never waits on the mixer.
 func (v *Voice) Position() float64 {
-	if v.stream != nil {
-		return float64(v.playedPub.Load()) / float64(v.m.rate)
-	}
 	return math.Float64frombits(v.posPub.Load()) / float64(v.m.rate)
 }
 
@@ -791,6 +822,9 @@ type Seeker interface {
 // Seeker must not recursively call Voice.Seek. Do not call Seek from
 // Stream.Read, which runs under the same playback lock.
 func (v *Voice) Seek(seconds float64) error {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return errors.New("audio: seek time must be finite")
+	}
 	v.m.mixMu.Lock()
 	defer v.m.mixMu.Unlock()
 	seconds = max(seconds, 0)
@@ -802,8 +836,9 @@ func (v *Voice) Seek(seconds float64) error {
 		if err := s.Seek(seconds); err != nil {
 			return err
 		}
-		v.played = int64(seconds * float64(v.m.rate))
-		v.playedPub.Store(v.played)
+		v.pos = seconds * float64(v.m.rate)
+		v.posPub.Store(math.Float64bits(v.pos))
+		v.streamRate = streamRate{}
 		return nil
 	}
 	if v.snd != nil {
@@ -847,8 +882,7 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	var n int
 	var more bool
 	if sn.stream != nil {
-		n = sn.stream.Read(scratch[:frames*2])
-		more = n == frames
+		n, more = sn.readStream(scratch[:frames*2])
 	} else {
 		n, more = sn.readSound(scratch[:frames*2])
 	}
