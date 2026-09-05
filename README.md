@@ -38,12 +38,13 @@ window.
   glTF models with skeletal animation, blend spaces, IK and morph
   targets, whose materials any part can override; cascaded shadows, spot
   and point lights with shadows, clustered lighting for a thousand lights
-  a frame, a procedural sky or image-based lighting from OpenEXR,
-  Radiance or ordinary panoramas, fog; reflection probes, baked light
-  probe grids and screen-space reflections; instancing, frustum culling
-  and levels of detail; billboards, decals, outlines, x-ray and stencil
-  masks; dynamic meshes and terrain; SSAO, bloom, FXAA, tone mapping and
-  colour grading; render textures and picking.
+  a frame, a procedural sky with atmospheric scattering and aerial
+  perspective or image-based lighting from OpenEXR, Radiance or ordinary
+  panoramas, fog; reflection probes, baked light probe grids and
+  screen-space reflections; order-independent transparency; instancing,
+  frustum culling and levels of detail; billboards, decals, outlines,
+  x-ray and stencil masks; dynamic meshes and terrain; SSAO, bloom, FXAA,
+  tone mapping and colour grading; render textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.
@@ -177,7 +178,7 @@ whole program and explains it section by section:
 | Command | Shows |
 |---|---|
 | `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites, and a lit brick floor where a moving lamp throws shadows from three crates |
-| `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
+| `go run ./examples/viewer [-model file.glb] [-sorted]` | lit 3D scene or a glTF model, orbit camera, crossed translucent panes composited order-independently, sprite overlay |
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
@@ -205,7 +206,7 @@ whole program and explains it section by section:
 | `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
 | `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |
 | `go run ./examples/text [-font file.ttf]` | HarfBuzz-shaped text: kerning and ligatures, Arabic joining, right-to-left and mixed lines, a fallback font, Unicode wrapping, hyphenation by language, rich markup, colour emoji, vertical text, distance-field text |
-| `go run ./examples/terrain` | a heightfield with a lake, billboard trees, rocks at three levels of detail, campfires and a searchlight, distance and valley fog, labels in the world, frustum culling counts, and terrain dug with a click |
+| `go run ./examples/terrain` | a heightfield with a lake, billboard trees, rocks at three levels of detail, campfires and a searchlight, an atmospheric sky with aerial perspective and valley fog, labels in the world, frustum culling counts, and terrain dug with a click |
 | `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |

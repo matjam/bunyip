@@ -228,6 +228,10 @@ type frameUniforms struct {
 	gridSpacing lin.Vec4            // xyz the distance between cells
 	gridCounts  lin.Vec4            // xyz how many cells on each axis
 	reflect     lin.Vec4            // x strength, y max roughness, z max distance, w steps
+	// The atmosphere, appended after that.
+	atmos lin.Vec4 // planet radius, air height, rayleigh and mie falloff heights
+	betaR lin.Vec4 // rayleigh scattering per unit at the ground, w = sun intensity
+	betaM lin.Vec4 // mie scattering, forward lobe, camera altitude, w = 1 with an atmosphere
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -374,7 +378,7 @@ func (g *Graphics) initMeshPass() error {
 	if mp.black, err = g.newTexture(1, 1, []byte{0, 0, 0, 255}, TextureOptions{Data: true}); err != nil {
 		return err
 	}
-	mp.defaultShader = &Shader{g: g, frag: shaders.PBRFrag, mesh: true, pipes: map[pipeKey]*render.Pipeline{}}
+	mp.defaultShader = &Shader{g: g, frag: shaders.PBRFrag, oitFrag: shaders.PBROITFrag, mesh: true, pipes: map[pipeKey]*render.Pipeline{}}
 	for _, key := range []pipeKey{{blend: BlendReplace}, {blend: BlendAlpha}, {blend: BlendReplace, shadow: true}} {
 		if _, err := mp.defaultShader.pipeline(key); err != nil {
 			return err
@@ -965,6 +969,11 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
 		u.fogRange = lin.V4(f.Start, f.End, f.Height, f.HeightFalloff)
 	}
+	if a := sky.Atmosphere; a.Height > 0 {
+		u.atmos = lin.V4(a.PlanetRadius, a.Height, a.Height/rayleighFalloff, a.Height/mieFalloff)
+		u.betaR = lin.V4(a.Rayleigh.R, a.Rayleigh.G, a.Rayleigh.B, a.Intensity)
+		u.betaM = lin.V4(a.Mie, a.Forward, a.Altitude, 1)
+	}
 	if env := l.Environment; env != nil && env.cube != nil {
 		u.sh = env.sh
 		u.env = lin.V4(env.scale, float32(env.mips), 1, 0)
@@ -1024,14 +1033,17 @@ func boolFloat(b bool) float32 {
 
 // prepareDraws resolves material sets and bounds, culls draws outside
 // the camera's view, sorts opaque draws for instancing and blended draws
-// back to front, and uploads the instance stream. Culled draws sort to
-// the end of their group and stay in the lists for the shadow pass,
-// which sees them from the light; q.visOpaque and q.visBlended count the
-// draws the camera sees at the front of each list. It runs before
-// writeUniforms and leaves each draw's bounding sphere on the draw, for
-// the shadow pass to cull against, and the furthest caster's reach
-// against the light in q.casterAlong, for the cascades.
-func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, blended drawList, err error) {
+// back to front, and uploads the instance stream. It returns three
+// groups in the order they are recorded: the opaque draws, the blended
+// draws the order-independent pass accumulates, and the blended draws
+// that still draw in sorted order. Culled draws sort to the end of their
+// group and stay in the lists for the shadow pass, which sees them from
+// the light; q.visOpaque, q.visOIT and q.visBlended count the draws the
+// camera sees at the front of each. It runs before writeUniforms and
+// leaves each draw's bounding sphere on the draw, for the shadow pass to
+// cull against, and the furthest caster's reach against the light in
+// q.casterAlong, for the cascades.
+func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, aspect float32) (opaque, oit, blended drawList, err error) {
 	q.ensureCamera() // culling, sorting and the frame block share one view
 	view := q.camera.viewMatrix()
 	frustum := FrustumOf(q.camera.ViewProj(aspect))
@@ -1043,6 +1055,11 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	q.depthClamp = g.r.Device.DepthClamp()
 	q.hasCasters, q.casterAlong = false, 0
 	lightDir := q.light.Direction.Norm()
+	// The order-independent pass needs a device that blends its two
+	// attachments differently and a shader with the program that writes
+	// them. Transmissive draws read the scene behind them, so they keep
+	// the sorted path whatever the setting says.
+	independent := g.post.settings.OrderIndependent && g.r.Device.IndependentBlend()
 	for i := range q.draws {
 		d := &q.draws[i]
 		d.centre, d.radius, d.cullable = q.drawBounds(d)
@@ -1050,13 +1067,16 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		// its cube map is what the material set binds.
 		d.probe = q.probeFor(d.centre)
 		if d.set, d.samplers, err = g.materialSet(&d.mat, q.probeEnv(d.probe, env), scene); err != nil {
-			return drawList{}, drawList{}, err
+			return drawList{}, drawList{}, drawList{}, err
 		}
 		d.depth = -view.MulPoint(d.centre).Z
 		d.blended = d.mat.blended() || d.shell > 0
 		if d.shell > 0 {
 			d.radius += shellLength(&d.mat) // a shell stands off the surface
 		}
+		// Fur shells are drawn from the inside out and read as one surface
+		// only in that order, so they keep the sorted path.
+		d.oit = independent && d.blended && d.shell == 0 && d.mat.Transmission == 0 && d.shader.orderIndependent()
 		d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
 		if d.culled {
 			culled++
@@ -1069,6 +1089,19 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	}
 	g.stats.Culled += culled
 	all := q.sortDraws()
+	// The blended group is split before the instance stream is built, so
+	// that a draw's place in the order is still its place in the stream.
+	blendedAt := all.len()
+	for i := range all.len() {
+		if all.at(i).blended {
+			blendedAt = i
+			break
+		}
+	}
+	oitAt := blendedAt
+	if independent {
+		oitAt = q.partitionOIT(all, blendedAt)
+	}
 	q.inst.reset()
 	for k := range all.len() {
 		d := all.at(k)
@@ -1136,24 +1169,40 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		})
 	}
 	if err := q.inst.upload(g, slot); err != nil {
-		return drawList{}, drawList{}, err
+		return drawList{}, drawList{}, drawList{}, err
 	}
 	if len(q.joints) > 0 {
 		data := unsafe.Slice((*byte)(unsafe.Pointer(&q.joints[0])), len(q.joints)*64)
 		if err := q.jointBuf.Write(slot, data); err != nil {
-			return drawList{}, drawList{}, err
+			return drawList{}, drawList{}, drawList{}, err
 		}
 	}
-	split := all.len()
-	for i := range all.len() {
-		if all.at(i).blended {
-			split = i
-			break
+	opaque = all.slice(0, blendedAt)
+	oit = all.slice(blendedAt, oitAt)
+	blended = all.slice(oitAt, all.len())
+	q.visOpaque, q.visOIT, q.visBlended = visibleCount(opaque), visibleCount(oit), visibleCount(blended)
+	return opaque, oit, blended, nil
+}
+
+// partitionOIT moves the draws the order-independent pass accumulates to
+// the front of the blended range, which starts at lo, and returns where
+// the draws that stay sorted begin. Each group keeps the order the sort
+// gave it, so the camera's draws still come before the culled ones and
+// the sorted group is still back to front.
+func (q *drawQueue) partitionOIT(all drawList, lo int) int {
+	q.sorted = q.sorted[:0]
+	at := lo
+	for i := lo; i < all.len(); i++ {
+		k := all.order[i]
+		if q.draws[k].oit {
+			all.order[at] = k
+			at++
+		} else {
+			q.sorted = append(q.sorted, k)
 		}
 	}
-	opaque, blended = all.slice(0, split), all.slice(split, all.len())
-	q.visOpaque, q.visBlended = visibleCount(opaque), visibleCount(blended)
-	return opaque, blended, nil
+	copy(all.order[at:], q.sorted)
+	return at
 }
 
 // visibleCount is how many draws at the front of a sorted group the
@@ -1191,7 +1240,7 @@ func orOne(metallic float32, hasTexture bool) float32 {
 // stream. In the shadow pass (cascade set) the depth-only pipelines are
 // used; otherwise each draw's shader picks its lit pipeline. Skinned
 // draws are never merged, since each has its own joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32, mask []bool) error {
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32, mask []bool, oit bool) error {
 	n := draws.len()
 	if n == 0 {
 		return nil // a sky-only frame has no instance buffer to bind
@@ -1222,6 +1271,7 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			}
 		}
 		key := meshKey(&d.mat, d.skinned, d.shell > 0)
+		key.oit = oit
 		if cascade != nil {
 			key = pipeKey{shadow: true, skinned: d.skinned}
 		}
@@ -1273,14 +1323,19 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	aspect := float32(t.extent.Width) / float32(t.extent.Height)
 	// The draws are prepared first: the cascades' near planes need the
 	// caster bounds, and the shadow pass culls against every light.
-	opaque, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
+	opaque, oit, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
 	if err != nil {
 		return err
 	}
 	if err := q.writeUniforms(fr.Slot, t.extent, g.time, g.reflectParams()); err != nil {
 		return err
 	}
-	seen, seenBlended := opaque.slice(0, q.visOpaque), blended.slice(0, q.visBlended)
+	seen, seenOIT, seenBlended := opaque.slice(0, q.visOpaque), oit.slice(0, q.visOIT), blended.slice(0, q.visBlended)
+	if seenOIT.len() > 0 {
+		if err := g.orderIndependent(t); err != nil {
+			return err
+		}
+	}
 	// Every shadow map is a region of one atlas: the cascades, then the
 	// spot maps, then each shadowed point light's six cube faces, each
 	// drawn with its own viewport. The vertex program picks the
@@ -1306,7 +1361,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 			render.SetViewportRect(cb, region)
 			render.SetScissorRect(cb, region)
 			pc := int32(index)
-			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc, q.shadowMask(opaque, index, spotMats, pointMats)); err != nil {
+			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc, q.shadowMask(opaque, index, spotMats, pointMats), false); err != nil {
 				return err
 			}
 		}
@@ -1334,7 +1389,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
 		vk.CmdDraw(cb, 3, 1, 0, 0)
 	}
-	if err := g.drawRuns(cb, fr, q, seen, 0, nil, nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seen, 0, nil, nil, false); err != nil {
 		return err
 	}
 	g.drawSolid(cb, fr, q, seen, 0, t.extent)
@@ -1353,8 +1408,32 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		}
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
 	}
+	if seenOIT.len() > 0 {
+		// Order-independent transparency: the translucent draws go into
+		// their own two images, depth-tested against the opaque scene but
+		// not against each other, and one fullscreen pass resolves them
+		// over the scene. It runs after the reflection pass, which reads
+		// the opaque scene alone.
+		g.timestamps.Begin(cb, "transparency")
+		render.EndTargetPass(cb, t.hdr)
+		pass := render.PassDesc{
+			Target: t.accum, Depth: t.hdr.Depth, LoadDepth: true,
+			Extra: []*render.Image{t.reveal.Color}, ExtraClear: [][4]float32{{1, 1, 1, 1}},
+		}
+		render.BeginTargetPass(cb, pass)
+		if err := g.drawRuns(cb, fr, q, seenOIT, uint32(opaque.len()), nil, nil, true); err != nil {
+			return err
+		}
+		render.EndTargetPassDesc(cb, pass)
+		g.timestamps.End(cb)
+		g.timestamps.Begin(cb, "transparency resolve")
+		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
+		render.SetViewport(cb, t.extent)
+		g.post.fullscreen(cb, g.post.oit, t.oitSet, postPush{})
+		g.timestamps.End(cb)
+	}
 	g.timestamps.Begin(cb, "blended")
-	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()), nil, nil); err != nil {
+	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()+oit.len()), nil, nil, false); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {

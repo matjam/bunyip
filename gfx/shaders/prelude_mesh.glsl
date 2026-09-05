@@ -77,6 +77,10 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 gridSpacing;    // xyz the distance between its cells
     vec4 gridCounts;     // xyz how many cells it has on each axis
     vec4 reflect;        // x strength, y max roughness, z max distance, w steps
+    // The atmosphere, appended after that.
+    vec4 atmos;        // x planet radius, y air height, z rayleigh, w mie falloff height
+    vec4 betaR;        // rgb rayleigh scattering per unit at the ground, w = sun intensity
+    vec4 betaM;        // x mie scattering, y forward lobe, z camera altitude, w = 1 with an atmosphere
 } frame;
 
 // The light probe grid's harmonics, nine vec4s a cell, x fastest then y
@@ -595,12 +599,140 @@ vec3 light(Surface s) {
     return color + ambient(s, n, v) * s.occlusion;
 }
 
+// ATMOSPHERE. Everything between this line and END ATMOSPHERE is the
+// same text in prelude_mesh.glsl and skyparam.frag, and Sky.scatter and
+// Sky.radiance in gfx/sky.go are the same functions in Go: the ambient
+// harmonics are projected from the Go side and the pixels come from
+// here, so the three must stay in step. TestAtmosphereBlocksMatch
+// compares the two shaders and TestAtmosphereMatchesGo the Go side.
+const int ATMOS_VIEW_STEPS = 8;
+const int ATMOS_SUN_STEPS = 4;
+const float ATMOS_PI = 3.14159265359;
+
+// raySphere returns where a ray from o along d crosses a sphere of
+// radius r about the origin, as two distances along the ray. x is
+// greater than y when the ray misses.
+vec2 raySphere(vec3 o, vec3 d, float r) {
+    float b = dot(o, d);
+    float c = dot(o, o) - r * r;
+    float h = b * b - c;
+    if (h < 0.0) return vec2(1.0, -1.0);
+    h = sqrt(h);
+    return vec2(-b - h, -b + h);
+}
+
+// phaseRayleigh is how much air scatters towards an angle whose cosine
+// is mu: nearly even, a little more forwards and backwards.
+float phaseRayleigh(float mu) { return 3.0 / (16.0 * ATMOS_PI) * (1.0 + mu * mu); }
+
+// phaseMie is the Henyey-Greenstein lobe haze scatters into, forwards
+// by g, which is the glare around the sun.
+float phaseMie(float mu, float g) {
+    float g2 = g * g;
+    float d = (2.0 + g2) * pow(1.0 + g2 - 2.0 * g * mu, 1.5);
+    return 3.0 / (8.0 * ATMOS_PI) * ((1.0 - g2) * (1.0 + mu * mu)) / d;
+}
+
+// atmosphereScatter integrates single scattering along a ray leaving the
+// camera in direction d, for at most dist world units: air and haze
+// thinning with height, each sample lit by what is left of the sunlight
+// that reached it and dimmed by the air back to the camera. Samples the
+// planet shadows are dark, which is what makes dusk fall. transmittance
+// comes back as how much of the light from beyond the segment survives
+// it, for aerial perspective and the sun's disc.
+vec3 atmosphereScatter(vec3 d, float dist, int steps, int sunSteps, out vec3 transmittance) {
+    float radius = frame.atmos.x, height = frame.atmos.y;
+    float hR = frame.atmos.z, hM = frame.atmos.w;
+    vec3 betaR = frame.betaR.rgb;
+    float betaM = frame.betaM.x;
+    vec3 sun = frame.sun.xyz;
+    vec3 origin = frame.skyUp.xyz * (radius + frame.betaM.z);
+    transmittance = vec3(1.0);
+    vec2 shell = raySphere(origin, d, radius + height);
+    float t0 = max(shell.x, 0.0), t1 = shell.y;
+    if (t1 <= t0) return vec3(0.0); // outside the air, looking away from the planet
+    vec2 gnd = raySphere(origin, d, radius);
+    if (gnd.y > 0.0 && gnd.x > 0.0) t1 = min(t1, gnd.x); // the ray meets the ground first
+    t1 = min(t1, t0 + dist);
+    if (t1 <= t0) return vec3(0.0);
+    float ds = (t1 - t0) / float(steps);
+    float mu = dot(d, sun);
+    float odR = 0.0, odM = 0.0;
+    vec3 sumR = vec3(0.0), sumM = vec3(0.0);
+    for (int i = 0; i < steps; i++) {
+        vec3 p = origin + d * (t0 + (float(i) + 0.5) * ds);
+        float h = max(length(p) - radius, 0.0);
+        float dR = exp(-h / hR) * ds;
+        float dM = exp(-h / hM) * ds;
+        odR += dR;
+        odM += dM;
+        vec2 shadow = raySphere(p, sun, radius);
+        if (shadow.y > 0.0 && shadow.x > 0.0) continue; // the planet stands in the way
+        float lightStep = max(raySphere(p, sun, radius + height).y, 0.0) / float(sunSteps);
+        float lodR = 0.0, lodM = 0.0;
+        for (int j = 0; j < sunSteps; j++) {
+            vec3 q = p + sun * ((float(j) + 0.5) * lightStep);
+            float hj = max(length(q) - radius, 0.0);
+            lodR += exp(-hj / hR) * lightStep;
+            lodM += exp(-hj / hM) * lightStep;
+        }
+        vec3 att = exp(-(betaR * (odR + lodR) + betaM * 1.1 * (odM + lodM)));
+        sumR += att * dR;
+        sumM += att * dM;
+    }
+    transmittance = exp(-(betaR * odR + betaM * 1.1 * odM));
+    return frame.betaR.w * (sumR * betaR * phaseRayleigh(mu) + sumM * betaM * phaseMie(mu, frame.betaM.y));
+}
+
+// skyColor is the sky's light from a direction without the sun's disc:
+// the atmosphere when the light's Sky has one, otherwise the gradient
+// above the horizon, and the ground or planet below. Below the horizon a
+// camera inside the air looks the colour up along the horizon instead,
+// because its own ray meets the ground at once and would leave a dark
+// band; from above the air the ray itself is integrated, so a planet
+// seen from orbit keeps the glow around its limb.
+vec3 skyColor(vec3 d) {
+    float up = dot(d, frame.skyUp.xyz);
+    float air = frame.horizon.w;
+    if (frame.betaM.w > 0.5) {
+        vec3 dir = d;
+        if (up < 0.0 && frame.betaM.z < frame.atmos.y) {
+            vec3 side = d - frame.skyUp.xyz * up;
+            float len = length(side);
+            if (len > 1e-4) dir = side / len;
+        }
+        vec3 tr;
+        vec3 c = atmosphereScatter(dir, 1e9, ATMOS_VIEW_STEPS, ATMOS_SUN_STEPS, tr) * air;
+        if (up < 0.0) c = mix(c, frame.ground.rgb, pow(-up, 0.5));
+        return c;
+    }
+    vec3 above = mix(frame.horizon.rgb, frame.sky.rgb, pow(clamp(up, 0.0, 1.0), 0.7)) * air;
+    vec3 below = mix(frame.horizon.rgb * air, frame.ground.rgb, pow(clamp(-up, 0.0, 1.0), 0.5));
+    return up >= 0.0 ? above : below;
+}
+// END ATMOSPHERE.
+
+// aerialPerspective is what the air between the camera and a surface
+// does to it: the surface dims by the air's transmittance and the light
+// that air scatters into the view is added. It is the sky's own model
+// over the distance to the fragment, at half the samples, because the
+// colour varies slowly along a ray short enough to see the end of.
+vec3 aerialPerspective(vec3 c, vec3 worldPos) {
+    vec3 d = worldPos - frame.camPos.xyz;
+    float dist = length(d);
+    if (dist < 1e-4) return c;
+    vec3 tr;
+    vec3 inscatter = atmosphereScatter(d / dist, dist, ATMOS_VIEW_STEPS / 2, ATMOS_SUN_STEPS / 2, tr);
+    return mix(c, c * tr + inscatter, frame.horizon.w);
+}
+
 // applyFog fades a lit colour towards the frame's fog colour by the
 // distance from the camera: linear between the range's start and end,
 // exponential-squared by the density, whichever is denser, thinned
-// above the ground fog's height. Every mesh shader's output passes
-// through it; call it yourself in finish() only to fog something the
-// engine does not.
+// above the ground fog's height. An atmospheric sky then adds aerial
+// perspective over that, so distant geometry takes the colour of the air
+// in front of it. Every mesh shader's output passes through it; call it
+// yourself in finish() only to fog something the engine does not.
 vec3 applyFog(vec3 c, vec3 worldPos, float depth) {
     float f = 0.0;
     if (frame.fogRange.y > frame.fogRange.x) {
@@ -613,7 +745,9 @@ vec3 applyFog(vec3 c, vec3 worldPos, float depth) {
     if (frame.fogRange.w > 0.0) {
         f *= clamp(exp(-(worldPos.y - frame.fogRange.z) * frame.fogRange.w), 0.0, 1.0);
     }
-    return mix(c, frame.fog.rgb, f);
+    c = mix(c, frame.fog.rgb, f);
+    if (frame.betaM.w > 0.5) c = aerialPerspective(c, worldPos);
+    return c;
 }
 
 // irradiance evaluates the environment's spherical harmonics for a
@@ -639,16 +773,10 @@ vec3 envBRDF(vec3 f0, float roughness, float NoV) {
 }
 
 // skyRadiance is the procedural sky's light from a direction, without
-// the sun: the atmosphere's gradient above the horizon and the ground or
-// planet below, blurred towards the mean for rough reflections. The
-// background shader draws the same gradient.
+// the sun: skyColor blurred towards the mean for rough reflections. The
+// background shader draws the same sky.
 vec3 skyRadiance(vec3 d, float roughness) {
-    float up = dot(d, frame.skyUp.xyz);
-    float air = frame.horizon.w;
-    vec3 above = mix(frame.horizon.rgb, frame.sky.rgb, pow(clamp(up, 0.0, 1.0), 0.7)) * air;
-    vec3 below = mix(frame.horizon.rgb * air, frame.ground.rgb, pow(clamp(-up, 0.0, 1.0), 0.5));
-    vec3 color = up >= 0.0 ? above : below;
-    return mix(color, frame.sh[0].rgb * 0.282095, roughness * 0.8);
+    return mix(skyColor(d), frame.sh[0].rgb * 0.282095, roughness * 0.8);
 }
 
 // probeIndex is the reflection probe this draw reflects, or -1 for the

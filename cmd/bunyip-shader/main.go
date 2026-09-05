@@ -17,12 +17,15 @@
 //	//go:embed wave.spv
 //	var waveSPV []byte
 //
-// -kind selects sprite (the default) or mesh. A mesh shader with a
-// vertex() hook is written as a bundle holding its fragment program and
-// the four vertex programs (static and skinned, lit and shadow), which
-// NewMeshShader reads; without the hook the output is plain fragment
-// SPIR-V. -stage compiles just one program (frag, vert, skinvert,
-// shadowvert, shadowskinvert), which is how the engine builds its own.
+// -kind selects sprite (the default) or mesh. A mesh shader is written
+// as a bundle: its two fragment programs, the usual one and the one the
+// order-independent transparency pass needs, and, when the source has a
+// vertex() hook, the four vertex programs (static and skinned, lit and
+// shadow). NewMeshShader reads the bundle, and a bundle from an older
+// version without the transparency program still loads, with those draws
+// keeping the sorted path. -stage compiles just one program (frag,
+// oitfrag, vert, skinvert, shadowvert, shadowskinvert), which is how the
+// engine builds its own.
 // -print writes the composed GLSL of a stage to standard output instead
 // of compiling it, for reading compiler messages against.
 package main
@@ -41,7 +44,7 @@ import (
 
 func main() {
 	kind := flag.String("kind", "sprite", "shader kind: sprite or mesh")
-	stage := flag.String("stage", "", "compile one stage only: frag, vert, skinvert, shadowvert, shadowskinvert")
+	stage := flag.String("stage", "", "compile one stage only: frag, oitfrag, vert, skinvert, shadowvert, shadowskinvert")
 	out := flag.String("o", "", "output file; default is the source name with .spv")
 	print := flag.Bool("print", false, "write the composed GLSL (of -stage, default frag) to stdout instead of compiling")
 	flag.Usage = func() {
@@ -98,7 +101,12 @@ func run(kind shaders.Kind, stageName, src, out string, print bool) error {
 	case only != nil:
 		stages = []shaders.Stage{*only}
 	case kind == shaders.Mesh && shaders.HasVertexHook(source):
-		stages = []shaders.Stage{shaders.StageFrag, shaders.StageVert, shaders.StageSkinVert, shaders.StageShadowVert, shaders.StageShadowSkinVert}
+		stages = []shaders.Stage{shaders.StageFrag, shaders.StageOITFrag, shaders.StageVert, shaders.StageSkinVert, shaders.StageShadowVert, shaders.StageShadowSkinVert}
+	case kind == shaders.Mesh:
+		// Two fragment programs: the usual one and the one the
+		// order-independent transparency pass needs, which writes a second
+		// attachment.
+		stages = []shaders.Stage{shaders.StageFrag, shaders.StageOITFrag}
 	default:
 		stages = []shaders.Stage{shaders.StageFrag}
 	}
@@ -130,7 +138,7 @@ func run(kind shaders.Kind, stageName, src, out string, print bool) error {
 // temporary file.
 func compile(glsl string, st shaders.Stage) ([]byte, error) {
 	suffix := ".frag"
-	if st != shaders.StageFrag {
+	if st != shaders.StageFrag && st != shaders.StageOITFrag {
 		suffix = ".vert"
 	}
 	tmp, err := os.CreateTemp("", "bunyip-shader-*"+suffix)

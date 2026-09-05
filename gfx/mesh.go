@@ -473,6 +473,7 @@ type meshDraw struct {
 	uniform    int32   // arena offset of the shader's uniforms, -1 for none
 	depth      float32 // view-space distance for transparency sorting
 	blended    bool    // mat.blended(), resolved once by prepareDraws for the sort
+	oit        bool    // blended and drawn in the order-independent pass
 	culled     bool    // outside the camera's view; drawn only into shadows
 	skinned bool
 	// shell is 0 for the mesh itself and rises to 1 on the outermost fur
