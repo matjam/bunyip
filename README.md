@@ -37,8 +37,9 @@ window.
   glass; glTF models with skeletal animation, blend spaces, IK and morph
   targets; cascaded shadows, spot and point lights with shadows,
   clustered lighting for a thousand lights a frame, a procedural sky or
-  image-based lighting, fog; instancing, frustum culling and levels of
-  detail; billboards, decals, outlines and x-ray; dynamic meshes and
+  image-based lighting, fog; reflection probes, baked light probe grids
+  and screen-space reflections; instancing, frustum culling and levels
+  of detail; billboards, decals, outlines and x-ray; dynamic meshes and
   terrain; SSAO, bloom, FXAA, tone mapping and colour grading; render
   textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels
@@ -178,6 +179,7 @@ whole program and explains it section by section:
 | `go run ./examples/audio [-music file.ogg] [-zone] [-mic]` | positional voices with panning or the binaural head model, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream, streamed music files and a microphone level meter |
 | `go run ./examples/solar` | the ECS driving a scene: a scene document and a prefab loaded from embedded files, hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
 | `go run ./examples/lighting [-model file.glb] [-env panorama.png]` | skinned meshes bent by joint matrices, cascaded shadows, two lamps with cube shadow maps over a field of 160 clustered point lights, a procedural sky with a slider that raises the altitude to orbit, image-based lighting from a panorama, every post-processing setting on a slider, glTF animation clips |
+| `go run ./examples/probes` | global illumination: a reflection probe baked inside a glowing room so the chrome ball mirrors its walls, a grid of light probes that colours the matte balls by the wall they stand near, and screen-space reflections on a polished floor, each on a checkbox |
 | `go run ./examples/pathfinding` | A*, Dijkstra maps, field of view, flood fill and lines on a paintable grid; save and load through the save package |
 | `go run ./examples/network -listen :7777` / `-join host:7777` | chat over TCP and pointer positions over UDP, turn-based with wake-ups on traffic; `-reliable` sends chat over reliable UDP and shows the link's round trip and loss |
 | `go run ./examples/assets` | asset directory plus pack file, async loading with a progress bar, hot reload of changed files, persistent settings |

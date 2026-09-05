@@ -397,6 +397,91 @@ g.env, err = ctx.Gfx.NewEnvironmentHDR(hdr, gfx.EnvironmentOptions{Intensity: 1.
 light.Environment, light.Background = g.env, true
 ```
 
+## Global illumination
+
+One environment lights the whole scene, which is right outdoors and wrong
+indoors: a ball in a red room reflects the sky. Three things give parts
+of a scene their own light. A reflection probe is what a place reflects,
+a light probe grid is what a place is lit by, and screen-space
+reflections are what the screen already shows. They stack: probes for
+reflections, a grid for the diffuse light, and the screen pass on top of
+both.
+
+`ReflectionProbe` captures the scene from a point into a cube map.
+`Position` is where it is captured, `Extent` the half-size of the box it
+covers (or `Radius` for a sphere probe), `Resolution` the cube face size
+in texels (default 64) and `Intensity` a multiplier. `BakeProbe(probe,
+scene)` renders six faces from that point and prefilters them for every
+roughness; the `scene` function queues the draws and the light the bake
+sees, exactly as `Draw` would. Baking submits its own command buffers and
+waits for them, so call it from `Init` or `Update`, never from `Draw`,
+and call it again when the room it holds has changed. `AddProbe` adds a
+baked probe to a frame the way `AddPointLight` adds a light.
+
+A draw reflects the probe whose volume holds its centre; everything
+outside every probe keeps `Light.Environment` or the `Sky`. Of two probes
+holding a draw, the one holding it more firmly wins, and the smaller of
+two that hold it equally. Only one cube map is bound per draw, so two
+probes are never blended with each other: `Margin` fades a probe's
+reflection towards the frame's average environment over the last few
+units inside its volume, which is what stops a ball popping as it leaves
+a room. `BoxProjection` reflects a box probe's walls at the place the
+walls are rather than at infinity, so a floor mirrors the wall it faces.
+A frame keeps its first `MaxProbes` (8) probes and counts the rest in
+`FrameStats.ProbesDropped`. A probe owns GPU memory; `Destroy` it in
+`Shutdown`.
+
+`LightProbeGrid` is the diffuse half: a lattice of `Counts` cells from
+`Origin` every `Spacing` units, each holding the light arriving at it as
+nine spherical harmonics. `BakeLightProbes(grid, scene)` renders a small
+cube at every cell (`Resolution`, default 16, is enough because harmonics
+keep only the low frequencies) and projects what it saw. `SetLightProbes`
+gives a frame a baked grid, which replaces the single ambient term where
+it reaches, interpolated between the eight cells around each fragment and
+faded back to the environment over the outer half cell. A grid holds its
+harmonics in ordinary memory and needs no `Destroy`; it is at most 4096
+cells.
+
+`PostSettings.Reflections` turns on screen-space reflections, 0 (off, the
+default) to 1. Smooth surfaces trace a ray through the depth buffer and
+show what the screen already holds: the bright box standing on a polished
+floor, a sign over wet asphalt. `ReflectionRoughness` is the roughness a
+surface stops reflecting the screen at (default 0.35),
+`ReflectionDistance` how far a ray travels in world units (default 30)
+and `ReflectionSteps` how many samples it takes (default 32). Where a ray
+leaves the screen or hits nothing the surface keeps its probe or
+environment reflection, so the two fit together rather than adding up.
+What is behind the camera or hidden behind something nearer is not on the
+screen and so cannot be reflected; a probe is what fills those in.
+
+```go
+// In Init: one probe for the room, a grid across its floor.
+g.probe = &gfx.ReflectionProbe{Position: lin.V3(0, 1.8, 0),
+	Extent: lin.V3(9, 2.5, 9), Margin: 1, Resolution: 96, BoxProjection: true}
+if err := ctx.Gfx.BakeProbe(g.probe, func() { g.drawRoom(ctx.Gfx) }); err != nil {
+	return err
+}
+g.grid = &gfx.LightProbeGrid{Origin: lin.V3(-6, 0.9, -6),
+	Spacing: lin.V3(6, 2, 6), Counts: [3]int{3, 2, 3}}
+if err := ctx.Gfx.BakeLightProbes(g.grid, func() { g.drawRoom(ctx.Gfx) }); err != nil {
+	return err
+}
+
+// In Draw: add them to the frame, and reflect the screen off the floor.
+p := gfx.DefaultPost()
+p.Reflections = 0.9
+gr.SetPost(p)
+gr.AddProbe(g.probe)
+gr.SetLightProbes(g.grid)
+```
+
+Bakes are the expensive part: a probe is six scene renders and a
+prefilter, a grid is six little renders a cell. Bake at load, or when a
+level changes, and keep what you baked. Both bakes draw the scene through
+the same code the frame does, so light the bake the way the frame is lit
+or the probe will disagree with the screen. The `probes` example puts all
+three on checkboxes.
+
 ## Sky, fog and atmosphere
 
 `Light.Sky` is a procedural environment. It takes an `Up` axis,
@@ -533,7 +618,9 @@ ones, so you can change one field without restating the rest.
 `Exposure` multiplies the scene before tone mapping. Use it when a scene
 is too dark or blown out. `Bloom` is the strength of the glow around
 bright pixels and `BloomThreshold` the luminance where it starts; zero
-bloom skips the passes. `AmbientOcclusion` is screen-space occlusion
+bloom skips the passes. `Reflections` and the three `Reflection*` fields
+are screen-space reflections, which the global illumination section
+covers. `AmbientOcclusion` is screen-space occlusion
 darkening creases and contact points, 0 to 1 with a default of 0.6, over
 `OcclusionRadius` world units, and `ShowOcclusion` displays the occlusion
 buffer instead of the scene while you tune it. `Vignette`, `Saturation`
@@ -616,7 +703,8 @@ gr.DebugText3D(scout.Position, "scout")
 passes, `Instances` is mesh instances in the main pass, `ShadowDraws` is
 the instances recorded into the shadow maps, `Culled` is the draws
 skipped as out of view, `Lights` and `LightsDropped` are the point and
-spot lights the frame kept and threw away, `Draws2D` and `Vertices2D`
+spot lights the frame kept and threw away, `ProbesDropped` is the
+reflection probes added past `MaxProbes`, `Draws2D` and `Vertices2D`
 cover the sprite stream, and `Waits` counts the times the frame stopped
 for the GPU to go idle, which a running game keeps at zero. The F3
 overlay shows them and `Config.DrawBudget` warns when a frame goes over

@@ -61,23 +61,38 @@ layout(set = 1, binding = 0) uniform Frame {
     mat4 spotViewProj[4];  // shadowed spot lights' projections
     mat4 pointViewProj[24]; // four shadowed point lights, six faces each
     vec4 cluster;      // xy tile size in pixels, zw the depth slice's scale and bias
+    // Global illumination, appended after what the older shaders read.
+    vec4 probePos[8];    // xyz where a reflection probe was captured, w = kind (1 box, 2 sphere)
+    vec4 probeMin[8];    // xyz the box's minimum corner, w = the sphere's radius
+    vec4 probeMax[8];    // xyz the box's maximum corner, w = the blend margin
+    vec4 probeParams[8]; // x intensity, y mip count, z box projection
+    vec4 gridOrigin;     // xyz the light probe grid's origin, w = intensity (0 no grid)
+    vec4 gridSpacing;    // xyz the distance between its cells
+    vec4 gridCounts;     // xyz how many cells it has on each axis
+    vec4 reflect;        // x strength, y max roughness, z max distance, w steps
 } frame;
+
+// The light probe grid's harmonics, nine vec4s a cell, x fastest then y
+// then z. It shares the frame's set, so it costs no sampled image.
+layout(std430, set = 1, binding = 1) readonly buffer ProbeGrid {
+    vec4 cells[];
+} probeGrid;
 
 // The frame's point and spot lights, and the cluster grid that says
 // which of them reach a fragment: sixteen tiles across the view, nine
 // down and twenty-four slices into the distance, the slices spaced
-// exponentially. cells holds each cluster's first index and count in
-// lightIndex, which holds indices into lights. gfx/cluster.go fills all
-// three each frame.
+// exponentially. clusterCells holds each cluster's first index and count
+// in lightIndex, which holds indices into lights. gfx/cluster.go fills
+// all three each frame, into the frame's own set.
 struct LightData {
     vec4 posRange; // xyz position, w range
     vec4 color;    // rgb colour, w = cos of a spot's inner cone (2 for a point light)
     vec4 dir;      // xyz a spot's direction, w = cos of its outer cone (-2 for a point light)
     vec4 info;     // x = spot map index or -1, y = cube map slot or -1
 };
-layout(std430, set = 1, binding = 1) readonly buffer Lights { LightData lights[]; };
-layout(std430, set = 1, binding = 2) readonly buffer Clusters { uvec2 cells[]; };
-layout(std430, set = 1, binding = 3) readonly buffer LightIndex { uint lightIndex[]; };
+layout(std430, set = 1, binding = 2) readonly buffer Lights { LightData lights[]; };
+layout(std430, set = 1, binding = 3) readonly buffer Clusters { uvec2 clusterCells[]; };
+layout(std430, set = 1, binding = 4) readonly buffer LightIndex { uint lightIndex[]; };
 const uint CLUSTER_X = 16u;
 const uint CLUSTER_Y = 9u;
 const uint CLUSTER_Z = 24u;
@@ -106,6 +121,7 @@ layout(location = 10) flat in vec4 vUVT1;    // texture transform e, f; z clearc
 layout(location = 11) flat in vec4 vSheen;   // sheen colour, w sheen roughness
 layout(location = 12) flat in vec4 vVolume;  // x transmission, y ior, z thickness, w attenuation distance
 layout(location = 13) flat in vec4 vAtten;   // attenuation colour, w = packed sampler indices
+layout(location = 14) flat in vec4 vGI;      // x reflection probe index plus one, y 1 for an opaque draw
 layout(location = 0) out vec4 outColor;
 
 // texSampler is the sampler for one of the material set's texture slots,
@@ -428,7 +444,7 @@ vec3 light(Surface s) {
     float shadow = mix(1.0, shadowFactor(n, l), frame.lightColor.w);
     vec3 color = lobes(s, n, v, l, frame.lightColor.rgb * shadow);
 
-    uvec2 cell = cells[clusterAt()];
+    uvec2 cell = clusterCells[clusterAt()];
     for (uint c = 0u; c < cell.y; c++) {
         LightData ld = lights[lightIndex[cell.x + c]];
         vec3 d = ld.posRange.xyz - s.worldPos;
@@ -509,16 +525,154 @@ vec3 skyRadiance(vec3 d, float roughness) {
     return mix(color, frame.sh[0].rgb * 0.282095, roughness * 0.8);
 }
 
-// envSpecular is the environment's reflection along r for a roughness,
-// from the prefiltered map or the procedural sky.
+// probeIndex is the reflection probe this draw reflects, or -1 for the
+// frame's own environment. Every draw inside a probe's volume binds that
+// probe's cube map as envMap, so there is one probe per draw.
+int probeIndex() { return int(vGI.x) - 1; }
+
+// boxProject maps a reflection direction to the point where it leaves a
+// box probe's volume, so a floor reflects the wall it faces at the place
+// the wall is rather than at infinity.
+vec3 boxProject(vec3 dir, vec3 pos, int i) {
+    // An axis-parallel ray divides by zero here; the infinity it gives
+    // loses the min, which is what a ray that never leaves that pair of
+    // planes should do.
+    vec3 inv = vec3(1.0) / dir;
+    vec3 t1 = (frame.probeMax[i].xyz - pos) * inv;
+    vec3 t2 = (frame.probeMin[i].xyz - pos) * inv;
+    vec3 tmax = max(t1, t2);
+    float t = min(min(tmax.x, tmax.y), tmax.z);
+    return (pos + dir * max(t, 0.0)) - frame.probePos[i].xyz;
+}
+
+// sphereProject is boxProject for a sphere probe: the ray meets the
+// sphere the probe was captured inside.
+vec3 sphereProject(vec3 dir, vec3 pos, int i) {
+    vec3 c = frame.probePos[i].xyz;
+    float radius = frame.probeMin[i].w;
+    vec3 d = pos - c;
+    float b = dot(d, dir);
+    float q = dot(d, d) - radius * radius;
+    float t = -b + sqrt(max(b * b - q, 0.0));
+    return (pos + dir * max(t, 0.0)) - c;
+}
+
+// probeFade is 1 well inside a probe's volume and 0 at its edge, over the
+// probe's blend margin. A zero margin never fades.
+float probeFade(vec3 pos, int i) {
+    float margin = frame.probeMax[i].w;
+    if (margin <= 0.0) return 1.0;
+    float depth;
+    if (frame.probePos[i].w > 1.5) {
+        depth = frame.probeMin[i].w - distance(pos, frame.probePos[i].xyz);
+    } else {
+        vec3 d = min(pos - frame.probeMin[i].xyz, frame.probeMax[i].xyz - pos);
+        depth = min(min(d.x, d.y), d.z);
+    }
+    return clamp(depth / margin, 0.0, 1.0);
+}
+
+// probeSpecular is a reflection probe's reflection along r, projected
+// onto the probe's volume when it is a sphere or a box that asked for it.
+vec3 probeSpecular(vec3 r, float roughness, vec3 pos, int i) {
+    vec3 dir = r;
+    if (frame.probePos[i].w > 1.5) {
+        dir = sphereProject(r, pos, i);
+    } else if (frame.probeParams[i].z > 0.5) {
+        dir = boxProject(r, pos, i);
+    }
+    return textureLod(envMap, dir, roughness * (frame.probeParams[i].y - 1.0)).rgb * frame.probeParams[i].x;
+}
+
+// envSpecular is the environment's reflection along r for a roughness:
+// the draw's reflection probe when it is inside one, otherwise the
+// prefiltered environment map or the procedural sky. Only one cube map is
+// bound per draw, so probes are never blended with each other; a probe's
+// margin fades its reflection towards the frame's average environment at
+// the edge of the volume instead.
 vec3 envSpecular(vec3 r, float roughness) {
+    int i = probeIndex();
+    if (i >= 0) {
+        vec3 probe = probeSpecular(r, roughness, vWorldPos, i);
+        float fade = probeFade(vWorldPos, i);
+        if (fade >= 1.0) return probe;
+        return mix(frame.sh[0].rgb * 0.282095 * frame.env.x, probe, fade);
+    }
     if (frame.env.z > 1.5) return skyRadiance(r, roughness);
     return textureLod(envMap, r, roughness * (frame.env.y - 1.0)).rgb * frame.env.x;
 }
 
-// envDiffuse is the ambient irradiance for a normal.
+// cellIrradiance evaluates one light probe grid cell's harmonics.
+vec3 cellIrradiance(int base, vec3 n) {
+    float x = n.x, y = n.y, z = n.z;
+    return probeGrid.cells[base + 0].rgb * 0.282095
+         + probeGrid.cells[base + 1].rgb * (0.488603 * y) + probeGrid.cells[base + 2].rgb * (0.488603 * z)
+         + probeGrid.cells[base + 3].rgb * (0.488603 * x)
+         + probeGrid.cells[base + 4].rgb * (1.092548 * x * y) + probeGrid.cells[base + 5].rgb * (1.092548 * y * z)
+         + probeGrid.cells[base + 6].rgb * (0.315392 * (3.0 * z * z - 1.0)) + probeGrid.cells[base + 7].rgb * (1.092548 * x * z)
+         + probeGrid.cells[base + 8].rgb * (0.546274 * (x * x - y * y));
+}
+
+// gridIrradiance is the light probe grid's irradiance for a normal at a
+// point, interpolated between the eight cells around it. cover comes back
+// 0 where the grid does not reach, half a cell past its outermost probes.
+vec3 gridIrradiance(vec3 n, vec3 pos, out float cover) {
+    cover = 0.0;
+    vec3 last = max(frame.gridCounts.xyz - 1.0, vec3(0.0));
+    vec3 g = (pos - frame.gridOrigin.xyz) / max(frame.gridSpacing.xyz, vec3(1e-4));
+    if (any(lessThan(g, vec3(-0.5))) || any(greaterThan(g, last + 0.5))) return vec3(0.0);
+    vec3 c = clamp(g, vec3(0.0), last);
+    vec3 f = fract(c);
+    ivec3 i0 = ivec3(floor(c));
+    ivec3 i1 = ivec3(min(vec3(i0) + 1.0, last));
+    int nx = int(frame.gridCounts.x), ny = int(frame.gridCounts.y);
+    vec3 sum = vec3(0.0);
+    for (int k = 0; k < 8; k++) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        ivec3 idx = ivec3(o.x == 0 ? i0.x : i1.x, o.y == 0 ? i0.y : i1.y, o.z == 0 ? i0.z : i1.z);
+        vec3 w3 = vec3(o.x == 0 ? 1.0 - f.x : f.x, o.y == 0 ? 1.0 - f.y : f.y, o.z == 0 ? 1.0 - f.z : f.z);
+        float w = w3.x * w3.y * w3.z;
+        if (w <= 0.0) continue;
+        sum += cellIrradiance(((idx.z * ny + idx.y) * nx + idx.x) * 9, n) * w;
+    }
+    // Fade over the outer half cell so the ambient does not step at the
+    // edge of the grid.
+    vec3 edge = min(g + 0.5, last + 0.5 - g);
+    cover = clamp(min(min(edge.x, edge.y), edge.z) * 2.0, 0.0, 1.0);
+    return sum;
+}
+
+// envDiffuse is the ambient irradiance for a normal, from the
+// environment's harmonics.
 vec3 envDiffuse(vec3 n) {
     return irradiance(n) * frame.env.x;
+}
+
+// envDiffuse at a point is the light probe grid's irradiance where the
+// grid covers it, fading to the environment's at the grid's edge.
+vec3 envDiffuse(vec3 n, vec3 worldPos) {
+    if (frame.gridOrigin.w > 0.0) {
+        float cover;
+        vec3 e = gridIrradiance(n, worldPos, cover);
+        if (cover > 0.0) return mix(envDiffuse(n), e * frame.gridOrigin.w, cover);
+    }
+    return envDiffuse(n);
+}
+
+// reflectWeight is how much of a surface the screen-space reflection pass
+// replaces with what the screen already shows: nothing when reflections
+// are off or the surface is rough, rising with the Fresnel reflectance
+// towards a mirror. An opaque draw writes it into the alpha channel,
+// which the frame does not otherwise use.
+float reflectWeight(Surface s) {
+    float maxRough = max(frame.reflect.y, 1e-3);
+    float gloss = 1.0 - smoothstep(maxRough * 0.5, maxRough, s.roughness);
+    if (gloss <= 0.0) return 0.0;
+    vec3 n = normalize(s.normal);
+    float NoV = max(dot(n, s.viewDir), 1e-4);
+    vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
+    vec3 F = f0 + (max(vec3(1.0 - s.roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
+    return clamp(max(max(F.r, F.g), F.b) * gloss * frame.reflect.x, 0.0, 1.0);
 }
 
 // ambient is light from everywhere: the environment map when one is set
@@ -530,20 +684,21 @@ vec3 ambient(Surface s, vec3 n, vec3 v) {
     vec3 kS = f0 + (max(vec3(1.0 - s.roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
     vec3 kD = (1.0 - kS) * (1.0 - s.metallic);
     vec3 r = reflect(-v, n);
-    vec3 color = kD * s.albedo * envDiffuse(n) * (1.0 - s.transmission);
+    vec3 diffuse = envDiffuse(n, s.worldPos);
+    vec3 color = kD * s.albedo * diffuse * (1.0 - s.transmission);
     if (s.transmission > 0.0) {
         color += kD * s.transmission * transmitted(s, n, v);
     }
     color += envSpecular(r, s.roughness) * envBRDF(f0, s.roughness, NoV);
     if (dot(s.sheen, s.sheen) > 0.0) {
-        color += s.sheen * envDiffuse(n) * 0.25 * (1.0 - s.sheenRoughness * 0.5);
+        color += s.sheen * diffuse * 0.25 * (1.0 - s.sheenRoughness * 0.5);
     }
     if (s.clearcoat > 0.0) {
         vec3 Fc = F_Schlick(NoV, vec3(0.04)) * s.clearcoat;
         color = color * (1.0 - Fc) + envSpecular(r, s.clearcoatRoughness) * Fc;
     }
     if (s.subsurface > 0.0) {
-        color += s.albedo * envDiffuse(-n) * 0.5 * (1.0 - s.thickness) * s.subsurface;
+        color += s.albedo * envDiffuse(-n, s.worldPos) * 0.5 * (1.0 - s.thickness) * s.subsurface;
     }
     return color;
 }

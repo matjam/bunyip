@@ -247,6 +247,9 @@ func newGraphics(r *render.Renderer) (*Graphics, error) {
 	if err := g.initPost(); err != nil {
 		return nil, err
 	}
+	if err := g.initReflections(); err != nil {
+		return nil, err
+	}
 	if err := g.initLines(); err != nil {
 		return nil, err
 	}
@@ -449,6 +452,9 @@ type FrameStats struct {
 	// MaxLights, whatever part of the view each one reaches. The
 	// directional light is not counted: every frame has one.
 	Lights int
+	// ProbesDropped counts reflection probes added past MaxProbes, which
+	// a frame keeps none of.
+	ProbesDropped int
 }
 
 // Stats returns the last finished frame's counts.

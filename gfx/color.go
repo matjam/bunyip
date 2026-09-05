@@ -40,8 +40,12 @@
 // pose, and a mesh whose shape leaves its geometry by Mesh.SetBounds or
 // Shader.VertexBounds), sorted for blending and lit by SetLight's
 // directional light with cascaded shadows, AddPoint and AddSpot, whose
-// lights cast shadows of their own, the procedural Sky or an
-// Environment map, and Fog.
+// lights cast shadows of their own and which a cluster grid sorts over
+// the view, the procedural Sky or an Environment map, and Fog. Parts
+// of a scene get their own light from a ReflectionProbe baked with
+// BakeProbe and added with AddProbe, a LightProbeGrid baked with
+// BakeLightProbes and set with SetLightProbes, and the screen-space
+// reflections PostSettings.Reflections turns on.
 // DrawLOD picks a mesh by distance. DrawBillboard and DrawText3D put
 // camera-facing quads and labels in the scene, and DrawDecal projects a
 // texture onto geometry. SetPost sets exposure, bloom, ambient
