@@ -150,8 +150,9 @@ kerning and ligatures cross the style changes inside it.
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, frustum culling with a public `Frustum`, bounds that follow
-a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
+ground fog, an atmospheric sky with aerial perspective, frustum culling
+with a public `Frustum`, bounds that follow a skinned pose and
+`Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, levels of detail, spot lights
 with shadows, per-light culling in the shadow pass, thirty-two lights a
 frame, heightfield and primitive meshes, dynamic mesh updates, colour
@@ -172,8 +173,9 @@ in.
   with `HeightfieldMesh`, a mesh shader and `LOD` today.
 - Global illumination beyond one environment map: light probes, baked
   lightmaps, reflection probes per area, screen-space reflections.
-- Volumetrics: god rays, and atmospheric scattering for the sky rather
-  than the parametric gradient. Fog is a per-pixel fade, not a medium.
+- Volumetrics: god rays, and light shafts through a medium. Fog is a
+  per-pixel fade, and `Sky.Atmosphere` scatters single bounces only, so
+  neither casts a shaft.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
 - Depth of field, motion blur and lens effects.
 - Order-independent transparency; blended draws are sorted per mesh.

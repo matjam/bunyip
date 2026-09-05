@@ -36,10 +36,11 @@ window.
 - 3D: physically based materials with clearcoat, sheen, subsurface and
   glass; glTF models with skeletal animation, blend spaces, IK and morph
   targets; cascaded shadows, spot lights with shadows, a procedural sky
-  or image-based lighting, fog; instancing, frustum culling and levels of
-  detail; billboards, decals, outlines and x-ray; dynamic meshes and
-  terrain; SSAO, bloom, FXAA, tone mapping and colour grading; render
-  textures and picking.
+  with atmospheric scattering and aerial perspective or image-based
+  lighting, fog; instancing, frustum
+  culling and levels of detail; billboards, decals, outlines and x-ray;
+  dynamic meshes and terrain; SSAO, bloom, FXAA, tone mapping and colour
+  grading; render textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.
@@ -195,7 +196,7 @@ whole program and explains it section by section:
 | `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
 | `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |
 | `go run ./examples/text [-font file.ttf]` | HarfBuzz-shaped text: kerning and ligatures, Arabic joining, right-to-left and mixed lines, a fallback font, Unicode wrapping, hyphenation by language, rich markup, colour emoji, vertical text, distance-field text |
-| `go run ./examples/terrain` | a heightfield with a lake, billboard trees, rocks at three levels of detail, campfires and a searchlight, distance and valley fog, labels in the world, frustum culling counts, and terrain dug with a click |
+| `go run ./examples/terrain` | a heightfield with a lake, billboard trees, rocks at three levels of detail, campfires and a searchlight, an atmospheric sky with aerial perspective and valley fog, labels in the world, frustum culling counts, and terrain dug with a click |
 | `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |

@@ -1,8 +1,9 @@
 // Command terrain is an outdoor scene of the kind a strategy or survival
 // game draws: a heightfield with a lake, billboard trees, rocks at
 // several levels of detail, campfires as point lights, a watchtower's
-// searchlight as a spot light, distance and valley fog, labels in the
-// world, and terrain the player digs into with a click (Mesh.Update).
+// searchlight as a spot light, an atmospheric sky and valley fog, labels
+// in the world, and terrain the player digs into with a click
+// (Mesh.Update).
 // The corner shows the frame's draw, instance and cull counts. Drag to
 // orbit, scroll to zoom, click the ground to dig.
 package main
@@ -262,16 +263,23 @@ func (g *game) Update(ctx *bunyip.Context) error {
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
-	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist))
-	haze := gfx.Color{R: 0.72, G: 0.78, B: 0.88, A: 1}
+	cam := gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist)
+	gr.SetCamera(cam)
+	mist := gfx.Color{R: 0.78, G: 0.75, B: 0.68, A: 1}
+	// The sky is scattered rather than painted: an Atmosphere replaces the
+	// Zenith and Horizon colours, so the low sun leaves the horizon orange
+	// and the sky overhead blue, and the same model tints the far hills
+	// with the air in front of them. Height is how deep the air is in this
+	// world's units and Altitude is where the camera sits in it. Fog is
+	// left to the valley: the air handles distance.
 	gr.SetLight(gfx.Light{
-		Direction:      lin.V3(-0.4, -0.7, -0.35),
+		Direction:      lin.V3(-0.6, -0.3, -0.4),
 		Color:          gfx.Color{R: 1, G: 0.95, B: 0.85, A: 1},
-		Sky:            gfx.Sky{Zenith: gfx.Color{R: 0.2, G: 0.42, B: 0.85, A: 1}, Horizon: haze, Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}},
+		Sky:            gfx.Sky{Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}, Atmosphere: gfx.Atmosphere{Height: 3000, Altitude: max(cam.Position.Y, 0)}},
 		Shadows:        true,
 		ShadowDistance: 90,
 		Background:     true,
-		Fog:            gfx.Fog{Color: haze, Start: 45, End: 170, Height: 0.6, HeightFalloff: 0.4},
+		Fog:            gfx.Fog{Color: mist, Start: 45, End: 200, Height: 0.8, HeightFalloff: 0.4},
 	})
 	// Campfires flicker; the tower's searchlight sweeps.
 	for i, f := range g.fires {

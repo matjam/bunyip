@@ -176,6 +176,9 @@ type frameUniforms struct {
 	fogRange      lin.Vec4                 // linear start, end; ground fog height, falloff
 	spotViewProj  [maxSpotShadows]lin.Mat4 // each shadowed spot light's projection
 	spotInfo      [maxPointLights]lin.Vec4 // x = shadow map index or -1, y = range
+	atmos         lin.Vec4                 // planet radius, air height, rayleigh and mie falloff heights
+	betaR         lin.Vec4                 // rayleigh scattering per unit at the ground, w = sun intensity
+	betaM         lin.Vec4                 // mie scattering, forward lobe, camera altitude, w = 1 with an atmosphere
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -779,6 +782,11 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 	if f := l.Fog; f.End > f.Start || f.Density > 0 {
 		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
 		u.fogRange = lin.V4(f.Start, f.End, f.Height, f.HeightFalloff)
+	}
+	if a := sky.Atmosphere; a.Height > 0 {
+		u.atmos = lin.V4(a.PlanetRadius, a.Height, a.Height/rayleighFalloff, a.Height/mieFalloff)
+		u.betaR = lin.V4(a.Rayleigh.R, a.Rayleigh.G, a.Rayleigh.B, a.Intensity)
+		u.betaM = lin.V4(a.Mie, a.Forward, a.Altitude, 1)
 	}
 	if env := l.Environment; env != nil && env.cube != nil {
 		u.sh = env.sh

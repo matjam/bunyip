@@ -231,6 +231,15 @@ render pass, so text tests draw one frame.
   `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
   `Shader.VertexBounds`, whose zero means the draw is never culled.
   `Mesh.SetBounds` overrides the box and survives `Update`.
+- The atmospheric sky is written three times: `Sky.scatter` and
+  `Sky.radiance` in `gfx/sky.go`, and the block between `// ATMOSPHERE.`
+  and `// END ATMOSPHERE.` in `gfx/shaders/prelude_mesh.glsl` and in
+  `gfx/shaders/skyparam.frag`, which are the same text. The ambient
+  harmonics are projected from the Go side and the pixels come from the
+  shaders, so a change to one is a change to all three.
+  `TestAtmosphereBlocksMatch` compares the two shaders and
+  `TestAtmosphereMatchesGo` renders the sky and checks it against
+  `Sky.radiance`.
 - The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
   class, then depth for blended draws or dense shader, uniform, material
   set and mesh ids for opaque ones, and the draw's index in the low
