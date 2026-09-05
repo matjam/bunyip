@@ -69,8 +69,10 @@ so an interface built in `Draw` sees every press.
 (`vertex2D`: position, UV, premultiplied colour) sorted by layer and
 merged into draws by texture, shader, uniforms, blend, clip and
 projection. 3D draws go into `meshDraw` records that `prepareDraws`
-resolves, culls, sorts and uploads as an instance stream; `renderScene`
-runs the shadow atlas pass, the HDR pass (sky, opaque, blended,
+resolves, culls, sorts and uploads as an instance stream, in three
+groups: opaque, order-independent translucent, and sorted translucent.
+`renderScene` runs the shadow atlas pass, the HDR pass (sky, opaque, the
+order-independent transparency pass and its resolve, sorted blended,
 debug lines), decals, then the post pass composites. Colours are linear
 and non-premultiplied in the API, premultiplied in the 2D stream.
 
@@ -83,7 +85,10 @@ declared on the attachment rather than as a separate command. Everything
 downstream (ambient occlusion, decals, reflections, the transmission
 snapshot, `RenderTexture.ReadDepth`) reads the single-sample images and
 needs no cases of its own. The shadow atlas and every post pass stay
-single-sample. A pipeline must match its pass's attachments, so
+single-sample, and so does the order-independent transparency pass: its
+accumulation and revealage images are its own, and `PassDesc.Depth`
+lends it the resolved scene depth to test against, so only its edges are
+unsmoothed. A pipeline must match its pass's attachments, so
 `PipelineDesc.Samples` carries the count, `pipeKey.out` carries an
 `outKey` (colour format, whether there is depth, sample count), and the
 fixed pipelines are built per output through `pipeCache` in
@@ -299,6 +304,24 @@ render pass, so text tests draw one frame.
   `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
   `Shader.VertexBounds`, whose zero means the draw is never culled.
   `Mesh.SetBounds` overrides the box and survives `Update`.
+- A mesh shader has two fragment programs: the usual one and the one the
+  order-independent transparency pass needs, which writes a second
+  attachment (the accumulated colour and the revealage). `shaders.Compose`
+  builds both from one source by substituting the `OUTPUT` line of
+  `meshPostlude`, `bunyip-shader` always bundles both for `-kind mesh`,
+  and a bundle without the second one (compiled before it existed) keeps
+  its draws on the sorted path. The pass needs the device's
+  `independentBlend`, because its two attachments blend differently; a
+  device without it also keeps sorting.
+- The atmospheric sky is written three times: `Sky.scatter` and
+  `Sky.radiance` in `gfx/sky.go`, and the block between `// ATMOSPHERE.`
+  and `// END ATMOSPHERE.` in `gfx/shaders/prelude_mesh.glsl` and in
+  `gfx/shaders/skyparam.frag`, which are the same text. The ambient
+  harmonics are projected from the Go side and the pixels come from the
+  shaders, so a change to one is a change to all three.
+  `TestAtmosphereBlocksMatch` compares the two shaders and
+  `TestAtmosphereMatchesGo` renders the sky and checks it against
+  `Sky.radiance`.
 - The instance stream is twelve `vec4`s at locations 5 to 16, so a
   skinned mesh's joints and weights sit at 17 and 18 (`vert_skin.glsl`
   and `skinVertexLayout`). The twelfth carries the draw's reflection

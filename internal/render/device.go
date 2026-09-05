@@ -24,9 +24,13 @@ type Device struct {
 	anisotropy  float32 // max anisotropy the device allows, 1 when unsupported
 	arrayIndex  bool    // sampler and sampled-image arrays may be indexed dynamically
 	depthClamp  bool    // the device clamps depth instead of clipping, when asked
-	waits       uint64  // times the device or its queue was waited on
-	frameNo     uint64  // frames begun, for the retire ring
-	retired     []deferred
+	// independentBlend is whether colour attachments may blend
+	// differently from one another, which one pipeline needs and the rest
+	// do not.
+	independentBlend bool
+	waits            uint64 // times the device or its queue was waited on
+	frameNo          uint64 // frames begun, for the retire ring
+	retired          []deferred
 }
 
 // NewDevice picks a GPU able to present to surface and creates the logical
@@ -81,6 +85,14 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	if g.features.DepthClamp != 0 {
 		features.Features.DepthClamp = vk.VK_TRUE
 		d.depthClamp = true
+	}
+	// Blending each colour attachment differently is what the
+	// order-independent transparency pass needs: its colour attachment
+	// adds and its revealage attachment multiplies. Without it that pass
+	// cannot be built and the caller keeps sorting.
+	if g.features.IndependentBlend != 0 {
+		features.Features.IndependentBlend = vk.VK_TRUE
+		d.independentBlend = true
 	}
 	info := vk.VkDeviceCreateInfo{
 		SType:                   vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -148,6 +160,12 @@ func (d *Device) Destroy() {
 // ask for it. Without it a pipeline clips at its near and far planes,
 // and the caller compensates.
 func (d *Device) DepthClamp() bool { return d.depthClamp }
+
+// IndependentBlend reports whether a pipeline may give each colour
+// attachment its own blend equation. A pipeline whose ExtraColor differs
+// from its first attachment needs it, and the caller falls back to
+// something else where it is missing.
+func (d *Device) IndependentBlend() bool { return d.independentBlend }
 
 // Limits exposes the physical device limits.
 func (d *Device) Limits() *vk.VkPhysicalDeviceLimits { return &d.gpu.props.Limits }

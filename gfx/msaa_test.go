@@ -106,6 +106,34 @@ func TestMultisampling(t *testing.T) {
 	}
 }
 
+// TestMultisampledTransparency runs the order-independent transparency
+// pass inside a multisampled scene. Its own two images stay
+// single-sample and test against the resolved depth, so the pass works
+// at every sample count and the crossing still shows the nearer quad on
+// each side.
+func TestMultisampledTransparency(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	if g.MaxSamples() < 4 {
+		t.Skipf("device supports at most %d samples", g.MaxSamples())
+	}
+	quad := facingQuad(t, g)
+	p := DefaultPost()
+	p.Bloom, p.AmbientOcclusion = 0, 0
+	p.NoAntiAlias, p.Samples = true, 4
+	g.SetPost(p)
+	img := crossedQuads(t, g, quad, true)
+	lean := func(x int) int {
+		c := img.RGBAAt(x, 32)
+		return int(c.R) - int(c.B)
+	}
+	if l := lean(26); l <= 20 {
+		t.Errorf("left of the crossing leans %d, want the near red quad by a clear margin", l)
+	}
+	if r := lean(38); r >= -20 {
+		t.Errorf("right of the crossing leans %d, want the near blue quad by a clear margin", r)
+	}
+}
+
 // TestMultisampledRenderTexture multisamples a render texture's own
 // surface, so 2D drawing into it is anti-aliased as well.
 func TestMultisampledRenderTexture(t *testing.T) {

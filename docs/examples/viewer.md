@@ -28,8 +28,10 @@ go run ./examples/viewer -seconds 3 -shot out.png
 scene and frames the camera on its bounds. `-noao` disables ambient
 occlusion, `-noshadow` disables shadows and `-showao` displays the
 occlusion buffer instead of the shaded image, which is how an occlusion
-problem is diagnosed. Drag with the left mouse button to orbit, scroll
-to zoom, Escape to quit.
+problem is diagnosed. `-sorted` composites the translucent panes by
+sorting them instead of order-independently, which is the comparison
+that shows what the order-independent pass is for. Drag with the left
+mouse button to orbit, scroll to zoom, Escape to quit.
 
 ## The viewer type
 
@@ -47,10 +49,12 @@ type viewer struct {
 	noAO      bool
 	noShadow  bool
 	showAO    bool
+	sorted    bool
 
 	model    *gfx.Model
 	cube     *gfx.Mesh
 	sphere   *gfx.Mesh
+	pane     *gfx.Mesh
 	checker  *gfx.Texture
 	yaw      float32
 	pitch    float32
@@ -92,6 +96,10 @@ func (v *viewer) Init(ctx *bunyip.Context) error {
 	if v.sphere, err = ctx.Gfx.NewMesh(sv, si); err != nil {
 		return err
 	}
+	pv, pi := gfx.PlaneMesh(1)
+	if v.pane, err = ctx.Gfx.NewMesh(pv, pi); err != nil {
+		return err
+	}
 	v.yaw, v.pitch, v.distance = 0.6, 0.5, 8
 	if v.modelPath != "" {
 		doc, err := gltf.Load(v.modelPath)
@@ -114,6 +122,7 @@ func (v *viewer) Shutdown(ctx *bunyip.Context) {
 	}
 	v.cube.Destroy()
 	v.sphere.Destroy()
+	v.pane.Destroy()
 	v.checker.Destroy()
 }
 ```
@@ -171,11 +180,13 @@ func (v *viewer) Update(ctx *bunyip.Context) error {
 
 ## Draw: camera, lights and post-processing
 
-The post settings are only touched when a flag asked for it. `g.Post()`
-returns the current settings, the copy is edited and `SetPost` puts it
-back, which is the pattern for every settings struct in the engine: read,
-change one field, write. `ShowOcclusion` displays the occlusion buffer
-in place of the shaded image.
+`g.Post()` returns the current settings, the copy is edited and
+`SetPost` puts it back, which is the pattern for every settings struct in
+the engine: read, change one field, write. `OrderIndependent` composites
+translucent draws without sorting them, which the crossed panes below
+show, and the occlusion fields are only touched when a flag asked for
+it; `ShowOcclusion` displays the occlusion buffer in place of the shaded
+image.
 
 The eye position is spherical coordinates around `center`: pitch lifts
 it, yaw turns it, distance scales it. `gfx.Camera` takes a position and
@@ -198,14 +209,17 @@ because both go into the same frame and the 2D stream composites last.
 ```go
 func (v *viewer) Draw(ctx *bunyip.Context) error {
 	g := ctx.Gfx
+	p := g.Post()
+	// Translucent surfaces are composited without sorting unless -sorted
+	// asks for the old path, which is what the crossed panes below show.
+	p.OrderIndependent = !v.sorted
 	if v.noAO || v.showAO {
-		p := g.Post()
 		p.AmbientOcclusion = 0
 		if v.showAO {
 			p.AmbientOcclusion, p.ShowOcclusion = 1, true
 		}
-		g.SetPost(p)
 	}
+	g.SetPost(p)
 	eye := v.center.Add(lin.V3(
 		v.distance*float32(math.Cos(float64(v.pitch))*math.Sin(float64(v.yaw))),
 		v.distance*float32(math.Sin(float64(v.pitch))),
@@ -251,6 +265,17 @@ func (v *viewer) drawScene(g *gfx.Graphics, t float32) {
 	g.DrawMesh(v.sphere, gfx.Material{BaseColor: gfx.RGB(230, 200, 120), Metallic: 1, Roughness: 0.15}, lin.Translate(lin.V3(0, 0.6, 0)).Mul(lin.Scale(lin.V3(1.5, 1.5, 1.5))))
 	g.DrawMesh(v.sphere, gfx.Material{BaseColor: gfx.RGB(220, 60, 60), Roughness: 0.7}, lin.Translate(lin.V3(-3, 0, 2)).Mul(lin.Scale(lin.V3(0.9, 0.9, 0.9))))
 	g.DrawMesh(v.cube, gfx.Material{BaseColor: gfx.RGB(120, 200, 255), Emissive: 3}, lin.Translate(lin.V3(3, 0, 2)).Mul(lin.Scale(lin.V3(0.8, 0.8, 0.8))))
+	// Two translucent panes crossing above the sphere, the pair turned
+	// with the camera so both stay side-on to it. Each is nearer than the
+	// other on its own side of the crossing, which one order for the whole
+	// draw cannot show: with PostSettings.OrderIndependent each side shows
+	// the pane in front of it, and with -sorted one pane covers both.
+	upright := lin.Rotate(-math.Pi/2, lin.V3(1, 0, 0))
+	for i, c := range []gfx.Color{{R: 0.15, G: 0.6, B: 1, A: 0.5}, {R: 1, G: 0.4, B: 0.35, A: 0.5}} {
+		turn := lin.Rotate(v.yaw+lin.Radians(35-70*float32(i)), lin.V3(0, 1, 0))
+		place := lin.Translate(lin.V3(0, 2.6, 0)).Mul(turn).Mul(upright).Mul(lin.Scale(lin.V3(3.4, 1, 2.4)))
+		g.DrawMesh(v.pane, gfx.Material{BaseColor: c, Blend: true, DoubleSided: true, Roughness: 0.25}, place)
+	}
 	for i := range 6 {
 		a := float32(i)*math.Pi/3 + t*0.5
 		pos := lin.V3(3.5*float32(math.Cos(float64(a))), 0.5+0.5*float32(math.Sin(float64(t+float32(i)))), 3.5*float32(math.Sin(float64(a))))
@@ -264,6 +289,15 @@ func (v *viewer) drawScene(g *gfx.Graphics, t float32) {
 The ring of six cubes sweeps metallic from 0 to 1 and roughness from 0.3
 to 0.8 across its members, so one screenshot shows what those two
 parameters do.
+
+The two panes are the transparency comparison. Sorting orders whole
+draws, so whichever pane sorts second covers the other over the entire
+crossing, which is right on one side and wrong on the other. The
+order-independent pass accumulates every translucent fragment with a
+weight that favours the nearer one and resolves them in a single pass, so
+each side of the crossing shows the pane that is really in front of it.
+Run the example twice, once with `-sorted`, and the overlap tells the two
+apart.
 
 ## The checker texture and main
 
@@ -289,9 +323,10 @@ func main() {
 	noAO := flag.Bool("noao", false, "disable ambient occlusion")
 	noShadow := flag.Bool("noshadow", false, "disable shadows")
 	showAO := flag.Bool("showao", false, "display the ambient occlusion buffer")
+	sorted := flag.Bool("sorted", false, "composite translucent draws by sorting them, not order-independently")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true, Validation: true},
-		&viewer{modelPath: *modelPath, seconds: *seconds, shot: *shot, noAO: *noAO, noShadow: *noShadow, showAO: *showAO})
+		&viewer{modelPath: *modelPath, seconds: *seconds, shot: *shot, noAO: *noAO, noShadow: *noShadow, showAO: *showAO, sorted: *sorted})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "viewer:", err)
 		os.Exit(1)

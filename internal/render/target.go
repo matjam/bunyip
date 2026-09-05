@@ -118,23 +118,6 @@ func (t *Target) Destroy() {
 	}
 }
 
-// colorAttachment is the image a pass renders colour into: the
-// multisampled one when there is one.
-func (t *Target) colorAttachment() *Image {
-	if t.MSColor != nil {
-		return t.MSColor
-	}
-	return t.Color
-}
-
-// depthAttachment is the image a pass renders depth into.
-func (t *Target) depthAttachment() *Image {
-	if t.MSDepth != nil {
-		return t.MSDepth
-	}
-	return t.Depth
-}
-
 // PassDesc describes one dynamic-rendering pass into a target.
 type PassDesc struct {
 	Target     *Target
@@ -143,7 +126,34 @@ type PassDesc struct {
 	LoadColor  bool    // keep existing colour instead of clearing
 	LoadDepth  bool    // keep existing depth (and stencil) instead of clearing
 	NoDepth    bool    // render without the depth attachment, leaving the depth image readable
+	// Extra are colour attachments after the target's own, in the order
+	// a pipeline's ExtraColor lists them, and at most three. Each is the
+	// target's extent, is cleared to the colour at the same index in
+	// ExtraClear, and ends readable by shaders like the target's own.
+	// They are single-sample and carry no resolve, so a target with them
+	// must be single-sample too: every attachment of a pass shares one
+	// sample count.
+	Extra      []*Image
+	ExtraClear [][4]float32
+	// Depth is a depth image to render into instead of the target's own,
+	// for a pass that shares another target's depth. Nil uses the
+	// target's, and LoadDepth applies to whichever is used.
+	Depth *Image
 }
+
+// depthImage is the depth attachment the pass renders into.
+func (p PassDesc) depthImage() *Image {
+	if p.Depth != nil {
+		return p.Depth
+	}
+	return p.Target.Depth
+}
+
+// The rendering attachment infos are handed to Vulkan by pointer and are
+// only read while the call runs. Passes are recorded from the goroutine
+// that owns the device, so one set for the process is enough and a local
+// slice is not forced onto the heap once a pass.
+var colorAttachScratch [4]vk.VkRenderingAttachmentInfo
 
 // BeginTargetPass transitions the target's images for rendering and opens a
 // dynamic-rendering pass. The colour image ends in colour-attachment layout
@@ -159,7 +169,6 @@ type PassDesc struct {
 // sample per pixel rather than a blend of unrelated depths.
 func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 	t := p.Target
-	var color vk.VkRenderingAttachmentInfo
 	var depth vk.VkRenderingAttachmentInfo
 	info := vk.VkRenderingInfo{
 		SType:      vk.VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -167,65 +176,97 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 		LayerCount: 1,
 	}
 	if t.Color != nil {
-		// Loading keeps the contents, so the transition must start from the
-		// layout the last pass left rather than discarding with UNDEFINED.
-		was := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
-		if p.LoadColor {
-			was = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		}
-		imageBarrier(cb, t.Color.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			was, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-			vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
-		var clear vk.VkClearValue
-		*clear.Color().Float32() = p.ClearColor
-		color = vk.VkRenderingAttachmentInfo{
-			SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			ImageView:   t.colorAttachment().View,
-			ImageLayout: vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
-			StoreOp:     vk.VK_ATTACHMENT_STORE_OP_STORE,
-			ClearValue:  clear,
-		}
-		if p.LoadColor {
-			color.LoadOp = vk.VK_ATTACHMENT_LOAD_OP_LOAD
-		}
-		if t.MSColor != nil {
-			// The multisampled attachment is never sampled, so it stays in
-			// colour-attachment layout between passes and only needs a
-			// barrier against the pass before it.
-			msWas := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
+		n := uint32(0)
+		// img is the single-sample image, ms the multisampled attachment
+		// that resolves into it, nil when the attachment is not
+		// multisampled.
+		attach := func(img, ms *Image, clearTo [4]float32) {
+			// Loading keeps the contents, so the transition must start from
+			// the layout the last pass left rather than discarding with
+			// UNDEFINED.
+			was := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
 			if p.LoadColor {
-				msWas = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				was = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}
-			imageBarrier(cb, t.MSColor.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-				msWas, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+			imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+				was, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
 				vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
-			color.ResolveMode = vk.VK_RESOLVE_MODE_AVERAGE_BIT
-			color.ResolveImageView = t.Color.View
-			color.ResolveImageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+			view := img.View
+			if ms != nil {
+				// The multisampled attachment is never sampled, so it stays
+				// in colour-attachment layout between passes and only needs
+				// a barrier against the pass before it.
+				msWas := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
+				if p.LoadColor {
+					msWas = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				}
+				imageBarrier(cb, ms.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+					msWas, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+					vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
+				view = ms.View
+			}
+			var clear vk.VkClearValue
+			*clear.Color().Float32() = clearTo
+			colorAttachScratch[n] = vk.VkRenderingAttachmentInfo{
+				SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+				ImageView:   view,
+				ImageLayout: vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+				StoreOp:     vk.VK_ATTACHMENT_STORE_OP_STORE,
+				ClearValue:  clear,
+			}
+			if ms != nil {
+				colorAttachScratch[n].ResolveMode = vk.VK_RESOLVE_MODE_AVERAGE_BIT
+				colorAttachScratch[n].ResolveImageView = img.View
+				colorAttachScratch[n].ResolveImageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+			}
+			if p.LoadColor {
+				colorAttachScratch[n].LoadOp = vk.VK_ATTACHMENT_LOAD_OP_LOAD
+			}
+			n++
 		}
-		info.ColorAttachmentCount = 1
-		info.PColorAttachments = &color
+		attach(t.Color, t.MSColor, p.ClearColor)
+		for i, img := range p.Extra {
+			var clearTo [4]float32
+			if i < len(p.ExtraClear) {
+				clearTo = p.ExtraClear[i]
+			}
+			attach(img, nil, clearTo)
+		}
+		info.ColorAttachmentCount = n
+		info.PColorAttachments = &colorAttachScratch[0]
 	}
 	var stencil vk.VkRenderingAttachmentInfo
-	if t.Depth != nil && !p.NoDepth {
-		format := t.Depth.Format
+	if d := p.depthImage(); d != nil && !p.NoDepth {
+		format := d.Format
+		// Only the target's own depth may be multisampled. A pass given a
+		// depth image of its own borrows a single-sample one, which is how
+		// the order-independent transparency pass tests against the
+		// resolved depth of the multisampled scene.
+		var msDepth *Image
+		if p.Depth == nil {
+			msDepth = t.MSDepth
+		}
 		was := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
 		if p.LoadDepth {
 			was = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		}
-		imageBarrier(cb, t.Depth.Handle, depthAspect(format),
+		imageBarrier(cb, d.Handle, depthAspect(format),
 			was, depthLayout(format),
 			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
 			vk.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
 			vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+		view := d.AttachView
+		if msDepth != nil {
+			view = msDepth.AttachView
+		}
 		var clear vk.VkClearValue
 		*clear.DepthStencil() = vk.VkClearDepthStencilValue{Depth: p.ClearDepth}
 		depth = vk.VkRenderingAttachmentInfo{
 			SType:       vk.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			ImageView:   t.depthAttachment().AttachView,
+			ImageView:   view,
 			ImageLayout: depthLayout(format),
 			LoadOp:      vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
 			StoreOp:     vk.VK_ATTACHMENT_STORE_OP_STORE,
@@ -234,12 +275,12 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 		if p.LoadDepth {
 			depth.LoadOp = vk.VK_ATTACHMENT_LOAD_OP_LOAD
 		}
-		if t.MSDepth != nil {
+		if msDepth != nil {
 			msWas := vk.VkImageLayout(vk.VK_IMAGE_LAYOUT_UNDEFINED)
 			if p.LoadDepth {
 				msWas = depthLayout(format)
 			}
-			imageBarrier(cb, t.MSDepth.Handle, depthAspect(format),
+			imageBarrier(cb, msDepth.Handle, depthAspect(format),
 				msWas, depthLayout(format),
 				vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 				vk.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -248,7 +289,7 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 			// an edge invents a surface that is in neither triangle, and
 			// every device supports this mode for depth and stencil alike.
 			depth.ResolveMode = vk.VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
-			depth.ResolveImageView = t.Depth.AttachView
+			depth.ResolveImageView = d.AttachView
 			depth.ResolveImageLayout = depthLayout(format)
 		}
 		info.PDepthAttachment = &depth
@@ -273,14 +314,20 @@ func EndTargetPassDesc(cb vk.VkCommandBuffer, p PassDesc) {
 	t := p.Target
 	vk.VkCmdEndRendering(cb)
 	if t.Color != nil {
-		imageBarrier(cb, t.Color.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+		readable := func(img *Image) {
+			imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+				vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+				vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+		}
+		readable(t.Color)
+		for _, img := range p.Extra {
+			readable(img)
+		}
 	}
-	if t.Depth != nil && !p.NoDepth {
-		format := t.Depth.Format
-		imageBarrier(cb, t.Depth.Handle, depthAspect(format),
+	if d := p.depthImage(); d != nil && !p.NoDepth {
+		format := d.Format
+		imageBarrier(cb, d.Handle, depthAspect(format),
 			depthLayout(format), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)

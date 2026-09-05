@@ -8,7 +8,8 @@ This is the outdoor scene a strategy or survival game draws. A
 heightfield mesh with a lake and a ridge, five hundred billboard trees,
 eighty rocks drawn at whichever level of detail their distance calls
 for, four campfires as flickering point lights, a watchtower whose
-searchlight is a spot light, distance and height fog, labels standing in
+searchlight is a spot light, a sky whose colour is scattered sunlight
+and mist in the hollows, labels standing in
 the world, a second camera's view volume drawn as lines, and terrain the
 player digs into with a click, which rebuilds the mesh and uploads it
 while the scene is running.
@@ -380,12 +381,16 @@ the three numbers, which saves writing the spherical coordinates by
 hand.
 
 The `Light` carries more than a direction here. `Sky` gives the ambient
-term a gradient with a zenith, a horizon and a ground colour, so
-surfaces facing up pick up blue and surfaces facing down pick up brown.
-`Background: true` draws that sky behind the scene. `Fog` has a colour,
-a start and an end distance, and a height falloff, so the fog thickens
-in the valleys as well as with distance. Using the same haze colour for
-the horizon and the fog is what makes the far hills meet the sky.
+term an `Atmosphere`: sunlight scattered through a shell of air 3000
+units deep rather than a zenith and horizon colour picked by hand, so
+the low sun leaves the horizon orange, the sky overhead stays blue, and
+surfaces facing up pick up the sky while surfaces facing down pick up
+`Ground`. `Altitude` is where the camera sits in that air, which is why
+the camera is built into a variable first. `Background: true` draws the
+sky behind the scene, and the same model tints the far hills with the
+air in front of them. `Fog` is left to the valley: it has a colour, a
+start and an end distance, and a height falloff, so it thickens in the
+hollows.
 
 The campfires add a point light each frame with a flicker, plus a small
 emissive sphere so the source is visible. The searchlight is
@@ -398,16 +403,23 @@ where it has fallen to nothing. Both are given in radians through
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
-	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist))
-	haze := gfx.Color{R: 0.72, G: 0.78, B: 0.88, A: 1}
+	cam := gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist)
+	gr.SetCamera(cam)
+	mist := gfx.Color{R: 0.78, G: 0.75, B: 0.68, A: 1}
+	// The sky is scattered rather than painted: an Atmosphere replaces the
+	// Zenith and Horizon colours, so the low sun leaves the horizon orange
+	// and the sky overhead blue, and the same model tints the far hills
+	// with the air in front of them. Height is how deep the air is in this
+	// world's units and Altitude is where the camera sits in it. Fog is
+	// left to the valley: the air handles distance.
 	gr.SetLight(gfx.Light{
-		Direction:      lin.V3(-0.4, -0.7, -0.35),
+		Direction:      lin.V3(-0.6, -0.3, -0.4),
 		Color:          gfx.Color{R: 1, G: 0.95, B: 0.85, A: 1},
-		Sky:            gfx.Sky{Zenith: gfx.Color{R: 0.2, G: 0.42, B: 0.85, A: 1}, Horizon: haze, Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}},
+		Sky:            gfx.Sky{Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}, Atmosphere: gfx.Atmosphere{Height: 3000, Altitude: max(cam.Position.Y, 0)}},
 		Shadows:        true,
 		ShadowDistance: 90,
 		Background:     true,
-		Fog:            gfx.Fog{Color: haze, Start: 45, End: 170, Height: 0.6, HeightFalloff: 0.4},
+		Fog:            gfx.Fog{Color: mist, Start: 45, End: 200, Height: 0.8, HeightFalloff: 0.4},
 	})
 	// Campfires flicker; the tower's searchlight sweeps.
 	for i, f := range g.fires {

@@ -150,7 +150,8 @@ kerning and ligatures cross the style changes inside it.
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, frustum culling with a public `Frustum`, bounds that follow
+ground fog, an atmospheric sky with aerial perspective, order-independent
+transparency, frustum culling with a public `Frustum`, bounds that follow
 a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, levels of detail, spot and point
 lights with shadows, per-light culling in the shadow pass, clustered
@@ -190,13 +191,19 @@ and per-frame buffers that grow without ever idling the GPU are in.
   and what is off screen or hidden falls back to the probe or the
   environment. There is no temporal accumulation, so a rough surface's
   rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
-- Volumetrics: god rays, and atmospheric scattering for the sky rather
-  than the parametric gradient. Fog is a per-pixel fade, not a medium.
+- Volumetrics: god rays, and light shafts through a medium. Fog is a
+  per-pixel fade, and `Sky.Atmosphere` scatters single bounces only, so
+  neither casts a shaft.
 - Temporal anti-aliasing. Multisampling and FXAA are both in
   (`PostSettings.Samples` and `NoAntiAlias`); nothing accumulates across
-  frames, so neither settles a shimmering edge the way TAA would.
+  frames, so neither settles a shimmering edge the way TAA would. The
+  order-independent transparency pass is single-sample, so its edges are
+  as hard as at one sample whatever `Samples` asks for.
 - Depth of field, motion blur and lens effects.
-- Order-independent transparency; blended draws are sorted per mesh.
+- Order-independent transparency is the weighted blended approximation
+  (`PostSettings.OrderIndependent`), so a deep stack of layers comes out
+  flatter than compositing them in order would, and transmissive draws
+  stay sorted. Per-pixel lists or depth peeling would be exact.
 - Culling is per draw and by bounding sphere. There is no bounding
   volume hierarchy or spatial index, so a frame still pays a frustum
   test for every draw it queues, and a draw whose shape leaves its
