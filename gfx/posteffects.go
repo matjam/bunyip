@@ -29,12 +29,7 @@ func (t *sceneTargets) needVelocity(g *Graphics) error {
 		vel.Destroy()
 		return err
 	}
-	set, err := g.post.singles.Allocate(vel.Color.View, g.linear)
-	if err != nil {
-		vel.Destroy()
-		return err
-	}
-	t.vel, t.velSet = vel, set
+	t.vel = vel
 	t.velPass = render.Target{Color: vel.Color, Depth: t.hdr.Depth, Extent: t.extent}
 	return nil
 }
@@ -48,12 +43,7 @@ func (t *sceneTargets) needPong(g *Graphics) error {
 	if err != nil {
 		return err
 	}
-	set, err := g.post.singles.Allocate(pong.Color.View, g.linear)
-	if err != nil {
-		pong.Destroy()
-		return err
-	}
-	t.pong, t.pongSet = pong, set
+	t.pong = pong
 	return nil
 }
 
@@ -175,7 +165,11 @@ func (t *sceneTargets) needLDR2(g *Graphics) error {
 
 // finalSet returns the composite's descriptor set for a combination of
 // bloom and light shafts, making it on first use. A missing input is
-// bound to the shared black texture, which contributes nothing.
+// bound to the shared black texture, which contributes nothing. It makes
+// no image of its own, because the composite calls it from inside a
+// render pass, where a clear or a barrier would be illegal; the caller
+// asks for the shafts image with needRays before it asks for a set that
+// names one.
 func (t *sceneTargets) finalSet(g *Graphics, bloom, rays bool) (vk.VkDescriptorSet, error) {
 	i := finalIndex(bloom, rays)
 	if t.finals[i] != 0 {
@@ -186,10 +180,7 @@ func (t *sceneTargets) finalSet(g *Graphics, bloom, rays bool) (vk.VkDescriptorS
 	if bloom {
 		glow = t.bloomA.Color.View
 	}
-	if rays {
-		if err := t.needRays(g); err != nil {
-			return 0, err
-		}
+	if rays && t.rays != nil {
 		shafts = t.rays.Color.View
 	}
 	set, err := g.post.quads.AllocateMany([]render.SamplerBinding{
@@ -387,6 +378,11 @@ func (g *Graphics) postChain(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarget
 		g.timestamps.Begin(cb, "motionblur")
 		g.renderMotionBlur(cb, q, t)
 		g.timestamps.End(cb)
+	}
+	if !temporal {
+		// Turning it off and on again must not reproject a frame from
+		// whenever it was last on against this frame's matrices.
+		t.histValid = false
 	}
 	if s.FocusDistance > 0 {
 		if err := t.needDOF(g); err != nil {

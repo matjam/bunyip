@@ -588,7 +588,10 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	has3D := len(q.draws) > 0 || q.light.Background || len(q.lines.items) > 0
 	// A frame with nothing 3D in it can still go through the composite,
 	// so bloom, the grade, the LUT and the lens effects reach a 2D game.
-	flat := !has3D && s.Post2D && len(q.stream.items) > 0
+	// A render texture keeps the direct path whatever Post2D says: the
+	// composite writes an opaque image, and a render texture's alpha is
+	// what a game draws it back with.
+	flat := !has3D && s.Post2D && target == nil && len(q.stream.items) > 0
 	bloom := (has3D || flat) && s.Bloom > 0
 	ao := has3D && s.AmbientOcclusion > 0
 	rays := false

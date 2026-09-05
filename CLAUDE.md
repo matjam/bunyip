@@ -315,6 +315,12 @@ render pass, so text tests draw one frame.
   cascades, the culling frustum and `gfx/pick.go` stay unjittered.
   `q.prevViewProj` is the previous frame's unjittered view-projection,
   set at the end of `renderQueue` and used by everything that reprojects.
+  The clustered light lookup is deliberately left alone: `clusterAt` in
+  `prelude_mesh.glsl` reads `gl_FragCoord` and `vViewDepth`, and
+  `vViewDepth` comes from the unjittered view matrix, so the only effect
+  of the jitter there is that a fragment within half a pixel of a tile
+  edge can land in the neighbouring tile. Tiles are tens of pixels
+  across, so it is ignored.
 - The velocity image holds the object's own motion only, in texture
   coordinates: `ndc(prevViewProj * currentWorld) - ndc(prevViewProj *
   previousWorld)`. A draw the game did not mark as moved writes nothing,

@@ -3,9 +3,73 @@ package gfx
 import (
 	"image"
 	"testing"
+	"unsafe"
 
 	"github.com/matjam/bunyip/lin"
 )
+
+// TestVelocityLayoutOffsets pins the velocity programs' vertex input to
+// the instance stream's actual field offsets. The layout is written as
+// byte offsets, so a field added to meshInstance moves them silently and
+// the motion vectors come out as noise rather than as an error.
+func TestVelocityLayoutOffsets(t *testing.T) {
+	var in meshInstance
+	if got := unsafe.Sizeof(in); got != meshInstanceSize {
+		t.Fatalf("meshInstance is %d bytes, meshInstanceSize says %d", got, meshInstanceSize)
+	}
+	want := map[uint32]uintptr{
+		1: unsafe.Offsetof(in.model),
+		2: unsafe.Offsetof(in.model) + 16,
+		3: unsafe.Offsetof(in.model) + 32,
+		4: unsafe.Offsetof(in.prevModel),
+		5: unsafe.Offsetof(in.prevModel) + 16,
+		6: unsafe.Offsetof(in.prevModel) + 32,
+		7: unsafe.Offsetof(in.extra),
+	}
+	bindings, attrs := velocityVertexLayout(true)
+	if bindings[1].Stride != meshInstanceSize {
+		t.Errorf("the instance stride is %d, want %d", bindings[1].Stride, meshInstanceSize)
+	}
+	for _, a := range attrs {
+		if a.Binding != 1 {
+			continue
+		}
+		w, ok := want[a.Location]
+		if !ok {
+			t.Errorf("location %d reads the instance stream but is not pinned here", a.Location)
+			continue
+		}
+		if uintptr(a.Offset) != w {
+			t.Errorf("location %d reads offset %d; the field is at %d", a.Location, a.Offset, w)
+		}
+		delete(want, a.Location)
+	}
+	for loc := range want {
+		t.Errorf("location %d is pinned here but the layout does not declare it", loc)
+	}
+	// The skinned variant's own vertex attributes, against the packed vertex.
+	var sv gpuSkinVertex
+	for _, c := range []struct {
+		loc  uint32
+		want uintptr
+	}{{8, unsafe.Offsetof(sv.joints)}, {9, unsafe.Offsetof(sv.weights)}} {
+		found := false
+		for _, a := range attrs {
+			if a.Location == c.loc && a.Binding == 0 {
+				found = true
+				if uintptr(a.Offset) != c.want {
+					t.Errorf("location %d reads offset %d; the field is at %d", c.loc, a.Offset, c.want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("the skinned layout does not declare location %d", c.loc)
+		}
+	}
+	if bindings[0].Stride != skinVertexSize {
+		t.Errorf("the skinned vertex stride is %d, want %d", bindings[0].Stride, skinVertexSize)
+	}
+}
 
 // lum is the 8-bit luminance of a pixel, for the post-processing tests.
 func lum(img *image.RGBA, x, y int) int {

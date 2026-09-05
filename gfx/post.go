@@ -56,6 +56,9 @@ type PostSettings struct {
 	// steps along an edge. It replaces FXAA on the main frame while it is
 	// on; default off. Moving meshes need DrawMeshMoved and its
 	// companions, or they smear until the neighbourhood clamp catches up.
+	// Motion vectors are written by the opaque meshes the camera sees, so
+	// a moving blended or transmissive mesh reprojects as if it were
+	// still whatever it was drawn with.
 	TemporalAA bool
 	// TemporalBlend is how much of the new frame goes into the average,
 	// 0.02 to 1; zero means 0.1. Lower is steadier and softer.
@@ -114,7 +117,8 @@ type PostSettings struct {
 	// are skipped in this mode, so a 2D game with no other setting on
 	// gets back the colours it drew; the effects that need depth
 	// (ambient occlusion, depth of field, motion blur, temporal
-	// anti-aliasing, god rays) stay off.
+	// anti-aliasing, god rays) stay off. It applies to the screen and not
+	// to a render texture, whose alpha the composite would flatten.
 	Post2D bool
 }
 
@@ -216,8 +220,6 @@ type sceneTargets struct {
 	pong    *render.Target
 	rays    *render.Target
 	ldr2    *render.Target
-	velSet  vk.VkDescriptorSet
-	pongSet vk.VkDescriptorSet
 	ldr2Set vk.VkDescriptorSet
 	taaSet  vk.VkDescriptorSet // scene, history, velocity, depth
 	mbSet   vk.VkDescriptorSet // scene, velocity, depth
@@ -447,7 +449,7 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 
 func (t *sceneTargets) destroy(g *Graphics) {
 	p := &g.post
-	for _, set := range []vk.VkDescriptorSet{t.hdrSet, t.depthSet, t.bloomASet, t.bloomBSet, t.ldrSet, t.aoASet, t.velSet, t.pongSet, t.ldr2Set} {
+	for _, set := range []vk.VkDescriptorSet{t.hdrSet, t.depthSet, t.bloomASet, t.bloomBSet, t.ldrSet, t.aoASet, t.ldr2Set} {
 		if set != 0 {
 			p.singles.Free(set)
 		}
@@ -524,7 +526,6 @@ func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets
 	render.EndTargetPass(cb, t.aoB)
 }
 
-// composite writes the tone-mapped scene into the current pass.
 // composite writes the tone-mapped scene into the current pass. flat is
 // a 2D frame, whose colours are already displayable: exposure and tone
 // mapping are skipped and the scene comes from the LDR image.
@@ -535,9 +536,12 @@ func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom, ao, 
 	if !bloom {
 		strength = 0
 	}
-	set, err := t.finalSet(g, bloom, rays)
+	var set vk.VkDescriptorSet
+	var err error
 	if flat {
 		set, err = t.final2DSet(g, bloom)
+	} else {
+		set, err = t.finalSet(g, bloom, rays)
 	}
 	if err != nil {
 		return err
