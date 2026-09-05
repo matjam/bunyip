@@ -19,26 +19,39 @@ type drawQueue struct {
 	meshIDs     idTable
 	shadowVis   []bool // draws that reach the shadow map being recorded
 	cascadeMats [shadowCascades]lin.Mat4
-	depthClamp  bool    // the shadow pipelines clamp depth rather than clip
-	hasCasters  bool    // casterAlong holds a value
-	casterAlong float32 // how far the furthest caster is against the light
-	sorted      []int32 // scratch for partitionOIT: the draws that stay sorted
-	visOpaque   int     // draws at the front of the opaque group the camera sees
-	visOIT      int     // the same for the order-independent group
-	visBlended  int     // the same for the blended group
-	decals      []decal
-	camera      Camera
-	light       Light
-	hasCam      bool
-	points      []pointLight
-	clusters    clusterGrid // this frame's lights, sorted into the view's clusters
-	spotSlots   []int32     // each light's spot shadow map, or -1
-	pointSlots  []int32     // each light's cube shadow map slot, or -1
-	uniforms    *render.UniformSets
-	inst        instanceStream
-	joints      []lin.Mat4 // joint matrices for skinned draws this frame
-	jointBuf    *render.StorageSets
-	clear       Color
+	// jitter is this frame's sub-pixel projection offset in clip units,
+	// zero unless temporal anti-aliasing is on, and projJ, viewProjJ and
+	// invViewProjJ are the matrices the scene pass rasterises with once it
+	// is applied. prevViewProj is the previous frame's view-projection
+	// without the jitter, which the velocity and resolve passes measure
+	// motion against; hasPrevVP says a previous frame exists.
+	jitter       lin.Vec2
+	projJ        lin.Mat4
+	viewProjJ    lin.Mat4
+	invViewProjJ lin.Mat4
+	prevViewProj lin.Mat4
+	hasPrevVP    bool
+	hasMoved     bool    // some draw this frame carries a previous transform
+	depthClamp   bool    // the shadow pipelines clamp depth rather than clip
+	hasCasters   bool    // casterAlong holds a value
+	casterAlong  float32 // how far the furthest caster is against the light
+	sorted       []int32 // scratch for partitionOIT: the draws that stay sorted
+	visOpaque    int     // draws at the front of the opaque group the camera sees
+	visOIT       int     // the same for the order-independent group
+	visBlended   int     // the same for the blended group
+	decals       []decal
+	camera       Camera
+	light        Light
+	hasCam       bool
+	points       []pointLight
+	clusters     clusterGrid // this frame's lights, sorted into the view's clusters
+	spotSlots    []int32     // each light's spot shadow map, or -1
+	pointSlots   []int32     // each light's cube shadow map slot, or -1
+	uniforms     *render.UniformSets
+	inst         instanceStream
+	joints       []lin.Mat4 // joint matrices for skinned draws this frame
+	jointBuf     *render.StorageSets
+	clear        Color
 	// out is the attachment set of the pass this queue's composite and 2D
 	// stream land in: the zero value for the screen, a render texture's
 	// own colour format, depth and sample count otherwise.

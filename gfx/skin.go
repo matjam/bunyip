@@ -101,8 +101,17 @@ func skinVertexLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInpu
 // DrawSkinned draws a skinned mesh with explicit joint matrices (one per
 // joint, already multiplied by the inverse bind matrices).
 func (g *Graphics) DrawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []lin.Mat4) {
+	g.DrawSkinnedMoved(m, mat, model, model, joints)
+}
+
+// DrawSkinnedMoved is DrawSkinned for a mesh that moved: prev is the
+// model matrix it was drawn with last frame. The motion vectors it
+// produces carry the model matrix's motion only, not the pose's, so a
+// character walking across the screen reprojects correctly while an arm
+// swinging in place does not.
+func (g *Graphics) DrawSkinnedMoved(m *Mesh, mat Material, model, prev lin.Mat4, joints []lin.Mat4) {
 	if !m.skinned || len(joints) == 0 {
-		g.DrawMesh(m, mat, model)
+		g.DrawMeshMoved(m, mat, model, prev)
 		return
 	}
 	if mat.BaseColor == (Color{}) {
@@ -114,5 +123,6 @@ func (g *Graphics) DrawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []l
 	q := g.cur
 	base := len(q.joints)
 	q.joints = append(q.joints, joints...)
-	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, jointBase: base, jointCount: len(joints), skinned: true})
+	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, prev: prev, moved: prev != model,
+		jointBase: base, jointCount: len(joints), skinned: true})
 }

@@ -466,6 +466,57 @@ func (q *drawQueue) ensureCamera() {
 	}
 }
 
+// jitterFrame picks the sub-pixel offset temporal anti-aliasing needs and
+// resolves the matrices this frame's passes rasterise with. The offset
+// walks a Halton sequence, so successive frames sample a different point
+// inside each pixel and the resolve averages them into an edge. With
+// anti-aliasing off the offset is zero and the matrices are the camera's
+// own.
+func (q *drawQueue) jitterFrame(extent vk.VkExtent2D, frame uint64, on bool) {
+	q.ensureCamera()
+	q.jitter = lin.Vec2{}
+	if on && extent.Width > 0 && extent.Height > 0 {
+		i := frame%8 + 1
+		q.jitter = lin.V2((halton(i, 2)-0.5)*2/float32(extent.Width), (halton(i, 3)-0.5)*2/float32(extent.Height))
+	}
+	aspect := float32(extent.Width) / float32(extent.Height)
+	q.projJ = jitterProjection(q.camera.Projection(aspect), q.jitter)
+	q.viewProjJ = q.projJ.Mul(q.camera.viewMatrix())
+	q.invViewProjJ = q.viewProjJ.Inverse()
+	if !q.hasPrevVP {
+		// The first frame has nothing behind it. Measuring against this
+		// frame's own projection makes the camera's part of the motion
+		// zero, which leaves an object's own motion correct.
+		q.prevViewProj = q.camera.Projection(aspect).Mul(q.camera.viewMatrix())
+	}
+}
+
+// halton is the i'th value of the Halton sequence in the given base, in
+// 0 to 1. It fills the pixel evenly however many frames are averaged.
+func halton(i, base uint64) float32 {
+	f, r := 1.0, 0.0
+	for i > 0 {
+		f /= float64(base)
+		r += f * float64(i%base)
+		i /= base
+	}
+	return float32(r)
+}
+
+// jitterProjection adds a clip-space translation to a projection, so the
+// image moves by a fraction of a pixel without the frustum's shape or the
+// depths changing.
+func jitterProjection(p lin.Mat4, j lin.Vec2) lin.Mat4 {
+	if j == (lin.Vec2{}) {
+		return p
+	}
+	for c := range 4 {
+		p[c*4+0] += j.X * p[c*4+3]
+		p[c*4+1] += j.Y * p[c*4+3]
+	}
+	return p
+}
+
 // SetLight sets the directional light, ambient term and shadow settings.
 func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 
@@ -617,6 +668,17 @@ func (q *drawQueue) pointShadows() (lights []int, mats []lin.Mat4) {
 // materials draw after everything opaque, farthest first.
 func (g *Graphics) DrawMesh(m *Mesh, mat Material, model lin.Mat4) {
 	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model})
+}
+
+// DrawMeshMoved is DrawMesh for a mesh that moved: prev is the model
+// matrix it was drawn with last frame. The velocity buffer carries the
+// difference, so temporal anti-aliasing reprojects the mesh instead of
+// smearing it and motion blur smears it along its own path. Drawing
+// through DrawMesh says the mesh did not move, which is what a static
+// scene wants; the camera's own motion is reconstructed from depth
+// either way.
+func (g *Graphics) DrawMeshMoved(m *Mesh, mat Material, model, prev lin.Mat4) {
+	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, prev: prev, moved: prev != model})
 }
 
 // queueMesh fills a draw's defaults, captures its shader's uniforms, and
@@ -929,7 +991,7 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 	mats, splits, radii := q.cascades(aspect)
 	q.cascadeMats = mats
 	u := frameUniforms{
-		viewProj:      q.camera.ViewProj(aspect),
+		viewProj:      q.viewProjJ,
 		view:          q.camera.viewMatrix(),
 		lightViewProj: mats,
 		camPos:        q.camera.Position.Vec4(1),
@@ -988,7 +1050,7 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 		u.sh = q.skySH
 		u.env = lin.V4(1, 0, 2, 0)
 	}
-	u.invViewProj = u.viewProj.Inverse()
+	u.invViewProj = q.invViewProjJ
 	if err := q.writeGrid(slot); err != nil {
 		return err
 	}
@@ -1055,7 +1117,7 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	}
 	culled := 0
 	q.depthClamp = g.r.Device.DepthClamp()
-	q.hasCasters, q.casterAlong = false, 0
+	q.hasCasters, q.casterAlong, q.hasMoved = false, 0, false
 	lightDir := q.light.Direction.Norm()
 	// The order-independent pass needs a device that blends its two
 	// attachments differently and a shader with the program that writes
@@ -1150,11 +1212,22 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 			filmThick = 400
 		}
 		mm := d.model
+		pm := d.prev
+		if !d.moved {
+			pm = mm
+		} else {
+			q.hasMoved = true
+		}
 		q.inst.add(meshInstance{
 			model: [3]lin.Vec4{
 				lin.V4(mm.At(0, 0), mm.At(0, 1), mm.At(0, 2), mm.At(0, 3)),
 				lin.V4(mm.At(1, 0), mm.At(1, 1), mm.At(1, 2), mm.At(1, 3)),
 				lin.V4(mm.At(2, 0), mm.At(2, 1), mm.At(2, 2), mm.At(2, 3)),
+			},
+			prevModel: [3]lin.Vec4{
+				lin.V4(pm.At(0, 0), pm.At(0, 1), pm.At(0, 2), pm.At(0, 3)),
+				lin.V4(pm.At(1, 0), pm.At(1, 1), pm.At(1, 2), pm.At(1, 3)),
+				lin.V4(pm.At(2, 0), pm.At(2, 1), pm.At(2, 2), pm.At(2, 3)),
 			},
 			baseColor: [4]float32{m.BaseColor.R, m.BaseColor.G, m.BaseColor.B, m.BaseColor.A},
 			material:  [4]float32{orOne(m.Metallic, m.MetalRoughTexture != nil), m.Roughness, m.Emissive, flags},
@@ -1334,6 +1407,11 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	// sample count. The shadow atlas stays single-sample, so its draws
 	// use the zero key.
 	g.sceneOut = outKey{samples: sampleKey(t.samples)}
+	// The matrices every pass after this one rasterises and reprojects
+	// with. A probe bake runs outside a frame and wants an exact face, so
+	// it takes no jitter and needs no motion vectors.
+	presenting := g.frame != nil
+	q.jitterFrame(t.extent, g.frameNo, presenting && g.post.settings.TemporalAA)
 	// The draws are prepared first: the cascades' near planes need the
 	// caster bounds, and the shadow pass culls against every light.
 	opaque, oit, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
@@ -1390,7 +1468,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		// evaluated from the frame block.
 		render.SetViewport(cb, t.extent)
 		rec := &g.rec
-		rec.push = push2D{proj: q.camera.ViewProj(aspect).Inverse()}
+		rec.push = push2D{proj: q.invViewProjJ}
 		cache := mp.skyParamPipe
 		rec.set = q.uniforms.Sets[fr.Slot]
 		if env := q.light.Environment; env != nil && env.cube != nil {
@@ -1463,7 +1541,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()+oit.len()), nil, nil, false); err != nil {
 		return err
 	}
-	if err := g.drawDebugLines(cb, fr, q, aspect); err != nil {
+	if err := g.drawDebugLines(cb, fr, q); err != nil {
 		return err
 	}
 	g.timestamps.End(cb)
@@ -1475,6 +1553,17 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		if err != nil {
 			return err
 		}
+	}
+	// The motion vectors go in over the finished depth buffer, so a
+	// moved mesh hidden behind something else writes nothing. Particles
+	// write no depth, so they come after.
+	if s := g.post.settings; presenting && (s.TemporalAA || s.MotionBlur > 0) {
+		if err := t.needVelocity(g); err != nil {
+			return err
+		}
+		g.timestamps.Begin(cb, "velocity")
+		g.renderVelocity(cb, fr, q, t, seen)
+		g.timestamps.End(cb)
 	}
 	// Instanced particles last, over the finished scene: they read the
 	// depth image rather than testing against it, which is what lets

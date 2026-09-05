@@ -1,7 +1,7 @@
 ---
 title: Sprites
 example: sprites
-summary: a few hundred textured sprites bouncing over a grid, and a lit brick floor where a circling lamp throws shadows from three crates
+summary: a few hundred textured sprites bouncing over a grid, a lit brick floor where a circling lamp throws shadows from three crates, and a key that runs the 2D frame through the post pass
 ---
 
 This is the smallest complete game in the repository, with one extra
@@ -10,7 +10,10 @@ sprites a position, a velocity, a tint and a spin, moves them in `Update`
 and draws them in `Draw`. In the bottom-right corner it also draws a lit
 room: a tiled brick floor with a normal map, a lamp circling above it, a
 fixed blue light in the corner, and three crates registered as shadow
-casters so the lamp throws their shadows across the bricks.
+casters so the lamp throws their shadows across the bricks. P runs the
+whole frame through the post pass, which a 2D game gets with
+`PostSettings.Post2D`: bloom over the brighter sprites, a vignette,
+a little chromatic aberration at the edges and film grain.
 
 It exercises 2D drawing from [gfx](../pkg/gfx.html): `NewTexture`,
 `Draw` with a `Sprite`, `FillRect` for the checkered background, and
@@ -31,7 +34,8 @@ go run ./examples/sprites -seconds 3 -shot out.png
 `-seconds N` quits after N seconds and `-shot file.png` writes a
 screenshot halfway through, which is how the example test drives every
 program here. `-fullscreen` starts full screen and `-capture` starts
-with the cursor captured; F and C toggle them at run time.
+with the cursor captured; F and C toggle them at run time. `-post`
+starts with the post pass on and P toggles it.
 
 ## The two types
 
@@ -45,7 +49,15 @@ because every angle in the engine is radians.
 sprites. There are three textures: the disc every sprite draws, the
 brick floor's colour, and the floor's normal map. `shotTaken` exists so
 the screenshot is written once rather than on every update after the
-halfway mark.
+halfway mark, and `post` is the toggle P flips.
+
+`post2D` is the settings value that toggle installs. A frame with no 3D
+draws in it takes a direct path to the screen and skips the post pass
+entirely, which is what a 2D game usually wants; `Post2D` is the field
+that sends it through the composite instead, and the rest of the value
+picks the effects that work without a depth buffer. Exposure and tone
+mapping are skipped in that mode, so the colours the program drew come
+back unchanged when nothing else is turned on.
 
 ```go
 type ball struct {
@@ -63,7 +75,19 @@ type game struct {
 	floor      *gfx.Texture
 	floorNorm  *gfx.Texture
 	balls      []ball
+	post       bool // run the 2D frame through the post pass
 	shotTaken  bool
+}
+
+// post2D is the grade P turns on. Post2D is what lets a frame with no 3D
+// draws in it reach the composite at all; the rest are the settings that
+// work without a depth buffer. Saturation and Contrast are 1 because
+// their zero would drain the colour out of the frame.
+func post2D() gfx.PostSettings {
+	return gfx.PostSettings{
+		Post2D: true, NoAntiAlias: true, Exposure: 1, Saturation: 1.1, Contrast: 1,
+		Bloom: 0.3, BloomThreshold: 0.9, Vignette: 0.3, Aberration: 0.6, Grain: 0.03,
+	}
 }
 ```
 
@@ -196,6 +220,9 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	if ctx.Input.KeyPressed(input.KeyC) {
 		ctx.SetCursorCaptured(!ctx.CursorCaptured())
 	}
+	if ctx.Input.KeyPressed(input.KeyP) {
+		g.post = !g.post
+	}
 	if dx, dy := ctx.Input.MouseDelta(); ctx.CursorCaptured() && (dx != 0 || dy != 0) {
 		ctx.Log.Info("sprites: captured mouse", "dx", dx, "dy", dy)
 	}
@@ -242,8 +269,19 @@ sprites of one texture cost little.
 its centre. The rotation is `spin * ctx.Time`, so it comes from the
 elapsed time rather than being accumulated, and stays exact.
 
+`SetPost` is called every frame, like everything else here. It is a
+replacement rather than an adjustment, so the P toggle is one branch: the
+posted value or a plain one.
+
 ```go
 func (g *game) Draw(ctx *bunyip.Context) error {
+	// Post settings are replaced every frame, like everything else drawn
+	// here. With Post2D off the frame goes straight to the screen.
+	if g.post {
+		ctx.Gfx.SetPost(post2D())
+	} else {
+		ctx.Gfx.SetPost(gfx.PostSettings{NoAntiAlias: true})
+	}
 	const cell = 40
 	for y := float32(0); y < ctx.Height; y += cell {
 		for x := float32(0); x < ctx.Width; x += cell {
@@ -260,13 +298,29 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		})
 	}
 	g.drawLitRoom(ctx)
+	ctx.Gfx.SetLayer(20)
+	ctx.Gfx.Debugf(12, 12, "P: 2D post-processing %s", onOff(g.post))
 	return nil
+}
+
+// onOff names a toggle for the overlay.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 ```
 
 Reading the mouse in `Draw` is safe: input edges are latched for the
 whole frame while `Draw` runs, so an interface built here sees every
 press even on a frame that ran no update.
+
+`Debugf` draws through the engine's built-in font, so a program can put a
+value on screen without loading one. It goes on layer 20, above the lit
+panel, and with `Post2D` on it goes through the composite with everything
+else: the overlay picks up the vignette and the grain too, because there
+is one image and one grade.
 
 ## The lit room: lights, occluders and shadows
 
@@ -469,9 +523,10 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	fullscreen := flag.Bool("fullscreen", false, "start full screen (F toggles)")
 	capture := flag.Bool("capture", false, "start with the cursor captured (C toggles)")
+	post := flag.Bool("post", false, "start with 2D post-processing on (P toggles)")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
-		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture})
+		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture, post: *post})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sprites:", err)
 		os.Exit(1)

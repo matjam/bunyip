@@ -189,7 +189,7 @@ func (g *Graphics) initLines() error {
 }
 
 // drawDebugLines records the queue's debug lines inside the HDR pass.
-func (g *Graphics) drawDebugLines(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, aspect float32) error {
+func (g *Graphics) drawDebugLines(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue) error {
 	if len(q.lines.items) == 0 {
 		return nil
 	}
@@ -201,7 +201,7 @@ func (g *Graphics) drawDebugLines(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 		return err
 	}
 	rec := &g.rec
-	rec.push.proj = q.camera.ViewProj(aspect)
+	rec.push.proj = q.viewProjJ
 	rec.offset = 0
 	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 	vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, 64, unsafe.Pointer(&rec.push.proj))
