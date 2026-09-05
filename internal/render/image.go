@@ -265,11 +265,53 @@ func (d *Device) ReadImage(img *Image) (*image.RGBA, error) {
 	return out, nil
 }
 
+// ReadImageRaw copies level 0 of a colour image that is in shader-read-only
+// layout back to the host as its own texels, texelBytes per texel, rows
+// packed with no padding. Use it for a format ReadImage cannot express as
+// an RGBA image, such as the half-float scene image a probe bake captures.
+// The image must not be in use by a frame in flight.
+func (d *Device) ReadImageRaw(img *Image, texelBytes int) ([]byte, error) {
+	w, h := int(img.Extent.Width), int(img.Extent.Height)
+	size := w * h * texelBytes
+	if size <= 0 {
+		return nil, fmt.Errorf("render: an image of %dx%d at %d bytes a texel has nothing to read", w, h, texelBytes)
+	}
+	buf, err := d.NewBuffer(vk.VkDeviceSize(size), vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if err != nil {
+		return nil, err
+	}
+	defer buf.Destroy()
+	err = d.OneShot(func(cb vk.VkCommandBuffer) {
+		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+			vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+			vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT|vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT)
+		region := vk.VkBufferImageCopy{
+			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+			ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
+		}
+		vk.VkCmdCopyImageToBuffer(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf.Handle, 1, &region)
+		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+			vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,
+			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, size)
+	copy(out, buf.Bytes()[:size])
+	return out, nil
+}
+
 // ReadDepth copies the depth aspect of an image that a finished pass
 // left in shader-read-only layout back to the host, one float per pixel
 // in row-major order, 0 at the near plane and 1 at the far plane. It
 // waits for the device, so it belongs in tools and tests rather than in
-// a frame. The image must not be in use by a frame in flight.
+// a frame. The image must not be in use by a frame in flight, and a
+// multisampled image is read through the one it resolves into.
 func (d *Device) ReadDepth(img *Image) ([]float32, error) {
 	if img.Samples != vk.VK_SAMPLE_COUNT_1_BIT {
 		return nil, fmt.Errorf("render: cannot read a multisampled depth image; read the resolved one")
@@ -290,6 +332,8 @@ func (d *Device) ReadDepth(img *Image) ([]float32, error) {
 		return nil, err
 	}
 	defer buf.Destroy()
+	// The copy takes the depth aspect alone even where the format carries
+	// stencil; a layout transition is per image, so the barriers name both.
 	aspect := vk.VkImageAspectFlags(vk.VK_IMAGE_ASPECT_DEPTH_BIT)
 	err = d.OneShot(func(cb vk.VkCommandBuffer) {
 		imageBarrier(cb, img.Handle, depthAspect(img.Format),
