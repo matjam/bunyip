@@ -3,8 +3,9 @@
 // levels of detail and a splat map blending sand, grass, rock and snow,
 // a lake, pine models near and baked impostors of them far, billboard
 // trees, rocks at several levels of detail, campfires as point lights, a
-// watchtower's searchlight as a spot light, distance and valley fog,
-// labels in the world, and terrain the player digs into with a click.
+// watchtower's searchlight as a spot light, an atmospheric sky and
+// valley fog, labels in the world, and terrain the player digs into
+// with a click.
 // The corner shows the frame's draw, instance and cull counts. Drag to
 // orbit, scroll to zoom, click the ground to dig.
 package main
@@ -146,20 +147,27 @@ func treeImage() *image.RGBA {
 	return img
 }
 
-// sunlight is the scene's directional light, sky and fog. The impostor
-// bake takes the same light, so a pine baked into the atlas is lit the
-// way the pine models beside it are; BakeImpostor drops the background,
-// the shadows and the fog, which the frame applies again.
-func sunlight() gfx.Light {
-	haze := gfx.Color{R: 0.72, G: 0.78, B: 0.88, A: 1}
+// sunlight is the scene's directional light, sky and fog, for a camera at
+// that altitude. The sky is scattered rather than painted: an Atmosphere
+// replaces the Zenith and Horizon colours, so the low sun leaves the
+// horizon orange and the sky overhead blue, and the same model tints the
+// far hills with the air in front of them. Height is how deep the air is
+// in this world's units. Fog is left to the valley: the air handles
+// distance.
+//
+// The impostor bake takes the same light, so a pine baked into the atlas
+// is lit the way the pine models beside it are; BakeImpostor drops the
+// background, the shadows and the fog, which the frame applies again.
+func sunlight(altitude float32) gfx.Light {
+	mist := gfx.Color{R: 0.78, G: 0.75, B: 0.68, A: 1}
 	return gfx.Light{
-		Direction:      lin.V3(-0.4, -0.7, -0.35),
+		Direction:      lin.V3(-0.6, -0.3, -0.4),
 		Color:          gfx.Color{R: 1, G: 0.95, B: 0.85, A: 1},
-		Sky:            gfx.Sky{Zenith: gfx.Color{R: 0.2, G: 0.42, B: 0.85, A: 1}, Horizon: haze, Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}},
+		Sky:            gfx.Sky{Ground: gfx.Color{R: 0.3, G: 0.32, B: 0.25, A: 1}, Atmosphere: gfx.Atmosphere{Height: 3000, Altitude: max(altitude, 0)}},
 		Shadows:        true,
 		ShadowDistance: 90,
 		Background:     true,
-		Fog:            gfx.Fog{Color: haze, Start: 45, End: 170, Height: 0.6, HeightFalloff: 0.4},
+		Fog:            gfx.Fog{Color: mist, Start: 45, End: 200, Height: 0.8, HeightFalloff: 0.4},
 	}
 }
 
@@ -261,7 +269,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.pine, err = ctx.Gfx.LoadModel(pineDocument()); err != nil {
 		return err
 	}
-	if g.pineFar, err = ctx.Gfx.BakeImpostor(g.pine, gfx.ImpostorOptions{Views: 12, Resolution: 96, Pitch: lin.Radians(20), Light: sunlight()}); err != nil {
+	if g.pineFar, err = ctx.Gfx.BakeImpostor(g.pine, gfx.ImpostorOptions{Views: 12, Resolution: 96, Pitch: lin.Radians(20), Light: sunlight(20)}); err != nil {
 		return err
 	}
 	g.pineFar.Distance = 30
@@ -392,8 +400,9 @@ func (g *game) Update(ctx *bunyip.Context) error {
 func (g *game) Draw(ctx *bunyip.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
-	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist))
-	gr.SetLight(sunlight())
+	cam := gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist)
+	gr.SetCamera(cam)
+	gr.SetLight(sunlight(cam.Position.Y))
 	// Campfires flicker; the tower's searchlight sweeps.
 	for i, f := range g.fires {
 		flick := 0.8 + 0.2*float32(math.Sin(float64(t)*9+float64(i)))

@@ -323,7 +323,8 @@ Transparency has three modes, and they do different things.
 `AlphaCutoff` discards fragments below a threshold in both the lit and
 the shadow pass, giving hard edges and real shadows, which is what
 leaves, fences and grass need. `Blend` draws the material after the
-opaque scene, sorted back to front, for smoke and water. `Transmission`
+opaque scene, sorted back to front, for smoke and water, or without
+sorting at all under `PostSettings.OrderIndependent`. `Transmission`
 is refractive glass, below. Alongside them, `DoubleSided` turns off
 back-face culling and lights back faces with a flipped normal, which a
 single-quad leaf needs; `Unlit` shows the base colour and emissive as
@@ -553,6 +554,34 @@ runway to orbit with no seam. Point `Up` away from a nearby planet and
 set `Ground` to that planet's colour to light the ship's night side with
 planet-shine.
 
+`Sky.Atmosphere` computes the sky instead of describing it. Set its
+`Height` to how deep the air is in the game's own units and the sky
+above the horizon becomes single-scattered sunlight, Rayleigh from the
+air and Mie from haze, in place of `Zenith` and `Horizon`: blue
+overhead at noon, orange and then red along the horizon as the sun
+drops, dark once the sun is under it, and thinner as `Altitude` climbs
+out of the air, so a plane can fly from a runway to space with no seam.
+`Ground` still lights the half below the horizon, and `Vacuum` still
+scales the result. Every other field has an Earth-like default scaled to
+`Height`, so `gfx.Atmosphere{Height: 3000}` is a whole sky;
+`PlanetRadius` (a hundred times `Height` by default) sets how far the
+horizon is, `Rayleigh` and `Mie` are the scattering per world unit at
+the ground, `Forward` is how tight the glare around the sun is, and
+`Intensity` is the sunlight the scattering divides up.
+
+`Height` is the one number to think about, because it fixes the scale of
+everything else: the air is as deep as the number says in world units,
+so a scene a hundred units across under a `Height` of 60 is looking
+through a hundred kilometres of air and washes out, while the same scene
+under 3000 has crisp distance and a sky that still works. Pick it by how
+far away things should start taking the air's colour, not by the size of
+a real planet. The model is integrated per pixel, eight samples along
+the view ray and four towards the sun at each; there is no table to
+precompute, load or keep in step, and the same function runs on the CPU
+in Go to project the ambient light onto spherical harmonics. Those
+harmonics are reprojected when the sun or the altitude moves far enough
+to matter, not every frame.
+
 `Light.Fog` fades geometry into a colour with distance, the cheapest way
 to give a scene depth and hide the far plane. Linear fog ramps from
 `Start` to full at `End`; exponential fog thickens with `Density`; when
@@ -562,6 +591,13 @@ axis, which puts mist in a valley without touching the hilltops. The sky
 is not fogged, so outdoors pick a fog colour close to the horizon's or
 the join will show.
 
+With an atmosphere the fog has help: distant geometry is dimmed by the
+air in front of it and takes the light that air scatters, from the same
+model, after the fog is applied. That is aerial perspective, and it is
+what makes far hills go pale and blue and the ones at sunset go pink. It
+costs nothing to ask for beyond the atmosphere itself, so a scene with
+one often wants `Fog` only for the valley mist.
+
 ```go
 // In orbit, the night side lit by the planet below.
 sky := gfx.Sky{Up: planetUp.Mul(-1), Vacuum: 1, Stars: 1,
@@ -569,9 +605,11 @@ sky := gfx.Sky{Up: planetUp.Mul(-1), Vacuum: 1, Stars: 1,
 gr.SetLight(gfx.Light{Direction: sunDir, Sky: sky, Background: true,
 	Color: gfx.Color{R: 2.4, G: 2.2, B: 1.9, A: 1}})
 
-// On the ground: haze on the horizon, mist in the valley.
-haze := gfx.Color{R: 0.72, G: 0.78, B: 0.88, A: 1}
-light.Fog = gfx.Fog{Color: haze, Start: 45, End: 170, Height: 0.6, HeightFalloff: 0.4}
+// On the ground: air on the horizon, mist in the valley.
+cam := gfx.OrbitCamera(lin.V3(0, 2, 0), yaw, pitch, dist)
+light.Sky = gfx.Sky{Ground: gfx.RGB(76, 82, 64),
+	Atmosphere: gfx.Atmosphere{Height: 3000, Altitude: cam.Position.Y}}
+light.Fog = gfx.Fog{Color: mist, Start: 45, End: 200, Height: 0.8, HeightFalloff: 0.4}
 ```
 
 ## Billboards, labels and marks on the world
@@ -878,9 +916,22 @@ whole extra frames.
 Transparency sorts by distance to the camera per draw, not per triangle,
 so two blended meshes that interpenetrate pick an order and keep it, and
 a large one sorted by its origin can land on the wrong side of a small
-one. Prefer `AlphaCutoff` where hard edges are acceptable, keep blended
-geometry convex and small, and use `NoDepthWrite` for additive effects
-where order does not matter.
+one. `PostSettings.OrderIndependent` is the way out: it accumulates every
+translucent fragment with a weight that favours the nearer one and
+resolves them in one pass, so a crossing looks right on both sides
+without any sorting at all. It costs two images the size of the frame and
+one pass, and it is an approximation: a scene of many overlapping layers
+comes out slightly flatter than compositing them in order would. Where it
+is off, prefer `AlphaCutoff` where hard edges are acceptable, keep
+blended geometry convex and small, and use `NoDepthWrite` for additive
+effects where order does not matter.
+
+`Transmission` keeps the sorted path either way, because refraction reads
+the scene behind the surface and so has to be drawn after it. A frame can
+have both: the copy of the scene that glass and screen-space reflections
+read is taken from the opaque draws, the order-independent pass resolves
+over it, and the transmissive draws follow in sorted order. So glass
+refracts the opaque scene, not the translucent surfaces in front of it.
 
 Meshes, models, textures, environments, render textures, shaders and
 fonts all hold GPU memory and all have `Destroy`. Call it from `Init`,

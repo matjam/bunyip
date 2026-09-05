@@ -150,7 +150,8 @@ kerning and ligatures cross the style changes inside it.
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, frustum culling with a public `Frustum`, bounds that follow
+ground fog, an atmospheric sky with aerial perspective, order-independent
+transparency, frustum culling with a public `Frustum`, bounds that follow
 a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, software occlusion culling from
 `AddOccluder3D`, a static bounding volume hierarchy behind
@@ -202,11 +203,15 @@ textures are in.
   and what is off screen or hidden falls back to the probe or the
   environment. There is no temporal accumulation, so a rough surface's
   rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
-- Volumetrics: god rays, and atmospheric scattering for the sky rather
-  than the parametric gradient. Fog is a per-pixel fade, not a medium.
+- Volumetrics: god rays, and light shafts through a medium. Fog is a
+  per-pixel fade, and `Sky.Atmosphere` scatters single bounces only, so
+  neither casts a shaft.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
 - Depth of field, motion blur and lens effects.
-- Order-independent transparency; blended draws are sorted per mesh.
+- Order-independent transparency is the weighted blended approximation
+  (`PostSettings.OrderIndependent`), so a deep stack of layers comes out
+  flatter than compositing them in order would, and transmissive draws
+  stay sorted. Per-pixel lists or depth peeling would be exact.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back. Post settings are also one
   set for the whole frame, read when it ends rather than when `DrawTo`

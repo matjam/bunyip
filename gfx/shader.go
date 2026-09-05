@@ -123,16 +123,21 @@ type Shader struct {
 	// prepared, so a game may change it between draws.
 	VertexBounds float32
 
-	g      *Graphics
-	frag   []byte
-	stages map[shaders.Stage][]byte // a mesh shader's vertex programs, when it hooks vertices
-	mesh   bool
-	images [4]*Texture
-	block  []byte // the latest uniform values
-	dirty  bool   // block changed since it was last placed in the arena
-	offset uint32 // arena offset of the block for this frame
-	frame  uint64 // frame the offset belongs to
-	pipes  map[pipeKey]*render.Pipeline
+	g    *Graphics
+	frag []byte
+	// oitFrag is a mesh shader's fragment program for the
+	// order-independent transparency pass, which writes a second
+	// attachment. A bundle compiled before that pass existed has none,
+	// and draws made with the shader keep the sorted path.
+	oitFrag []byte
+	stages  map[shaders.Stage][]byte // a mesh shader's vertex programs, when it hooks vertices
+	mesh    bool
+	images  [4]*Texture
+	block   []byte // the latest uniform values
+	dirty   bool   // block changed since it was last placed in the arena
+	offset  uint32 // arena offset of the block for this frame
+	frame   uint64 // frame the offset belongs to
+	pipes   map[pipeKey]*render.Pipeline
 }
 
 // pipeKey selects a pipeline variant of a shader.
@@ -144,6 +149,7 @@ type pipeKey struct {
 	noDepthWrite bool
 	shadow       bool // the depth-only shadow pass
 	stencil      bool // mark the stencil buffer, for outlines
+	oit          bool // the order-independent transparency pass
 }
 
 // meshKey is the pipeline variant a material needs. It takes a pointer
@@ -176,14 +182,20 @@ func (g *Graphics) newShader(data []byte, mesh bool) (*Shader, error) {
 			return nil, fmt.Errorf("gfx: %w", err)
 		}
 		s.frag = stages[shaders.StageFrag]
+		s.oitFrag = stages[shaders.StageOITFrag]
 		delete(stages, shaders.StageFrag)
+		delete(stages, shaders.StageOITFrag)
 		if len(stages) > 0 {
 			s.stages = stages
 		}
 	} else {
 		s.frag = data
 	}
-	for _, spv := range append([][]byte{s.frag}, slices.Collect(maps.Values(s.stages))...) {
+	programs := append([][]byte{s.frag}, slices.Collect(maps.Values(s.stages))...)
+	if s.oitFrag != nil {
+		programs = append(programs, s.oitFrag)
+	}
+	for _, spv := range programs {
 		if len(spv) < 20 || len(spv)%4 != 0 || spv[0] != 0x03 || spv[1] != 0x02 || spv[2] != 0x23 || spv[3] != 0x07 {
 			return nil, fmt.Errorf("gfx: shader is not SPIR-V (compile it with bunyip-shader)")
 		}
@@ -200,6 +212,11 @@ func (g *Graphics) newShader(data []byte, mesh bool) (*Shader, error) {
 	}
 	return s, nil
 }
+
+// orderIndependent reports whether the shader has the fragment program
+// the order-independent transparency pass needs. A mesh shader compiled
+// before that pass existed has not, so its draws stay sorted.
+func (s *Shader) orderIndependent() bool { return len(s.oitFrag) > 0 }
 
 // vert is the shader's program for a vertex stage, or the engine's.
 func (s *Shader) vert(st shaders.Stage) []byte {
@@ -235,6 +252,9 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 	} else if s.mesh {
 		desc = g.meshes.pipelineDesc(key.skinned)
 		desc.Frag = s.frag
+		if key.oit {
+			desc.Frag = s.oitFrag
+		}
 		if key.skinned {
 			desc.Vert = s.vert(shaders.StageSkinVert)
 		} else {
@@ -254,6 +274,19 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 		}
 		if key.stencil {
 			desc.Stencil = render.StencilWrite(1)
+		}
+		if key.oit {
+			// The order-independent pass writes two attachments: the
+			// weighted colour adds into the accumulation image, and the
+			// alpha multiplies the revealage image down towards nothing.
+			desc.Factors = &render.BlendFactors{
+				SrcColor: vk.VK_BLEND_FACTOR_ONE, DstColor: vk.VK_BLEND_FACTOR_ONE, ColorOp: vk.VK_BLEND_OP_ADD,
+				SrcAlpha: vk.VK_BLEND_FACTOR_ONE, DstAlpha: vk.VK_BLEND_FACTOR_ONE, AlphaOp: vk.VK_BLEND_OP_ADD,
+			}
+			desc.ExtraColor = []render.ColorAttachment{{Format: revealFormat, Blend: true, Factors: &render.BlendFactors{
+				SrcColor: vk.VK_BLEND_FACTOR_ZERO, DstColor: vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR, ColorOp: vk.VK_BLEND_OP_ADD,
+				SrcAlpha: vk.VK_BLEND_FACTOR_ZERO, DstAlpha: vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, AlphaOp: vk.VK_BLEND_OP_ADD,
+			}}}
 		}
 	} else {
 		bindings, attrs := vertex2DLayout()
@@ -339,7 +372,7 @@ func (s *Shader) Reload(spirv []byte) error {
 		return err
 	}
 	s.retirePipelines()
-	s.frag, s.stages, s.pipes = fresh.frag, fresh.stages, fresh.pipes
+	s.frag, s.oitFrag, s.stages, s.pipes = fresh.frag, fresh.oitFrag, fresh.stages, fresh.pipes
 	return nil
 }
 

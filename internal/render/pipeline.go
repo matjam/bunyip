@@ -35,6 +35,21 @@ type PipelineDesc struct {
 	// Device.DepthClamp says whether it took effect.
 	DepthClamp bool
 	FrontFace  vk.VkFrontFace // zero means counter-clockwise
+	// ExtraColor describes the colour attachments after the first: their
+	// formats and how each blends. The first attachment stays
+	// ColorFormat with Blend and Factors. A pass drawing with the
+	// pipeline binds the same attachments in the same order, through
+	// PassDesc.Extra.
+	ExtraColor []ColorAttachment
+}
+
+// ColorAttachment is one of a pipeline's colour attachments past the
+// first: the format it writes and how it blends. The fragment shader
+// writes it from the output at the matching location.
+type ColorAttachment struct {
+	Format  vk.VkFormat
+	Blend   bool          // blending on; premultiplied source-over unless Factors is set
+	Factors *BlendFactors // blend equation when Blend is set
 }
 
 // BlendFactors is a fixed-function blend equation: colour and alpha are
@@ -181,23 +196,14 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		depth.StencilTestEnable = vk.VK_TRUE
 		depth.Front, depth.Back = op, op
 	}
-	blendAttachment := vk.VkPipelineColorBlendAttachmentState{
-		ColorWriteMask: vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
+	attachments := []vk.VkPipelineColorBlendAttachmentState{blendState(desc.Blend, desc.Factors)}
+	formats := []vk.VkFormat{desc.ColorFormat}
+	for _, a := range desc.ExtraColor {
+		attachments = append(attachments, blendState(a.Blend, a.Factors))
+		formats = append(formats, a.Format)
 	}
-	if desc.Blend {
-		f := PremultipliedOver
-		if desc.Factors != nil {
-			f = *desc.Factors
-		}
-		blendAttachment.BlendEnable = vk.VK_TRUE
-		blendAttachment.SrcColorBlendFactor = f.SrcColor
-		blendAttachment.DstColorBlendFactor = f.DstColor
-		blendAttachment.ColorBlendOp = f.ColorOp
-		blendAttachment.SrcAlphaBlendFactor = f.SrcAlpha
-		blendAttachment.DstAlphaBlendFactor = f.DstAlpha
-		blendAttachment.AlphaBlendOp = f.AlphaOp
-	}
-	blend := vk.VkPipelineColorBlendStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, AttachmentCount: 1, PAttachments: &blendAttachment}
+	blend := vk.VkPipelineColorBlendStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		AttachmentCount: uint32(len(attachments)), PAttachments: &attachments[0]}
 	if desc.NoColor {
 		blend.AttachmentCount = 0
 		blend.PAttachments = nil
@@ -206,8 +212,8 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 	dynamic := vk.VkPipelineDynamicStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, DynamicStateCount: 2, PDynamicStates: &dynamicStates[0]}
 	rendering := vk.VkPipelineRenderingCreateInfo{
 		SType:                   vk.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-		ColorAttachmentCount:    1,
-		PColorAttachmentFormats: &desc.ColorFormat,
+		ColorAttachmentCount:    uint32(len(formats)),
+		PColorAttachmentFormats: &formats[0],
 		DepthAttachmentFormat:   desc.DepthFormat,
 	}
 	if HasStencil(desc.DepthFormat) {
@@ -237,6 +243,28 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		return nil, err
 	}
 	return p, nil
+}
+
+// blendState is one attachment's colour write mask and blend equation.
+func blendState(enabled bool, factors *BlendFactors) vk.VkPipelineColorBlendAttachmentState {
+	st := vk.VkPipelineColorBlendAttachmentState{
+		ColorWriteMask: vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
+	}
+	if !enabled {
+		return st
+	}
+	f := PremultipliedOver
+	if factors != nil {
+		f = *factors
+	}
+	st.BlendEnable = vk.VK_TRUE
+	st.SrcColorBlendFactor = f.SrcColor
+	st.DstColorBlendFactor = f.DstColor
+	st.ColorBlendOp = f.ColorOp
+	st.SrcAlphaBlendFactor = f.SrcAlpha
+	st.DstAlphaBlendFactor = f.DstAlpha
+	st.AlphaBlendOp = f.AlphaOp
+	return st
 }
 
 func (p *Pipeline) Destroy() {
