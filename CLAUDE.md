@@ -94,11 +94,14 @@ the draw, which is what `shaderSampledImageArrayDynamicIndexing` needs;
 without it. A draw inside a reflection probe's volume binds that probe's
 cube map at binding 9 instead of the light's environment, so probes cost
 no image: `materialSet` is keyed on the environment already. Set 1 is the
-per-frame `Frame` uniform block at binding 0 and the light probe grid's
-harmonics as a storage buffer at binding 1
-(`Device.NewUniformStorageSets`); the queue's own sets are bound and the
-mesh pass's layout is what the pipelines are built against, so both are
-made the same way. Set 2 is the shadow atlas, the one comparison sampler.
+per-frame block: the `Frame` uniform block at binding 0, the light probe
+grid's harmonics as a growable storage buffer at binding 1, and the
+frame's light records, cluster table and light index list as fixed-size
+storage buffers at bindings 2 to 4 (`Device.NewFrameSets`, sized by
+`frameStorage`; the fixed ones never grow, so a frame writes them
+without a wait). The queue's own sets are bound and the mesh pass's
+layout is what the pipelines are built against, so both are made the
+same way. Set 2 is the shadow atlas, the one comparison sampler.
 Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal allows sixteen samplers a stage,
 which the four plus the shadow atlas's stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
@@ -113,7 +116,26 @@ Changing a field before the end means changing all of them and
 regenerating every shader; appending at the end only needs the files that
 read the new field. The global illumination fields (the probe volumes,
 the grid's shape, the reflection settings) are the tail, read by
-`prelude_mesh.glsl` and `ssr.frag`.
+`prelude_mesh.glsl` and `ssr.frag`. The lights themselves are not in the
+block: they live in set 1's storage buffers, and the block carries the
+shadow projections and the cluster grid's mapping.
+
+**Lights are clustered.** `gfx/cluster.go` cuts the view into 16 by 9
+tiles and 24 exponential depth slices each frame, sorts the frame's
+lights into the clusters they reach on the CPU, and writes the records,
+the per-cluster table and the index list into set 1. The fragment
+prelude finds its cluster from `gl_FragCoord` and the view depth and
+loops over that cluster's lights. A cluster keeps 64 lights and a frame
+1024 (`MaxLights`).
+
+**Shadow maps share one atlas** (`shadowRegion` in `gfx/mesh_draw.go`,
+mirrored by the fragment prelude): three cascades of 2048 in the square
+top's quadrants, four spot maps of 1024 in the fourth, and the six cube
+faces of up to four point lights, 512 each, in the strip below. The
+atlas takes a depth-only format where the device has one. The shadow
+pass draws one map per viewport, and the vertex program picks the
+projection from the push constant: cascades, then spot maps, then cube
+faces.
 
 **Shaders are compiled offline.** `glslangValidator` must be on the
 path. `go generate ./gfx/shaders/` rebuilds the engine's SPIR-V and

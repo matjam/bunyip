@@ -1,5 +1,6 @@
 // Command lighting is the renderer playground: a skinned mesh bent by
-// joint matrices computed each frame, cascaded shadows, point lights, and
+// joint matrices computed each frame, cascaded shadows, two lamps that
+// cast their own shadows over a field of 160 small point lights, and
 // every post-processing setting on a slider (exposure, bloom, vignette,
 // saturation, contrast, ambient occlusion, FXAA). With -model it loads a
 // glTF file and plays its animation clips (Space cycles them).
@@ -27,6 +28,12 @@ import (
 const (
 	segments = 10  // joints along each tentacle
 	segLen   = 0.4 // metres per joint
+	// fieldLights is how many small point lights cover the floor. They
+	// are far past what a fixed array would hold: the renderer sorts a
+	// frame's lights into clusters over the view, so each one costs the
+	// part of the view its range reaches.
+	fieldLights = 160
+	fieldCols   = 16 // lights across the field
 )
 
 type game struct {
@@ -44,6 +51,7 @@ type game struct {
 	clip     int
 	post     gfx.PostSettings
 	shadows  bool
+	field    bool // draw the field of small point lights
 	env      *gfx.Environment
 	vacuum   float32
 	useEnv   bool
@@ -104,6 +112,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.post = gfx.DefaultPost()
 	g.post.Vignette = 0.3
 	g.shadows = true
+	g.field = true
 	g.yaw = 0.7
 	return nil
 }
@@ -163,10 +172,32 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	}
 	gr.SetLight(light)
 	t := float32(ctx.Time)
-	for i := range 3 {
-		a := t*0.7 + float32(i)*2.1
-		gr.AddPointLight(lin.V3(4*float32(math.Cos(float64(a))), 1.2, 4*float32(math.Sin(float64(a)))),
-			gfx.Color{R: 3 * float32(i%2), G: 2, B: 4 * float32((i+1)%2), A: 1}, 7)
+	// Two lamps orbiting over the floor. A point light with Shadows set
+	// renders the six faces of a cube map, so it throws the tentacles'
+	// shadows in every direction; a frame gets four of them.
+	for i := range 2 {
+		a := t*0.7 + float32(i)*3.1
+		gr.AddPoint(gfx.PointLight{
+			Position: lin.V3(4*float32(math.Cos(float64(a))), 2.2, 4*float32(math.Sin(float64(a)))),
+			Color:    gfx.Color{R: 4 * float32(i%2), G: 2.5, B: 5 * float32((i+1)%2), A: 1},
+			Range:    9, Shadows: g.shadows,
+		})
+	}
+	// A field of small lights over the floor, more than any fixed array
+	// would hold. Each one has a short range, so the cluster grid gives
+	// it only the handful of clusters it reaches.
+	if g.field {
+		for i := range fieldLights {
+			x := float32(i%fieldCols)*0.85 - 6.4
+			z := float32(i/fieldCols)*0.85 - 3.8
+			pulse := 0.5 + 0.5*float32(math.Sin(float64(t*2+float32(i)*0.7)))
+			hue := float32(i) * 0.21
+			gr.AddPointLight(lin.V3(x, 0.35, z), gfx.Color{
+				R: 2 * pulse * (0.5 + 0.5*float32(math.Sin(float64(hue)))),
+				G: 2 * pulse * (0.5 + 0.5*float32(math.Sin(float64(hue+2.1)))),
+				B: 2 * pulse * (0.5 + 0.5*float32(math.Sin(float64(hue+4.2)))),
+				A: 1}, 1.1)
+		}
 	}
 	gr.DrawMesh(g.floor, gfx.Material{BaseColor: gfx.RGB(150, 150, 160), Roughness: 0.9}, lin.Translate(lin.V3(0, -0.1, 0)).Mul(lin.Scale(lin.V3(12, 0.2, 12))))
 	gr.DrawMesh(g.sphere, gfx.Material{BaseColor: gfx.RGB(230, 200, 120), Metallic: 1, Roughness: 0.2}, lin.Translate(lin.V3(3.5, 1, -2)))
@@ -185,7 +216,11 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 510}, func() {
+		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 696}, func() {
+			// Lights counts the point and spot lights the frame kept and
+			// LightsDropped what it refused past gfx.MaxLights.
+			s := gr.Stats()
+			u.Label(fmt.Sprintf("%d lights, %d dropped, %d shadow draws", s.Lights, s.LightsDropped, s.ShadowDraws))
 			u.Slider("Vacuum (up to orbit)", &g.vacuum, 0, 1)
 			u.Slider("Exposure", &g.post.Exposure, 0.1, 4)
 			u.Slider("Bloom", &g.post.Bloom, 0, 1)
@@ -201,6 +236,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 				g.post.NoAntiAlias = !fxaa
 			}
 			u.Checkbox("Shadows", &g.shadows)
+			u.Checkbox("Light field (160 point lights)", &g.field)
 			u.Checkbox("Environment (image-based lighting)", &g.useEnv)
 			if g.model != nil {
 				u.Label(fmt.Sprintf("Clip %d/%d, Space cycles", g.clip+1, len(g.model.Clips())))
@@ -268,7 +304,7 @@ func main() {
 	env := flag.String("env", "", "equirectangular panorama (PNG or JPEG) to light the scene with")
 	vacuum := flag.Float64("vacuum", 0, "how thin the air starts: 0 on the ground, 1 in orbit")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip lighting", Width: 1024, Height: 640, Resizable: true, Validation: true},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip lighting", Width: 1024, Height: 720, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, modelPath: *model, envPath: *env, vacuum: float32(*vacuum)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lighting:", err)
