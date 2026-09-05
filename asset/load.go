@@ -13,6 +13,7 @@ import (
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
+	"github.com/matjam/bunyip/particle"
 )
 
 // Errors from the loaders below name the asset: "asset sprites/hero.png:
@@ -204,6 +205,31 @@ func Prefab(fs *FS, name string) (*ecs.Prefab, error) {
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
 	return pf, nil
+}
+
+// Emitter reads a particle emitter saved as JSON and loads the texture
+// it names, from the same directory as the emitter file. An emitter
+// naming no texture comes back drawing plain quads. Destroy the texture
+// with the rest of the game's resources; it is the returned emitter's
+// Texture.
+func Emitter(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (particle.Emitter, error) {
+	data, err := fs.Read(name)
+	if err != nil {
+		return particle.Emitter{}, fmt.Errorf("asset %s: %w", name, err)
+	}
+	e, err := particle.Load(data)
+	if err != nil {
+		return particle.Emitter{}, fmt.Errorf("asset %s: %w", name, err)
+	}
+	if e.TextureName == "" {
+		return e, nil
+	}
+	tex, err := Texture(g, fs, path.Join(path.Dir(name), e.TextureName), opts)
+	if err != nil {
+		return particle.Emitter{}, err
+	}
+	e.Texture = tex
+	return e, nil
 }
 
 // Tracker reads and parses a MOD, S3M, XM or IT module.

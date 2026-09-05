@@ -132,6 +132,12 @@ type Emitter struct {
 	Frames        []int
 	FrameOverLife Curve
 
+	// TextureName names the image an emitter saved as JSON wants as its
+	// Texture, relative to the emitter's own file. The engine never
+	// reads it: asset.Emitter loads and sets the texture, and an editor
+	// writes it. Zero is empty, for an effect that draws plain quads.
+	TextureName string
+
 	// Blend is the blend mode particles draw with; zero is alpha
 	// blending, gfx.BlendAdd glows. Layer is the sprite layer; zero is 0.
 	Blend gfx.Blend

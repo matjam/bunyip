@@ -29,6 +29,8 @@
 // radians measured from +X towards +Y (so -Pi/2 points up the screen).
 package particle
 
+import "github.com/matjam/bunyip/lin"
+
 // Curve is a value over a particle's lifetime: keyframes of (t, value)
 // with t from 0 (born) to 1 (dying), interpolated linearly and held flat
 // outside the first and last key. An empty Curve is 1 everywhere, so
@@ -80,6 +82,28 @@ func (c Curve) At(t float32) float32 {
 		}
 	}
 	return last.V
+}
+
+// Points returns the curve's keys as (t, value) pairs, the form
+// ui.CurveEditor edits. An empty curve gives an empty slice, not the 1
+// it evaluates to.
+func (c Curve) Points() []lin.Vec2 {
+	pts := make([]lin.Vec2, len(c))
+	for i, k := range c {
+		pts[i] = lin.V2(k.T, k.V)
+	}
+	return pts
+}
+
+// CurveOf builds a Curve from (t, value) pairs, the other half of
+// Points. The pairs must be in increasing t, which is what the editor
+// keeps them in.
+func CurveOf(points []lin.Vec2) Curve {
+	c := make(Curve, len(points))
+	for i, p := range points {
+		c[i] = Key{p.X, p.Y}
+	}
+	return c
 }
 
 // Range is a span a particle picks a value from at birth, uniformly.

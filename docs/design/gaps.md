@@ -125,7 +125,9 @@ no per-particle state at all.
   no depth sort, in 2D or 3D. Additive effects do not care; a game with
   overlapping alpha-blended particles orders the slice itself.
 - 3D particles are not lit and cast no shadows.
-- A particle editor in the gallery.
+- The gallery's particle editor edits one emitter at a time and previews
+  it in 2D. It does not show the instanced or the 3D path, chain several
+  emitters into one effect, or preview against a game's own background.
 - Compiling GLSL at runtime would need a pure-Go compiler and is out of
   scope; the offline tool plus `Shader.Reload` is the design.
 
@@ -256,7 +258,7 @@ splits, tabs, tables, trees, menus, modals, draggable windows, radios,
 integer sliders, spinners, list boxes, colour pickers, images, icon
 buttons, rich labels with links, arrow-key navigation inside lists,
 tables, trees, tabs, radios and dropdowns, drag and drop, reorderable
-lists, and an accessibility tree are in.
+lists, curve editors, and an accessibility tree are in.
 
 - Handing the accessibility tree to a platform screen reader. The tree
   exists; the bridge to VoiceOver and its counterparts does not.

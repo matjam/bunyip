@@ -1,7 +1,7 @@
 ---
 title: Gallery
 example: gallery
-summary: every widget in the interface package, the built-in themes, a texture skin, menus, modals, drag and drop, tables and scalable text
+summary: every widget in the interface package, the built-in themes, a texture skin, menus, modals, drag and drop, tables, scalable text and a live particle editor
 ---
 
 This program is the catalogue of [ui](../pkg/ui.html). A panel holds
@@ -20,6 +20,11 @@ widget that can be triggered returns whether it was. Containers take
 closures, so nesting is what scopes them and there is no end call to
 forget. [The interface guide](../guides/ui.html) explains the model,
 identity and themes.
+
+A third window is a small particle editor: sliders and two curve editors
+tune a `particle.Emitter` while it burns beside them, and Save writes it
+as the JSON `asset.Emitter` loads, so a game ships its effects as assets
+rather than as code.
 
 Behind the widgets the program also draws with
 [gfx](../pkg/gfx.html): a dozen translucent squares moving on a
@@ -64,6 +69,7 @@ import (
 	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
+	"github.com/matjam/bunyip/lin"
 	"github.com/matjam/bunyip/ui"
 )
 
@@ -107,6 +113,10 @@ type gallery struct {
 	order    []string
 	drops    int
 	lastDrop string
+
+	// The particle editor's window and the texture its effects draw with.
+	edit *editor
+	soft *gfx.Texture
 }
 ```
 
@@ -179,6 +189,10 @@ func (g *gallery) Init(ctx *bunyip.Context) error {
 	if g.beep {
 		ctx.Audio.Play(g.tone, audio.PlayOptions{Volume: 0.4})
 	}
+	if g.soft, err = softCircle(ctx.Gfx); err != nil {
+		return err
+	}
+	g.edit = newEditor(g.soft, lin.V2(452, 580))
 	// Two of the gallery's own values through the console: set them from
 	// the command line, or watch them in the Services panel.
 	ctx.Console.Float("gallery.volume", &g.volume, "the volume slider's value")
@@ -222,6 +236,7 @@ func (g *gallery) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
 	g.big.Destroy()
 	g.bold.Destroy()
+	g.soft.Destroy()
 	for _, t := range g.skinTex {
 		t.Destroy()
 	}
@@ -251,6 +266,7 @@ func (g *gallery) Update(ctx *bunyip.Context) error {
 		ctx.Screenshot(g.shot)
 		g.shotDone = true
 	}
+	g.edit.update(ctx.Delta)
 	return nil
 }
 ```
@@ -278,6 +294,8 @@ func (g *gallery) Draw(ctx *bunyip.Context) error {
 	ctx.Gfx.DrawTextBlock(g.big, "Bunyip", 380, 40, gfx.TextOptions{Size: 72 + 8*float32(math.Sin(float64(t))), Angle: -0.08}, gfx.RGB(255, 220, 120))
 	ctx.Gfx.DrawTextBlock(g.big, "scalable text from one atlas", 384, 130, gfx.TextOptions{Size: 22}, gfx.RGB(200, 200, 215))
 	ctx.Gfx.DrawTextBlock(g.big, "tiny", 384, 160, gfx.TextOptions{Size: 11}, gfx.RGB(150, 150, 170))
+	// The effect the particle editor is tuning, under every window.
+	g.edit.preview(ctx.Gfx)
 ```
 
 ## Draw: the frame, the menu bar and the window
@@ -444,6 +462,7 @@ the height of its content and a closure that builds it.
 				}
 			})
 		})
+		g.edit.draw(u)
 	})
 	// The console draws last of all, above every window the gallery
 	// opened: ` opens it and F4 opens the debug panels.
@@ -560,12 +579,276 @@ func main() {
 	theme := flag.String("theme", "dark", "starting theme: "+fmt.Sprint(ui.ThemeNames()))
 	tab := flag.Int("tab", 0, "the tab of the More widgets window to open on (0-3)")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 900, Height: 560, Resizable: true, Validation: true, Debug: *debug, Console: true},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 1220, Height: 620, Resizable: true, Validation: true, Debug: *debug, Console: true},
 		&gallery{seconds: *seconds, shot: *shot, beep: *beep, skinned: *skin, theme: *theme, startTab: *tab})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)
 		os.Exit(1)
 	}
+}
+```
+
+## The particle editor: state
+
+`particles.go` holds a second, larger widget: a window that tunes a
+`particle.Emitter` while it burns. It is the case an immediate-mode
+interface is built for. Nothing is registered, nothing is bound; every
+widget writes into a field of the emitter, and when one reports a change
+the emitter goes straight back to the running system.
+
+Two fields are kept beside the emitter rather than in it. The curves are
+held as the `[]lin.Vec2` points `ui.CurveEditor` edits, and the angles
+are held in degrees, because that is what anyone tuning an effect thinks
+in while the engine works in radians.
+
+<!-- file: particles.go -->
+```go
+// editor tunes a particle emitter while it burns: every widget writes
+// into the emitter and hands it straight back to the running system, so
+// the preview beside the panel is always the effect the numbers
+// describe. Save writes the emitter as JSON, the form asset.Emitter
+// loads, so a game ships its effects as assets rather than as code.
+type editor struct {
+	emitter particle.Emitter
+	system  *particle.System
+	win     ui.Rect
+	tab     int
+	preset  int
+	blend   int
+	// The two curves as the points ui.CurveEditor edits, converted back
+	// into the emitter whenever they change.
+	size  []lin.Vec2
+	alpha []lin.Vec2
+	// spread and direction are shown in degrees, which is what anyone
+	// tuning an effect thinks in; the emitter keeps radians.
+	direction float32
+	spread    float32
+	gravity   float32
+	path      string
+	status    string
+	soft      *gfx.Texture
+	at        lin.Vec2
+}
+```
+
+The dropdown at the top of the window starts from one of the package's
+presets. Two of them are burst effects, which would pop once and stop, so
+they are given a rate instead.
+
+<!-- file: particles.go -->
+```go
+// presets are the starting points the dropdown offers, in the order it
+// lists them.
+var presets = []string{"Fire", "Smoke", "Sparks", "Confetti"}
+
+// preset returns one of them by index.
+func preset(i int) particle.Emitter {
+	switch i {
+	case 1:
+		return particle.Smoke()
+	case 2:
+		e := particle.Sparks()
+		e.Rate, e.Burst = 120, 0 // a steady fountain rather than one pop
+		return e
+	case 3:
+		e := particle.Confetti()
+		e.Rate, e.Burst = 40, 0
+		return e
+	}
+	return particle.Fire()
+}
+```
+
+## The particle editor: loading and applying
+
+`load` is the one direction, taking an emitter apart into the widgets'
+state, and `apply` is the other, putting it back together. `SetEmitter`
+retunes the running system without throwing away the particles already in
+the air, so a slider drag reads as the effect changing rather than
+restarting.
+
+`Points` and `CurveOf` convert between a `particle.Curve` and the points
+the curve editor drags.
+
+<!-- file: particles.go -->
+```go
+// newEditor starts the editor on the fire preset at a point in the view.
+func newEditor(soft *gfx.Texture, at lin.Vec2) *editor {
+	ed := &editor{
+		win:  ui.Rect{X: 900, Y: 24, W: 300, H: 560},
+		soft: soft,
+		at:   at,
+		path: "emitter.json",
+		// The Look tab holds the curve editors, which is the widget this
+		// panel exists to show, so the gallery opens on it.
+		tab: 2,
+	}
+	ed.load(preset(0))
+	return ed
+}
+
+// load takes an emitter as the one being edited: the texture and the
+// position are the editor's, the widgets read their state out of it, and
+// a fresh system runs it.
+func (ed *editor) load(e particle.Emitter) {
+	e.Position = ed.at
+	e.Texture = ed.soft
+	e.TextureName = "soft-circle" // what asset.Emitter would load
+	e.Layer = 1
+	if e.Seed == 0 {
+		e.Seed = 5 // a fixed stream, so the preview replays the same way
+	}
+	ed.emitter = e
+	ed.size = e.SizeOverLife.Points()
+	ed.alpha = e.AlphaOverLife.Points()
+	ed.direction = lin.Degrees(e.Direction)
+	ed.spread = lin.Degrees(e.Spread)
+	ed.gravity = e.Acceleration.Y
+	ed.blend = int(e.Blend)
+	ed.system = particle.New(e)
+}
+
+// apply pushes the widgets' values back into the emitter and retunes the
+// running system, keeping the particles already in the air.
+func (ed *editor) apply() {
+	e := &ed.emitter
+	e.Direction = lin.Radians(ed.direction)
+	e.Spread = lin.Radians(ed.spread)
+	e.Acceleration.Y = ed.gravity
+	e.SizeOverLife = particle.CurveOf(ed.size)
+	e.AlphaOverLife = particle.CurveOf(ed.alpha)
+	e.Blend = gfx.Blend(ed.blend)
+	ed.system.SetEmitter(*e)
+}
+
+// update advances the preview.
+func (ed *editor) update(dt float64) { ed.system.Update(dt) }
+
+// preview draws the effect and a mark where it is emitting from.
+func (ed *editor) preview(g *gfx.Graphics) {
+	g.SetLayer(0)
+	g.StrokeCircle(ed.at.X, ed.at.Y, 5, 1, gfx.RGBA(200, 200, 220, 90))
+	ed.system.Draw(g)
+	g.SetLayer(0)
+}
+```
+
+## The particle editor: the window
+
+The tabs keep the panel short: emission, motion and look. Each widget
+returns whether it changed something, so they are folded together with
+`||` and the emitter is rebuilt once, at the end, only if one of them
+did.
+
+`u.CurveEditor` is the widget the rest of the gallery does not have: a
+graph of a curve over a particle's lifetime, edited by dragging its
+points. Clicking an empty part of the graph adds a point and
+right-clicking one takes it away, down to the two that anchor the ends.
+The `lo` and `hi` arguments are the range the values may take, which is 0
+to 3 for a size multiplier and 0 to 1 for an alpha.
+
+<!-- file: particles.go -->
+```go
+// draw builds the editor window. Every widget reports whether it changed
+// something, so the emitter is rebuilt only when one did.
+func (ed *editor) draw(u *ui.Context) {
+	u.Window("Particle editor", &ed.win, func() {
+		if u.Dropdown("Preset", &ed.preset, presets) {
+			ed.load(preset(ed.preset))
+		}
+		u.Tabs([]string{"Emission", "Motion", "Look"}, &ed.tab)
+		changed := false
+		switch ed.tab {
+		case 0:
+			changed = u.Slider("Rate (per second)", &ed.emitter.Rate, 0, 400) || changed
+			changed = u.Slider("Life from (s)", &ed.emitter.Lifetime.Min, 0.05, 4) || changed
+			changed = u.Slider("Life to (s)", &ed.emitter.Lifetime.Max, 0.05, 4) || changed
+			changed = u.Slider("Radius", &ed.emitter.Shape.Radius, 0, 80) || changed
+			u.Label(fmt.Sprintf("%d alive of %d", ed.system.Alive(), ed.emitter.Max))
+		case 1:
+			changed = u.Slider("Direction (deg)", &ed.direction, -180, 180) || changed
+			changed = u.Slider("Spread (deg)", &ed.spread, 0, 360) || changed
+			changed = u.Slider("Speed from", &ed.emitter.Speed.Min, 0, 400) || changed
+			changed = u.Slider("Speed to", &ed.emitter.Speed.Max, 0, 400) || changed
+			changed = u.Slider("Gravity", &ed.gravity, -400, 400) || changed
+			changed = u.Slider("Damping", &ed.emitter.Damping, 0, 4) || changed
+		case 2:
+			changed = u.Slider("Size from", &ed.emitter.Size.Min, 1, 60) || changed
+			changed = u.Slider("Size to", &ed.emitter.Size.Max, 1, 60) || changed
+			// Drag a point to bend the curve, click the graph to add one,
+			// right-click a point to take it away.
+			changed = u.CurveEditor("Size over life", &ed.size, 0, 3, 64) || changed
+			changed = u.CurveEditor("Alpha over life", &ed.alpha, 0, 1, 64) || changed
+			changed = u.Dropdown("Blend", &ed.blend, []string{"alpha", "add", "multiply", "screen"}) || changed
+			if len(ed.emitter.ColorOverLife) == 0 {
+				changed = u.ColorPicker("Tint", &ed.emitter.Color) || changed
+			} else {
+				u.Label("Tinted by a colour-over-life gradient.")
+			}
+		}
+		if changed {
+			ed.apply()
+		}
+		u.Separator()
+		u.TextField("File", &ed.path)
+		u.Row(2, func() {
+			if u.Button("Save") {
+				ed.status = ed.save()
+			}
+			if u.Button("Load") {
+				ed.status = ed.loadFile()
+			}
+		})
+		if ed.status != "" {
+			u.Label(ed.status)
+		}
+	})
+}
+```
+
+## The particle editor: saving an effect as an asset
+
+`particle.Save` and `particle.Load` write and read an emitter as JSON.
+Everything a file can hold is written; the texture cannot be, so
+`TextureName` carries the path instead and `asset.Emitter` loads the
+image it names. That is the whole point of the editor: a game tunes an
+effect here, saves it beside its other assets, and loads it at startup
+without the numbers ever appearing in the code.
+
+<!-- file: particles.go -->
+```go
+// save writes the emitter as JSON and reports what happened, for the
+// line under the buttons.
+func (ed *editor) save() string {
+	data, err := particle.Save(ed.emitter)
+	if err != nil {
+		return err.Error()
+	}
+	if err := os.WriteFile(ed.path, data, 0o644); err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("Saved %d bytes to %s", len(data), ed.path)
+}
+
+// loadFile reads an emitter back. The texture and the position are the
+// editor's own, so a file written anywhere still previews here.
+func (ed *editor) loadFile() string {
+	data, err := os.ReadFile(ed.path)
+	if err != nil {
+		return err.Error()
+	}
+	e, err := particle.Load(data)
+	if err != nil {
+		return err.Error()
+	}
+	ed.load(e)
+	return "Loaded " + ed.path
+}
+
+// softCircle uploads the white disc that fades at its edge, the texture
+// most glowing particles want.
+func softCircle(g *gfx.Graphics) (*gfx.Texture, error) {
+	return g.NewTexture(particle.SoftCircle(64), gfx.TextureOptions{Linear: true})
 }
 ```
 
@@ -582,3 +865,11 @@ func main() {
   widget follow it.
 - Draw the squares in `Draw` after `u.Begin` and watch them cover the
   interface, then use `SetLayer` to order them instead.
+- Drag the points of `Size over life` in the particle editor and watch
+  the flame change shape as you do; click the graph to add a point and
+  right-click one to take it away.
+- Press Save in the particle editor and read the `emitter.json` it
+  writes. Every field is one an `Emitter` documents, so the file is worth
+  editing by hand; press Load to see the change.
+- Point `asset.Emitter` at that file from another game and the effect
+  loads with its texture, with none of its numbers in the code.

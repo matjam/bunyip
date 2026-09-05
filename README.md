@@ -173,7 +173,7 @@ whole program and explains it section by section:
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
-| `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, audio beep, frame-timing overlay, and the debug console on ` and F4 |
+| `go run ./examples/gallery [-skin] [-theme nord] [-debug]` | every UI widget, the built-in themes, a texture skin, a live particle editor that saves its emitter as JSON, audio beep, frame-timing overlay, and the debug console on ` and F4 |
 | `go run ./examples/tiles` | sprite sheet, tilemap with culling, following Camera2D (zoom, rotate), walking animation, layers, timers and tweens, nine-slice HUD with wrapped text |
 | `go run ./examples/audio [-music file.ogg] [-zone] [-mic]` | positional voices with panning or the binaural head model, reverb and low-pass sliders, fades, pitch, voice priorities, a synthesised Stream, streamed music files and a microphone level meter |
 | `go run ./examples/solar` | the ECS driving a scene: a scene document and a prefab loaded from embedded files, hierarchy, orbit and spin systems, instanced asteroid belt, click picking, render-texture minimap, profile scopes |
