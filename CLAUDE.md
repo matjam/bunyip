@@ -35,7 +35,7 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials (including iridescence, anisotropy, specular tint and fur shells), models, skinning and animation players, lights, shadows, sky and environments (`hdr.go` for Radiance, `exr.go` for OpenEXR), fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
@@ -69,8 +69,10 @@ so an interface built in `Draw` sees every press.
 (`vertex2D`: position, UV, premultiplied colour) sorted by layer and
 merged into draws by texture, shader, uniforms, blend, clip and
 projection. 3D draws go into `meshDraw` records that `prepareDraws`
-resolves, culls, sorts and uploads as an instance stream; `renderScene`
-runs the shadow atlas pass, the HDR pass (sky, opaque, blended,
+resolves, culls, sorts and uploads as an instance stream, in three
+groups: opaque, order-independent translucent, and sorted translucent.
+`renderScene` runs the shadow atlas pass, the HDR pass (sky, opaque, the
+order-independent transparency pass and its resolve, sorted blended,
 debug lines), decals, then the post pass composites. Colours are linear
 and non-premultiplied in the API, premultiplied in the 2D stream.
 
@@ -79,25 +81,30 @@ sprite stream. `ParticleQuad` is exactly the GPU instance layout, so a
 slice of them uploads as a memcpy and the fragment program does the
 premultiply; the quad's six vertices come from `gl_VertexIndex`, so
 there is no vertex buffer. `DrawParticles` records a batch into the
-queue and `flush2D` interleaves the batches with the 2D stream by layer,
-which is why `draw2D` carries the layer of its first item; within one
-layer particles draw over sprites. `DrawParticles3D` records into
-`parts.scene`, which `renderScene` draws after decals in a `NoDepth`
-pass over `t.hdr`, sampling `t.depthSet` and doing the depth test in the
-fragment program, which is what gives the soft fade. Its push block is
-its own 128 bytes carrying the camera basis, so the shared `Frame` block
-is untouched.
+queue and `flush2D` interleaves the batches with the 2D stream by layer
+and then by call order, which is why `draw2D` carries the layer and the
+submission offset of its first item and why `item2D` carries `breaks`:
+two sprite runs with a batch between them must not merge into one draw.
+`DrawParticles3D` records into `parts.scene`, which `renderScene` draws
+after decals in a `NoDepth` pass over `t.hdr`, sampling `t.depthSet` and
+doing the depth test in the fragment program, which is what gives the
+soft fade. Its push block is its own 128 bytes carrying the camera
+basis, so the shared `Frame` block is untouched.
 
-**Descriptor sets for meshes.** Set 0 is the material: thirteen
+**Descriptor sets for meshes.** Set 0 is the material: seventeen
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
 the environment cube, the thickness map, the scene copy for
-transmission, the transmission map) at bindings 0 to 12, then one array
-of four `SAMPLER` bindings at binding 13, immutable in the layout:
+transmission, the transmission map, then the iridescence, anisotropy,
+specular and fur maps) at bindings 0 to 16, then one array
+of four `SAMPLER` bindings at binding 17, immutable in the layout:
 linear repeat, linear clamp, nearest repeat, nearest clamp, in that
 order (`samplerIndex` in `gfx/mesh_draw.go`). A texture's own filtering
 and edge handling pick its sampler, and `materialSet` packs one index
-per texture slot, two bits each, into the instance stream's `atten.w`;
-the shader reads it back with `texSampler(slot)` and the GLSL preludes
+per texture slot, two bits each, into the instance stream's `atten.w`,
+for the first eleven slots only (`packedSamplerSlots`); the four maps
+after them are always read linear and repeating, because a float's
+mantissa has no room for more index bits.
+The shader reads the index back with `texSampler(slot)` and the GLSL preludes
 `#define` the old names (`albedoTex`, `image0`) as
 `sampler2D(image, samplers[...])` pairs, so game shaders are unchanged.
 Every instance of a draw shares set 0, so the index is the same across
@@ -117,9 +124,17 @@ same way. Set 2 is the shadow atlas, the one comparison sampler.
 Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal allows sixteen samplers a stage,
 which the four plus the shadow atlas's stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
-which is the budget the thirteen images and the atlas spend from: a new
+which is the budget the seventeen images and the atlas spend from: a new
 material texture costs an image and no sampler. The shadow maps still
 share one atlas image so the shadow pass costs one binding.
+
+**The instance stream** (`meshInstance` in `gfx/mesh.go`) is fifteen
+`vec4`s at vertex attribute locations 5 to 16 and 19 to 21; 17 and 18
+are a skinned mesh's joints and weights (`meshVertexLayout` and
+`skinVertexLayout`). Adding a field means adding it at the end of the
+struct, at the next free location, and to the declarations in
+`vert_common.glsl` and the varyings the postludes in
+`gfx/shaders/shaders.go` write and `prelude_mesh.glsl` reads.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
 in seven GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
@@ -203,7 +218,10 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...   # and linux
 
 Headless tests: `newHeadless(t, w, h)` in `gfx` and `newContext(t)` in
 `ui` give a `Graphics` on an offscreen surface; `renderMaterial` in
-`gfx/material_test.go` renders one frame and returns the image. UI tests
+`gfx/material_test.go` renders one frame and returns the image.
+`newHeadless` turns the validation layers on and fails the test if they
+report an error, so a pipeline or descriptor mistake is a red test rather
+than a line in the log. UI tests
 must feed a mouse move and run one frame before a press, because hover
 is one frame behind. A glyph first drawn in a frame appears in that
 frame, because the atlas upload is recorded into the frame before the
@@ -293,6 +311,24 @@ render pass, so text tests draw one frame.
   `gfx/bounds.go`), and a mesh whose shader has a vertex hook by
   `Shader.VertexBounds`, whose zero means the draw is never culled.
   `Mesh.SetBounds` overrides the box and survives `Update`.
+- A mesh shader has two fragment programs: the usual one and the one the
+  order-independent transparency pass needs, which writes a second
+  attachment (the accumulated colour and the revealage). `shaders.Compose`
+  builds both from one source by substituting the `OUTPUT` line of
+  `meshPostlude`, `bunyip-shader` always bundles both for `-kind mesh`,
+  and a bundle without the second one (compiled before it existed) keeps
+  its draws on the sorted path. The pass needs the device's
+  `independentBlend`, because its two attachments blend differently; a
+  device without it also keeps sorting.
+- The atmospheric sky is written three times: `Sky.scatter` and
+  `Sky.radiance` in `gfx/sky.go`, and the block between `// ATMOSPHERE.`
+  and `// END ATMOSPHERE.` in `gfx/shaders/prelude_mesh.glsl` and in
+  `gfx/shaders/skyparam.frag`, which are the same text. The ambient
+  harmonics are projected from the Go side and the pixels come from the
+  shaders, so a change to one is a change to all three.
+  `TestAtmosphereBlocksMatch` compares the two shaders and
+  `TestAtmosphereMatchesGo` renders the sky and checks it against
+  `Sky.radiance`.
 - The instance stream is twelve `vec4`s at locations 5 to 16, so a
   skinned mesh's joints and weights sit at 17 and 18 (`vert_skin.glsl`
   and `skinVertexLayout`). The twelfth carries the draw's reflection

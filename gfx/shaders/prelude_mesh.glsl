@@ -10,12 +10,12 @@
 // Lighting is metallic-roughness PBR: Cook-Torrance with GGX
 // distribution, Schlick Fresnel and Smith-GGX visibility; one shadowed
 // directional light, the point and spot lights of the fragment's own
-// cluster, image-based or hemisphere ambient, plus clearcoat, sheen and
-// subsurface lobes when a material asks for them.
-// Set 0 keeps images and samplers apart: thirteen sampled images and one
-// array of four samplers shared by every material (linear repeat, linear
-// clamp, nearest repeat, nearest clamp). A texture's own filtering and
-// edge handling pick its sampler, and the index rides in the instance
+// cluster, image-based or hemisphere ambient, plus clearcoat, sheen,
+// subsurface, iridescence and anisotropy when a material asks for them.
+// Set 0 keeps images and samplers apart: seventeen sampled images and
+// one array of four samplers shared by every material (linear repeat,
+// linear clamp, nearest repeat, nearest clamp). A texture's own filtering
+// and edge handling pick its sampler, and the index rides in the instance
 // stream, so a new material texture costs an image and no sampler. The
 // names below are macros that pair the two, so texture(albedoTex, uv)
 // and texture(image0, uv) read as they always have.
@@ -32,10 +32,17 @@ layout(set = 0, binding = 9) uniform textureCube tEnv;     // prefiltered enviro
 layout(set = 0, binding = 10) uniform texture2D tThickness; // R: 1 thick, 0 thin, for subsurface
 layout(set = 0, binding = 11) uniform texture2D tScene;     // the opaque scene, blurred down its mips, for transmission
 layout(set = 0, binding = 12) uniform texture2D tTransmission; // R scales the transmission factor
-layout(set = 0, binding = 13) uniform sampler samplers[4];
+layout(set = 0, binding = 13) uniform texture2D tIridescence;  // R the thin film's strength, G its thickness
+layout(set = 0, binding = 14) uniform texture2D tAnisotropy;   // RG the direction, B the strength
+layout(set = 0, binding = 15) uniform texture2D tSpecular;     // RGB the reflection's tint, A its strength
+layout(set = 0, binding = 16) uniform texture2D tFur;          // R the strand mask of a fur shell
+layout(set = 0, binding = 17) uniform sampler samplers[4];
 
-// LINEAR_CLAMP is the sampler the engine's own images always use.
+// LINEAR_CLAMP is the sampler the engine's own images always use, and
+// LINEAR_REPEAT the one the material maps added after the packed sampler
+// indices ran out use.
 const int LINEAR_CLAMP = 1;
+const int LINEAR_REPEAT = 0;
 
 layout(set = 1, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -70,6 +77,10 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 gridSpacing;    // xyz the distance between its cells
     vec4 gridCounts;     // xyz how many cells it has on each axis
     vec4 reflect;        // x strength, y max roughness, z max distance, w steps
+    // The atmosphere, appended after that.
+    vec4 atmos;        // x planet radius, y air height, z rayleigh, w mie falloff height
+    vec4 betaR;        // rgb rayleigh scattering per unit at the ground, w = sun intensity
+    vec4 betaM;        // x mie scattering, y forward lobe, z camera altitude, w = 1 with an atmosphere
 } frame;
 
 // The light probe grid's harmonics, nine vec4s a cell, x fastest then y
@@ -122,6 +133,9 @@ layout(location = 11) flat in vec4 vSheen;   // sheen colour, w sheen roughness
 layout(location = 12) flat in vec4 vVolume;  // x transmission, y ior, z thickness, w attenuation distance
 layout(location = 13) flat in vec4 vAtten;   // attenuation colour, w = packed sampler indices
 layout(location = 14) flat in vec4 vGI;      // x reflection probe index plus one, y 1 for an opaque draw
+layout(location = 15) flat in vec4 vSpec;    // specular colour, w specular strength
+layout(location = 16) flat in vec4 vIrid;    // iridescence strength, film ior, thickness min and max in nm
+layout(location = 17) flat in vec4 vFur;     // anisotropy strength, its rotation; shell offset and shell height
 layout(location = 0) out vec4 outColor;
 
 // texSampler is the sampler for one of the material set's texture slots,
@@ -143,6 +157,13 @@ int texSampler(int slot) { return (int(vAtten.w) >> (2 * slot)) & 3; }
 #define transmissionTex sampler2D(tTransmission, samplers[texSampler(10)])
 #define envMap samplerCube(tEnv, samplers[LINEAR_CLAMP])
 #define sceneTex sampler2D(tScene, samplers[LINEAR_CLAMP])
+// The maps below are always read with linear filtering and repeat: the
+// packed index carries two bits for each of the first eleven slots and
+// has no room for more.
+#define iridescenceTex sampler2D(tIridescence, samplers[LINEAR_REPEAT])
+#define anisotropyTex sampler2D(tAnisotropy, samplers[LINEAR_REPEAT])
+#define specularTex sampler2D(tSpecular, samplers[LINEAR_REPEAT])
+#define furTex sampler2D(tFur, samplers[LINEAR_REPEAT])
 
 // Surface is what the lighting sees. surface() may change any field:
 // albedo and alpha (linear, not premultiplied), normal (world space),
@@ -151,7 +172,12 @@ int texSampler(int slot) { return (int(vAtten.w) >> (2 * slot)) & 3; }
 // clearcoat and clearcoatRoughness (a varnish layer), sheen and
 // sheenRoughness (cloth), subsurface and thickness (light through thin
 // parts), transmission, ior, volume (thickness in world units),
-// attenuation and attenuationDistance (light through glass and liquids).
+// attenuation and attenuationDistance (light through glass and liquids),
+// specular and specularColor (the strength and tint of a dielectric's
+// reflection), iridescence with iridescenceIOR and iridescenceThickness
+// in nanometres (a thin film over the surface), anisotropy with tangent
+// (a highlight stretched along the tangent), and shell (0 on the surface
+// itself, rising to 1 on the outermost fur shell).
 // color is the vertex colour, already multiplied into albedo.
 struct Surface {
     vec3 albedo;
@@ -178,6 +204,14 @@ struct Surface {
     float volume;
     vec3 attenuation;
     float attenuationDistance;
+    vec3 specularColor;
+    float specular;
+    float iridescence;
+    float iridescenceIOR;
+    float iridescenceThickness; // nanometres
+    float anisotropy;
+    vec3 tangent;               // world space, the direction a highlight stretches along
+    float shell;                // 0 on the surface, 1 on the outermost fur shell
 };
 
 // VertexData and model are the vertex stage's; they are here so a
@@ -212,6 +246,24 @@ vec3 perturbNormal(vec3 n, vec3 pos, vec2 uv) {
     mat3 tbn = mat3(t * invmax, b * invmax, n);
     vec3 nm = texture(normalTex, uv).xyz * 2.0 - 1.0;
     return normalize(tbn * nm);
+}
+
+// surfaceTangent is the surface's direction along the u axis of its
+// texture coordinates, turned in the surface's plane by an angle in
+// radians. It comes from screen-space derivatives, like perturbNormal,
+// so an anisotropic material needs texture coordinates but no tangents
+// of its own. dir turns it further, as an anisotropy map's red and green
+// channels ask.
+vec3 surfaceTangent(vec3 n, vec2 uv, vec2 dir) {
+    vec3 dp1 = dFdx(vWorldPos), dp2 = dFdy(vWorldPos);
+    vec2 duv1 = dFdx(uv), duv2 = dFdy(uv);
+    vec3 dp2perp = cross(dp2, n), dp1perp = cross(n, dp1);
+    vec3 t = dp2perp * duv1.x + dp1perp * duv2.x;
+    if (dot(t, t) < 1e-12) t = abs(n.y) < 0.99 ? cross(vec3(0.0, 1.0, 0.0), n) : vec3(1.0, 0.0, 0.0);
+    t = normalize(t - n * dot(n, t));
+    vec3 b = cross(n, t);
+    vec3 turned = t * dir.x + b * dir.y;
+    return dot(turned, turned) < 1e-12 ? t : normalize(turned);
 }
 
 // sampleAtlas takes nine comparisons around a point of one map in the
@@ -329,6 +381,54 @@ vec3 F_Schlick(float VoH, vec3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - VoH, 5.0);
 }
 
+// D_GGXAniso is the GGX distribution stretched along the tangent, with
+// one roughness across the tangent and another across the bitangent
+// (Burley, in the form Filament uses).
+float D_GGXAniso(float NoH, float ToH, float BoH, float at, float ab) {
+    vec3 d = vec3(ab * ToH, at * BoH, at * ab * NoH);
+    float d2 = max(dot(d, d), 1e-8);
+    float b2 = at * ab / d2;
+    return at * ab * b2 * b2 / PI;
+}
+
+// V_SmithGGXAniso is the visibility term that goes with D_GGXAniso.
+float V_SmithGGXAniso(float at, float ab, float ToV, float BoV, float ToL, float BoL, float NoV, float NoL) {
+    float lv = NoL * length(vec3(at * ToV, ab * BoV, NoV));
+    float ll = NoV * length(vec3(at * ToL, ab * BoL, NoL));
+    return 0.5 / max(lv + ll, 1e-5);
+}
+
+// thinFilm is how much a film of that many nanometres reflects at each
+// of three wavelengths, seen at an angle. The two reflections, off the
+// film's front and back, are out of phase by the extra distance the
+// second travels, and where they cancel that wavelength is missing from
+// the reflection: a soap bubble, an oil slick, tempered steel. It is a
+// cheap stand-in for the full Belcour and Barla model, with a mean of
+// 0.5, so the caller doubles it to keep the surface's average
+// reflectance.
+vec3 thinFilm(float cosTheta, float thickness, float filmIOR) {
+    float eta = max(filmIOR, 1.0);
+    float sin2 = (1.0 - cosTheta * cosTheta) / (eta * eta);
+    float cosT = sqrt(max(1.0 - sin2, 0.0));
+    float opd = 2.0 * eta * thickness * cosT; // optical path difference, nm
+    vec3 phase = 2.0 * PI * opd / vec3(650.0, 550.0, 450.0) + PI;
+    return 0.5 + 0.5 * cos(phase);
+}
+
+// baseF0 is the surface's reflectance at normal incidence: a dielectric's
+// 0.04 scaled and tinted by the specular colour, the albedo where the
+// surface is metal.
+vec3 baseF0(Surface s) {
+    return mix(vec3(0.04) * s.specularColor * s.specular, s.albedo, s.metallic);
+}
+
+// iridescent shifts a Fresnel colour through the thin film's
+// interference, keeping the average reflectance where it was.
+vec3 iridescent(Surface s, vec3 F, float cosTheta) {
+    if (s.iridescence <= 0.0) return F;
+    return mix(F, F * 2.0 * thinFilm(cosTheta, s.iridescenceThickness, s.iridescenceIOR), s.iridescence);
+}
+
 // D_Charlie is the sheen distribution (Estevez and Kulla).
 float D_Charlie(float NoH, float roughness) {
     float a = max(roughness, 0.05);
@@ -375,6 +475,36 @@ vec3 shadeVolume(vec3 n, vec3 v, vec3 l, vec3 radiance, vec3 albedo, float metal
     return (kd * albedo / PI + spec) * radiance * NoL;
 }
 
+// baseLayer is one light's contribution to a surface's base layer: the
+// diffuse lobe, scaled down by what passes through the surface instead,
+// and the specular lobe, stretched along the tangent where the material
+// is anisotropic and shifted by the thin film where it is iridescent.
+// It is what the engine's own lighting uses; shade and shadeVolume are
+// the plain forms a game shader may call.
+vec3 baseLayer(Surface s, vec3 n, vec3 v, vec3 l, vec3 radiance) {
+    vec3 h = normalize(l + v);
+    float NoL = max(dot(n, l), 0.0);
+    float NoV = max(dot(n, v), 1e-4);
+    float NoH = max(dot(n, h), 0.0);
+    float VoH = max(dot(v, h), 0.0);
+    float a = s.roughness * s.roughness;
+    float a2 = a * a;
+    vec3 F = iridescent(s, F_Schlick(VoH, baseF0(s)), VoH);
+    float D = D_GGX(NoH, a2);
+    float V = V_SmithGGX(NoV, NoL, a2);
+    if (s.anisotropy != 0.0) {
+        float at = max(a * (1.0 + s.anisotropy), 1e-3);
+        float ab = max(a * (1.0 - s.anisotropy), 1e-3);
+        vec3 t = normalize(s.tangent - n * dot(n, s.tangent));
+        vec3 b = cross(n, t);
+        D = D_GGXAniso(NoH, dot(t, h), dot(b, h), at, ab);
+        V = V_SmithGGXAniso(at, ab, dot(t, v), dot(b, v), dot(t, l), dot(b, l), NoV, NoL);
+    }
+    vec3 spec = D * V * F;
+    vec3 kd = (1.0 - F) * (1.0 - s.metallic) * (1.0 - s.transmission);
+    return (kd * s.albedo / PI + spec) * radiance * NoL;
+}
+
 // transmitted is the light arriving through a transmissive surface: the
 // opaque scene behind it, refracted across the volume, blurred by the
 // roughness and absorbed by the attenuation colour over the distance,
@@ -396,7 +526,7 @@ vec3 transmitted(Surface s, vec3 n, vec3 v) {
 // lobes is one light's contribution to a surface: the base layer plus
 // sheen, clearcoat and subsurface transmission.
 vec3 lobes(Surface s, vec3 n, vec3 v, vec3 l, vec3 radiance) {
-    vec3 color = shadeVolume(n, v, l, radiance, s.albedo, s.metallic, s.roughness, s.transmission);
+    vec3 color = baseLayer(s, n, v, l, radiance);
     vec3 h = normalize(l + v);
     float NoL = max(dot(n, l), 0.0);
     float NoV = max(dot(n, v), 1e-4);
@@ -469,12 +599,140 @@ vec3 light(Surface s) {
     return color + ambient(s, n, v) * s.occlusion;
 }
 
+// ATMOSPHERE. Everything between this line and END ATMOSPHERE is the
+// same text in prelude_mesh.glsl and skyparam.frag, and Sky.scatter and
+// Sky.radiance in gfx/sky.go are the same functions in Go: the ambient
+// harmonics are projected from the Go side and the pixels come from
+// here, so the three must stay in step. TestAtmosphereBlocksMatch
+// compares the two shaders and TestAtmosphereMatchesGo the Go side.
+const int ATMOS_VIEW_STEPS = 8;
+const int ATMOS_SUN_STEPS = 4;
+const float ATMOS_PI = 3.14159265359;
+
+// raySphere returns where a ray from o along d crosses a sphere of
+// radius r about the origin, as two distances along the ray. x is
+// greater than y when the ray misses.
+vec2 raySphere(vec3 o, vec3 d, float r) {
+    float b = dot(o, d);
+    float c = dot(o, o) - r * r;
+    float h = b * b - c;
+    if (h < 0.0) return vec2(1.0, -1.0);
+    h = sqrt(h);
+    return vec2(-b - h, -b + h);
+}
+
+// phaseRayleigh is how much air scatters towards an angle whose cosine
+// is mu: nearly even, a little more forwards and backwards.
+float phaseRayleigh(float mu) { return 3.0 / (16.0 * ATMOS_PI) * (1.0 + mu * mu); }
+
+// phaseMie is the Henyey-Greenstein lobe haze scatters into, forwards
+// by g, which is the glare around the sun.
+float phaseMie(float mu, float g) {
+    float g2 = g * g;
+    float d = (2.0 + g2) * pow(1.0 + g2 - 2.0 * g * mu, 1.5);
+    return 3.0 / (8.0 * ATMOS_PI) * ((1.0 - g2) * (1.0 + mu * mu)) / d;
+}
+
+// atmosphereScatter integrates single scattering along a ray leaving the
+// camera in direction d, for at most dist world units: air and haze
+// thinning with height, each sample lit by what is left of the sunlight
+// that reached it and dimmed by the air back to the camera. Samples the
+// planet shadows are dark, which is what makes dusk fall. transmittance
+// comes back as how much of the light from beyond the segment survives
+// it, for aerial perspective and the sun's disc.
+vec3 atmosphereScatter(vec3 d, float dist, int steps, int sunSteps, out vec3 transmittance) {
+    float radius = frame.atmos.x, height = frame.atmos.y;
+    float hR = frame.atmos.z, hM = frame.atmos.w;
+    vec3 betaR = frame.betaR.rgb;
+    float betaM = frame.betaM.x;
+    vec3 sun = frame.sun.xyz;
+    vec3 origin = frame.skyUp.xyz * (radius + frame.betaM.z);
+    transmittance = vec3(1.0);
+    vec2 shell = raySphere(origin, d, radius + height);
+    float t0 = max(shell.x, 0.0), t1 = shell.y;
+    if (t1 <= t0) return vec3(0.0); // outside the air, looking away from the planet
+    vec2 gnd = raySphere(origin, d, radius);
+    if (gnd.y > 0.0 && gnd.x > 0.0) t1 = min(t1, gnd.x); // the ray meets the ground first
+    t1 = min(t1, t0 + dist);
+    if (t1 <= t0) return vec3(0.0);
+    float ds = (t1 - t0) / float(steps);
+    float mu = dot(d, sun);
+    float odR = 0.0, odM = 0.0;
+    vec3 sumR = vec3(0.0), sumM = vec3(0.0);
+    for (int i = 0; i < steps; i++) {
+        vec3 p = origin + d * (t0 + (float(i) + 0.5) * ds);
+        float h = max(length(p) - radius, 0.0);
+        float dR = exp(-h / hR) * ds;
+        float dM = exp(-h / hM) * ds;
+        odR += dR;
+        odM += dM;
+        vec2 shadow = raySphere(p, sun, radius);
+        if (shadow.y > 0.0 && shadow.x > 0.0) continue; // the planet stands in the way
+        float lightStep = max(raySphere(p, sun, radius + height).y, 0.0) / float(sunSteps);
+        float lodR = 0.0, lodM = 0.0;
+        for (int j = 0; j < sunSteps; j++) {
+            vec3 q = p + sun * ((float(j) + 0.5) * lightStep);
+            float hj = max(length(q) - radius, 0.0);
+            lodR += exp(-hj / hR) * lightStep;
+            lodM += exp(-hj / hM) * lightStep;
+        }
+        vec3 att = exp(-(betaR * (odR + lodR) + betaM * 1.1 * (odM + lodM)));
+        sumR += att * dR;
+        sumM += att * dM;
+    }
+    transmittance = exp(-(betaR * odR + betaM * 1.1 * odM));
+    return frame.betaR.w * (sumR * betaR * phaseRayleigh(mu) + sumM * betaM * phaseMie(mu, frame.betaM.y));
+}
+
+// skyColor is the sky's light from a direction without the sun's disc:
+// the atmosphere when the light's Sky has one, otherwise the gradient
+// above the horizon, and the ground or planet below. Below the horizon a
+// camera inside the air looks the colour up along the horizon instead,
+// because its own ray meets the ground at once and would leave a dark
+// band; from above the air the ray itself is integrated, so a planet
+// seen from orbit keeps the glow around its limb.
+vec3 skyColor(vec3 d) {
+    float up = dot(d, frame.skyUp.xyz);
+    float air = frame.horizon.w;
+    if (frame.betaM.w > 0.5) {
+        vec3 dir = d;
+        if (up < 0.0 && frame.betaM.z < frame.atmos.y) {
+            vec3 side = d - frame.skyUp.xyz * up;
+            float len = length(side);
+            if (len > 1e-4) dir = side / len;
+        }
+        vec3 tr;
+        vec3 c = atmosphereScatter(dir, 1e9, ATMOS_VIEW_STEPS, ATMOS_SUN_STEPS, tr) * air;
+        if (up < 0.0) c = mix(c, frame.ground.rgb, pow(-up, 0.5));
+        return c;
+    }
+    vec3 above = mix(frame.horizon.rgb, frame.sky.rgb, pow(clamp(up, 0.0, 1.0), 0.7)) * air;
+    vec3 below = mix(frame.horizon.rgb * air, frame.ground.rgb, pow(clamp(-up, 0.0, 1.0), 0.5));
+    return up >= 0.0 ? above : below;
+}
+// END ATMOSPHERE.
+
+// aerialPerspective is what the air between the camera and a surface
+// does to it: the surface dims by the air's transmittance and the light
+// that air scatters into the view is added. It is the sky's own model
+// over the distance to the fragment, at half the samples, because the
+// colour varies slowly along a ray short enough to see the end of.
+vec3 aerialPerspective(vec3 c, vec3 worldPos) {
+    vec3 d = worldPos - frame.camPos.xyz;
+    float dist = length(d);
+    if (dist < 1e-4) return c;
+    vec3 tr;
+    vec3 inscatter = atmosphereScatter(d / dist, dist, ATMOS_VIEW_STEPS / 2, ATMOS_SUN_STEPS / 2, tr);
+    return mix(c, c * tr + inscatter, frame.horizon.w);
+}
+
 // applyFog fades a lit colour towards the frame's fog colour by the
 // distance from the camera: linear between the range's start and end,
 // exponential-squared by the density, whichever is denser, thinned
-// above the ground fog's height. Every mesh shader's output passes
-// through it; call it yourself in finish() only to fog something the
-// engine does not.
+// above the ground fog's height. An atmospheric sky then adds aerial
+// perspective over that, so distant geometry takes the colour of the air
+// in front of it. Every mesh shader's output passes through it; call it
+// yourself in finish() only to fog something the engine does not.
 vec3 applyFog(vec3 c, vec3 worldPos, float depth) {
     float f = 0.0;
     if (frame.fogRange.y > frame.fogRange.x) {
@@ -487,7 +745,9 @@ vec3 applyFog(vec3 c, vec3 worldPos, float depth) {
     if (frame.fogRange.w > 0.0) {
         f *= clamp(exp(-(worldPos.y - frame.fogRange.z) * frame.fogRange.w), 0.0, 1.0);
     }
-    return mix(c, frame.fog.rgb, f);
+    c = mix(c, frame.fog.rgb, f);
+    if (frame.betaM.w > 0.5) c = aerialPerspective(c, worldPos);
+    return c;
 }
 
 // irradiance evaluates the environment's spherical harmonics for a
@@ -513,16 +773,10 @@ vec3 envBRDF(vec3 f0, float roughness, float NoV) {
 }
 
 // skyRadiance is the procedural sky's light from a direction, without
-// the sun: the atmosphere's gradient above the horizon and the ground or
-// planet below, blurred towards the mean for rough reflections. The
-// background shader draws the same gradient.
+// the sun: skyColor blurred towards the mean for rough reflections. The
+// background shader draws the same sky.
 vec3 skyRadiance(vec3 d, float roughness) {
-    float up = dot(d, frame.skyUp.xyz);
-    float air = frame.horizon.w;
-    vec3 above = mix(frame.horizon.rgb, frame.sky.rgb, pow(clamp(up, 0.0, 1.0), 0.7)) * air;
-    vec3 below = mix(frame.horizon.rgb * air, frame.ground.rgb, pow(clamp(-up, 0.0, 1.0), 0.5));
-    vec3 color = up >= 0.0 ? above : below;
-    return mix(color, frame.sh[0].rgb * 0.282095, roughness * 0.8);
+    return mix(skyColor(d), frame.sh[0].rgb * 0.282095, roughness * 0.8);
 }
 
 // probeIndex is the reflection probe this draw reflects, or -1 for the
@@ -670,7 +924,7 @@ float reflectWeight(Surface s) {
     if (gloss <= 0.0) return 0.0;
     vec3 n = normalize(s.normal);
     float NoV = max(dot(n, s.viewDir), 1e-4);
-    vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
+    vec3 f0 = baseF0(s);
     vec3 F = f0 + (max(vec3(1.0 - s.roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
     return clamp(max(max(F.r, F.g), F.b) * gloss * frame.reflect.x, 0.0, 1.0);
 }
@@ -680,16 +934,24 @@ float reflectWeight(Surface s) {
 // every lobe.
 vec3 ambient(Surface s, vec3 n, vec3 v) {
     float NoV = max(dot(n, v), 1e-4);
-    vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
+    vec3 f0 = baseF0(s);
     vec3 kS = f0 + (max(vec3(1.0 - s.roughness), f0) - f0) * pow(1.0 - NoV, 5.0);
     vec3 kD = (1.0 - kS) * (1.0 - s.metallic);
     vec3 r = reflect(-v, n);
+    if (s.anisotropy != 0.0) {
+        // An anisotropic surface reflects the environment along a normal
+        // bent towards the direction the highlight stretches in.
+        vec3 t = normalize(s.tangent - n * dot(n, s.tangent));
+        vec3 dir = s.anisotropy >= 0.0 ? cross(n, t) : t;
+        vec3 bent = normalize(mix(n, cross(cross(dir, v), dir), abs(s.anisotropy)));
+        r = reflect(-v, bent);
+    }
     vec3 diffuse = envDiffuse(n, s.worldPos);
     vec3 color = kD * s.albedo * diffuse * (1.0 - s.transmission);
     if (s.transmission > 0.0) {
         color += kD * s.transmission * transmitted(s, n, v);
     }
-    color += envSpecular(r, s.roughness) * envBRDF(f0, s.roughness, NoV);
+    color += envSpecular(r, s.roughness) * iridescent(s, envBRDF(f0, s.roughness, NoV), NoV);
     if (dot(s.sheen, s.sheen) > 0.0) {
         color += s.sheen * diffuse * 0.25 * (1.0 - s.sheenRoughness * 0.5);
     }

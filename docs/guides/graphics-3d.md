@@ -196,8 +196,26 @@ g.ship, err = ctx.Gfx.LoadModel(doc) // or asset.Model(ctx.Gfx, g.fs, "ship.glb"
 `DrawModelAt(m, transform)` takes a `Transform` instead. `Model.Min` and
 `Model.Max` bound the whole model. Use them to set a camera's distance
 when you do not know the file in advance. `Model.Parts` is the placed
-primitives, each a `ModelPart` with a `Mesh`, a `Material` and a `World`
-matrix, for drawing one part with its own material. `NodeCount`,
+primitives, each a `ModelPart` with a `Mesh`, a `Name` (the name glTF
+gave its material), a `Material` and a `World` matrix.
+
+To draw a model with a material of your own, `DrawModelWith(m, world,
+override)` passes each part through the override and draws what it
+returns, and `DrawModelAnimatedWith` does the same for a posed one. The
+override sees the part's index and the part itself, so it can match on
+the index or on the name, and returning `part.Material` leaves a part
+alone. The model's own materials are never changed.
+
+```go
+gr.DrawModelWith(g.ship, world, func(i int, p gfx.ModelPart) gfx.Material {
+	if p.Name != "hull" {
+		return p.Material
+	}
+	m := p.Material
+	m.BaseColor = teamColor
+	return m
+})
+``` `NodeCount`,
 `NodeName`, `NodeIndex` and `NodeParent` walk the node hierarchy by name,
 so you can find a node such as a gun muzzle and spawn an effect there;
 `Model.NodeMatrix` and `NodePosition` give a node's rest-pose place in
@@ -268,7 +286,8 @@ Transparency has three modes, and they do different things.
 `AlphaCutoff` discards fragments below a threshold in both the lit and
 the shadow pass, giving hard edges and real shadows, which is what
 leaves, fences and grass need. `Blend` draws the material after the
-opaque scene, sorted back to front, for smoke and water. `Transmission`
+opaque scene, sorted back to front, for smoke and water, or without
+sorting at all under `PostSettings.OrderIndependent`. `Transmission`
 is refractive glass, below. Alongside them, `DoubleSided` turns off
 back-face culling and lights back faces with a flipped normal, which a
 single-quad leaf needs; `Unlit` shows the base colour and emissive as
@@ -281,8 +300,10 @@ floor in one field.
 The layered features come from the matching glTF extensions and cost
 nothing left at zero. `Clearcoat` with `ClearcoatRoughness` adds a
 varnish lobe for car paint and wet surfaces, `Sheen` with
-`SheenRoughness` adds soft light at grazing angles for velvet and cloth,
-and `Subsurface`, shaped by a `ThicknessTexture`, lets light through thin
+`SheenRoughness` adds soft light at grazing angles, which is the fabric
+look: velvet, felt, brushed cotton, and a good starting point is a sheen
+colour near the base colour with a `SheenRoughness` around 0.4.
+`Subsurface`, shaped by a `ThicknessTexture`, lets light through thin
 parts for leaves, wax and skin. `Transmission` makes glass and ice. The
 opaque scene shows through, refracted by `IOR` (zero means 1.5) across
 `Thickness` world units, blurred by the roughness and absorbed towards
@@ -299,12 +320,66 @@ velvet := gfx.Material{BaseColor: gfx.RGB(40, 30, 90), Roughness: 0.9,
 	Sheen: gfx.RGB(200, 180, 255), SheenRoughness: 0.4}
 ```
 
+`Specular` and `SpecularColor` scale and tint what a dielectric reflects,
+so chalk (`Specular: 0.02`) and a warm varnish are describable; zero
+means the plain 1 and white, and metals are unaffected. `Iridescence`
+puts a thin film over the surface whose interference turns the hue with
+the angle: soap bubbles, oil, beetles, tempered steel. Its look is set by
+`IridescenceThickness` in nanometres (zero means 400; 100 to 800 is the
+range that shows colour) and `IridescenceIOR` (zero means 1.3), and an
+`IridescenceTexture` scales the strength by its red channel and the
+thickness by its green, the two maps glTF packs into one image.
+`Anisotropy` stretches the highlight along the surface for brushed metal,
+hair, satin and vinyl, turned by `AnisotropyRotation`; the direction
+comes from the mesh's texture coordinates, so an anisotropic mesh needs
+UVs but no tangents of its own.
+
+`Shells` draws the mesh again that many times, each further out along its
+normals, which is fur, grass, moss and hair. `ShellLength` is how far the
+outermost shell stands off in world units (zero means 0.05) and
+`FurTexture` is the strand mask: a shell keeps a fragment where the map's
+red channel is above that shell's height, so a tiled noise image gives
+strands of different lengths and a `UVTransform` tiles it. Shells draw
+after the opaque scene, leave the depth buffer alone and cast no shadow,
+and each one costs an instance of the mesh, so sixteen shells of one
+sphere are one draw call.
+
+`Stencil`, `StencilRef` and `StencilWrite` mask one draw against
+another. A material with `StencilWrite: gfx.StencilReplace` and a
+`StencilRef` of 1 marks the buffer where it draws, and one with
+`Stencil: gfx.StencilEqual` and the same reference draws only inside that
+mark: portals, cutaways, magic windows. The buffer starts each frame at
+zero, materials that write it are drawn before those that do not so the
+order the game queues them in does not matter, and the masked draw still
+has to pass the depth test, so put it in front of its mask. `Outline`
+uses the stencil buffer for itself, so a material with an outline ignores
+the three.
+
+```go
+brushed := gfx.Material{BaseColor: gfx.RGB(200, 200, 210), Metallic: 1,
+	Roughness: 0.35, Anisotropy: 0.9}
+bubble := gfx.Material{BaseColor: gfx.RGB(140, 140, 150), Metallic: 1,
+	Roughness: 0.2, Iridescence: 1, IridescenceThickness: 480}
+fur := gfx.Material{BaseColor: gfx.RGB(190, 140, 70), Roughness: 0.9,
+	Shells: 16, ShellLength: 0.22, FurTexture: g.noise, UVTransform: lin.Scale2(8, 4)}
+mask := gfx.Material{StencilWrite: gfx.StencilReplace, StencilRef: 1}
+through := gfx.Material{BaseColor: gfx.RGB(255, 120, 40), Stencil: gfx.StencilEqual, StencilRef: 1}
+```
+
 Vertex colours multiply the base colour and need no field at all; glTF
 files fill them from `COLOR_0` and the terrain snippet above writes them
 by hand. The second UV set comes from `TEXCOORD_1`. A `Shader` from
 `NewMeshShader` replaces the surface calculation before lighting, for
 water, dissolves, triplanar mapping and vertex displacement; the
 [shaders guide](shaders.html) covers writing one.
+
+A model's materials arrive from its file. `LoadModel` reads the glTF
+extensions the fields above come from, including
+`KHR_materials_specular`, `KHR_materials_iridescence` and
+`KHR_materials_anisotropy`, and converts the older
+`KHR_materials_pbrSpecularGlossiness` workflow to metallic-roughness as
+it loads, exactly for the factors and through the glossiness channel for
+the image.
 
 ## Lighting
 
@@ -381,7 +456,13 @@ them.
 
 For image-based lighting, `NewEnvironment` turns an equirectangular
 panorama into a light probe and `NewEnvironmentHDR` does the same for a
-Radiance `.hdr` panorama read with `DecodeHDR`, keeping its range.
+floating-point one, keeping its range. `DecodePanorama` reads the bytes
+of whichever kind you have: an OpenEXR file (`DecodeEXR`), a Radiance
+`.hdr` file (`DecodeHDR`), or an ordinary image, whose sRGB colours it
+converts. The EXR reader takes scanline files with half or float
+channels, uncompressed or compressed with RLE, ZIPS or ZIP, and refuses
+tiled, deep, multi-part and PIZ, PXR24, B44 or DWA files with an error
+that names what the file is.
 `EnvironmentOptions.Intensity` scales it and `Size` sets the cube map's
 side in texels (default 128). Set it as `Light.Environment` and it
 replaces the ambient and the sky. Metals reflect it, rough surfaces take
@@ -389,11 +470,11 @@ its tint from every direction, and `Light.Background` draws it behind the
 scene. Environments hold GPU memory; `Destroy` them in `Shutdown`.
 
 ```go
-hdr, err := gfx.DecodeHDR(data)
+panorama, err := gfx.DecodePanorama(data) // .exr, .hdr, .png or .jpg
 if err != nil {
 	return err
 }
-g.env, err = ctx.Gfx.NewEnvironmentHDR(hdr, gfx.EnvironmentOptions{Intensity: 1.5, Size: 256})
+g.env, err = ctx.Gfx.NewEnvironmentHDR(panorama, gfx.EnvironmentOptions{Intensity: 1.5, Size: 256})
 light.Environment, light.Background = g.env, true
 ```
 
@@ -498,6 +579,34 @@ runway to orbit with no seam. Point `Up` away from a nearby planet and
 set `Ground` to that planet's colour to light the ship's night side with
 planet-shine.
 
+`Sky.Atmosphere` computes the sky instead of describing it. Set its
+`Height` to how deep the air is in the game's own units and the sky
+above the horizon becomes single-scattered sunlight, Rayleigh from the
+air and Mie from haze, in place of `Zenith` and `Horizon`: blue
+overhead at noon, orange and then red along the horizon as the sun
+drops, dark once the sun is under it, and thinner as `Altitude` climbs
+out of the air, so a plane can fly from a runway to space with no seam.
+`Ground` still lights the half below the horizon, and `Vacuum` still
+scales the result. Every other field has an Earth-like default scaled to
+`Height`, so `gfx.Atmosphere{Height: 3000}` is a whole sky;
+`PlanetRadius` (a hundred times `Height` by default) sets how far the
+horizon is, `Rayleigh` and `Mie` are the scattering per world unit at
+the ground, `Forward` is how tight the glare around the sun is, and
+`Intensity` is the sunlight the scattering divides up.
+
+`Height` is the one number to think about, because it fixes the scale of
+everything else: the air is as deep as the number says in world units,
+so a scene a hundred units across under a `Height` of 60 is looking
+through a hundred kilometres of air and washes out, while the same scene
+under 3000 has crisp distance and a sky that still works. Pick it by how
+far away things should start taking the air's colour, not by the size of
+a real planet. The model is integrated per pixel, eight samples along
+the view ray and four towards the sun at each; there is no table to
+precompute, load or keep in step, and the same function runs on the CPU
+in Go to project the ambient light onto spherical harmonics. Those
+harmonics are reprojected when the sun or the altitude moves far enough
+to matter, not every frame.
+
 `Light.Fog` fades geometry into a colour with distance, the cheapest way
 to give a scene depth and hide the far plane. Linear fog ramps from
 `Start` to full at `End`; exponential fog thickens with `Density`; when
@@ -507,6 +616,13 @@ axis, which puts mist in a valley without touching the hilltops. The sky
 is not fogged, so outdoors pick a fog colour close to the horizon's or
 the join will show.
 
+With an atmosphere the fog has help: distant geometry is dimmed by the
+air in front of it and takes the light that air scatters, from the same
+model, after the fog is applied. That is aerial perspective, and it is
+what makes far hills go pale and blue and the ones at sunset go pink. It
+costs nothing to ask for beyond the atmosphere itself, so a scene with
+one often wants `Fog` only for the valley mist.
+
 ```go
 // In orbit, the night side lit by the planet below.
 sky := gfx.Sky{Up: planetUp.Mul(-1), Vacuum: 1, Stars: 1,
@@ -514,9 +630,11 @@ sky := gfx.Sky{Up: planetUp.Mul(-1), Vacuum: 1, Stars: 1,
 gr.SetLight(gfx.Light{Direction: sunDir, Sky: sky, Background: true,
 	Color: gfx.Color{R: 2.4, G: 2.2, B: 1.9, A: 1}})
 
-// On the ground: haze on the horizon, mist in the valley.
-haze := gfx.Color{R: 0.72, G: 0.78, B: 0.88, A: 1}
-light.Fog = gfx.Fog{Color: haze, Start: 45, End: 170, Height: 0.6, HeightFalloff: 0.4}
+// On the ground: air on the horizon, mist in the valley.
+cam := gfx.OrbitCamera(lin.V3(0, 2, 0), yaw, pitch, dist)
+light.Sky = gfx.Sky{Ground: gfx.RGB(76, 82, 64),
+	Atmosphere: gfx.Atmosphere{Height: 3000, Altitude: cam.Position.Y}}
+light.Fog = gfx.Fog{Color: mist, Start: 45, End: 200, Height: 0.8, HeightFalloff: 0.4}
 ```
 
 ## Billboards, labels and marks on the world
@@ -750,9 +868,22 @@ whole extra frames.
 Transparency sorts by distance to the camera per draw, not per triangle,
 so two blended meshes that interpenetrate pick an order and keep it, and
 a large one sorted by its origin can land on the wrong side of a small
-one. Prefer `AlphaCutoff` where hard edges are acceptable, keep blended
-geometry convex and small, and use `NoDepthWrite` for additive effects
-where order does not matter.
+one. `PostSettings.OrderIndependent` is the way out: it accumulates every
+translucent fragment with a weight that favours the nearer one and
+resolves them in one pass, so a crossing looks right on both sides
+without any sorting at all. It costs two images the size of the frame and
+one pass, and it is an approximation: a scene of many overlapping layers
+comes out slightly flatter than compositing them in order would. Where it
+is off, prefer `AlphaCutoff` where hard edges are acceptable, keep
+blended geometry convex and small, and use `NoDepthWrite` for additive
+effects where order does not matter.
+
+`Transmission` keeps the sorted path either way, because refraction reads
+the scene behind the surface and so has to be drawn after it. A frame can
+have both: the copy of the scene that glass and screen-space reflections
+read is taken from the opaque draws, the order-independent pass resolves
+over it, and the transmissive draws follow in sorted order. So glass
+refracts the opaque scene, not the translucent surfaces in front of it.
 
 Meshes, models, textures, environments, render textures, shaders and
 fonts all hold GPU memory and all have `Destroy`. Call it from `Init`,

@@ -1,16 +1,20 @@
 ---
 title: Materials
 example: materials
-summary: every material feature on a row of spheres and a few props: clearcoat, sheen, subsurface, glass, alpha cutout, vertex colours, a scrolling texture, a decal, an outline and an x-ray tint
+summary: every material feature on a row of spheres and a few props: clearcoat, sheen, subsurface, glass, iridescence, anisotropy, a specular tint, fur, alpha cutout, vertex colours, a scrolling texture, a decal, an outline, an x-ray tint and a stencil mask
 ---
 
-Seven spheres in a row show seven surfaces: brushed metal, car paint with
-a clearcoat, velvet with sheen, skin with subsurface scattering shaped by
-a thickness map, a mesh coloured per vertex, an unlit sphere, and
-refracting glass that absorbs colour over distance. Around them are
-alpha-cutout leaves casting cutout shadows, a floor scrolling its texture
-through a UV transform with a decal projected onto it, an outlined
-sphere, and a sphere behind a wall showing through with an x-ray tint.
+Eleven spheres in a row show eleven surfaces: brushed metal, car paint
+with a clearcoat, velvet with sheen, skin with subsurface scattering
+shaped by a thickness map, a mesh coloured per vertex, an unlit sphere,
+refracting glass that absorbs colour over distance, a thin film whose
+hue turns with the angle, a brushed metal whose highlight is stretched
+along the surface, a dark surface with a warm specular tint, and a ball
+of fur made of shells. Around them are alpha-cutout leaves casting
+cutout shadows, a floor scrolling its texture through a UV transform
+with a decal projected onto it, an outlined sphere, a sphere behind a
+wall showing through with an x-ray tint, and a glowing orb drawn only
+inside a stencil mask.
 
 Everything here is [gfx.Material](../pkg/gfx.html#Material), one plain
 value passed to a draw call. There is no material object to create or
@@ -18,7 +22,7 @@ destroy, so a program can build one per frame, which is what the row does.
 The textures a material refers to are GPU resources and are created once.
 
 Lighting is a procedural sky, or a panorama with `-env`, which also shows
-how a Radiance `.hdr` file differs from a PNG. Read
+how an OpenEXR or Radiance file differs from a PNG. Read
 [the 3D graphics guide](../guides/graphics-3d.html) for the renderer and
 [the physics3d walkthrough](physics3d.html) for the same material fields
 used on five hundred cubes.
@@ -29,22 +33,23 @@ Run it:
 go run ./examples/materials -seconds 3 -shot out.png
 ```
 
-The flags are `-seconds N`, `-shot file.png` and `-env file.hdr` for a
-panorama, which may also be a PNG or a JPEG. Dragging orbits, the wheel
-zooms and Escape quits.
+The flags are `-seconds N`, `-shot file.png` and `-env file.exr` for a
+panorama, which may also be a Radiance `.hdr`, a PNG or a JPEG. Dragging
+orbits, the wheel zooms and Escape quits.
 
 ## Package and state
 
-The game holds four meshes, four textures, the optional environment and
-the camera's three numbers.
+The game holds four meshes, five textures, the optional environment, the
+camera's three numbers and the two switches the panel offers.
 
 ```go
 // Command materials shows every material feature on a row of spheres and
-// a few props: clearcoat, sheen, subsurface, alpha cutout, unlit, vertex
-// colours, a scrolling texture transform, occlusion, an outline and an
-// x-ray tint through a wall, a projected decal, all under image-based
-// lighting from a sky or a panorama (-env file.png or file.hdr). Drag to
-// orbit, scroll to zoom, Escape quits.
+// a few props: clearcoat, sheen, subsurface, iridescence, anisotropy, a
+// specular tint, fur, alpha cutout, unlit, vertex colours, a scrolling
+// texture transform, occlusion, an outline and an x-ray tint through a
+// wall, a stencil mask, a projected decal, all under image-based
+// lighting from a sky or a panorama (-env file.png, .hdr or .exr). Drag
+// to orbit, scroll to zoom, Escape quits.
 package main
 
 import (
@@ -54,9 +59,9 @@ import (
 	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
-	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/image/font/gofont/goregular"
@@ -84,6 +89,7 @@ type game struct {
 	leaf     *gfx.Texture
 	splat    *gfx.Texture
 	thick    *gfx.Texture
+	fur      *gfx.Texture
 	yaw      float32
 	pitch    float32
 	dist     float32
@@ -92,6 +98,7 @@ type game struct {
 	dragging bool
 	shotDone bool
 	xray     bool
+	mask     bool
 }
 ```
 
@@ -148,49 +155,46 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	if g.thick, err = ctx.Gfx.NewTexture(thickness(64), gfx.TextureOptions{Linear: true, Data: true}); err != nil {
 		return err
 	}
+	if g.fur, err = ctx.Gfx.NewTexture(strands(128), gfx.TextureOptions{Linear: true, Data: true, Repeat: true}); err != nil {
+		return err
+	}
 	if g.envPath != "" {
 		if g.env, err = loadEnvironment(ctx.Gfx, g.envPath); err != nil {
 			return err
 		}
 	}
-	g.yaw, g.pitch, g.dist = 0.4, 0.3, 11
-	g.xray = true
+	g.yaw, g.pitch, g.dist = 0.4, 0.3, 14
+	g.xray, g.mask = true, true
 	return nil
 }
 ```
 
-`loadEnvironment` shows the two paths into image-based lighting. A
-Radiance `.hdr` file is decoded by `gfx.DecodeHDR` and passed to
-`NewEnvironmentHDR`, which keeps values above one, so a sun in the
-panorama stays a sun. A PNG or JPEG is an ordinary sRGB image, so it goes
-through `NewEnvironment` with an `Intensity` to make up some of the range
-it cannot carry.
+`loadEnvironment` reads whichever kind of panorama it is given.
+`gfx.DecodePanorama` sniffs the format: an OpenEXR file, a Radiance
+`.hdr` file, or an ordinary image. The first two carry values above one,
+so a sun in the panorama stays a sun and needs no help; an sRGB image
+cannot, so the extension decides whether to add an `Intensity` to make up
+some of the range it lost.
 
 ```go
-// loadEnvironment reads a panorama: Radiance .hdr keeps its full range,
-// PNG and JPEG are treated as sRGB.
+// loadEnvironment reads a panorama in whichever format it is in.
+// DecodePanorama keeps the full range of an OpenEXR or Radiance file, so
+// a sun in it stays a sun, and converts a PNG or JPEG from sRGB, which
+// needs an intensity to make up some of the range it cannot carry.
 func loadEnvironment(gr *gfx.Graphics, path string) (*gfx.Environment, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	if strings.HasSuffix(strings.ToLower(path), ".hdr") {
-		data, err := io.ReadAll(f)
-		if err != nil {
-			return nil, err
-		}
-		img, err := gfx.DecodeHDR(data)
-		if err != nil {
-			return nil, err
-		}
-		return gr.NewEnvironmentHDR(img, gfx.EnvironmentOptions{})
-	}
-	img, _, err := image.Decode(f)
+	img, err := gfx.DecodePanorama(data)
 	if err != nil {
 		return nil, err
 	}
-	return gr.NewEnvironment(img, gfx.EnvironmentOptions{Intensity: 1.5})
+	opts := gfx.EnvironmentOptions{}
+	if ext := strings.ToLower(filepath.Ext(path)); ext != ".hdr" && ext != ".exr" {
+		opts.Intensity = 1.5
+	}
+	return gr.NewEnvironmentHDR(img, opts)
 }
 ```
 
@@ -204,7 +208,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 	if g.env != nil {
 		g.env.Destroy()
 	}
-	for _, t := range []*gfx.Texture{g.thick, g.splat, g.leaf, g.stripes} {
+	for _, t := range []*gfx.Texture{g.fur, g.thick, g.splat, g.leaf, g.stripes} {
 		t.Destroy()
 	}
 	for _, m := range []*gfx.Mesh{g.colored, g.quad, g.cube, g.sphere} {
@@ -279,7 +283,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 		Shadows: true, ShadowDistance: 30, Environment: g.env, Background: true})
 	// The floor, with a scrolling stripe texture and a decal on it.
 	gr.DrawMesh(g.cube, gfx.Material{Texture: g.stripes, Roughness: 0.8, UVTransform: lin.Translate2(t*0.05, 0).Mul(lin.Scale2(6, 6))},
-		lin.Translate(lin.V3(0, -0.5, 0)).Mul(lin.Scale(lin.V3(14, 0.2, 14))))
+		lin.Translate(lin.V3(0, -0.5, 0)).Mul(lin.Scale(lin.V3(22, 0.2, 14))))
 	gr.DrawDecal(g.splat, lin.Translate(lin.V3(-2.5, -0.3, 2.5)).Mul(lin.Rotate(t*0.3, lin.V3(0, 1, 0))).Mul(lin.Scale(lin.V3(2, 1, 2))), gfx.RGB(120, 20, 20))
 ```
 
@@ -296,6 +300,16 @@ element or a stylised object wants. The glass sets `Transmission` with an
 `IOR` and a `Thickness`, and `AttenuationColor` over
 `AttenuationDistance` is what white light becomes after that far inside
 the volume.
+
+The last four are the layered features that came later. `Iridescence`
+puts a thin film over the surface, `IridescenceThickness` nanometres
+thick, whose interference leaves a different hue at every angle.
+`Anisotropy` stretches the highlight along the surface, which is what
+tells brushed metal from polished. `SpecularColor` tints what a
+dielectric reflects, so a dark surface can still throw a warm highlight.
+`Shells` draws the sphere sixteen more times, each further out along its
+normals, with `FurTexture` deciding how far each strand reaches and
+`UVTransform` tiling that mask into strands.
 
 The loop draws them along X with one matrix each.
 
@@ -314,9 +328,15 @@ The loop draws them along X with one matrix each.
 		{"unlit", gfx.Material{BaseColor: gfx.RGB(255, 140, 40), Unlit: true}, g.sphere},
 		{"glass", gfx.Material{Roughness: 0.05, Transmission: 1, IOR: 1.5, Thickness: 0.8,
 			AttenuationColor: gfx.RGB(120, 200, 255), AttenuationDistance: 1}, g.sphere},
+		{"iridescence", gfx.Material{BaseColor: gfx.RGB(140, 140, 150), Metallic: 1, Roughness: 0.2,
+			Iridescence: 1, IridescenceThickness: 480}, g.sphere},
+		{"anisotropy", gfx.Material{BaseColor: gfx.RGB(200, 200, 210), Metallic: 1, Roughness: 0.35, Anisotropy: 0.9}, g.sphere},
+		{"specular tint", gfx.Material{BaseColor: gfx.RGB(20, 20, 22), Roughness: 0.2, SpecularColor: gfx.RGB(255, 170, 90)}, g.sphere},
+		{"fur", gfx.Material{BaseColor: gfx.RGB(190, 140, 70), Roughness: 0.9, Shells: 16, ShellLength: 0.22,
+			FurTexture: g.fur, UVTransform: lin.Scale2(8, 4)}, g.sphere},
 	}
 	for i, r := range row {
-		x := float32(i)*2.2 - 6.6
+		x := float32(i)*1.8 - 9
 		gr.DrawMesh(r.mesh, r.mat, lin.Translate(lin.V3(x, 0.4, -2)).Mul(lin.Scale(lin.V3(0.8, 0.8, 0.8))))
 	}
 ```
@@ -353,18 +373,48 @@ copy of the material leaves the original alone.
 	gr.DrawMesh(g.sphere, hidden, lin.Translate(lin.V3(-1, 0.4, 1.2)).Mul(lin.Scale(lin.V3(0.5, 0.5, 0.5))))
 ```
 
+## Draw: the stencil mask
+
+The pane and the orb are one material each. The pane writes 1 into the
+stencil buffer where it draws (`StencilWrite: gfx.StencilReplace` with a
+`StencilRef` of 1) and the orb draws only where the buffer already holds
+1 (`Stencil: gfx.StencilEqual`), so the orb appears inside the pane's
+shape and nowhere else. That is the whole of a portal, a cutaway or a
+magic window.
+
+The orb is queued first here on purpose: a material that writes the
+stencil buffer is drawn before one that does not, whatever order the
+game queued them in, so a mask never depends on the sort. The orb sits
+in front of the pane, since it still has to pass the depth test.
+
+```go
+	// A stencil mask: the pane marks the buffer where it draws and the
+	// sphere in front of it is drawn only where the mark is, which is how
+	// a portal or a cutaway is built. Materials that write the stencil
+	// buffer draw first, so the two can be queued either way round.
+	pane := gfx.Material{BaseColor: gfx.RGB(25, 35, 55), Roughness: 0.3}
+	orb := gfx.Material{BaseColor: gfx.RGB(255, 120, 40), Roughness: 0.3, Emissive: 0.8}
+	if g.mask {
+		pane.StencilWrite, pane.StencilRef = gfx.StencilReplace, 1
+		orb.Stencil, orb.StencilRef = gfx.StencilEqual, 1
+	}
+	gr.DrawMesh(g.sphere, orb, lin.Translate(lin.V3(-4.6, 1.2, 5.2)).Mul(lin.Scale(lin.V3(1.3, 1.3, 1.3))))
+	gr.DrawMesh(g.quad, pane, lin.Translate(lin.V3(-4.6, 1.2, 4.2)).Mul(lin.Scale(lin.V3(1.8, 1.8, 1))))
+```
+
 ## Draw: the panel
 
-One checkbox and a caption. `u.Checkbox` takes a pointer to the bool it
+Two checkboxes and a caption. `u.Checkbox` takes a pointer to the bool it
 edits, which is the immediate-mode form throughout
 [ui](../pkg/ui.html).
 
 ```go
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Materials", ui.Rect{X: 12, Y: 12, W: 320, H: 150}, func() {
+		u.Panel("Materials", ui.Rect{X: 12, Y: 12, W: 340, H: 190}, func() {
 			u.Checkbox("X-ray the sphere behind the wall", &g.xray)
-			u.Label("Row: metal, clearcoat, sheen, subsurface, vertex colours, unlit, glass. Leaves are alpha cutouts; the green sphere is outlined; the floor scrolls its texture and carries a decal.")
+			u.Checkbox("Stencil mask on the pane", &g.mask)
+			u.Label("Row: metal, clearcoat, sheen, subsurface, vertex colours, unlit, glass, iridescence, anisotropy, specular tint, fur. Leaves are alpha cutouts; the green sphere is outlined; the floor scrolls its texture and carries a decal.")
 		})
 	})
 	return nil
@@ -389,11 +439,11 @@ func quadMesh() ([]gfx.Vertex, []uint32) {
 }
 ```
 
-The four textures are generated so the example needs no asset files.
+The five textures are generated so the example needs no asset files.
 `stripes` is a tiling pattern for the floor, `leafShape` a leaf on a
 transparent background for the cutouts, `splat` a soft-edged blob with
-alpha for the decal, and `thickness` a banded greyscale read as data
-rather than colour.
+alpha for the decal, `thickness` a banded greyscale read as data rather
+than colour, and `strands` the fur mask.
 
 ```go
 func stripes(size int) image.Image {
@@ -462,13 +512,39 @@ func thickness(size int) image.Image {
 }
 ```
 
+`strands` is read by every shell of the fur material: a shell keeps the
+texels whose value is above its own height, so the low texels stop at the
+first shell and the high ones reach the last, which is what makes strands
+of different lengths out of one image.
+
+```go
+// strands is the fur mask: each texel is how far out the strand at that
+// point reaches, so a shell keeps the texels above its own height and
+// the fur thins towards its tips. The pattern is a hash of the cell the
+// texel falls in, which is enough to read as fur.
+func strands(size int) image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	const cells = 40
+	for y := range size {
+		for x := range size {
+			cx, cy := x*cells/size, y*cells/size
+			h := uint32(cx*374761393 + cy*668265263)
+			h = (h ^ (h >> 13)) * 1274126177
+			v := uint8(h >> 24)
+			img.SetRGBA(x, y, color.RGBA{v, v, v, 255})
+		}
+	}
+	return img
+}
+```
+
 ## main
 
 ```go
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
-	env := flag.String("env", "", "panorama for lighting: .hdr, .png or .jpg")
+	env := flag.String("env", "", "panorama for lighting: .exr, .hdr, .png or .jpg")
 	flag.Parse()
 	err := bunyip.Run(bunyip.Config{Title: "Bunyip materials", Width: 1100, Height: 680, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, envPath: *env})
@@ -489,5 +565,11 @@ func main() {
   scroll, with `lin.Rotate2`.
 - Put a `NormalTexture` on the metal sphere in `Draw` and see roughness
   and normals interact.
-- Pass `-env` a Radiance file and compare it with the same panorama
-  exported as a PNG, which `loadEnvironment` treats differently.
+- Pass `-env` an OpenEXR or Radiance file and compare it with the same
+  panorama exported as a PNG, which `loadEnvironment` treats differently.
+- Raise `Shells` on the fur sphere to 32 and lower `ShellLength`, then
+  drop `FurTexture` to see what the strand mask is doing.
+- Turn `IridescenceThickness` from 200 up to 800 and watch the hue walk
+  around the sphere.
+- Set the pane's `StencilWrite` to `gfx.StencilKeep` in `Draw` and the
+  orb comes back whole, which is what the panel's checkbox does.

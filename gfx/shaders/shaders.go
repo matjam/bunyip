@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // The 2D and mesh programs, including the engine's own, are game-style
@@ -32,6 +33,7 @@ var (
 )
 
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage frag -o pbr.frag.spv pbr_default.glsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -stage oitfrag -o pbr_oit.frag.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage vert -o pbr.vert.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage skinvert -o pbr_skin.vert.spv pbr_default.glsl
 //go:generate go run ../../cmd/bunyip-shader -kind mesh -stage shadowvert -o shadow.vert.spv pbr_default.glsl
@@ -45,6 +47,7 @@ var (
 //go:generate glslangValidator -V -o ssao.frag.spv ssao.frag
 //go:generate glslangValidator -V -o ssr.frag.spv ssr.frag
 //go:generate glslangValidator -V -o aoblur.frag.spv aoblur.frag
+//go:generate glslangValidator -V -o oit.frag.spv oit.frag
 //go:generate glslangValidator -V -o sky.frag.spv sky.frag
 //go:generate glslangValidator -V -o skyparam.frag.spv skyparam.frag
 //go:generate glslangValidator -V -o line.vert.spv line.vert
@@ -85,6 +88,8 @@ var (
 	DecalFrag []byte
 	//go:embed pbr.frag.spv
 	PBRFrag []byte
+	//go:embed pbr_oit.frag.spv
+	PBROITFrag []byte
 	//go:embed pbr.vert.spv
 	PBRVert []byte
 	//go:embed pbr_skin.vert.spv
@@ -111,6 +116,8 @@ var (
 	SSRFrag []byte
 	//go:embed aoblur.frag.spv
 	AOBlurFrag []byte
+	//go:embed oit.frag.spv
+	OITFrag []byte
 )
 
 // Kind is which pipeline a game shader is written for.
@@ -133,12 +140,13 @@ const (
 	StageSkinVert                    // skinned meshes, lit pass
 	StageShadowVert                  // static meshes, shadow pass
 	StageShadowSkinVert              // skinned meshes, shadow pass
+	StageOITFrag                     // the fragment program of the order-independent transparency pass
 	stageCount
 )
 
 // String names a stage as bunyip-shader's -stage flag spells it.
 func (s Stage) String() string {
-	names := [...]string{"frag", "vert", "skinvert", "shadowvert", "shadowskinvert"}
+	names := [...]string{"frag", "vert", "skinvert", "shadowvert", "shadowskinvert", "oitfrag"}
 	if int(s) < len(names) {
 		return names[s]
 	}
@@ -208,16 +216,75 @@ void main() {
     s.volume = vVolume.z * s.thickness;
     s.attenuation = vAtten.rgb;
     s.attenuationDistance = vVolume.w;
+    vec4 specSample = texture(specularTex, uv);
+    s.specularColor = vSpec.rgb * specSample.rgb;
+    s.specular = vSpec.w * specSample.a;
+    // glTF packs the thin film's strength in red and its thickness in
+    // green, the thickness running from the minimum to the maximum.
+    vec2 iridSample = texture(iridescenceTex, uv).rg;
+    s.iridescence = vIrid.x * iridSample.r;
+    s.iridescenceIOR = vIrid.y;
+    s.iridescenceThickness = mix(vIrid.z, vIrid.w, iridSample.g);
+    // An anisotropy map holds the direction the highlight stretches in
+    // as red and green around a half, and the strength in blue.
+    vec3 anisoSample = texture(anisotropyTex, uv).rgb;
+    s.anisotropy = vFur.x * anisoSample.b;
+    s.tangent = n;
+    if (s.anisotropy != 0.0) {
+        vec2 dir = anisoSample.rg * 2.0 - 1.0;
+        float c = cos(vFur.y), sn = sin(vFur.y);
+        s.tangent = surfaceTangent(n, uv, vec2(dir.x * c - dir.y * sn, dir.x * sn + dir.y * c));
+    }
+    s.shell = vFur.w;
     surface(s);
     if (vExtra.y > 0.0 && s.alpha < vExtra.y) discard;
+    if (s.shell > 0.0) {
+        // A fur shell keeps only the fragments where a strand reaches
+        // this far out, and fades as it goes.
+        if (texture(furTex, uv).r < s.shell) discard;
+        s.alpha *= 1.0 - s.shell * 0.5;
+    }
     vec3 color = s.unlit ? s.albedo : light(s);
     vec4 lit = finish(vec4(color + s.emissive, s.alpha), s);
     lit.rgb = applyFog(lit.rgb, vWorldPos, vViewDepth);
-    // An opaque draw's alpha is never read as coverage, so the frame
+OUTPUT}
+`
+
+// meshOutput and meshOITOutput are the two ways the fragment main ends,
+// substituted for OUTPUT in meshPostlude. The order-independent pass
+// writes two attachments and every other pass writes one, so the two are
+// separate programs rather than one with a branch: a program that writes
+// an attachment its pass does not have is a validation warning on every
+// draw.
+const meshOutput = `    // An opaque draw's alpha is never read as coverage, so the frame
     // carries the screen-space reflection weight there instead and the
     // reflection pass reads it back from the scene copy.
     if (vGI.y > 0.5 && frame.reflect.x > 0.0) lit.a = reflectWeight(s);
     outColor = lit;
+`
+
+const meshOITOutput = `    // The colour goes into the accumulation attachment scaled by the
+    // depth weight, and the alpha multiplies the revealage attachment
+    // down. The composite divides one by the other, which gives back
+    // exactly this fragment's colour where it is the only layer.
+    outColor = lit * oitWeight(lit.a, gl_FragCoord.z);
+    outReveal = lit.a;
+`
+
+// meshOITDecls is what the order-independent fragment program has that
+// the others do not. It goes after the game's own code, so the lines a
+// compiler reports still line up with the file.
+const meshOITDecls = `
+layout(location = 1) out float outReveal;
+
+// oitWeight is how much a translucent fragment counts in the
+// order-independent pass: nearer fragments weigh far more, so a surface
+// in front of another still looks like it is in front (McGuire and
+// Bavoil, equation 10). It reads the depth buffer's own scale, so it
+// holds whatever size a game's world is, and stops at a thousand so a
+// stack of layers cannot overflow the half-float target.
+float oitWeight(float alpha, float z) {
+    return alpha * clamp(3e3 * pow(1.0 - z, 3.0), 1e-2, 1e3);
 }
 `
 
@@ -246,15 +313,20 @@ layout(location = 11) flat out vec4 vSheen;
 layout(location = 12) flat out vec4 vVolume;
 layout(location = 13) flat out vec4 vAtten;
 layout(location = 14) flat out vec4 vGI;
+layout(location = 15) flat out vec4 vSpec;
+layout(location = 16) flat out vec4 vIrid;
+layout(location = 17) flat out vec4 vFur;
 
 void main() {
     VertexData v = VertexData(iPos, iNormal, iUV, iUV2, iColor);
     vertex(v);
     mat4 m = model()SKIN;
     vec4 world = m * vec4(v.position, 1.0);
+    vNormal = normalize(mat3(m) * v.normal);
+    // A fur shell is the same mesh pushed out along its normals.
+    world.xyz += vNormal * iFur.z;
     gl_Position = frame.viewProj * world;
     vWorldPos = world.xyz;
-    vNormal = normalize(mat3(m) * v.normal);
     vUV = v.uv;
     vUV2 = v.uv2;
     vColor = v.color;
@@ -268,6 +340,9 @@ void main() {
     vVolume = iVolume;
     vAtten = iAtten;
     vGI = iGI;
+    vSpec = iSpec;
+    vIrid = iIrid;
+    vFur = iFur;
 }
 `
 
@@ -333,7 +408,9 @@ func Compose(kind Kind, stage Stage, source string) (glsl string, lineOffset int
 		}
 		switch stage {
 		case StageFrag:
-			return meshPrelude + body + meshPostlude, countLines(meshPrelude), nil
+			return meshPrelude + body + strings.Replace(meshPostlude, "OUTPUT", meshOutput, 1), countLines(meshPrelude), nil
+		case StageOITFrag:
+			return meshPrelude + body + meshOITDecls + strings.Replace(meshPostlude, "OUTPUT", meshOITOutput, 1), countLines(meshPrelude), nil
 		case StageVert:
 			return vertCommon + body + skinCall.ReplaceAllString(litVertPostlude, ""), countLines(vertCommon), nil
 		case StageSkinVert:

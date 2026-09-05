@@ -34,15 +34,18 @@ window.
   thirteen languages, colour matrices, lit sprites with shadows cast
   from occluders, blend modes and
   game-written fragment shaders.
-- 3D: physically based materials with clearcoat, sheen, subsurface and
-  glass; glTF models with skeletal animation, blend spaces, IK and morph
-  targets; cascaded shadows, spot and point lights with shadows,
-  clustered lighting for a thousand lights a frame, a procedural sky or
-  image-based lighting, fog; reflection probes, baked light probe grids
-  and screen-space reflections; instancing, frustum culling and levels
-  of detail; billboards, decals, outlines and x-ray; dynamic meshes and
-  terrain; SSAO, bloom, FXAA, tone mapping and colour grading; render
-  textures and picking.
+- 3D: physically based materials with clearcoat, sheen, subsurface,
+  glass, iridescence, anisotropy, specular tinting and fur as shells;
+  glTF models with skeletal animation, blend spaces, IK and morph
+  targets, whose materials any part can override; cascaded shadows, spot
+  and point lights with shadows, clustered lighting for a thousand lights
+  a frame, a procedural sky with atmospheric scattering and aerial
+  perspective or image-based lighting from OpenEXR, Radiance or ordinary
+  panoramas, fog; reflection probes, baked light probe grids and
+  screen-space reflections; order-independent transparency; instancing,
+  frustum culling and levels of detail; billboards, decals, outlines,
+  x-ray and stencil masks; dynamic meshes and terrain; SSAO, bloom, FXAA,
+  tone mapping and colour grading; render textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.
@@ -176,7 +179,7 @@ whole program and explains it section by section:
 | Command | Shows |
 |---|---|
 | `go run ./examples/sprites` | 300 tinted, rotating, alpha-blended sprites, and a lit brick floor where a moving lamp throws shadows from three crates |
-| `go run ./examples/viewer [-model file.glb]` | lit 3D scene or a glTF model, orbit camera, sprite overlay |
+| `go run ./examples/viewer [-model file.glb] [-sorted]` | lit 3D scene or a glTF model, orbit camera, crossed translucent panes composited order-independently, sprite overlay |
 | `go run ./examples/window` | the platform layer's smoke test: a window, a swapchain of cleared frames, and every event printed as it arrives |
 | `go run ./examples/clear` | the renderer's smoke test: a window cleared to a cycling colour, with `-shot` to check one frame's pixels |
 | `go run ./examples/roguelike` | turn-based dungeon crawl with line of sight |
@@ -197,14 +200,14 @@ whole program and explains it section by section:
 | `go run ./examples/softbody` | a cloth flag flapping on a pole in a swinging gust, a jelly cube that drops and can be kicked beside a rigid crate, and a tank of 2D fluid breaking around a post |
 | `go run ./examples/space` | a ship under thrust in a fictional star system: seven Kepler planets with moons, an asteroid belt and a comet, N-body gravity, orbit rings, predicted path, focus cycling, time warp |
 | `go run ./examples/tetris` | the complete game the Tetris guide builds on the ECS: systems, resources, events, timers, tweens, UI panel, synthesised sounds |
-| `go run ./examples/materials [-env panorama.hdr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall |
+| `go run ./examples/materials [-env panorama.exr]` | every material feature on a row of spheres: metal, clearcoat, sheen, subsurface, vertex colours, unlit, refracting glass with absorption, iridescence, anisotropy, a specular tint, fur; alpha-cutout leaves with cutout shadows, a scrolling texture transform, a projected decal, an outline, an x-ray tint through a wall, a stencil mask |
 | `go run ./examples/tiled` | a map from the Tiled editor: layers, an external tileset, flipped and rotated tiles, an animated pond, object outlines |
 | `go run ./examples/autotile` | paint terrain that picks its own tiles: a 47-tile blob set composed from a six-tile template, an edge-matched wall set, a corner Wang water set with curving shores, weighted flower variants, and a 64-tile hexagonal edge set on a staggered-row layout |
 | `go run ./examples/particles` | a campfire of fire and smoke, rain, sparks on click and confetti on Space from the particle package, with a tuning panel |
 | `go run ./examples/shaders` | fragment shaders written by the game: a wave and a dissolve on sprites, a lava surface shader under the engine's lighting, blend modes, a sheared sprite |
 | `go run ./examples/vector` | paths filled under both rules, curves and arcs, every cap and join, textured fills, all seven blend modes, the transform stack, anti-aliased |
 | `go run ./examples/text [-font file.ttf]` | HarfBuzz-shaped text: kerning and ligatures, Arabic joining, right-to-left and mixed lines, a fallback font, Unicode wrapping, hyphenation by language, rich markup, colour emoji, vertical text, distance-field text |
-| `go run ./examples/terrain` | a heightfield with a lake, billboard trees, rocks at three levels of detail, campfires and a searchlight, distance and valley fog, labels in the world, frustum culling counts, and terrain dug with a click |
+| `go run ./examples/terrain` | a heightfield with a lake, billboard trees, rocks at three levels of detail, campfires and a searchlight, an atmospheric sky with aerial perspective and valley fog, labels in the world, frustum culling counts, and terrain dug with a click |
 | `go run ./cmd/bunyip-docs -out site` | renders the documentation site (guides plus API reference) |
 | `go run ./cmd/bunyip-info` | the Vulkan stack, without a window |
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |

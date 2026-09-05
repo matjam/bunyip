@@ -164,7 +164,8 @@ kerning and ligatures cross the style changes inside it.
 ## 3D rendering
 
 Billboards and 3D text, debug frustums and 3D debug text, distance and
-ground fog, frustum culling with a public `Frustum`, bounds that follow
+ground fog, an atmospheric sky with aerial perspective, order-independent
+transparency, frustum culling with a public `Frustum`, bounds that follow
 a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, levels of detail, spot and point
 lights with shadows, per-light culling in the shadow pass, clustered
@@ -207,11 +208,15 @@ repeating sampling for render textures are in.
   and what is off screen or hidden falls back to the probe or the
   environment. There is no temporal accumulation, so a rough surface's
   rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
-- Volumetrics: god rays, and atmospheric scattering for the sky rather
-  than the parametric gradient. Fog is a per-pixel fade, not a medium.
+- Volumetrics: god rays, and light shafts through a medium. Fog is a
+  per-pixel fade, and `Sky.Atmosphere` scatters single bounces only, so
+  neither casts a shaft.
 - Temporal anti-aliasing and MSAA; FXAA is the only option.
 - Depth of field, motion blur and lens effects.
-- Order-independent transparency; blended draws are sorted per mesh.
+- Order-independent transparency is the weighted blended approximation
+  (`PostSettings.OrderIndependent`), so a deep stack of layers comes out
+  flatter than compositing them in order would, and transmissive draws
+  stay sorted. Per-pixel lists or depth peeling would be exact.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back.
 - Culling is per draw and by bounding sphere. There is no bounding
@@ -223,19 +228,29 @@ repeating sampling for render textures are in.
 ## Materials and lighting
 
 Clearcoat, sheen, subsurface, transmission with volume attenuation and
-transmission and thickness textures, vertex colours, a second UV set,
-texture transforms, decals, outlines and x-ray are in.
+transmission and thickness textures, iridescence, anisotropy, specular
+colour and strength, fur and grass as shells, vertex colours, a second UV
+set, texture transforms, decals, outlines, x-ray, per-material stencil
+state, a material override on `DrawModel`, and panoramas from OpenEXR,
+Radiance and ordinary images are in. The glTF extensions behind the
+material fields load, and the specular-glossiness workflow is converted
+to metallic-roughness as a file is read.
 
-- Iridescence, anisotropy, specular colour and the specular-glossiness
-  workflow from glTF extensions.
-- A material override on `DrawModel`, which draws every part with the
-  material glTF gave it. Changing one part means walking `Model.Parts`
-  and calling `DrawMesh` for each.
-- Per-material stencil state beyond outlines and x-ray.
-- Hair, fur and cloth shading (anisotropic highlights, shell rendering).
-- OpenEXR panoramas for environments. Radiance `.hdr` and LDR images
-  decode today, and the procedural sky covers most outdoor and space
-  scenes without any image.
+- The thin film is an approximation at three wavelengths rather than the
+  Belcour and Barla model, so an iridescent surface has the right hues in
+  the right places but not the spectrum a renderer would integrate.
+- A specular-glossiness file whose specular colour varies across one
+  material keeps only its glossiness; the colour comes from the converted
+  factors alone.
+- The iridescence, anisotropy, specular and fur maps are always sampled
+  linear and repeating: the packed sampler index has two bits for each of
+  the first eleven texture slots and no room for more.
+- Fur shells are drawn from the inside out with the depth buffer left
+  alone, so two furry meshes that overlap blend in the order they were
+  queued rather than by depth.
+- PIZ, PXR24, B44, B44A, DWAA and DWAB compression in OpenEXR files, and
+  tiled, deep and multi-part ones. Each is refused with an error naming
+  what the file is.
 
 ## Animation
 
