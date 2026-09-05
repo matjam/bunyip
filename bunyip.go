@@ -133,10 +133,15 @@ type Config struct {
 	NoAudio    bool // disable audio output and microphone capture
 	Log        *slog.Logger
 
-	// Debug shows the frame-timing overlay at start; F3 toggles it either
-	// way. Pprof, when set to an address such as "localhost:6060", serves
-	// Go's profiler there.
+	// Debug shows the frame-timing overlay at start; F3 toggles it either way.
 	Debug bool
+
+	// Pprof starts a Go profiling HTTP server at this address, for example
+	// "127.0.0.1:6060". Empty disables starting the server. Profiles are at
+	// /debug/pprof/; CPU profiling and execution tracing start on request.
+	// Use a loopback address for local debugging: the server has no authentication.
+	// Listen failures are logged and do not stop the game. The server uses
+	// http.DefaultServeMux and remains running until the process exits.
 	Pprof string
 
 	// Console builds the debug console, puts it on Context.Console and

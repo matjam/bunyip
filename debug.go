@@ -3,7 +3,7 @@ package bunyip
 import (
 	"fmt"
 	"net/http"
-	_ "net/http/pprof" // registered on the default mux when Config.Pprof is set
+	_ "net/http/pprof" // registers handlers; Config.Pprof starts the listener
 	"time"
 
 	"golang.org/x/image/font/gofont/goregular"

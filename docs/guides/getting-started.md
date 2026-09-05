@@ -184,6 +184,57 @@ appends a stack trace if the game panics. That file is the one to ask a
 player for. `bunyip.FlyCamera` is a free-flying camera for looking round
 a 3D scene while it is being built.
 
+### Profiling
+
+Enable Go's profiling server when starting the game:
+
+```go
+err := bunyip.Run(bunyip.Config{
+	Title: "My Game",
+	Debug: true,
+	Pprof: "127.0.0.1:6060",
+}, &game{})
+if err != nil {
+	panic(err)
+}
+```
+
+An empty `Pprof` skips starting the server. `Debug` independently enables
+the frame overlay. Use the loopback address above for local debugging;
+the profiling server has no authentication. Listener errors are logged
+without stopping the game. The listener stays open until the process exits,
+including after `Run` returns, and is retained during device recovery.
+
+With the game running, reproduce the slow scene while collecting 30 seconds
+of CPU samples from another terminal:
+
+```sh
+CGO_ENABLED=0 go tool pprof 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
+```
+
+At the pprof prompt, `top` shows the largest costs and `top -cum` includes
+time in called functions. Inspect memory separately:
+
+```sh
+CGO_ENABLED=0 go tool pprof 'http://127.0.0.1:6060/debug/pprof/heap'
+CGO_ENABLED=0 go tool pprof -alloc_space 'http://127.0.0.1:6060/debug/pprof/allocs'
+```
+
+The heap view defaults to sampled live bytes; `alloc_space` shows cumulative
+allocated bytes, which helps find temporary allocation churn. For scheduling,
+blocking and GC activity, collect an execution trace:
+
+```sh
+curl -o trace.out 'http://127.0.0.1:6060/debug/pprof/trace?seconds=5'
+CGO_ENABLED=0 go tool trace trace.out
+```
+
+CPU recording and tracing run on request. Profiling adds overhead, so compare
+the same workload before and after a change. These tools inspect Go runtime
+and CPU activity; they do not profile GPU shaders. The standard
+[HTTP profiling documentation](https://pkg.go.dev/net/http/pprof) describes
+the endpoints and additional profile types.
+
 ## The examples
 
 Most examples accept `-seconds N` to exit after N seconds and

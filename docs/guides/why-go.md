@@ -73,18 +73,35 @@ Go package with tests that do not open a window. Bunyip also supports
 offscreen rendering for visual checks; those checks still need a Vulkan
 implementation.
 
-Go's CPU and heap profiles help identify expensive functions and allocation
-sources, while execution traces help investigate scheduling and blocking.
-Bunyip adds frame timings, an in-game console and profile scopes so you can
-relate engine work to what appears on screen. See the [Go diagnostics
-guide](https://go.dev/doc/diagnostics) for the language's profiling tools.
-
 The same packages can support an asset converter, game server and desktop
 client. For example, a server and client can import a shared package of
 combat rules, while a command-line tool validates the same level format
 that the game loads. That reuse reduces duplicated logic; deterministic
 simulation still requires deliberate choices about ordering, randomness
 and numeric behavior.
+
+## Built-in profiling, connected to the running game
+
+Performance problems are easier to fix when you can see where time and
+memory go. Go includes CPU and heap profiling and execution tracing in its
+standard tooling. These tools can inspect both your game code and the Go
+engine underneath it, helping you follow a slowdown across package boundaries.
+
+Bunyip already exposes this as an option: set `Config.Pprof` to
+`"127.0.0.1:6060"` to start its profiling server. Leave it empty to skip
+starting the server. You can then capture a CPU profile while reproducing
+a slow scene, inspect heap allocations, or record a trace to investigate
+goroutine scheduling and blocking. The [profiling walkthrough](getting-started.html#profiling)
+shows the configuration and commands.
+
+For example, a slow turn might come from repeated path searches; a frame
+spike might coincide with rebuilding temporary data. Profiles help locate
+those costs before you rewrite a subsystem. Bunyip's frame overlay and
+named profile scopes connect those investigations to individual game phases.
+CPU profiles do not measure GPU shader execution, so use the frame timings
+to decide whether the next investigation belongs on the CPU or GPU side.
+See the [Go diagnostics guide](https://go.dev/doc/diagnostics) for the tools
+and their interpretation.
 
 ## Concurrency for work around the frame
 
