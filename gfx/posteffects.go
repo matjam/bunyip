@@ -347,8 +347,13 @@ func (g *Graphics) renderRays(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarge
 	if taps <= 0 {
 		taps = 32
 	}
+	// The shafts take the light's hue but not its intensity: a sun of 2.4
+	// would otherwise make GodRays of 1 blow the sky out, and the setting
+	// is what a game tunes.
 	c := q.light.Color
-	if c == (Color{}) {
+	if m := max(c.R, max(c.G, c.B)); m > 0 {
+		c = Color{c.R / m, c.G / m, c.B / m, 1}
+	} else {
 		c = White
 	}
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.rays})
