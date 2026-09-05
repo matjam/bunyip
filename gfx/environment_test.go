@@ -8,6 +8,30 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
+// TestSmallEnvironment builds environments smaller than a full chain of
+// roughness levels. A cube of 16 texels has five levels, not six, and
+// asking the driver for six is an error the validation layers catch, so
+// the count follows the size.
+func TestSmallEnvironment(t *testing.T) {
+	g := newHeadless(t, 32, 32)
+	src := newRadianceMap(8, 4)
+	for y := range 4 {
+		for x := range 8 {
+			src.set(x, y, 0.5, 0.5, 0.5)
+		}
+	}
+	for _, tc := range []struct{ size, mips int }{{8, 4}, {16, 5}, {32, 6}, {128, 6}} {
+		env, err := g.newEnvironment(src, EnvironmentOptions{Size: tc.size})
+		if err != nil {
+			t.Fatalf("environment of %d texels: %v", tc.size, err)
+		}
+		if env.mips != tc.mips {
+			t.Errorf("environment of %d texels has %d roughness levels, want %d", tc.size, env.mips, tc.mips)
+		}
+		env.Destroy()
+	}
+}
+
 // TestEnvironmentReflection lights a mirror-like metal sphere with an
 // environment that is red above and blue below, with no direct light:
 // the top of the sphere must reflect red and the bottom blue, and with

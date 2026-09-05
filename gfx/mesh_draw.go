@@ -74,10 +74,11 @@ type meshPass struct {
 	shadowSet     vk.VkDescriptorSet
 	shadowDesc    *render.DescriptorSets
 	shadowSamp    vk.VkSampler
-	// materials is set 0: thirteen sampled images (five material
+	// materials is set 0: seventeen sampled images (five material
 	// textures, a shader's image0..3, the environment cube, the
-	// thickness map, the scene copy, the transmission map) and the
-	// shared sampler array, which is immutable in the layout.
+	// thickness map, the scene copy, the transmission map, and the
+	// iridescence, anisotropy, specular and fur maps) and the shared
+	// sampler array, which is immutable in the layout.
 	materials    *render.DescriptorSets
 	matSets      map[materialKey]vk.VkDescriptorSet
 	lastMatKey   materialKey // the key materialSet last resolved, to skip hashing matSets
