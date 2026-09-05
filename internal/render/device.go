@@ -22,6 +22,9 @@ type Device struct {
 	portability bool
 	alloc       allocator
 	anisotropy  float32 // max anisotropy the device allows, 1 when unsupported
+	frameNo     uint64  // frames begun, for the retire ring
+	retired     []deferred
+	waits       uint64 // times the device has been idled
 }
 
 // NewDevice picks a GPU able to present to surface and creates the logical
@@ -91,10 +94,17 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	return d, nil
 }
 
-// WaitIdle blocks until the device has finished all submitted work.
+// WaitIdle blocks until the device has finished all submitted work. It
+// stalls every frame in flight, so prefer Retire for objects a recorded
+// frame may still reference.
 func (d *Device) WaitIdle() error {
+	d.waits++
 	return vk.Check("vkDeviceWaitIdle", vk.VkDeviceWaitIdle(d.Handle))
 }
+
+// Waits counts the times the device has been idled since it was created.
+// A frame whose count rises stalled the GPU; FrameStats.Waits reports it.
+func (d *Device) Waits() uint64 { return d.waits }
 
 // Destroy releases the device after waiting for it to go idle.
 func (d *Device) Destroy() {
@@ -102,6 +112,7 @@ func (d *Device) Destroy() {
 		return
 	}
 	_ = d.WaitIdle()
+	d.flushRetired()
 	d.alloc.destroy()
 	vk.VkDestroyCommandPool(d.Handle, d.pool, nil)
 	vk.VkDestroyDevice(d.Handle, nil)

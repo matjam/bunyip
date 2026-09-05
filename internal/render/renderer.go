@@ -158,6 +158,9 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
 		return nil, false, deviceLostOr(err)
 	}
+	// The slot's fence covers the frame submitted FramesInFlight frames
+	// ago, so anything retired then is now free to destroy.
+	d.nextFrame()
 	sc.index = 0
 	if r.Swapchain.Handle == 0 {
 		// Headless: one image per frame slot, paced by the slot's fence.

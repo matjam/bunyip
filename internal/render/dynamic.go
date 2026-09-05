@@ -32,19 +32,6 @@ func (d *Device) NewDynamicUniforms(blockRange vk.VkDeviceSize, stages vk.VkShad
 	if err := vk.Check("vkCreateDescriptorSetLayout", vk.VkCreateDescriptorSetLayout(d.Handle, &layoutInfo, nil, &u.Layout)); err != nil {
 		return nil, err
 	}
-	poolSize := vk.VkDescriptorPoolSize{Type: vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, DescriptorCount: FramesInFlight}
-	poolInfo := vk.VkDescriptorPoolCreateInfo{SType: vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, MaxSets: FramesInFlight, PoolSizeCount: 1, PPoolSizes: &poolSize}
-	if err := vk.Check("vkCreateDescriptorPool", vk.VkCreateDescriptorPool(d.Handle, &poolInfo, nil, &u.pool)); err != nil {
-		u.Destroy()
-		return nil, err
-	}
-	for i := range u.Sets {
-		alloc := vk.VkDescriptorSetAllocateInfo{SType: vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, DescriptorPool: u.pool, DescriptorSetCount: 1, PSetLayouts: &u.Layout}
-		if err := vk.Check("vkAllocateDescriptorSets", vk.VkAllocateDescriptorSets(d.Handle, &alloc, &u.Sets[i])); err != nil {
-			u.Destroy()
-			return nil, err
-		}
-	}
 	if err := u.grow(16 * 1024); err != nil {
 		u.Destroy()
 		return nil, err
@@ -52,35 +39,76 @@ func (d *Device) NewDynamicUniforms(blockRange vk.VkDeviceSize, stages vk.VkShad
 	return u, nil
 }
 
-// grow replaces every slot's buffer with one of at least size bytes and
-// points the sets at them. The device is idled first, since a frame in
-// flight may be reading the old buffers.
-func (u *DynamicUniforms) grow(size vk.VkDeviceSize) error {
-	if err := u.dev.WaitIdle(); err != nil {
-		return err
+// newPool creates a pool holding one set per frame in flight and
+// allocates those sets from it.
+func (u *DynamicUniforms) newPool() (vk.VkDescriptorPool, [FramesInFlight]vk.VkDescriptorSet, error) {
+	var pool vk.VkDescriptorPool
+	var sets [FramesInFlight]vk.VkDescriptorSet
+	d := u.dev
+	poolSize := vk.VkDescriptorPoolSize{Type: vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, DescriptorCount: FramesInFlight}
+	poolInfo := vk.VkDescriptorPoolCreateInfo{SType: vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, MaxSets: FramesInFlight, PoolSizeCount: 1, PPoolSizes: &poolSize}
+	if err := vk.Check("vkCreateDescriptorPool", vk.VkCreateDescriptorPool(d.Handle, &poolInfo, nil, &pool)); err != nil {
+		return 0, sets, err
 	}
+	for i := range sets {
+		alloc := vk.VkDescriptorSetAllocateInfo{SType: vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, DescriptorPool: pool, DescriptorSetCount: 1, PSetLayouts: &u.Layout}
+		if err := vk.Check("vkAllocateDescriptorSets", vk.VkAllocateDescriptorSets(d.Handle, &alloc, &sets[i])); err != nil {
+			vk.VkDestroyDescriptorPool(d.Handle, pool, nil)
+			return 0, sets, err
+		}
+	}
+	return pool, sets, nil
+}
+
+// grow gives every slot a buffer of at least size bytes and a fresh
+// descriptor set pointing at it, then retires the old pool and buffers.
+// Nothing waits for the device: a frame in flight keeps reading the sets
+// and buffers it bound until the retire ring frees them.
+func (u *DynamicUniforms) grow(size vk.VkDeviceSize) error {
 	newSize := max(u.size*2, 16*1024)
 	for newSize < size {
 		newSize *= 2
 	}
-	for i := range u.buffers {
-		if u.buffers[i] != nil {
-			u.buffers[i].Destroy()
+	pool, sets, err := u.newPool()
+	if err != nil {
+		return err
+	}
+	var bufs [FramesInFlight]*Buffer
+	fail := func(err error) error {
+		for _, b := range bufs {
+			if b != nil {
+				b.Destroy()
+			}
 		}
+		vk.VkDestroyDescriptorPool(u.dev.Handle, pool, nil)
+		return err
+	}
+	for i := range bufs {
 		buf, err := u.dev.NewBuffer(newSize, vk.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 		if err != nil {
-			return err
+			return fail(err)
 		}
-		u.buffers[i] = buf
+		bufs[i] = buf
 		bufInfo := vk.VkDescriptorBufferInfo{Buffer: buf.Handle, Range: u.Range}
 		write := vk.VkWriteDescriptorSet{
-			SType: vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, DstSet: u.Sets[i], DescriptorCount: 1,
+			SType: vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, DstSet: sets[i], DescriptorCount: 1,
 			DescriptorType: vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, PBufferInfo: &bufInfo,
 		}
 		vk.VkUpdateDescriptorSets(u.dev.Handle, 1, &write, 0, nil)
 	}
-	u.size = newSize
+	oldPool, oldBufs, dev := u.pool, u.buffers, u.dev
+	u.pool, u.Sets, u.buffers, u.size = pool, sets, bufs, newSize
+	if oldPool != 0 {
+		dev.Retire(func() {
+			for _, b := range oldBufs {
+				if b != nil {
+					b.Destroy()
+				}
+			}
+			vk.VkDestroyDescriptorPool(dev.Handle, oldPool, nil)
+		})
+	}
 	return nil
 }
 

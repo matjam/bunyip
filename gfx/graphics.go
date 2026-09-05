@@ -31,6 +31,7 @@ type Graphics struct {
 	staging       [render.FramesInFlight][]*render.Buffer // texture writes in flight, freed when the slot comes round
 	stats         FrameStats                              // counts for the frame being recorded
 	lastStats     FrameStats                              // the last finished frame's counts
+	waitsAtBegin  uint64                                  // the device's wait count when the frame began
 	meshes        meshPass
 	post          postPass
 	white         *Texture
@@ -232,6 +233,7 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	}
 	g.staging[g.frame.Slot] = g.staging[g.frame.Slot][:0]
 	g.stats = FrameStats{}
+	g.waitsAtBegin = g.r.Device.Waits()
 	g.main.reset()
 	g.main.clear = clear
 	g.cur = g.main
@@ -339,6 +341,10 @@ type FrameStats struct {
 	// which a frame keeps none of; a nonzero count means the scene should
 	// add its nearest lights first.
 	LightsDropped int
+	// Waits counts the times the frame idled the GPU, which costs the whole
+	// pipeline. Growing a per-frame buffer no longer waits; destroying a
+	// texture, mesh or render texture mid-frame does.
+	Waits int
 }
 
 // Stats returns the last finished frame's counts.
@@ -410,8 +416,9 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 		return nil, err
 	}
 	img, err := g.r.EndFrame(fr, capture)
-	g.lastStats = g.stats
 	g.freeRetired()
+	g.stats.Waits = int(g.r.Device.Waits() - g.waitsAtBegin)
+	g.lastStats = g.stats
 	return img, err
 }
 

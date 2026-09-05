@@ -241,25 +241,28 @@ func (s *stream2D) build() {
 // slot's buffer when the stream outgrew them.
 func (s *stream2D) upload(dev *render.Device, slot int) error {
 	if len(s.ordered) > s.capacity {
-		if err := dev.WaitIdle(); err != nil {
-			return err
-		}
 		newCap := max(s.capacity*2, initialVertexCapacity)
 		for newCap < len(s.ordered) {
 			newCap *= 2
 		}
-		for i := range s.buffers {
-			if s.buffers[i] != nil {
-				s.buffers[i].Destroy()
-			}
+		var bufs [render.FramesInFlight]*render.Buffer
+		for i := range bufs {
 			buf, err := dev.NewBuffer(vk.VkDeviceSize(newCap*vertex2DSize), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 				vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 			if err != nil {
+				for _, b := range bufs {
+					if b != nil {
+						b.Destroy()
+					}
+				}
 				return err
 			}
-			s.buffers[i] = buf
+			bufs[i] = buf
 		}
-		s.capacity = newCap
+		// A frame in flight may still be reading the old buffers, so they
+		// go to the retire ring rather than idling the device here.
+		dev.RetireBuffers(s.buffers)
+		s.buffers, s.capacity = bufs, newCap
 	}
 	if len(s.ordered) == 0 {
 		return nil
