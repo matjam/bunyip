@@ -13,8 +13,10 @@ import (
 //	bit 63     blended: every opaque draw before any blended one
 //	bit 62     culled: what the camera sees before what it does not
 //	blended    bits 61..30 the view depth, farthest first
-//	opaque     bit 61 skinned, then the shader, the shader's uniforms,
-//	           the material set and the mesh, each as a dense id
+//	opaque     bit 61 clear for a draw that writes the stencil buffer, so
+//	           a mask is drawn before whatever tests it; bit 60 skinned,
+//	           then the shader, the shader's uniforms, the material set
+//	           and the mesh, each as a dense id
 //	bits 19..0 the draw's place in the queue, so that draws which tie
 //	           keep the order the game queued them in
 //
@@ -29,16 +31,17 @@ import (
 const (
 	sortBlendedBit   = 63
 	sortCulledBit    = 62
-	sortSkinnedBit   = 61
+	sortStencilBit   = 61
+	sortSkinnedBit   = 60
 	sortDepthShift   = 30
-	sortShaderShift  = 54
+	sortShaderShift  = 53
 	sortShaderBits   = 7
-	sortUniformShift = 47
+	sortUniformShift = 46
 	sortUniformBits  = 7
-	sortSetShift     = 34
+	sortSetShift     = 33
 	sortSetBits      = 13
 	sortMeshShift    = 20
-	sortMeshBits     = 14
+	sortMeshBits     = 13
 	sortIndexBits    = 20
 	sortIndexMask    = 1<<sortIndexBits - 1
 	sortMaxDraws     = 1 << sortIndexBits
@@ -79,6 +82,11 @@ func (q *drawQueue) buildKeys() bool {
 		if d.blended {
 			key |= 1<<sortBlendedBit | uint64(^depthBits(d.depth))<<sortDepthShift
 		} else {
+			// A draw that marks the stencil buffer comes first, so a draw
+			// that tests the mark sees it however the two were queued.
+			if !d.mat.marksStencil() {
+				key |= 1 << sortStencilBit
+			}
 			if d.skinned {
 				key |= 1 << sortSkinnedBit
 			}
@@ -145,6 +153,11 @@ func (q *drawQueue) sortRecords() drawList {
 				return 1
 			}
 			return 0
+		case a.mat.marksStencil() != b.mat.marksStencil(): // a mask before what tests it
+			if a.mat.marksStencil() {
+				return -1
+			}
+			return 1
 		case a.skinned != b.skinned:
 			if a.skinned {
 				return 1

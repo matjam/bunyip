@@ -196,8 +196,26 @@ g.ship, err = ctx.Gfx.LoadModel(doc) // or asset.Model(ctx.Gfx, g.fs, "ship.glb"
 `DrawModelAt(m, transform)` takes a `Transform` instead. `Model.Min` and
 `Model.Max` bound the whole model. Use them to set a camera's distance
 when you do not know the file in advance. `Model.Parts` is the placed
-primitives, each a `ModelPart` with a `Mesh`, a `Material` and a `World`
-matrix, for drawing one part with its own material. `NodeCount`,
+primitives, each a `ModelPart` with a `Mesh`, a `Name` (the name glTF
+gave its material), a `Material` and a `World` matrix.
+
+To draw a model with a material of your own, `DrawModelWith(m, world,
+override)` passes each part through the override and draws what it
+returns, and `DrawModelAnimatedWith` does the same for a posed one. The
+override sees the part's index and the part itself, so it can match on
+the index or on the name, and returning `part.Material` leaves a part
+alone. The model's own materials are never changed.
+
+```go
+gr.DrawModelWith(g.ship, world, func(i int, p gfx.ModelPart) gfx.Material {
+	if p.Name != "hull" {
+		return p.Material
+	}
+	m := p.Material
+	m.BaseColor = teamColor
+	return m
+})
+``` `NodeCount`,
 `NodeName`, `NodeIndex` and `NodeParent` walk the node hierarchy by name,
 so you can find a node such as a gun muzzle and spawn an effect there;
 `Model.NodeMatrix` and `NodePosition` give a node's rest-pose place in
@@ -282,8 +300,10 @@ floor in one field.
 The layered features come from the matching glTF extensions and cost
 nothing left at zero. `Clearcoat` with `ClearcoatRoughness` adds a
 varnish lobe for car paint and wet surfaces, `Sheen` with
-`SheenRoughness` adds soft light at grazing angles for velvet and cloth,
-and `Subsurface`, shaped by a `ThicknessTexture`, lets light through thin
+`SheenRoughness` adds soft light at grazing angles, which is the fabric
+look: velvet, felt, brushed cotton, and a good starting point is a sheen
+colour near the base colour with a `SheenRoughness` around 0.4.
+`Subsurface`, shaped by a `ThicknessTexture`, lets light through thin
 parts for leaves, wax and skin. `Transmission` makes glass and ice. The
 opaque scene shows through, refracted by `IOR` (zero means 1.5) across
 `Thickness` world units, blurred by the roughness and absorbed towards
@@ -300,12 +320,66 @@ velvet := gfx.Material{BaseColor: gfx.RGB(40, 30, 90), Roughness: 0.9,
 	Sheen: gfx.RGB(200, 180, 255), SheenRoughness: 0.4}
 ```
 
+`Specular` and `SpecularColor` scale and tint what a dielectric reflects,
+so chalk (`Specular: 0.02`) and a warm varnish are describable; zero
+means the plain 1 and white, and metals are unaffected. `Iridescence`
+puts a thin film over the surface whose interference turns the hue with
+the angle: soap bubbles, oil, beetles, tempered steel. Its look is set by
+`IridescenceThickness` in nanometres (zero means 400; 100 to 800 is the
+range that shows colour) and `IridescenceIOR` (zero means 1.3), and an
+`IridescenceTexture` scales the strength by its red channel and the
+thickness by its green, the two maps glTF packs into one image.
+`Anisotropy` stretches the highlight along the surface for brushed metal,
+hair, satin and vinyl, turned by `AnisotropyRotation`; the direction
+comes from the mesh's texture coordinates, so an anisotropic mesh needs
+UVs but no tangents of its own.
+
+`Shells` draws the mesh again that many times, each further out along its
+normals, which is fur, grass, moss and hair. `ShellLength` is how far the
+outermost shell stands off in world units (zero means 0.05) and
+`FurTexture` is the strand mask: a shell keeps a fragment where the map's
+red channel is above that shell's height, so a tiled noise image gives
+strands of different lengths and a `UVTransform` tiles it. Shells draw
+after the opaque scene, leave the depth buffer alone and cast no shadow,
+and each one costs an instance of the mesh, so sixteen shells of one
+sphere are one draw call.
+
+`Stencil`, `StencilRef` and `StencilWrite` mask one draw against
+another. A material with `StencilWrite: gfx.StencilReplace` and a
+`StencilRef` of 1 marks the buffer where it draws, and one with
+`Stencil: gfx.StencilEqual` and the same reference draws only inside that
+mark: portals, cutaways, magic windows. The buffer starts each frame at
+zero, materials that write it are drawn before those that do not so the
+order the game queues them in does not matter, and the masked draw still
+has to pass the depth test, so put it in front of its mask. `Outline`
+uses the stencil buffer for itself, so a material with an outline ignores
+the three.
+
+```go
+brushed := gfx.Material{BaseColor: gfx.RGB(200, 200, 210), Metallic: 1,
+	Roughness: 0.35, Anisotropy: 0.9}
+bubble := gfx.Material{BaseColor: gfx.RGB(140, 140, 150), Metallic: 1,
+	Roughness: 0.2, Iridescence: 1, IridescenceThickness: 480}
+fur := gfx.Material{BaseColor: gfx.RGB(190, 140, 70), Roughness: 0.9,
+	Shells: 16, ShellLength: 0.22, FurTexture: g.noise, UVTransform: lin.Scale2(8, 4)}
+mask := gfx.Material{StencilWrite: gfx.StencilReplace, StencilRef: 1}
+through := gfx.Material{BaseColor: gfx.RGB(255, 120, 40), Stencil: gfx.StencilEqual, StencilRef: 1}
+```
+
 Vertex colours multiply the base colour and need no field at all; glTF
 files fill them from `COLOR_0` and the terrain snippet above writes them
 by hand. The second UV set comes from `TEXCOORD_1`. A `Shader` from
 `NewMeshShader` replaces the surface calculation before lighting, for
 water, dissolves, triplanar mapping and vertex displacement; the
 [shaders guide](shaders.html) covers writing one.
+
+A model's materials arrive from its file. `LoadModel` reads the glTF
+extensions the fields above come from, including
+`KHR_materials_specular`, `KHR_materials_iridescence` and
+`KHR_materials_anisotropy`, and converts the older
+`KHR_materials_pbrSpecularGlossiness` workflow to metallic-roughness as
+it loads, exactly for the factors and through the glossiness channel for
+the image.
 
 ## Lighting
 
@@ -382,7 +456,13 @@ them.
 
 For image-based lighting, `NewEnvironment` turns an equirectangular
 panorama into a light probe and `NewEnvironmentHDR` does the same for a
-Radiance `.hdr` panorama read with `DecodeHDR`, keeping its range.
+floating-point one, keeping its range. `DecodePanorama` reads the bytes
+of whichever kind you have: an OpenEXR file (`DecodeEXR`), a Radiance
+`.hdr` file (`DecodeHDR`), or an ordinary image, whose sRGB colours it
+converts. The EXR reader takes scanline files with half or float
+channels, uncompressed or compressed with RLE, ZIPS or ZIP, and refuses
+tiled, deep, multi-part and PIZ, PXR24, B44 or DWA files with an error
+that names what the file is.
 `EnvironmentOptions.Intensity` scales it and `Size` sets the cube map's
 side in texels (default 128). Set it as `Light.Environment` and it
 replaces the ambient and the sky. Metals reflect it, rough surfaces take
@@ -390,11 +470,11 @@ its tint from every direction, and `Light.Background` draws it behind the
 scene. Environments hold GPU memory; `Destroy` them in `Shutdown`.
 
 ```go
-hdr, err := gfx.DecodeHDR(data)
+panorama, err := gfx.DecodePanorama(data) // .exr, .hdr, .png or .jpg
 if err != nil {
 	return err
 }
-g.env, err = ctx.Gfx.NewEnvironmentHDR(hdr, gfx.EnvironmentOptions{Intensity: 1.5, Size: 256})
+g.env, err = ctx.Gfx.NewEnvironmentHDR(panorama, gfx.EnvironmentOptions{Intensity: 1.5, Size: 256})
 light.Environment, light.Background = g.env, true
 ```
 
@@ -707,7 +787,8 @@ gr.DrawMeshMoved(ship, shipMat, at(now), at(before))
 
 `DrawMeshMoved`, `DrawSkinnedMoved`, `DrawModelMoved` and
 `DrawModelAnimatedMoved` each take the transform the draw had last
-frame. Plain `DrawMesh` says the mesh did not move, which is what a
+frame; the two model forms take a `MaterialOverride` after it, as
+`DrawModelWith` does, and nil draws the file's own materials. Plain `DrawMesh` says the mesh did not move, which is what a
 static scene wants and what costs nothing: a frame where nothing moved
 draws nothing into the velocity buffer. A moving mesh drawn through
 `DrawMesh` still resolves, because the neighbourhood clamp will not let

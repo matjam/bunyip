@@ -41,9 +41,9 @@ func velocityVertexLayout(skinned bool) ([]vk.VkVertexInputBindingDescription, [
 		{Location: 1, Binding: 1, Format: f32x4, Offset: 0},
 		{Location: 2, Binding: 1, Format: f32x4, Offset: 16},
 		{Location: 3, Binding: 1, Format: f32x4, Offset: 32},
-		{Location: 4, Binding: 1, Format: f32x4, Offset: 192},
-		{Location: 5, Binding: 1, Format: f32x4, Offset: 208},
-		{Location: 6, Binding: 1, Format: f32x4, Offset: 224},
+		{Location: 4, Binding: 1, Format: f32x4, Offset: 240},
+		{Location: 5, Binding: 1, Format: f32x4, Offset: 256},
+		{Location: 6, Binding: 1, Format: f32x4, Offset: 272},
 	}
 	if skinned {
 		attrs = append(attrs,

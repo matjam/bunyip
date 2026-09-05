@@ -3,7 +3,9 @@ package gfx
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"image"
 	"io"
 	"math"
 	"strings"
@@ -136,6 +138,40 @@ func readScanline(br *bufio.Reader, scan []byte, w int) error {
 		}
 	}
 	return nil
+}
+
+// DecodePanorama reads an equirectangular panorama from encoded bytes,
+// whichever format it is in: an OpenEXR file, a Radiance .hdr file, or
+// any image the program has registered a decoder for, whose sRGB colours
+// are converted to linear radiance. Pass the result to NewEnvironmentHDR.
+// A program that loads PNG or JPEG panoramas must import image/png or
+// image/jpeg for their decoders, as it would for image.Decode.
+func DecodePanorama(data []byte) (*HDRImage, error) {
+	switch {
+	case len(data) >= 4 && binary.LittleEndian.Uint32(data) == 20000630:
+		return DecodeEXR(data)
+	case len(data) >= 2 && data[0] == '#' && data[1] == '?':
+		return DecodeHDR(data)
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("gfx: panorama: %w", err)
+	}
+	b := img.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return nil, fmt.Errorf("gfx: panorama has empty bounds")
+	}
+	out := &HDRImage{Width: b.Dx(), Height: b.Dy(), Pix: make([]float32, b.Dx()*b.Dy()*3)}
+	for y := range out.Height {
+		for x := range out.Width {
+			r, g, bb, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			i := (y*out.Width + x) * 3
+			out.Pix[i] = srgbToLinear(uint8(r >> 8))
+			out.Pix[i+1] = srgbToLinear(uint8(g >> 8))
+			out.Pix[i+2] = srgbToLinear(uint8(bb >> 8))
+		}
+	}
+	return out, nil
 }
 
 // NewEnvironmentHDR builds an environment from a floating-point

@@ -35,7 +35,7 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials (including iridescence, anisotropy, specular tint and fur shells), models, skinning and animation players, lights, shadows, sky and environments (`hdr.go` for Radiance, `exr.go` for OpenEXR), fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
@@ -88,16 +88,20 @@ game that turns none of them on pays nothing. The composite reads four
 samplers (scene, bloom, occlusion, rays) plus the LUT, with a set per
 combination of bloom and rays in `sceneTargets.finals`.
 
-**Descriptor sets for meshes.** Set 0 is the material: thirteen
+**Descriptor sets for meshes.** Set 0 is the material: seventeen
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
 the environment cube, the thickness map, the scene copy for
-transmission, the transmission map) at bindings 0 to 12, then one array
-of four `SAMPLER` bindings at binding 13, immutable in the layout:
+transmission, the transmission map, then the iridescence, anisotropy,
+specular and fur maps) at bindings 0 to 16, then one array
+of four `SAMPLER` bindings at binding 17, immutable in the layout:
 linear repeat, linear clamp, nearest repeat, nearest clamp, in that
 order (`samplerIndex` in `gfx/mesh_draw.go`). A texture's own filtering
 and edge handling pick its sampler, and `materialSet` packs one index
-per texture slot, two bits each, into the instance stream's `atten.w`;
-the shader reads it back with `texSampler(slot)` and the GLSL preludes
+per texture slot, two bits each, into the instance stream's `atten.w`,
+for the first eleven slots only (`packedSamplerSlots`); the four maps
+after them are always read linear and repeating, because a float's
+mantissa has no room for more index bits.
+The shader reads the index back with `texSampler(slot)` and the GLSL preludes
 `#define` the old names (`albedoTex`, `image0`) as
 `sampler2D(image, samplers[...])` pairs, so game shaders are unchanged.
 Every instance of a draw shares set 0, so the index is the same across
@@ -117,9 +121,17 @@ same way. Set 2 is the shadow atlas, the one comparison sampler.
 Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal allows sixteen samplers a stage,
 which the four plus the shadow atlas's stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
-which is the budget the thirteen images and the atlas spend from: a new
+which is the budget the seventeen images and the atlas spend from: a new
 material texture costs an image and no sampler. The shadow maps still
 share one atlas image so the shadow pass costs one binding.
+
+**The instance stream** (`meshInstance` in `gfx/mesh.go`) is fifteen
+`vec4`s at vertex attribute locations 5 to 16 and 19 to 21; 17 and 18
+are a skinned mesh's joints and weights (`meshVertexLayout` and
+`skinVertexLayout`). Adding a field means adding it at the end of the
+struct, at the next free location, and to the declarations in
+`vert_common.glsl` and the varyings the postludes in
+`gfx/shaders/shaders.go` write and `prelude_mesh.glsl` reads.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
 in seven GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
@@ -201,7 +213,10 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...   # and linux
 
 Headless tests: `newHeadless(t, w, h)` in `gfx` and `newContext(t)` in
 `ui` give a `Graphics` on an offscreen surface; `renderMaterial` in
-`gfx/material_test.go` renders one frame and returns the image. UI tests
+`gfx/material_test.go` renders one frame and returns the image.
+`newHeadless` turns the validation layers on and fails the test if they
+report an error, so a pipeline or descriptor mistake is a red test rather
+than a line in the log. UI tests
 must feed a mouse move and run one frame before a press, because hover
 is one frame behind. A glyph first drawn in a frame appears in that
 frame, because the atlas upload is recorded into the frame before the

@@ -178,6 +178,53 @@ type Material struct {
 	ThicknessImage      int        // G scales the thickness, as glTF stores it; -1 none
 	AttenuationDistance float32    // zero for no absorption
 	AttenuationColor    [3]float32 // default white
+
+	// Specular is KHR_materials_specular: SpecularFactor scales a
+	// dielectric's reflection (default 1) and SpecularColor tints it
+	// (default white). SpecularImage holds the strength in its alpha and
+	// SpecularColorImage the tint in its RGB; each is -1 when the file
+	// gives none.
+	SpecularFactor     float32
+	SpecularColor      [3]float32
+	SpecularImage      int
+	SpecularColorImage int
+
+	// Iridescence is KHR_materials_iridescence, a thin film over the
+	// surface: IridescenceFactor is its strength (default 0),
+	// IridescenceIOR its index of refraction (default 1.3) and the film
+	// is between IridescenceThicknessMin and IridescenceThicknessMax
+	// nanometres thick (defaults 100 and 400). IridescenceImage scales
+	// the strength by its red channel and IridescenceThicknessImage
+	// places the thickness between the two by its green channel; each is
+	// -1 when the file gives none.
+	IridescenceFactor       float32
+	IridescenceIOR          float32
+	IridescenceThicknessMin float32
+	IridescenceThicknessMax float32
+	IridescenceImage          int
+	IridescenceThicknessImage int
+
+	// Anisotropy is KHR_materials_anisotropy, a highlight stretched along
+	// the surface: AnisotropyStrength is how far (default 0) and
+	// AnisotropyRotation which way, in radians. AnisotropyImage holds a
+	// direction in red and green and a strength in blue, or -1.
+	AnisotropyStrength float32
+	AnisotropyRotation float32
+	AnisotropyImage    int
+
+	// SpecGloss reports that the material came from
+	// KHR_materials_pbrSpecularGlossiness, which the loader converts to
+	// metallic-roughness: the factors above are the converted ones.
+	// SpecGlossImage is the extension's specular-glossiness image, whose
+	// alpha is the glossiness, or -1; the renderer turns it into a
+	// metallic-roughness map. Its RGB, the specular colour per texel, is
+	// not used, so a file whose specular colour varies across one
+	// material loads with the converted factors alone.
+	SpecGloss      bool
+	SpecGlossImage int
+	// Glossiness is the extension's glossiness factor, which scales the
+	// image's alpha; 1 without the extension.
+	Glossiness float32
 }
 
 // AlphaMode is how a material's alpha is used.
@@ -193,7 +240,8 @@ const (
 // roughness or normals) and must not be decoded as sRGB.
 func (d *Document) IsDataImage(i int) bool {
 	for _, m := range d.Materials {
-		if m.MetalRoughImage == i || m.NormalImage == i || m.OcclusionImage == i || m.TransmissionImage == i || m.ThicknessImage == i {
+		if m.MetalRoughImage == i || m.NormalImage == i || m.OcclusionImage == i || m.TransmissionImage == i || m.ThicknessImage == i ||
+			m.IridescenceImage == i || m.IridescenceThicknessImage == i || m.AnisotropyImage == i || m.SpecularImage == i {
 			return true
 		}
 	}
