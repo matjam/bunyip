@@ -152,6 +152,33 @@ func (d *Device) DepthClamp() bool { return d.depthClamp }
 // Limits exposes the physical device limits.
 func (d *Device) Limits() *vk.VkPhysicalDeviceLimits { return &d.gpu.props.Limits }
 
+// MaxSamples is the highest sample count the device supports for colour
+// and depth attachments together, one of 1, 2, 4, 8, 16, 32 or 64. It is
+// never below 1: every device supports single-sample rendering.
+func (d *Device) MaxSamples() int {
+	limits := d.Limits()
+	counts := limits.FramebufferColorSampleCounts & limits.FramebufferDepthSampleCounts & limits.FramebufferStencilSampleCounts
+	best := 1
+	for n := 2; n <= 64; n *= 2 {
+		if counts&vk.VkSampleCountFlags(n) != 0 {
+			best = n
+		}
+	}
+	return best
+}
+
+// SampleCount turns a requested sample count into the flag bit for it,
+// rounded down to a power of two the device supports. Zero and one both
+// mean no multisampling.
+func (d *Device) SampleCount(n int) vk.VkSampleCountFlagBits {
+	n = min(n, d.MaxSamples())
+	count := 1
+	for c := 2; c <= n; c *= 2 {
+		count = c
+	}
+	return vk.VkSampleCountFlagBits(count)
+}
+
 // Physical exposes the physical device handle for surface queries.
 func (d *Device) Physical() vk.VkPhysicalDevice { return d.gpu.handle }
 

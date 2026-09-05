@@ -34,6 +34,10 @@ type drawQueue struct {
 	joints       []lin.Mat4 // joint matrices for skinned draws this frame
 	jointBuf     *render.StorageSets
 	clear        Color
+	// out is the attachment set of the pass this queue's composite and 2D
+	// stream land in: the zero value for the screen, a render texture's
+	// own colour format, depth and sample count otherwise.
+	out          outKey
 	viewW        float32
 	viewH        float32
 	pixelW       float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)

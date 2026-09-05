@@ -20,6 +20,15 @@ type PostSettings struct {
 	Saturation     float32 // default 1
 	Contrast       float32 // default 1
 	NoAntiAlias    bool    // skip the FXAA pass on the main frame
+	// Samples multisamples the 3D scene pass: 1 (the default), 2, 4 or 8,
+	// clamped to what the GPU supports. Every triangle edge is then
+	// resolved from that many coverage samples, which is the one form of
+	// anti-aliasing that does not blur the picture, at the cost of that
+	// many times the scene's colour and depth memory and bandwidth. Set
+	// NoAntiAlias with it: FXAA over an already resolved image only
+	// softens it. Changing it rebuilds the scene targets and the
+	// pipelines that draw into them, on the next frame.
+	Samples int
 	// AmbientOcclusion is the strength of screen-space ambient occlusion,
 	// 0 (off) to 1; default 0.6. It darkens creases and contact points.
 	AmbientOcclusion float32
@@ -65,17 +74,29 @@ func DefaultPost() PostSettings {
 	return PostSettings{Exposure: 1, Bloom: 0.25, BloomThreshold: 1, Saturation: 1, Contrast: 1, AmbientOcclusion: 0.6, OcclusionRadius: 1}
 }
 
-// SetPost replaces the post-processing settings.
+// SetPost replaces the post-processing settings. A change to Samples
+// takes effect on the next frame, which rebuilds the scene targets.
 func (g *Graphics) SetPost(p PostSettings) { g.post.settings = p }
 
 // Post returns the current settings.
 func (g *Graphics) Post() PostSettings { return g.post.settings }
 
+// MaxSamples is the highest sample count PostSettings.Samples and
+// RenderTextureOptions.Samples accept on this GPU: 1 when it cannot
+// multisample at all, and usually 8.
+func (g *Graphics) MaxSamples() int { return g.r.Device.MaxSamples() }
+
+// sceneSamples is the sample count the scene passes render at, clamped
+// to what the device supports.
+func (g *Graphics) sceneSamples() vk.VkSampleCountFlagBits {
+	return g.r.Device.SampleCount(g.post.settings.Samples)
+}
+
 // postPass owns the fullscreen pipelines and descriptor pools shared by
 // every scene target set.
 type postPass struct {
 	settings  PostSettings
-	composite *render.Pipeline
+	composite *pipeCache // built per output: the screen, or a render texture's format and samples
 	bright    *render.Pipeline
 	blur      *render.Pipeline
 	fxaa      *render.Pipeline
@@ -94,9 +115,12 @@ type postPass struct {
 }
 
 // sceneTargets are the offscreen images one output needs: HDR scene,
-// bloom ping-pong at half size, and the LDR image FXAA reads.
+// bloom ping-pong at half size, and the LDR image FXAA reads. Only the
+// HDR target is ever multisampled; it resolves into its own colour and
+// depth images, which is what every later pass reads.
 type sceneTargets struct {
 	extent    vk.VkExtent2D
+	samples   vk.VkSampleCountFlagBits // the HDR pass's sample count, one for none
 	hdr       *render.Target
 	bloomA    *render.Target
 	bloomB    *render.Target
@@ -149,9 +173,11 @@ func (g *Graphics) initPost() error {
 	}); err != nil {
 		return err
 	}
-	// The composite and FXAA passes write swapchain-format images with the
-	// frame's depth attachment present, on screen and in render textures.
-	if p.composite, err = dev.NewPipeline(render.PipelineDesc{
+	// The composite writes the swapchain's format with the frame's depth
+	// attachment present on screen, and whatever colour format, depth and
+	// sample count a render texture was made with, so it is cached per
+	// output. FXAA only ever resolves onto the screen.
+	if p.composite, err = newPipeCache(dev, render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.PostFrag,
 		ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push, SetLayouts: []vk.VkDescriptorSetLayout{p.triples.Layout, g.descriptors.Layout},
@@ -160,7 +186,7 @@ func (g *Graphics) initPost() error {
 	}
 	// Decals read the scene depth through the same single-sampler layout.
 	decalBindings, decalAttrs := meshVertexLayout()
-	if g.meshes.decalPipe, err = dev.NewPipeline(render.PipelineDesc{
+	if g.meshes.decalPipe, err = newPipeCache(dev, render.PipelineDesc{
 		Vert: shaders.DecalVert, Frag: shaders.DecalFrag, ColorFormat: hdrFormat,
 		Bindings: decalBindings[:1], Attributes: decalAttrs[:1],
 		CullMode: vk.VK_CULL_MODE_FRONT_BIT, Blend: true,
@@ -187,24 +213,35 @@ func (g *Graphics) initPost() error {
 	}); err != nil {
 		return err
 	}
-	if p.main, err = g.newSceneTargets(g.r.Swapchain.Extent); err != nil {
+	if p.main, err = g.newSceneTargets(g.r.Swapchain.Extent, g.sceneSamples()); err != nil {
 		return err
 	}
 	g.r.OnResize(func(vk.VkExtent2D) error { return g.rebuildMain() })
 	return nil
 }
 
-// newSceneTargets builds the images and descriptor sets for one extent.
-func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) {
+// newSceneTargets builds the images and descriptor sets for one extent
+// at one sample count.
+func (g *Graphics) newSceneTargets(extent vk.VkExtent2D, samples vk.VkSampleCountFlagBits) (*sceneTargets, error) {
 	p := &g.post
 	dev := g.r.Device
-	t := &sceneTargets{extent: extent}
+	if samples == 0 {
+		samples = vk.VK_SAMPLE_COUNT_1_BIT
+	}
+	t := &sceneTargets{extent: extent, samples: samples}
 	var err error
 	fail := func(err error) (*sceneTargets, error) {
 		t.destroy(g)
 		return nil, err
 	}
-	if t.hdr, err = dev.NewTargetCopyable(extent, hdrFormat, g.r.DepthFormat); err != nil {
+	// The HDR target carries the multisampled attachments and resolves
+	// into its own colour and depth images. Its colour is a transfer
+	// source for the transmission snapshot and its depth one for
+	// RenderTexture.ReadDepth.
+	if t.hdr, err = dev.NewTargetDesc(render.TargetDesc{
+		Extent: extent, ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat, Samples: samples,
+		ColorUsage: vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT, DepthUsage: vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+	}); err != nil {
 		return fail(err)
 	}
 	half := vk.VkExtent2D{Width: max(extent.Width/2, 1), Height: max(extent.Height/2, 1)}
@@ -341,10 +378,15 @@ func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets
 	render.EndTargetPass(cb, t.aoB)
 }
 
-// composite writes the tone-mapped scene into the current pass.
-func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom, ao bool) {
+// composite writes the tone-mapped scene into the current pass, whose
+// attachments out describes.
+func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, out outKey, bloom, ao bool) error {
 	p := &g.post
 	s := p.settings
+	pipe, err := p.composite.at(out)
+	if err != nil {
+		return err
+	}
 	set := t.finalSet
 	strength := s.Bloom
 	if !bloom {
@@ -364,11 +406,12 @@ func (g *Graphics) composite(cb vk.VkCommandBuffer, t *sceneTargets, bloom, ao b
 		}
 	}
 	p.lut = lut.set
-	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.composite.Layout, 1, 1, &p.lut, 0, nil)
-	p.fullscreen(cb, p.composite, set, postPush{
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &p.lut, 0, nil)
+	p.fullscreen(cb, pipe, set, postPush{
 		a: [4]float32{s.Exposure, strength, s.Vignette, s.Saturation},
 		b: [4]float32{s.Contrast, aoStrength, boolFloat(s.ShowOcclusion), lutStrength},
 	})
+	return nil
 }
 
 // antiAlias resolves the LDR image into the current pass with FXAA.
@@ -380,7 +423,8 @@ func (p *postPass) destroy(g *Graphics) {
 	if p.main != nil {
 		p.main.destroy(g)
 	}
-	for _, pipe := range []*render.Pipeline{p.composite, p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur} {
+	p.composite.destroy()
+	for _, pipe := range []*render.Pipeline{p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur} {
 		if pipe != nil {
 			pipe.Destroy()
 		}

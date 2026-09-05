@@ -1,8 +1,10 @@
 package render
 
 import (
+	"encoding/binary"
 	"fmt"
 	"image"
+	"math"
 
 	"github.com/matjam/bunyip/internal/vk"
 )
@@ -17,6 +19,7 @@ type Image struct {
 	Format     vk.VkFormat
 	Extent     vk.VkExtent2D
 	Mips       uint32
+	Samples    vk.VkSampleCountFlagBits // one unless the image is a multisampled attachment
 	mem        allocation
 	dev        *Device
 }
@@ -59,7 +62,21 @@ func MipLevels(extent vk.VkExtent2D) uint32 {
 
 // NewImageMips creates a 2D image with mips levels.
 func (d *Device) NewImageMips(extent vk.VkExtent2D, format vk.VkFormat, usage vk.VkImageUsageFlags, aspect vk.VkImageAspectFlags, mips uint32) (*Image, error) {
-	img := &Image{Format: format, Extent: extent, Mips: mips, dev: d}
+	return d.NewImageSamples(extent, format, usage, aspect, mips, vk.VK_SAMPLE_COUNT_1_BIT)
+}
+
+// NewImageSamples creates a 2D image with mips levels and a sample
+// count. A multisampled image is an attachment only: it has one level,
+// nothing samples it, and a resolve writes its result into a
+// single-sample image.
+func (d *Device) NewImageSamples(extent vk.VkExtent2D, format vk.VkFormat, usage vk.VkImageUsageFlags, aspect vk.VkImageAspectFlags, mips uint32, samples vk.VkSampleCountFlagBits) (*Image, error) {
+	if samples == 0 {
+		samples = vk.VK_SAMPLE_COUNT_1_BIT
+	}
+	if samples != vk.VK_SAMPLE_COUNT_1_BIT {
+		mips = 1
+	}
+	img := &Image{Format: format, Extent: extent, Mips: mips, Samples: samples, dev: d}
 	info := vk.VkImageCreateInfo{
 		SType:         vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		ImageType:     vk.VK_IMAGE_TYPE_2D,
@@ -67,7 +84,7 @@ func (d *Device) NewImageMips(extent vk.VkExtent2D, format vk.VkFormat, usage vk
 		Extent:        vk.VkExtent3D{Width: extent.Width, Height: extent.Height, Depth: 1},
 		MipLevels:     mips,
 		ArrayLayers:   1,
-		Samples:       vk.VK_SAMPLE_COUNT_1_BIT,
+		Samples:       samples,
 		Tiling:        vk.VK_IMAGE_TILING_OPTIMAL,
 		Usage:         usage,
 		SharingMode:   vk.VK_SHARING_MODE_EXCLUSIVE,
@@ -243,6 +260,68 @@ func (d *Device) ReadImage(img *Image) (*image.RGBA, error) {
 	case vk.VK_FORMAT_B8G8R8A8_SRGB, vk.VK_FORMAT_B8G8R8A8_UNORM:
 		for i := 0; i+3 < len(out.Pix); i += 4 {
 			out.Pix[i], out.Pix[i+2] = out.Pix[i+2], out.Pix[i]
+		}
+	}
+	return out, nil
+}
+
+// ReadDepth copies the depth aspect of an image that a finished pass
+// left in shader-read-only layout back to the host, one float per pixel
+// in row-major order, 0 at the near plane and 1 at the far plane. It
+// waits for the device, so it belongs in tools and tests rather than in
+// a frame. The image must not be in use by a frame in flight.
+func (d *Device) ReadDepth(img *Image) ([]float32, error) {
+	if img.Samples != vk.VK_SAMPLE_COUNT_1_BIT {
+		return nil, fmt.Errorf("render: cannot read a multisampled depth image; read the resolved one")
+	}
+	var stride int
+	switch img.Format {
+	case vk.VK_FORMAT_D32_SFLOAT, vk.VK_FORMAT_D32_SFLOAT_S8_UINT, vk.VK_FORMAT_D24_UNORM_S8_UINT:
+		stride = 4
+	case vk.VK_FORMAT_D16_UNORM, vk.VK_FORMAT_D16_UNORM_S8_UINT:
+		stride = 2
+	default:
+		return nil, fmt.Errorf("render: depth format %d cannot be read back", img.Format)
+	}
+	w, h := int(img.Extent.Width), int(img.Extent.Height)
+	buf, err := d.NewBuffer(vk.VkDeviceSize(w*h*stride), vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if err != nil {
+		return nil, err
+	}
+	defer buf.Destroy()
+	aspect := vk.VkImageAspectFlags(vk.VK_IMAGE_ASPECT_DEPTH_BIT)
+	err = d.OneShot(func(cb vk.VkCommandBuffer) {
+		imageBarrier(cb, img.Handle, depthAspect(img.Format),
+			vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT|vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+			vk.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT|vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT)
+		region := vk.VkBufferImageCopy{
+			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: aspect, LayerCount: 1},
+			ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
+		}
+		vk.VkCmdCopyImageToBuffer(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf.Handle, 1, &region)
+		imageBarrier(cb, img.Handle, depthAspect(img.Format),
+			vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,
+			vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
+	})
+	if err != nil {
+		return nil, err
+	}
+	src := buf.Bytes()[:w*h*stride]
+	out := make([]float32, w*h)
+	for i := range out {
+		switch img.Format {
+		case vk.VK_FORMAT_D32_SFLOAT, vk.VK_FORMAT_D32_SFLOAT_S8_UINT:
+			out[i] = math.Float32frombits(binary.LittleEndian.Uint32(src[i*4:]))
+		case vk.VK_FORMAT_D24_UNORM_S8_UINT:
+			// The depth aspect copies as X8_D24_UNORM_PACK32: the value
+			// sits in the low 24 bits.
+			out[i] = float32(binary.LittleEndian.Uint32(src[i*4:])&0xffffff) / 0xffffff
+		default:
+			out[i] = float32(binary.LittleEndian.Uint16(src[i*2:])) / 0xffff
 		}
 	}
 	return out, nil

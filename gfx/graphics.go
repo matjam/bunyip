@@ -48,7 +48,11 @@ type Graphics struct {
 	pathSubs      []subpath        // flattened sub-paths, reused by FillPath and StrokePath
 	pathFill      filler           // likewise the scanline filler
 	pathStroke    stroker          // and the stroke expander
-	linePipe      *render.Pipeline // debug lines over the 3D scene
+	linePipe      *pipeCache // debug lines over the 3D scene, per sample count
+	// sceneOut is the attachment set of the HDR pass being recorded: the
+	// pipelines drawn into it are built per sample count, and one queue
+	// is recorded at a time.
+	sceneOut outKey
 	dbgFont       *Font            // the built-in font, made on first use
 	dbgFontFailed bool
 	rec           recordScratch // long-lived arguments for the recording commands
@@ -92,17 +96,34 @@ func (g *Graphics) mainExtent() vk.VkExtent2D {
 // rebuildMain sizes the main scene targets to the viewport when it changed.
 func (g *Graphics) rebuildMain() error {
 	ext := g.mainExtent()
-	if g.post.main != nil && g.post.main.extent == ext {
+	samples := g.sceneSamples()
+	if g.post.main != nil && g.post.main.extent == ext && g.post.main.samples == samples {
 		return nil
 	}
-	if err := g.r.Device.WaitIdle(); err != nil {
-		return err
-	}
-	if g.post.main != nil {
-		g.post.main.destroy(g)
+	if old := g.post.main; old != nil {
+		g.post.main = nil
+		g.deferDestroy(func() { old.destroy(g) })
 	}
 	var err error
-	g.post.main, err = g.newSceneTargets(ext)
+	g.post.main, err = g.newSceneTargets(ext, samples)
+	return err
+}
+
+// rebuildScene gives a render texture scene targets at the sample count
+// the post settings now ask for. It runs at the start of a frame's
+// rendering, where no pass is open yet and the old targets can go on the
+// retire list rather than costing a wait.
+func (g *Graphics) rebuildScene(rt *RenderTexture) error {
+	samples := g.sceneSamples()
+	if rt.scene != nil && rt.scene.samples == samples {
+		return nil
+	}
+	if old := rt.scene; old != nil {
+		rt.scene = nil
+		g.deferDestroy(func() { old.destroy(g) })
+	}
+	var err error
+	rt.scene, err = g.newSceneTargets(vk.VkExtent2D{Width: uint32(rt.Width), Height: uint32(rt.Height)}, samples)
 	return err
 }
 
@@ -507,10 +528,18 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	}
 	// The 2D shadow maps are built and uploaded before any pass is
 	// recorded, so every lit draw in the frame samples the same maps.
+	// This is also where a changed sample count takes effect, for the
+	// same reason: no pass is open yet.
 	for _, sf := range g.subFrames {
+		if err := g.rebuildScene(sf.rt); err != nil {
+			return nil, err
+		}
 		if err := g.buildShadows2D(sf.queue); err != nil {
 			return nil, err
 		}
+	}
+	if err := g.rebuildMain(); err != nil {
+		return nil, err
 	}
 	if err := g.buildShadows2D(g.main); err != nil {
 		return nil, err
@@ -559,8 +588,11 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	aa := has3D && !g.post.settings.NoAntiAlias && target == nil
 	if aa {
 		// Composite into the LDR image, then resolve with FXAA on screen.
+		// The LDR image is always single-sample in the swapchain's format.
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
-		g.composite(cb, t, bloom, ao)
+		if err := g.composite(cb, t, outKey{}, bloom, ao); err != nil {
+			return err
+		}
 		render.EndTargetPass(cb, t.ldr)
 	}
 	vp := vk.VkRect2D{Extent: g.r.Swapchain.Extent}
@@ -583,7 +615,9 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	case aa:
 		g.antiAlias(cb, t)
 	case has3D:
-		g.composite(cb, t, bloom, ao)
+		if err := g.composite(cb, t, q.out, bloom, ao); err != nil {
+			return err
+		}
 	}
 	if err := g.flush2D(fr, q, vp); err != nil {
 		return err
@@ -641,7 +675,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 				render.SetScissorRect(cb, pixelRect(vp, s.clip, scaleX, scaleY))
 			}
 		}
-		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend})
+		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend, out: q.out})
 		if err != nil {
 			return err
 		}
@@ -683,9 +717,7 @@ func (g *Graphics) destroy() {
 		g.dbgFont.Destroy()
 		g.dbgFont = nil
 	}
-	if g.linePipe != nil {
-		g.linePipe.Destroy()
-	}
+	g.linePipe.destroy()
 	g.post.destroy(g)
 	g.meshes.destroy(g)
 	if g.white != nil {

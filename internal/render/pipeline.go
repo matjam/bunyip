@@ -25,6 +25,10 @@ type PipelineDesc struct {
 	Stencil          *StencilState  // stencil test and write, when the depth format has stencil
 	PushConstantSize uint32         // bytes visible to all stages, 0 for none
 	SetLayouts       []vk.VkDescriptorSetLayout
+	// Samples is the sample count of the attachments the pipeline renders
+	// into; zero or one is no multisampling. It must match the target's,
+	// so a pass that changes sample count needs its own pipelines.
+	Samples          vk.VkSampleCountFlagBits
 	NoColor          bool    // depth-only pass (shadow maps)
 	DepthBias        float32 // constant depth bias, for shadow passes
 	DepthSlopeBias   float32
@@ -159,7 +163,13 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		raster.DepthBiasConstantFactor = desc.DepthBias
 		raster.DepthBiasSlopeFactor = desc.DepthSlopeBias
 	}
-	multisample := vk.VkPipelineMultisampleStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, RasterizationSamples: vk.VK_SAMPLE_COUNT_1_BIT}
+	samples := desc.Samples
+	if samples == 0 {
+		samples = vk.VK_SAMPLE_COUNT_1_BIT
+	}
+	// Coverage is per sample, shading per pixel: the standard trade that
+	// makes multisampling cheap. Nothing asks for sample shading.
+	multisample := vk.VkPipelineMultisampleStateCreateInfo{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, RasterizationSamples: samples}
 	compare := desc.DepthCompare
 	if compare == 0 {
 		compare = vk.VK_COMPARE_OP_LESS_OR_EQUAL

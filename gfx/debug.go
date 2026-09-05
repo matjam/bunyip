@@ -174,7 +174,7 @@ func pick(b bool, no, yes float32) float32 {
 // blended, positions and colours from one vertex stream.
 func (g *Graphics) initLines() error {
 	var err error
-	g.linePipe, err = g.r.Device.NewPipeline(render.PipelineDesc{
+	g.linePipe, err = newPipeCache(g.r.Device, render.PipelineDesc{
 		Vert: shaders.LineVert, Frag: shaders.LineFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		Topology: vk.VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
@@ -196,11 +196,15 @@ func (g *Graphics) drawDebugLines(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 	if err := q.lines.upload(g, fr.Slot); err != nil {
 		return err
 	}
+	pipe, err := g.linePipe.at(g.sceneOut)
+	if err != nil {
+		return err
+	}
 	rec := &g.rec
 	rec.push.proj = q.camera.ViewProj(aspect)
 	rec.offset = 0
-	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, g.linePipe.Handle)
-	vk.CmdPushConstants(cb, g.linePipe.Layout, meshStages, 0, 64, unsafe.Pointer(&rec.push.proj))
+	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
+	vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, 64, unsafe.Pointer(&rec.push.proj))
 	vk.CmdBindVertexBuffers(cb, 0, 1, &q.lines.buffers[q.lines.slot].Handle, &rec.offset)
 	vk.CmdDraw(cb, uint32(len(q.lines.items)), 1, 0, 0)
 	return nil

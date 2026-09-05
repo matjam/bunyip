@@ -144,12 +144,17 @@ type pipeKey struct {
 	noDepthWrite bool
 	shadow       bool // the depth-only shadow pass
 	stencil      bool // mark the stencil buffer, for outlines
+	// out is the pass's attachment set. A mesh shader uses its sample
+	// count, since the scene may be multisampled; a sprite shader uses
+	// all of it, since a render texture chooses its own colour format,
+	// depth and samples. The shadow pass is always the zero value.
+	out outKey
 }
 
-// meshKey is the pipeline variant a material needs. It takes a pointer
-// because Material is large and this sits in the draw loop.
-func meshKey(mat *Material, skinned bool) pipeKey {
-	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0}
+// meshKey is the pipeline variant a material needs in a pass. It takes a
+// pointer because Material is large and this sits in the draw loop.
+func meshKey(mat *Material, skinned bool, out outKey) pipeKey {
+	key := pipeKey{blend: BlendReplace, skinned: skinned, doubleSided: mat.DoubleSided, noDepthTest: mat.NoDepthTest, noDepthWrite: mat.NoDepthWrite, stencil: mat.Outline > 0, out: out}
 	if mat.blended() {
 		key.blend = BlendAlpha
 	}
@@ -255,16 +260,17 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 		if key.stencil {
 			desc.Stencil = render.StencilWrite(1)
 		}
+		desc.Samples = key.out.samples
 	} else {
 		bindings, attrs := vertex2DLayout()
-		desc = render.PipelineDesc{
+		desc = key.out.apply(render.PipelineDesc{
 			Vert: g.spriteVert(), Frag: s.frag,
 			ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
 			Bindings: bindings, Attributes: attrs,
 			Blend: true, Factors: key.blend.factors(),
 			PushConstantSize: push2DSize,
 			SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout, g.uniforms.Layout},
-		}
+		})
 	}
 	p, err := g.r.Device.NewPipeline(desc)
 	if err != nil {
