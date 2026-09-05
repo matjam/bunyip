@@ -305,6 +305,16 @@ render pass, so text tests draw one frame.
   be told how tall its contents are, so each tab counts its rows
   (`Console.rowsH`). A row added to a tab without adding to its count
   scrolls short.
+- GPU pass times come from one timestamp query pool with a range per
+  frame slot (`render.Timestamps`). A frame resets its slot's range at
+  the top of its command buffer, and that reset first reads the results
+  the same slot left `FramesInFlight` frames ago, whose fence
+  `BeginFrame` has already waited on, so nothing waits and the figures
+  lag the frame on screen. `Timestamps.Begin` and `End` bracket a pass;
+  spans with the same name are summed, so a pass run for a render
+  texture and for the screen reads as one. A device with a zero
+  timestamp period or no valid timestamp bits gets a nil `*Timestamps`
+  on which every method does nothing.
 
 # Part two: using Bunyip in a game
 

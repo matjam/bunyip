@@ -89,7 +89,7 @@ while the console is shut, so they do not go off as you type.
 | `unbind <key>` | Drop a key's binding |
 | `binds` | List the key bindings |
 | `fps` | The frame rate and frame time |
-| `stats` | The frame timings, the profile scopes and the draw counts |
+| `stats` | The frame timings, the GPU pass times, the profile scopes and the draw counts |
 | `log <level>` | Show log records at this level and above: debug, info, warn or error |
 | `timescale [x]` | Read or set how fast game time runs |
 | `panels [tab]` | Open or close the debug panels, on a named tab |
@@ -161,10 +161,32 @@ title bar to move it and its bottom-right corner to resize it.
 **Engine** graphs the last few hundred frames, each frame one column
 split into the time spent updating, drawing and presenting, with the
 line at 16.7 ms that a frame has to stay under to hold sixty a second.
+A mark above each column is the time the GPU spent on that frame, drawn
+beside the stack rather than inside it because the GPU works on one
+frame while the processor records the next, so the two do not add up.
 Under it are the frame timings, how many updates the loop ran this frame
-and the most it has ever run in one (the fixed-step catch-up), the
-profile scopes `Context.Profile` recorded, the 2D and 3D draw counts
-with what was culled, and the draw budget from `Config.DrawBudget`.
+and the most it has ever run in one (the fixed-step catch-up), the GPU
+time by pass, the profile scopes `Context.Profile` recorded, the 2D and
+3D draw counts with what was culled, and the draw budget from
+`Config.DrawBudget`.
+
+### GPU pass times
+
+The engine times each pass on the GPU with timestamp queries: the shadow
+atlas, the opaque scene, the blended scene, the decals, bloom, ambient
+occlusion, the composite, the anti-aliasing resolve and the 2D stream. A
+pass that runs for a render texture as well as for the screen is summed
+into one figure. The panel lists them under the graph, the F3 overlay
+shows the frame's total as `gpu`, and a game reads both from
+`ctx.Stats.GPUFrameMS` and `ctx.Stats.GPU` (`gfx.FrameStats.GPUFrameMS`
+and `GPU` under it) without the console.
+
+The queries are read back at the frame slot's next begin, once its fence
+has been waited on, so timing a frame never stalls one: the figures
+describe a frame a frame or two back and stand still while nothing new
+lands. A device that cannot time work on its queue, which some MoltenVK
+configurations are, reports no passes and a zero total rather than
+failing, and the graph leaves the mark off.
 
 **Graphics** edits the live `PostSettings`: exposure, bloom and its
 threshold, vignette, saturation, contrast, ambient occlusion and its

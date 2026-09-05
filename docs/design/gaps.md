@@ -320,11 +320,14 @@ turns on the in-game console: commands, variables, key bindings, the
 log, and panels for the frame timings and profile scopes, the live
 post-processing settings and GPU resources, a world's entities,
 components, resources and systems, the physics simulation, the mixer,
-the input devices and a game's own services.
+the input devices and a game's own services. Every pass is timed on the
+GPU with timestamp queries read back without waiting, reported by
+`gfx.FrameStats.GPU` and `GPUFrameMS` and by `bunyip.Stats`, graphed and
+listed by the engine panel and totalled by the F3 overlay.
 
-- A frame profiler with GPU timestamps. The console's engine panel
-  graphs the CPU side (update, draw, present) and shows the `Profile`
-  scopes, but nothing times the passes on the GPU.
+- Nothing times the parts of a pass, only the pass: a slow shader inside
+  the opaque pass shows as a slow opaque pass. Splitting it further
+  would mean timestamps between draw runs, which is a query pair per run.
 - An asset pipeline that converts textures to compressed GPU formats
   (BC, ASTC) and generates mip chains offline.
 - Material hot reload as a built-in; a game reloads a material's

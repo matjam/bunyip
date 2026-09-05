@@ -62,9 +62,10 @@ window.
   unfocused or hidden, gamepads, IME text input, action maps with
   rebinding, a frame-timing overlay on F3, and optional pprof.
 - Debugging: an in-game console with commands, variables, key bindings
-  and the log, and panels for the frame timings, the GPU resources and
-  post-processing, a world's entities and systems, the physics
-  simulation, the mixer, the input devices and a game's own services.
+  and the log, and panels for the frame timings, per-pass GPU times from
+  timestamp queries, the GPU resources and post-processing, a world's
+  entities and systems, the physics simulation, the mixer, the input
+  devices and a game's own services.
 
 macOS is the tested target. The Windows (Win32, WASAPI, XInput) and Linux
 (Wayland or X11, ALSA, joystick devices) layers sit behind the same
