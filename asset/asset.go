@@ -6,8 +6,10 @@
 // OpenFS also takes an io/fs.FS. The one-call loaders (Image, Texture,
 // Atlas, Aseprite, Font, Sound, Music, Model, Tracker, Scene, Prefab)
 // read and decode an asset into an engine object. A
-// Loader decodes assets on worker goroutines for loading screens, and a
-// Watcher reports loose files that change on disk for hot reload.
+// Loader decodes assets on worker goroutines for loading screens, a
+// Watcher reports loose files that change on disk, and a Reloader swaps
+// a changed file's texture or shader into the objects a game already
+// holds, so hot reload needs no bookkeeping in the game.
 package asset
 
 import (
@@ -368,7 +370,7 @@ func Pack(dir, out string) error {
 
 func stored(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".png", ".jpg", ".jpeg", ".ogg", ".mp3", ".zip", ".pak", ".glb", ".webp", ".mp4":
+	case ".png", ".jpg", ".jpeg", ".ogg", ".mp3", ".zip", ".pak", ".glb", ".webp", ".mp4", ".ktx2":
 		return true
 	}
 	return false

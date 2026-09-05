@@ -439,6 +439,11 @@ func (l *loop) publishStats() {
 	gs := l.ctx.Gfx.Stats()
 	s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances = gs.Draws2D, gs.Vertices2D, gs.Draws3D, gs.Instances
 	s.Waits = gs.Waits
+	s.GPUFrameMS = gs.GPUFrameMS
+	s.GPU = s.GPU[:0]
+	for _, sp := range gs.GPU {
+		s.GPU = append(s.GPU, Scope{Name: sp.Name, MS: sp.MS})
+	}
 }
 
 // paused reports whether the game stands still: Config.PauseUnfocused

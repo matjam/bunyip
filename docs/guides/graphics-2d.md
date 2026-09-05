@@ -117,14 +117,61 @@ gr.DrawRegion(frame, gfx.Sprite{Pos: g.hero})
 corners keep their size, so a 24 by 24 png draws a panel or a speech
 bubble at any size. Set `Tile` to repeat the edges and centre instead of
 stretching them. `NewBlankTexture` and `Texture.Write` replace a
-texture's pixels, streamed without waiting for the GPU, so a painting
-tool or a video can change one every frame; `Texture.Read` copies
-pixels back.
+rectangle of a texture's pixels, streamed without waiting for the GPU,
+so a painting tool or a video can change one every frame;
+`Texture.Read` copies pixels back. `Texture.Replace` swaps the whole
+image, at a new size if need be, and keeps the `*Texture` the game
+holds, so every material and sprite that names it draws the new picture;
+it is what `asset.Reloader` calls when a texture's file changes on
+disk.
 
 ```go
 ns := gfx.NineSlice{Tex: g.panel, Left: 8, Top: 8, Right: 8, Bottom: 8}
 gr.DrawNineSlice(ns, lin.R(12, 12, 300, 92), gfx.White)
 ```
+
+### Compressed textures
+
+A texture uploaded from a PNG costs four bytes a texel on the GPU, and
+the mip chain the driver blits for it costs a third again. `bunyip-tex`
+compresses an image to one of the BC block formats ahead of time and
+writes it with its whole mip chain as a KTX2 file, which
+`gfx.NewCompressedTexture` uploads block for block:
+
+```
+bunyip-tex -format bc7 sprites/hero.png       # writes sprites/hero.ktx2
+bunyip-tex -format bc5 -linear normals/*.png  # tangent-space normal maps
+```
+
+```go
+g.hero, err = asset.Texture(ctx.Gfx, fs, "sprites/hero.ktx2", gfx.TextureOptions{Linear: true})
+```
+
+`asset.Texture` picks the path from the name, so a game changes the
+extension and nothing else. Which format suits what:
+
+| Format | Bits a texel | For |
+|---|---|---|
+| `bc1` | 4 | opaque colour where a quarter of the size matters more than the last of the quality |
+| `bc3` | 8 | colour with alpha: sprites with soft edges |
+| `bc4` | 4 | one channel: masks, height fields, roughness |
+| `bc5` | 8 | two channels: tangent-space normal maps |
+| `bc7` | 8 | colour, with or without alpha, that has to hold up close |
+
+`-linear` says the file holds data rather than sRGB colour, which is
+what a normal map, a mask or a roughness map is; `bc4` and `bc5` are
+always linear. `-no-mips` writes level 0 alone, `-fast` skips BC7's
+search through its two-subset partitions, and `-v` reports each file's
+size and its peak signal-to-noise ratio so a choice of format can be
+judged rather than guessed at. Nothing is compressed or downsampled
+while the game runs: the blocks and the levels go straight to the GPU.
+
+A device that cannot sample the format, which some MoltenVK
+configurations cannot for the BC formats, decodes level 0 on the
+processor into a plain texture instead, so the same file works
+everywhere at the cost of the memory it was meant to save. A KTX2 file
+holding ASTC uploads on a device that samples it; nothing here encodes
+or decodes ASTC, so there is no fallback for one.
 
 ## Sprites
 

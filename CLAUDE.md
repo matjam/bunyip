@@ -35,7 +35,7 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials, models, skinning and animation players, lights, shadows, sky and environments, fog, culling, LOD, billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the game draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
@@ -50,7 +50,7 @@ X11 and `platform.Backend()` says which was chosen.
 | `internal/render/` | The Vulkan backend: device, swapchain, frames in flight, images, buffers, pipelines, descriptor sets, targets, readback. |
 | `internal/hook/` | The boundary between the engine loop and `gfx`, `input` and `audio`. Each of those packages keeps its plumbing (frame begin and end, resize, the event feed, the audio pull) on unexported methods, wraps the public value in an unexported driver implementing a `hook` interface, and registers a constructor from `init`. `run.go` builds all three through `hook` and hands the game the values `Game()` returns. |
 | `internal/platform/`, `internal/audioout/` | Per-OS window, events, surface, audio output and microphone input. `*_darwin.go` is the reference; Windows and Linux mirror it. Linux has two window backends behind one `App` and `Window`: Wayland in `wayland_linux.go`, its hand-built protocol tables in `wayland_proto_linux.go` and its listener callbacks in `wayland_listen_linux.go`, and X11 in `x11_linux.go`. `app_linux.go` holds the shared structs, chooses the backend in `NewApp` and forwards every method to the live one. |
-| `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
+| `cmd/` | `bunyip-shader` (composes and compiles game shaders), `bunyip-tex` (compresses images to KTX2 with their mip chains), `bunyip-docs` (the documentation site), `bunyip-pack`, `bunyip-bundle`, `bunyip-play`, `bunyip-info`, `vkgen`. |
 | `examples/` | One directory per example; every one takes `-seconds N` and `-shot file.png`. `examples_test.go` runs them all headless and compares each frame against `examples/testdata/<name>.png`, and each has a walkthrough in `docs/examples/`. |
 | `docs/guides/` | The guides, Markdown with front matter (`title`, `group`, `order`, `summary`); images sit beside them. The groups are Start (introduction, getting started, Tetris), Engine (the window, input, entities and systems, game services, the debug console), Graphics (2D graphics, 3D graphics, shaders, animation, the interface), Simulation (physics, orbits) and Audio. `docs/design/` holds design notes and `gaps.md`, the list of what is missing. |
 | `docs/examples/` | One walkthrough per example, `<name>.md`, with front matter (`title`, `example`, `summary`) and a screenshot `<name>.png` beside it. The body quotes the whole program in source order, verbatim, with a section explaining each part. `cmd/bunyip-docs` renders these as the Example programs group; the examples are not rendered as packages. |
@@ -106,11 +106,14 @@ the draw, which is what `shaderSampledImageArrayDynamicIndexing` needs;
 without it. A draw inside a reflection probe's volume binds that probe's
 cube map at binding 9 instead of the light's environment, so probes cost
 no image: `materialSet` is keyed on the environment already. Set 1 is the
-per-frame `Frame` uniform block at binding 0 and the light probe grid's
-harmonics as a storage buffer at binding 1
-(`Device.NewUniformStorageSets`); the queue's own sets are bound and the
-mesh pass's layout is what the pipelines are built against, so both are
-made the same way. Set 2 is the shadow atlas, the one comparison sampler.
+per-frame block: the `Frame` uniform block at binding 0, the light probe
+grid's harmonics as a growable storage buffer at binding 1, and the
+frame's light records, cluster table and light index list as fixed-size
+storage buffers at bindings 2 to 4 (`Device.NewFrameSets`, sized by
+`frameStorage`; the fixed ones never grow, so a frame writes them
+without a wait). The queue's own sets are bound and the mesh pass's
+layout is what the pipelines are built against, so both are made the
+same way. Set 2 is the shadow atlas, the one comparison sampler.
 Set 3 is joint matrices. Set 4 is a game shader's uniform block. Metal allows sixteen samplers a stage,
 which the four plus the shadow atlas's stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
@@ -125,7 +128,26 @@ Changing a field before the end means changing all of them and
 regenerating every shader; appending at the end only needs the files that
 read the new field. The global illumination fields (the probe volumes,
 the grid's shape, the reflection settings) are the tail, read by
-`prelude_mesh.glsl` and `ssr.frag`.
+`prelude_mesh.glsl` and `ssr.frag`. The lights themselves are not in the
+block: they live in set 1's storage buffers, and the block carries the
+shadow projections and the cluster grid's mapping.
+
+**Lights are clustered.** `gfx/cluster.go` cuts the view into 16 by 9
+tiles and 24 exponential depth slices each frame, sorts the frame's
+lights into the clusters they reach on the CPU, and writes the records,
+the per-cluster table and the index list into set 1. The fragment
+prelude finds its cluster from `gl_FragCoord` and the view depth and
+loops over that cluster's lights. A cluster keeps 64 lights and a frame
+1024 (`MaxLights`).
+
+**Shadow maps share one atlas** (`shadowRegion` in `gfx/mesh_draw.go`,
+mirrored by the fragment prelude): three cascades of 2048 in the square
+top's quadrants, four spot maps of 1024 in the fourth, and the six cube
+faces of up to four point lights, 512 each, in the strip below. The
+atlas takes a depth-only format where the device has one. The shadow
+pass draws one map per viewport, and the vertex program picks the
+projection from the push constant: cascades, then spot maps, then cube
+faces.
 
 **Shaders are compiled offline.** `glslangValidator` must be on the
 path. `go generate ./gfx/shaders/` rebuilds the engine's SPIR-V and
@@ -174,6 +196,8 @@ BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
 CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update          # rerecord the golden images
 CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update -docs    # and the walkthrough screenshots
 go run ./cmd/bunyip-docs -out site
+go run ./cmd/bunyip-tex -v -format bc7 art/hero.png      # also bc1, bc3, bc4, bc5
+go run ./cmd/bunyip-tex -format bc5 -linear -outdir build art/normals/*.png
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...   # and linux
 ```
 
@@ -316,6 +340,25 @@ render pass, so text tests draw one frame.
   `endUpdate` clears and the frame set that `endFrame` clears, which
   Draw reads. Nothing copies one into the other, so a frame that runs
   no update still reports each edge once.
+- A compressed texture holds blocks, so nothing writes texels into one:
+  `Texture.Write` and `Replace` refuse, and `ReplaceCompressed` takes
+  another KTX2 file. `NewCompressedTexture` uploads the file's levels as
+  they are through `render.RecordLevelsUpload`, packing them into one
+  staging allocation with each level's offset a multiple of sixteen,
+  which every BC block size divides. Where `Device.SupportsFormat` says
+  no, level 0 is decoded on the processor and the texture becomes an
+  ordinary RGBA one, so the fallback is invisible except in the memory it
+  costs. `gfx/ktx2` writes BC7 in modes 6 and 1 only, and its decoder
+  reads back the same two; `TestCompressedMatchesCPUDecode` in `gfx`
+  compares the hardware decode against that decoder, which is what proves
+  the partition tables in `bc7tables.go`.
+- `Texture.Replace` keeps the `*Texture` a game holds and swaps what is
+  behind it, which is how `asset.Reloader` reloads a material's
+  textures. The same size goes through `Write`; a different size takes a
+  fresh image, so the cached material and image descriptor sets that
+  name the old view are dropped through `forgetTexture` and the old
+  image is retired. Anything that caches a descriptor set built from
+  `Texture.img.View` has to be dropped there too.
 - `NewTexture` and `Texture.Write` premultiply translucent texels in
   linear light before uploading to an sRGB image (`linearPremultiply`);
   Go's `image.RGBA` premultiplies in sRGB space, which an sRGB sampler
@@ -360,6 +403,19 @@ render pass, so text tests draw one frame.
   be told how tall its contents are, so each tab counts its rows
   (`Console.rowsH`). A row added to a tab without adding to its count
   scrolls short.
+- GPU pass times come from one timestamp query pool with a range per
+  frame slot (`render.Timestamps`). A frame resets its slot's range at
+  the top of its command buffer, and that reset first reads the results
+  the same slot left `FramesInFlight` frames ago, whose fence
+  `BeginFrame` has already waited on, so nothing waits and the figures
+  lag the frame on screen. `Timestamps.Begin` and `End` bracket a pass;
+  spans with the same name are summed, so a pass run for a render
+  texture and for the screen reads as one. A device with a zero
+  timestamp period or no valid timestamp bits gets a nil `*Timestamps`
+  on which every method does nothing. `Begin` and `End` also do nothing
+  on a command buffer that did not call `Reset`, so `renderScene` on a
+  one-shot buffer (a `BakeProbe` face) writes into no query it never
+  reset and spends none of the open frame's.
 
 # Part two: using Bunyip in a game
 
@@ -409,6 +465,7 @@ goroutine.
 | The loop, the view, the window, screenshots, headless runs | `bunyip.Config`, `bunyip.Context` |
 | Keys, mouse, gamepads, rebinding | `input.State`, `input.Actions` |
 | Sprites, text, paths, tilemaps, cameras, particles | `gfx` (2D half), `particle`, `tiled` |
+| Compressed textures and their offline mip chains | `cmd/bunyip-tex`, `gfx/ktx2`, `gfx.NewCompressedTexture` |
 | Autotiling: terrain that picks its own tiles | `grid/autotile`, `tiled.WangSet` for sets from the Tiled editor |
 | Meshes, materials, lights, shadows, sky, fog, post-processing | `gfx` (3D half), `gltf` for loading models |
 | Reflection probes, baked light probe grids, screen-space reflections | `gfx.ReflectionProbe`, `gfx.LightProbeGrid`, `gfx.PostSettings.Reflections` |

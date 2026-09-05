@@ -24,14 +24,16 @@ type Graphics struct {
 	linear       vk.VkSampler
 	nearestRep   vk.VkSampler
 	linearRep    vk.VkSampler
-	spriteShader *Shader         // the default 2D shader
-	sdfShader    *Shader         // distance-field text
-	matrixShader *Shader         // sprites through a colour matrix
-	litShader    *Shader         // normal-mapped sprites under 2D lights
-	staging      *render.Staging // this frame's upload arena, one per frame slot
-	waitBase     uint64          // the device's wait count when the frame began
-	stats        FrameStats      // counts for the frame being recorded
-	lastStats    FrameStats      // the last finished frame's counts
+	spriteShader *Shader            // the default 2D shader
+	sdfShader    *Shader            // distance-field text
+	matrixShader *Shader            // sprites through a colour matrix
+	litShader    *Shader            // normal-mapped sprites under 2D lights
+	staging      *render.Staging    // this frame's upload arena, one per frame slot
+	timestamps   *render.Timestamps // GPU pass timings; nil where the device has no timestamp queries
+	gpuSpans     []GPUSpan          // the newest GPU timings, refilled each frame
+	waitBase     uint64             // the device's wait count when the frame began
+	stats        FrameStats         // counts for the frame being recorded
+	lastStats    FrameStats         // the last finished frame's counts
 	meshes       meshPass
 	post         postPass
 	particles    particlePass
@@ -210,6 +212,10 @@ func (g *Graphics) setup(record func(cb vk.VkCommandBuffer)) error {
 func newGraphics(r *render.Renderer) (*Graphics, error) {
 	g := &Graphics{r: r, imageSets: map[[5]*Texture]vk.VkDescriptorSet{}}
 	g.staging = r.Device.NewStaging()
+	// A device without timestamp queries leaves this nil, and every call
+	// on it does nothing, so the frame records no timings and FrameStats
+	// reports none.
+	g.timestamps = r.Device.NewTimestamps()
 	var err error
 	if g.descriptors, err = r.Device.NewSamplerDescriptors(5, 2048); err != nil {
 		return nil, err
@@ -289,7 +295,17 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	g.staging.Begin(g.frame.Slot)
 	g.freeRetired(g.frame.Slot)
 	g.waitBase = g.r.Device.Waits()
+	// Resetting the slot's queries publishes the timings the frame that
+	// used this slot recorded, which have landed because BeginFrame
+	// waited on that slot's fence.
+	g.timestamps.Reset(g.frame.CB, g.frame.Slot)
 	g.stats = FrameStats{}
+	g.gpuSpans = g.gpuSpans[:0]
+	for _, s := range g.timestamps.Spans() {
+		g.gpuSpans = append(g.gpuSpans, GPUSpan{Name: s.Name, MS: s.MS})
+	}
+	g.stats.GPU = g.gpuSpans
+	g.stats.GPUFrameMS = g.timestamps.FrameMS()
 	g.main.reset()
 	g.main.clear = clear
 	g.cur = g.main
@@ -431,9 +447,10 @@ type FrameStats struct {
 	Instances  int // mesh instances drawn in the main pass
 	Culled     int // mesh draws outside the camera's view, skipped in the main pass
 	// ShadowDraws counts the mesh instances recorded into the shadow maps,
-	// summed over the cascades and the shadowed spot lights. A caster is
-	// only recorded into the maps its bounds reach, so this falls as
-	// lights and casters spread out.
+	// summed over the cascades, the shadowed spot lights and the cube
+	// faces of the shadowed point lights. A caster is only recorded into
+	// the maps its bounds reach, so this falls as lights and casters
+	// spread out.
 	ShadowDraws int
 	// Culled2D counts sprites outside the 2D camera's view that were
 	// dropped before reaching the vertex stream.
@@ -449,8 +466,8 @@ type FrameStats struct {
 	// vertex stream outgrowing its buffer or a Texture.Read.
 	Waits int
 	// Lights counts the point and spot lights the frame kept, out of
-	// MaxLights. The directional light is not counted: every frame has
-	// one.
+	// MaxLights, whatever part of the view each one reaches. The
+	// directional light is not counted: every frame has one.
 	Lights int
 	// Particles counts the instances drawn by DrawParticles and
 	// DrawParticles3D. Each batch is one draw call however many
@@ -459,6 +476,27 @@ type FrameStats struct {
 	// ProbesDropped counts reflection probes added past MaxProbes, which
 	// a frame keeps none of.
 	ProbesDropped int
+	// GPU is how long the GPU spent in each pass, in the order the passes
+	// were recorded: the shadow atlas, the opaque and blended scene, the
+	// reflections, the decals, bloom, ambient occlusion, the composite,
+	// the anti-alias resolve and the 2D stream. A pass that runs for a
+	// render texture as well as the screen is summed into one entry. It is
+	// empty on a device without timestamp queries, which some MoltenVK
+	// configurations are. The figures come from queries read back without
+	// waiting, so they describe a frame two frames back, and the slice is
+	// reused every frame; copy it to keep it.
+	GPU []GPUSpan
+	// GPUFrameMS is the GPU time from the frame's first pass to the end
+	// of its last, so it covers the gaps between passes as well. Zero
+	// means the device has no timestamp queries or the frame drew nothing.
+	GPUFrameMS float64
+}
+
+// GPUSpan is one pass of a frame and the milliseconds the GPU spent in
+// it, as FrameStats.GPU reports it.
+type GPUSpan struct {
+	Name string
+	MS   float64
 }
 
 // Stats returns the last finished frame's counts.
@@ -559,19 +597,25 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 			return err
 		}
 		if bloom {
+			g.timestamps.Begin(cb, "bloom")
 			g.renderBloom(cb, t)
+			g.timestamps.End(cb)
 		}
 		if ao {
+			g.timestamps.Begin(cb, "occlusion")
 			g.renderAO(cb, q, t)
+			g.timestamps.End(cb)
 		}
 	}
 	clear := q.clear.premultiplied()
 	aa := has3D && !g.post.settings.NoAntiAlias && target == nil
 	if aa {
 		// Composite into the LDR image, then resolve with FXAA on screen.
+		g.timestamps.Begin(cb, "composite")
 		render.BeginTargetPass(cb, render.PassDesc{Target: t.ldr, ClearColor: clear, ClearDepth: 1})
 		g.composite(cb, t, bloom, ao)
 		render.EndTargetPass(cb, t.ldr)
+		g.timestamps.End(cb)
 	}
 	vp := vk.VkRect2D{Extent: g.r.Swapchain.Extent}
 	switch {
@@ -591,11 +635,18 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	}
 	switch {
 	case aa:
+		g.timestamps.Begin(cb, "antialias")
 		g.antiAlias(cb, t)
+		g.timestamps.End(cb)
 	case has3D:
+		g.timestamps.Begin(cb, "composite")
 		g.composite(cb, t, bloom, ao)
+		g.timestamps.End(cb)
 	}
-	if err := g.flush2D(fr, q, vp); err != nil {
+	g.timestamps.Begin(cb, "2d")
+	err := g.flush2D(fr, q, vp)
+	g.timestamps.End(cb)
+	if err != nil {
 		return err
 	}
 	if target != nil {
@@ -742,6 +793,7 @@ func (g *Graphics) destroy() {
 	if g.staging != nil {
 		g.staging.Destroy()
 	}
+	g.timestamps.Destroy()
 	if g.uniforms != nil {
 		g.uniforms.Destroy()
 	}

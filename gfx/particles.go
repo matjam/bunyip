@@ -358,6 +358,8 @@ func (g *Graphics) drawSceneParticles(cb vk.VkCommandBuffer, q *drawQueue, t *sc
 	right := forward.Cross(up).Norm()
 	camUp := right.Cross(forward).Norm()
 	pp := &g.particles
+	g.timestamps.Begin(cb, "particles")
+	defer g.timestamps.End(cb)
 	pass := render.PassDesc{Target: t.hdr, LoadColor: true, NoDepth: true}
 	render.BeginTargetPass(cb, pass)
 	render.SetViewport(cb, t.extent)

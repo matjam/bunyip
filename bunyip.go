@@ -431,6 +431,7 @@ func (c *Context) ConsoleFrame() console.Frame {
 		Stats: console.Stats{
 			FPS: c.Stats.FPS, FrameMS: c.Stats.FrameMS, UpdateMS: c.Stats.UpdateMS,
 			DrawMS: c.Stats.DrawMS, PresentMS: c.Stats.PresentMS, Updates: c.Stats.Updates,
+			GPUFrameMS: c.Stats.GPUFrameMS,
 			DrawBudget: c.budget,
 		},
 		Screenshot:   c.Screenshot,
@@ -440,6 +441,9 @@ func (c *Context) ConsoleFrame() console.Frame {
 	}
 	for _, s := range c.Stats.Scopes {
 		f.Stats.Scopes = append(f.Stats.Scopes, console.Scope{Name: s.Name, MS: s.MS})
+	}
+	for _, s := range c.Stats.GPU {
+		f.Stats.GPU = append(f.Stats.GPU, console.Scope{Name: s.Name, MS: s.MS})
 	}
 	return f
 }

@@ -7,6 +7,7 @@ import (
 	_ "image/jpeg" // registers the JPEG decoder for Image
 	_ "image/png"  // registers the PNG decoder for Image
 	"path"
+	"strings"
 
 	"github.com/matjam/bunyip/audio"
 	"github.com/matjam/bunyip/audio/tracker"
@@ -32,8 +33,21 @@ func Image(fs *FS, name string) (image.Image, error) {
 	return img, nil
 }
 
-// Texture decodes an image and uploads it.
+// Texture decodes an image and uploads it. A name ending in .ktx2 is a
+// compressed texture from bunyip-tex: its blocks and its mip levels go
+// to the GPU as they stand, without being decoded or downsampled first.
 func Texture(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gfx.Texture, error) {
+	if compressedName(name) {
+		data, err := fs.Read(name)
+		if err != nil {
+			return nil, fmt.Errorf("asset %s: %w", name, err)
+		}
+		tex, err := g.NewCompressedTexture(data, opts)
+		if err != nil {
+			return nil, fmt.Errorf("asset %s: %w", name, err)
+		}
+		return tex, nil
+	}
 	img, err := Image(fs, name)
 	if err != nil {
 		return nil, err
@@ -43,6 +57,29 @@ func Texture(g *gfx.Graphics, fs *FS, name string, opts gfx.TextureOptions) (*gf
 		return nil, fmt.Errorf("asset %s: %w", name, err)
 	}
 	return tex, nil
+}
+
+// compressedName reports whether a name is a KTX2 texture rather than an
+// image to decode.
+func compressedName(name string) bool {
+	return strings.EqualFold(path.Ext(name), ".ktx2")
+}
+
+// replaceTexture decodes a texture file and swaps its contents into a
+// texture the game already holds, so every material and sprite that
+// names that texture draws the new image. Reloader uses it.
+func replaceTexture(tex *gfx.Texture, name string, data []byte) error {
+	if compressedName(name) {
+		if err := tex.ReplaceCompressed(data); err != nil {
+			return fmt.Errorf("asset %s: %w", name, err)
+		}
+		return nil
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("asset %s: %w", name, err)
+	}
+	return tex.Replace(img)
 }
 
 // Atlas reads a TexturePacker or Aseprite JSON atlas, loads the image it
