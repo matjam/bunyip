@@ -17,13 +17,18 @@ That makes Go a useful choice for developers who want to build their game
 in code, understand the engine underneath it and spend less time maintaining
 build infrastructure. Here is how that choice shapes Bunyip.
 
-## One language for the engine and the game
+## A shared language for the engine and core game code
 
 Gameplay code uses the same structs, functions, interfaces and packages as
 the renderer and asset tools. You can follow a drawing call into the engine
-with your editor, change it, and rebuild with the same toolchain. There is
-no separate gameplay scripting language to learn or binding layer to maintain
-between game logic and the engine's Go API.
+with your editor, change it, and rebuild with the same toolchain. Core game
+systems can call the engine's Go API directly and share packages with its
+tools.
+
+Scripting for modding is a future goal. Bunyip does not have an embedded
+scripting language yet; its absence is not a decision to require every mod
+to be written in Go. A scripting layer would let mod authors extend a game
+while its engine and core systems retain this shared Go foundation.
 
 Small interfaces let a subsystem accept the capabilities it needs. For
 example, Bunyip's asset helpers accept `fs.FS`: the same loading code can
