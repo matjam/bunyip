@@ -686,9 +686,11 @@ either side of it stays sharp before the blur grows, and how far past
 that the blur reaches its full width; zero means a quarter of the focus
 distance. `BokehRadius` is that full width in pixels of a 1080-high
 frame (zero means 12) and `BokehSamples` how many taps the disc gathers
-(zero means 16). A wide bokeh wants more of them: the disc is turned by
-a different angle in every pixel, so too few taps read as noise across
-the blurred parts rather than as a pattern.
+(zero means 16). A wide bokeh wants more of them: the disc is the same
+in every pixel, so too few taps over a large radius leave a visible
+pattern on fine detail. Turning the disc per pixel would break that into
+noise, but it scatters the texture fetches and costs about three times
+as much, so raising `BokehSamples` is the better trade.
 
 `MotionBlur` smears each pixel back along the way it moved since the last
 frame, 0 to 1; zero is off, and `MotionSamples` is how many taps it takes
