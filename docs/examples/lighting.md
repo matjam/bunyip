@@ -1,21 +1,23 @@
 ---
 title: Lighting
 example: lighting
-summary: skinned meshes bent by joint matrices under cascaded shadows, point lights, a procedural sky that thins to orbit, image-based lighting and every post-processing setting on a slider, including temporal anti-aliasing, depth of field, motion blur, god rays and the lens effects
+summary: skinned meshes bent by joint matrices under cascaded shadows, two lamps with cube shadow maps over a field of 160 clustered point lights, a procedural sky that thins to orbit, image-based lighting, and every post-processing setting on a slider including temporal anti-aliasing, depth of field, motion blur, god rays and the lens effects
 ---
 
 This is the renderer playground. Five tentacles are skinned meshes bent
 by joint matrices this program computes on the CPU every frame, lit by a
-directional sun with cascaded shadows and three orbiting point lights,
-against a procedural sky whose air thins as a slider climbs to orbit. A
-panel puts every post-processing setting on a slider: exposure, bloom and
-its threshold, vignette, saturation, contrast, ambient occlusion and its
-radius, and FXAA. A second panel holds the settings that read the depth
-buffer or the velocity buffer: temporal anti-aliasing and its blend,
-depth of field, motion blur, god rays, and the lens effects (chromatic
-aberration, distortion, ghosts and film grain). A sphere orbits the
-scene and reports the transform it had last frame, so those last two have
-something moving to work on.
+directional sun with cascaded shadows, by two orbiting lamps that cast
+shadows of their own from cube maps, and by a field of 160 small point
+lights over the floor, against a procedural sky whose air thins as a
+slider climbs to orbit. A panel puts every post-processing setting on a
+slider: exposure, bloom and its threshold, vignette, saturation,
+contrast, ambient occlusion and its radius, and FXAA, and counts the
+frame's lights and shadow draws. A second panel holds the settings that
+read the depth buffer or the velocity buffer: temporal anti-aliasing and
+its blend, depth of field, motion blur, god rays, and the lens effects
+(chromatic aberration, distortion, ghosts and film grain). A sphere
+orbits the scene and reports the transform it had last frame, so those
+last two have something moving to work on.
 
 With `-model` it loads a glTF file instead and plays its animation clips,
 which is the shortest path from a file exported by a modelling tool to
@@ -41,10 +43,13 @@ cycles a model's clips and Escape quits.
 
 ## Package and state
 
-The two constants describe the tentacle: ten joints of 0.4 metres each.
-3D distances have no fixed unit, but the lighting and the shadow
+The first two constants describe the tentacle: ten joints of 0.4 metres
+each. 3D distances have no fixed unit, but the lighting and the shadow
 distances are tuned for metres, so a scene is easiest to reason about in
-them.
+them. The other two size the field of small point lights over the floor,
+which is far past what one array of lights could hold: the renderer
+sorts a frame's lights into a grid of clusters over the view, so a light
+with a short range costs only the part of the view it reaches.
 
 The game holds three meshes, an optional loaded model and its animation
 player, the post-processing settings as one value, and the slider state.
@@ -53,7 +58,8 @@ moving sphere needs to say where it was.
 
 ```go
 // Command lighting is the renderer playground: a skinned mesh bent by
-// joint matrices computed each frame, cascaded shadows, point lights, and
+// joint matrices computed each frame, cascaded shadows, two lamps that
+// cast their own shadows over a field of 160 small point lights, and
 // every post-processing setting on a slider (exposure, bloom, vignette,
 // saturation, contrast, ambient occlusion, FXAA, temporal anti-aliasing,
 // depth of field, motion blur, god rays and the lens effects). A sphere
@@ -84,6 +90,12 @@ import (
 const (
 	segments = 10  // joints along each tentacle
 	segLen   = 0.4 // metres per joint
+	// fieldLights is how many small point lights cover the floor. They
+	// are far past what a fixed array would hold: the renderer sorts a
+	// frame's lights into clusters over the view, so each one costs the
+	// part of the view its range reaches.
+	fieldLights = 160
+	fieldCols   = 16 // lights across the field
 )
 
 type game struct {
@@ -101,6 +113,7 @@ type game struct {
 	clip     int
 	post     gfx.PostSettings
 	shadows  bool
+	field    bool // draw the field of small point lights
 	env      *gfx.Environment
 	vacuum   float32
 	useEnv   bool
@@ -187,6 +200,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	g.post = gfx.DefaultPost()
 	g.post.Vignette = 0.3
 	g.shadows = true
+	g.field = true
 	g.yaw = 0.7
 	return nil
 }
@@ -274,7 +288,17 @@ behind it.
 `AddPointLight` adds a light for this frame only, with a position, a
 colour and a radius. There is no light object to keep, in the same way
 there is no sprite object: lights are queued per frame like everything
-else.
+else. `AddPoint` takes a `gfx.PointLight` value instead, which is the
+form that can ask for `Shadows`: the two orbiting lamps each render the
+six faces of a cube shadow map, so they throw the tentacles' shadows in
+every direction. A frame gives cube maps to the first four point lights
+that ask (`gfx.MaxPointShadows`).
+
+Then the field: 160 more point lights over the floor, each with a range
+of about a metre. A frame keeps 1024 of them (`gfx.MaxLights`) and sorts
+them into clusters over the view, and a fragment is lit by its own
+cluster's lights alone, so the field costs the pools of light it draws
+rather than 160 lights on every pixel.
 
 ```go
 func (g *game) Draw(ctx *bunyip.Context) error {
@@ -294,10 +318,32 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	}
 	gr.SetLight(light)
 	t := float32(ctx.Time)
-	for i := range 3 {
-		a := t*0.7 + float32(i)*2.1
-		gr.AddPointLight(lin.V3(4*float32(math.Cos(float64(a))), 1.2, 4*float32(math.Sin(float64(a)))),
-			gfx.Color{R: 3 * float32(i%2), G: 2, B: 4 * float32((i+1)%2), A: 1}, 7)
+	// Two lamps orbiting over the floor. A point light with Shadows set
+	// renders the six faces of a cube map, so it throws the tentacles'
+	// shadows in every direction; a frame gets four of them.
+	for i := range 2 {
+		a := t*0.7 + float32(i)*3.1
+		gr.AddPoint(gfx.PointLight{
+			Position: lin.V3(4*float32(math.Cos(float64(a))), 2.2, 4*float32(math.Sin(float64(a)))),
+			Color:    gfx.Color{R: 4 * float32(i%2), G: 2.5, B: 5 * float32((i+1)%2), A: 1},
+			Range:    9, Shadows: g.shadows,
+		})
+	}
+	// A field of small lights over the floor, more than any fixed array
+	// would hold. Each one has a short range, so the cluster grid gives
+	// it only the handful of clusters it reaches.
+	if g.field {
+		for i := range fieldLights {
+			x := float32(i%fieldCols)*0.85 - 6.4
+			z := float32(i/fieldCols)*0.85 - 3.8
+			pulse := 0.5 + 0.5*float32(math.Sin(float64(t*2+float32(i)*0.7)))
+			hue := float32(i) * 0.21
+			gr.AddPointLight(lin.V3(x, 0.35, z), gfx.Color{
+				R: 2 * pulse * (0.5 + 0.5*float32(math.Sin(float64(hue)))),
+				G: 2 * pulse * (0.5 + 0.5*float32(math.Sin(float64(hue+2.1)))),
+				B: 2 * pulse * (0.5 + 0.5*float32(math.Sin(float64(hue+4.2)))),
+				A: 1}, 1.1)
+		}
 	}
 ```
 
@@ -353,10 +399,21 @@ it up. The FXAA checkbox reads and writes an inverted local, because the
 field is named for its zero value: `NoAntiAlias` false means
 anti-aliasing is on, which keeps the zero `PostSettings` sensible.
 
+The label at the top reads the last finished frame's `gfx.FrameStats`:
+how many lights the frame kept, how many it refused past `MaxLights`,
+and how many mesh instances went into the shadow maps, which is what the
+two shadowed lamps and the sun's cascades cost. Turning the light field
+off leaves the lamps and the sun, which is the comparison the counter
+makes readable.
+
 ```go
 	u := g.ui
 	u.Begin(ctx.Input, func() {
-		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 250, H: 510}, func() {
+		u.Panel("Post-processing", ui.Rect{X: 12, Y: 12, W: 260, H: 696}, func() {
+			// Lights counts the point and spot lights the frame kept and
+			// LightsDropped what it refused past gfx.MaxLights.
+			s := gr.Stats()
+			u.Label(fmt.Sprintf("%d lights, %d dropped, %d shadow draws", s.Lights, s.LightsDropped, s.ShadowDraws))
 			u.Slider("Vacuum (up to orbit)", &g.vacuum, 0, 1)
 			u.Slider("Exposure", &g.post.Exposure, 0.1, 4)
 			u.Slider("Bloom", &g.post.Bloom, 0, 1)
@@ -372,6 +429,7 @@ anti-aliasing is on, which keeps the zero `PostSettings` sensible.
 				g.post.NoAntiAlias = !fxaa
 			}
 			u.Checkbox("Shadows", &g.shadows)
+			u.Checkbox("Light field (160 point lights)", &g.field)
 			u.Checkbox("Environment (image-based lighting)", &g.useEnv)
 			if g.model != nil {
 				u.Label(fmt.Sprintf("Clip %d/%d, Space cycles", g.clip+1, len(g.model.Clips())))
@@ -381,7 +439,7 @@ anti-aliasing is on, which keeps the zero `PostSettings` sensible.
 		})
 		// The second panel is everything that needs the depth buffer or
 		// the velocity buffer, plus the lens. Each slider's zero is off.
-		u.Panel("Camera and lens", ui.Rect{X: 752, Y: 12, W: 260, H: 604}, func() {
+		u.Panel("Camera and lens", ui.Rect{X: 752, Y: 12, W: 260, H: 640}, func() {
 			u.Checkbox("Temporal anti-alias", &g.post.TemporalAA)
 			u.Slider("Temporal blend", &g.post.TemporalBlend, 0.02, 0.5)
 			u.Slider("Focus distance (0 off)", &g.post.FocusDistance, 0, 25)
@@ -508,7 +566,7 @@ func main() {
 	env := flag.String("env", "", "equirectangular panorama (PNG or JPEG) to light the scene with")
 	vacuum := flag.Float64("vacuum", 0, "how thin the air starts: 0 on the ground, 1 in orbit")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip lighting", Width: 1024, Height: 640, Resizable: true, Validation: true},
+	err := bunyip.Run(bunyip.Config{Title: "Bunyip lighting", Width: 1024, Height: 720, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, modelPath: *model, envPath: *env, vacuum: float32(*vacuum)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lighting:", err)
