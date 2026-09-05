@@ -195,6 +195,13 @@ that choose their colour format, their depth and their own sample count
 and can be read back as pixels or as depth, and per-frame buffers that
 grow without ever idling the GPU are in.
 
+- MoltenVK's index buffer compatibility path uses one driver allocation
+  per index buffer, bound at offset zero. It fixes disappearing indexed
+  draws, but many live meshes or CPU morph uploads awaiting retirement can
+  exhaust `maxMemoryAllocationCount` before exhausting memory. Vertex
+  buffers and other small resources remain pooled; reducing index
+  allocation pressure without reintroducing the rendering failure remains
+  open.
 - Soft shadows beyond the fixed nine-tap filter: no contact hardening,
   and a cube face's filter is clamped inside the face, so a point light's
   shadow hardens over the seam between faces.

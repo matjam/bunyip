@@ -12,6 +12,7 @@ import (
 type gpu struct {
 	handle      vk.VkPhysicalDevice
 	props       vk.VkPhysicalDeviceProperties
+	driverID    vk.VkDriverId
 	features    vk.VkPhysicalDeviceFeatures
 	memProps    vk.VkPhysicalDeviceMemoryProperties
 	queueFamily uint32
@@ -61,6 +62,10 @@ func inspectGPU(h vk.VkPhysicalDevice, surface vk.VkSurfaceKHR) (*gpu, error) {
 	if g.props.ApiVersion < vk.API_VERSION_1_3 {
 		return nil, nil
 	}
+	driver := vk.VkPhysicalDeviceDriverProperties{SType: vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES}
+	properties := vk.VkPhysicalDeviceProperties2{SType: vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, PNext: unsafe.Pointer(&driver)}
+	vk.VkGetPhysicalDeviceProperties2(h, &properties)
+	g.driverID = driver.DriverID
 	var v13 vk.VkPhysicalDeviceVulkan13Features
 	v13.SType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
 	f2 := vk.VkPhysicalDeviceFeatures2{SType: vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, PNext: unsafe.Pointer(&v13)}

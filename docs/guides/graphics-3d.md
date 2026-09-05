@@ -1166,6 +1166,18 @@ scene is using more memory than it should, or to check that a level
 teardown freed what it loaded. The [debug console](console.html) shows
 the same list with a running total.
 
+On MoltenVK devices using Vulkan's portability subset, each index buffer
+gets a separate allocation of the size required by the driver, bound at
+offset zero. This compatibility path prevents indexed geometry from
+disappearing on affected drivers; vertex buffers and other small resources
+still share memory blocks. Each live index buffer counts toward the
+device's `maxMemoryAllocationCount`, including replaced geometry waiting
+for the GPU to finish. Many small meshes or repeated CPU morph uploads can
+therefore reach the allocation limit even when their total byte size is
+modest. Reuse geometry where possible, destroy resources when finished,
+and handle mesh creation and update errors. The renderer returns an error
+before exceeding the reported allocation limit.
+
 Draw calls cost more than triangles. A high `Draws3D` next to a low
 `Instances` means batching is breaking. Merge static geometry with
 `AppendMesh` or share a material across a crowd to collapse the calls.

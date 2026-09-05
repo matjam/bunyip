@@ -9,8 +9,9 @@ import (
 
 // The allocator carves device memory into large blocks per memory type and
 // hands out aligned spans from a free list, so thousands of buffers and
-// images share a handful of driver allocations. Large resources get their
-// own allocation. Host-visible blocks stay mapped for their whole life.
+// images share a handful of driver allocations. Large resources and
+// MoltenVK index buffers get their own allocations. Host-visible blocks
+// stay mapped for their whole life.
 
 const (
 	blockSize     = 64 << 20 // bytes per shared block
@@ -54,6 +55,23 @@ type AllocStats struct {
 
 // Stats returns the current allocator statistics.
 func (d *Device) Stats() AllocStats { return d.alloc.stats }
+
+// allocateBuffer keeps MoltenVK index buffers at offset zero. MoltenVK
+// 1.4.2 on the Apple Paravirtual device can drop indexed draws with pooled
+// index buffers even though GPU readback confirms their bytes are intact.
+// Index-only separate allocations fix both dense meshes and mesh updates;
+// vertex and other buffers still pool normally. Each index buffer uses one
+// device allocation of exactly the required size, not a whole shared block.
+func (a *allocator) allocateBuffer(req vk.VkMemoryRequirements, props vk.VkMemoryPropertyFlags, usage vk.VkBufferUsageFlags) (allocation, error) {
+	if !a.dev.portability || a.dev.gpu.driverID != vk.VK_DRIVER_ID_MOLTENVK || usage&vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT == 0 {
+		return a.allocate(req, props, true)
+	}
+	typeIndex, err := a.dev.gpu.memoryType(req.MemoryTypeBits, props)
+	if err != nil {
+		return allocation{}, err
+	}
+	return a.dedicated(req.Size, typeIndex, props&vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0)
+}
 
 // allocate returns memory for a resource with the given requirements.
 func (a *allocator) allocate(req vk.VkMemoryRequirements, props vk.VkMemoryPropertyFlags, linear bool) (allocation, error) {
@@ -190,6 +208,9 @@ func (a *allocator) destroy() {
 
 // allocateRaw asks the driver for one allocation, mapping it when host-visible.
 func (d *Device) allocateRaw(size vk.VkDeviceSize, typeIndex uint32, hostVisible bool) (vk.VkDeviceMemory, unsafe.Pointer, error) {
+	if limit := d.gpu.props.Limits.MaxMemoryAllocationCount; limit != 0 && uint64(d.alloc.stats.Blocks)+uint64(d.alloc.stats.Dedicated) >= uint64(limit) {
+		return 0, nil, fmt.Errorf("render: device memory allocation limit reached (%d); release resources before allocating more", limit)
+	}
 	info := vk.VkMemoryAllocateInfo{
 		SType:           vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		AllocationSize:  size,

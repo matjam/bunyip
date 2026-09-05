@@ -7,8 +7,9 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
-// Buffer is a VkBuffer bound to allocator memory. Host-visible buffers are
-// mapped for their whole life.
+// Buffer is a VkBuffer bound to allocator memory. Most buffers share memory
+// blocks; MoltenVK index buffers use separate allocations at offset zero.
+// Host-visible buffers are mapped for their whole life.
 type Buffer struct {
 	Handle vk.VkBuffer
 	Size   vk.VkDeviceSize
@@ -32,7 +33,7 @@ func (d *Device) NewBuffer(size vk.VkDeviceSize, usage vk.VkBufferUsageFlags, pr
 	var req vk.VkMemoryRequirements
 	vk.VkGetBufferMemoryRequirements(d.Handle, b.Handle, &req)
 	var err error
-	if b.mem, err = d.alloc.allocate(req, props, true); err != nil {
+	if b.mem, err = d.alloc.allocateBuffer(req, props, usage); err != nil {
 		b.Destroy()
 		return nil, err
 	}
