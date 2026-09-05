@@ -9,16 +9,29 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	stream       stream2D
-	draws        []meshDraw
-	order        []int32  // draws in draw order, as indices into draws
-	keys         []uint64 // each draw's packed sort key, the sort's working set
-	shaderIDs    idTable  // dense ids for the sort key
-	uniformIDs   idTable
-	setIDs       idTable
-	meshIDs      idTable
-	shadowVis    []bool // draws that reach the shadow map being recorded
-	cascadeMats  [shadowCascades]lin.Mat4
+	stream      stream2D
+	draws       []meshDraw
+	order       []int32  // draws in draw order, as indices into draws
+	keys        []uint64 // each draw's packed sort key, the sort's working set
+	shaderIDs   idTable  // dense ids for the sort key
+	uniformIDs  idTable
+	setIDs      idTable
+	meshIDs     idTable
+	shadowVis   []bool // draws that reach the shadow map being recorded
+	cascadeMats [shadowCascades]lin.Mat4
+	// jitter is this frame's sub-pixel projection offset in clip units,
+	// zero unless temporal anti-aliasing is on, and projJ, viewProjJ and
+	// invViewProjJ are the matrices the scene pass rasterises with once it
+	// is applied. prevViewProj is the previous frame's view-projection
+	// without the jitter, which the velocity and resolve passes measure
+	// motion against; hasPrevVP says a previous frame exists.
+	jitter       lin.Vec2
+	projJ        lin.Mat4
+	viewProjJ    lin.Mat4
+	invViewProjJ lin.Mat4
+	prevViewProj lin.Mat4
+	hasPrevVP    bool
+	hasMoved     bool    // some draw this frame carries a previous transform
 	depthClamp   bool    // the shadow pipelines clamp depth rather than clip
 	hasCasters   bool    // casterAlong holds a value
 	casterAlong  float32 // how far the furthest caster is against the light

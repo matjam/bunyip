@@ -774,7 +774,102 @@ gr.SetPost(p)
 Post applies to the 3D scene, not to the 2D drawn over it. A HUD is not
 bloomed, tone-mapped or graded. That keeps text readable, and it
 explains why a sprite over the scene can look brighter than the scene
-does. The `lighting` example puts all of these on sliders.
+does. A frame with no 3D draws in it can go through the composite as
+well; see [2D graphics](graphics-2d.html). The `lighting` example puts
+all of these on sliders.
+
+### Temporal anti-aliasing
+
+`TemporalAA` averages each frame with the ones before it. The projection
+moves by a fraction of a pixel each frame along a Halton sequence, so
+successive frames sample a different point inside every pixel, and the
+resolve blends the last resolved frame into this one after reprojecting
+it. `TemporalBlend` is how much of the new frame goes in, 0.02 to 1;
+zero means 0.1, and lower is steadier and softer. It replaces FXAA while
+it is on, so `NoAntiAlias` does not apply.
+
+Reprojection needs to know where every pixel was last frame. The camera's
+part comes from the depth buffer. An object's own motion has to be told,
+because immediate-mode drawing has no identity across frames to look a
+previous transform up by:
+
+```go
+gr.DrawMeshMoved(ship, shipMat, at(now), at(before))
+```
+
+`DrawMeshMoved`, `DrawSkinnedMoved`, `DrawModelMoved` and
+`DrawModelAnimatedMoved` each take the transform the draw had last
+frame; the two model forms take a `MaterialOverride` after it, as
+`DrawModelWith` does, and nil draws the file's own materials. Plain `DrawMesh` says the mesh did not move, which is what a
+static scene wants and what costs nothing: a frame where nothing moved
+draws nothing into the velocity buffer. A moving mesh drawn through
+`DrawMesh` still resolves, because the neighbourhood clamp will not let
+the history stray far from the pixels around it, but it softens while it
+moves. A skinned mesh carries its model matrix's motion and not its
+pose's, so a character walking across the screen reprojects and an arm
+swinging in place does not.
+
+### Depth of field, motion blur and god rays
+
+`FocusDistance` is how far in front of the camera the image is sharp, in
+world units; zero turns depth of field off. `FocusRange` is how far
+either side of it stays sharp before the blur grows, and how far past
+that the blur reaches its full width; zero means a quarter of the focus
+distance. `BokehRadius` is that full width in pixels of a 1080-high
+frame (zero means 12) and `BokehSamples` how many taps the disc gathers
+(zero means 16). A wide bokeh wants more of them: the disc is the same
+in every pixel, so too few taps over a large radius leave a visible
+pattern on fine detail. Turning the disc per pixel would break that into
+noise, but it scatters the texture fetches and costs about three times
+as much, so raising `BokehSamples` is the better trade.
+
+`MotionBlur` smears each pixel back along the way it moved since the last
+frame, 0 to 1; zero is off, and `MotionSamples` is how many taps it takes
+(zero means 8). It reads the same velocity buffer, so an object blurs
+along its own path only when it was drawn with one of the `Moved` calls;
+the camera's motion always works.
+
+`GodRays` is the strength of the shafts the directional light throws past
+an occluder. Each pixel walks towards the sun's place on screen through
+the depth buffer, gathering the steps where the sky shows through:
+`GodRayDecay` is how fast a shaft fades along its length (zero means
+0.96), `GodRayDensity` how far towards the sun the walk goes (zero means
+0.6) and `GodRaySamples` how many steps it takes (zero means 32). The
+pass is skipped when the sun is beside or behind the camera, and an
+orthographic camera has no sun position to walk towards, so it gets none.
+
+### The lens
+
+Four settings model the camera rather than the scene, and all four happen
+inside the composite, so together they cost about as much as a fifth of
+the bloom.
+
+`Aberration` splits the red and blue channels apart towards the edge of
+the frame; 1 is about three pixels at the edge of a 1080-wide frame and
+0.5 is a subtle fringe. `Distortion` bends the image about the centre,
+positive for barrel and negative for pincushion. `Ghosts` draws the
+bright pass mirrored through the centre a few times over, the reflections
+a lens makes of a bright light, and needs `Bloom` above zero because that
+is the image it reads. `Grain` adds per-pixel noise that moves each
+frame; 0.05 is subtle. Every one of them is off at zero.
+
+```go
+p := gfx.DefaultPost()
+p.TemporalAA, p.TemporalBlend = true, 0.1
+p.FocusDistance, p.FocusRange, p.BokehRadius = 12, 4, 16
+p.MotionBlur = 0.5
+p.GodRays = 0.8
+p.Aberration, p.Distortion, p.Grain = 0.6, 0.15, 0.03
+gr.SetPost(p)
+```
+
+Roughly, at 1280 by 720 on an RTX 4090, over a frame that costs 40
+microseconds with none of them on: the lens effects together 3, bloom
+and FXAA 14 each, god rays 20, motion blur 24, ambient occlusion 32,
+temporal anti-aliasing 35 and depth of field 42. `BenchmarkPost` in the
+`gfx` package measures them; the numbers are best of five over a scene
+of two dozen instanced cubes, so they are the passes' own cost rather
+than a game's, and they move by a few microseconds between runs.
 
 ## Render textures
 

@@ -612,8 +612,16 @@ func (g *Graphics) DrawModel(m *Model, world lin.Mat4) {
 //		return p.Material
 //	})
 func (g *Graphics) DrawModelWith(m *Model, world lin.Mat4, override MaterialOverride) {
+	g.DrawModelMoved(m, world, world, override)
+}
+
+// DrawModelMoved is DrawModelWith for a model that moved: prev is the
+// world transform it was drawn with last frame, which the velocity
+// buffer carries for temporal anti-aliasing and motion blur.
+func (g *Graphics) DrawModelMoved(m *Model, world, prev lin.Mat4, override MaterialOverride) {
 	for i, p := range m.Parts {
-		g.DrawMesh(p.Mesh, override.apply(i, p), world.Mul(p.World))
+		mat := override.apply(i, p)
+		g.DrawMeshMoved(p.Mesh, mat, world.Mul(p.World), prev.Mul(p.World))
 	}
 }
 

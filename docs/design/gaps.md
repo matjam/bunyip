@@ -110,11 +110,12 @@ no per-particle state at all.
   staggered grid a hexagonal map uses. `Map.Layout` gives it `Square`,
   which matches the wrong cells; only orthogonal, isometric and
   hexagonal maps have a layout that fits.
-- Post-processing on a 2D-only frame. Bloom, ambient occlusion,
-  vignette, the LUT and FXAA all run in the composite pass, which
-  `renderQueue` skips when the frame has no 3D draws, no background and
-  no debug lines (`has3D` in `gfx/graphics.go`). A 2D game draws to a
-  `RenderTexture` and blits it with its own sprite shader instead.
+- A 2D frame that goes through the post pass pays for a second image
+  and a full-screen copy: `PostSettings.Post2D` draws the 2D stream into
+  the LDR image and composites from there, rather than colouring the
+  stream in place. Ambient occlusion, depth of field, motion blur,
+  temporal anti-aliasing and god rays need a depth buffer a 2D frame
+  does not have, so they stay off in that mode.
 - Stateless emitters are evaluated on the CPU, not in the vertex shader.
   Every particle is a closed form of its seed and the clock, so the
   vertex program could compute it from `gl_InstanceIndex` and upload
@@ -208,15 +209,34 @@ repeating sampling for render textures are in.
   and what is off screen or hidden falls back to the probe or the
   environment. There is no temporal accumulation, so a rough surface's
   rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
-- Volumetrics: god rays, and light shafts through a medium. Fog is a
-  per-pixel fade, and `Sky.Atmosphere` scatters single bounces only, so
-  neither casts a shaft.
-- Temporal anti-aliasing and MSAA; FXAA is the only option.
-- Depth of field, motion blur and lens effects.
+- Volumetrics: light shafts through a medium. Fog is a per-pixel fade,
+  `Sky.Atmosphere` scatters single bounces only, and the god rays are a
+  screen-space radial blur over the depth buffer's sky mask, so none of
+  the three casts a shaft through anything.
 - Order-independent transparency is the weighted blended approximation
   (`PostSettings.OrderIndependent`), so a deep stack of layers comes out
   flatter than compositing them in order would, and transmissive draws
   stay sorted. Per-pixel lists or depth peeling would be exact.
+- MSAA. FXAA and temporal anti-aliasing are the two options.
+- Motion vectors come from a pass of their own rather than from a second
+  colour attachment on the HDR pass, so a frame with moving meshes in it
+  rasterises their geometry twice. Multiple render targets in
+  `internal/render` would let the lit pass write them as it goes.
+- A moving mesh has to say so: `DrawMeshMoved` and its companions take
+  the transform the draw had last frame, because immediate-mode drawing
+  has no identity across frames. A mesh that moves and is drawn through
+  plain `DrawMesh` softens under temporal anti-aliasing and does not
+  blur along its own path.
+- A skinned mesh's motion vectors carry its model matrix and not its
+  pose, so a limb swinging in place has none. Keeping the previous
+  frame's joint matrices would fix it and would double the joint buffer.
+- Depth of field gathers one disc at full resolution rather than a
+  half-resolution near and far layer, so a very wide bokeh costs more
+  than it should and a bright out-of-focus highlight does not bloom into
+  the shape of the aperture.
+- Motion blur gathers along each pixel's own vector, with no tile-max
+  pass to dilate a fast object's blur past its silhouette, so an object
+  smears inside its own outline and leaves no trail behind it.
 - Render texture options beyond sampling: colour format, no depth,
   multisampling, and reading the depth back.
 - Culling is per draw and by bounding sphere. There is no bounding
