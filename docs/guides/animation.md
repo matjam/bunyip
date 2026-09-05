@@ -331,9 +331,11 @@ Past that cap the blend falls back to the processor for that mesh: the
 rest vertices plus each open target are summed and the result uploaded,
 one pass over the vertices per open target and one upload each time the
 weights change. It is correct at any count and slower at every one, so
-keep the open targets few. Each instance of a morphing mesh gets its own
-copy of the geometry on load, so two characters with the same face can
-show different expressions whichever path they take.
+keep the open targets few. Each queued draw captures its weights and
+uploaded geometry, so characters sharing one model can show different
+expressions through separate animation players or weight changes between
+draws. This also holds when successive draws switch between the shader
+and processor paths.
 
 Two things follow from the shader doing the work. `Mesh.Vertices` gives
 the geometry as uploaded, which is the rest pose while the shader

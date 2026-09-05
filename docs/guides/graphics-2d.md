@@ -633,6 +633,12 @@ stateless emitter is slower per particle than a simulated one;
 `Burst`, `Prewarm`, `WorldSpace` and the radial and tangential
 accelerations do not apply to it.
 
+`Stop` fixes the stateless stream's final birth time and lets existing
+particles age out. `Finished` checks their lifetimes at the current clock,
+even before the next draw; `Alive` reports the last draw's count.
+`SetClock` retains the stop time when scrubbing, and `Start` resets the
+clock to zero and resumes births.
+
 ### Particles in the 3D scene
 
 `Draw3D` draws the same system as camera-facing quads in the 3D scene

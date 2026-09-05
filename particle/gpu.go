@@ -33,8 +33,9 @@ type GPUSystem struct {
 	// clock is seconds since Start, which a stateless emitter evaluates
 	// its whole stream from.
 	clock float32
-	// born counts the particles a stateless emitter has begun, so its
-	// stream carries on across a SetEmitter.
+	// stoppedAt is the final permitted birth time while stopped.
+	stoppedAt float32
+	// statelessAlive counts the instances produced by the last draw.
 	statelessAlive int
 
 	// The plane the simulation's 2D coordinates sit in for Draw3D.
@@ -196,11 +197,13 @@ func (s *GPUSystem) Position() lin.Vec2 { return s.pos }
 // Start begins emitting, births the emitter's Burst and runs its
 // Prewarm. NewGPU calls it; call it again to restart a stopped system.
 // A stateless emitter has neither a burst nor a prewarm: its stream is
-// already running at every time, so Start only sets the clock to zero.
+// already populated at time zero. Start resets the clock and permits
+// new births again.
 func (s *GPUSystem) Start() {
 	s.running = true
 	if s.e.Stateless {
 		s.clock = 0
+		s.stoppedAt = 0
 		return
 	}
 	s.Burst(s.e.Burst)
@@ -213,8 +216,14 @@ func (s *GPUSystem) Start() {
 }
 
 // Stop ends emission over time. Live particles die out on their own;
-// Finished reports when they have.
-func (s *GPUSystem) Stop() { s.running = false }
+// Finished reports when they have. A stateless system keeps this clock
+// as its final birth time; calling Stop again keeps the original cutoff.
+func (s *GPUSystem) Stop() {
+	if s.running {
+		s.stoppedAt = s.clock
+	}
+	s.running = false
+}
 
 // Clear kills every live particle at once.
 func (s *GPUSystem) Clear() {
@@ -250,15 +259,16 @@ func (s *GPUSystem) Alive() int {
 // has been started, not stopped, and its emitter has a Rate.
 func (s *GPUSystem) Emitting() bool { return s.running && s.e.Rate > 0 }
 
-// Clock is how many seconds a stateless system has run, which is the
-// only state it keeps. It stays zero for a stateful one.
+// Clock is how many seconds a stateless system has run. It stays zero
+// for a stateful one.
 func (s *GPUSystem) Clock() float32 { return s.clock }
 
 // SetClock moves a stateless system to a time, so an effect can be
 // scrubbed, rewound or jumped forward without simulating the gap. Every
 // particle is computed from the clock, so the result is the same as
 // having run to it. It does nothing to a stateful system, whose
-// particles are the accumulation of its steps.
+// particles are the accumulation of its steps. A stopped stateless
+// system retains its final birth time when the clock changes.
 func (s *GPUSystem) SetClock(t float32) {
 	if s.e.Stateless {
 		s.clock = max(t, 0)
@@ -266,8 +276,17 @@ func (s *GPUSystem) SetClock(t float32) {
 }
 
 // Finished reports that the system is not emitting and has no live
-// particles, so a one-shot effect can be dropped.
-func (s *GPUSystem) Finished() bool { return !s.Emitting() && s.Alive() == 0 }
+// particles, so a one-shot effect can be dropped. For a stateless system
+// it checks lifetimes at the current clock, without requiring a Draw.
+func (s *GPUSystem) Finished() bool {
+	if s.Emitting() {
+		return false
+	}
+	if s.e.Stateless {
+		return !s.statelessHasLiveParticles()
+	}
+	return s.p.n == 0
+}
 
 // Update advances the simulation by dt seconds: particles age, move and
 // die, and new ones are born at the emitter's Rate, with fractional

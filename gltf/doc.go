@@ -13,7 +13,12 @@
 // package has no GPU dependency, so a tool or a server can read models
 // too; gfx.LoadModel uploads a Document into meshes and materials, and
 // phys can take a mesh's triangles as a static collider. Parse errors
-// name the offending buffer, accessor or image.
+// identify the invalid buffer, accessor, image, node or scene. Hierarchies
+// are validated before resources are resolved: cycles, repeated children,
+// multiple parents and invalid references are rejected. Scene roots must
+// have no parent and be unique within each scene; the same root may be
+// reused across scenes. Validation and flattening take linear work in the
+// hierarchy size and support deep trees without a depth cutoff.
 package gltf
 
 import (

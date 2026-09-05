@@ -383,7 +383,10 @@ render pass, so text tests draw one frame.
   draw reads it, so `meshPass.morphNone` is the empty one. A pose with
   more open targets than the cap falls back to the blend on the
   processor, which uploads, and switching back puts the rest pose up
-  again first.
+  again first. Each queued draw captures its weights and uploaded
+  geometry; later poses of a shared model cannot change earlier draws.
+  Unchanged geometry reuses a cached mesh view, keeping the shader path
+  free of per-draw allocations.
 - Occlusion culling (`gfx/occlude.go`) runs after the frustum test in
   `prepareDraws`. `AddOccluder3D` meshes are rasterised into a CPU depth
   buffer (256 by 144 by default) holding the nearest occluder depth per

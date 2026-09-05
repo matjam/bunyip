@@ -485,11 +485,10 @@ type meshDraw struct {
 	shell      float32
 	jointBase  int // first joint matrix in the queue's joint list
 	jointCount int // how many joint matrices the draw's pose uses
-	// morph is the mesh's morph targets and the weights this draw blends
-	// them by in the vertex shader, nil when it has none or the pose was
-	// blended on the processor; morphSet is its model's delta buffer, or
-	// zero for the empty set the mesh pass keeps.
-	morph    *morphMesh
+	// morph captures the targets and weights when queued, empty for a
+	// processor blend; morphSet is its model's delta buffer, or zero for
+	// the empty set the mesh pass keeps.
+	morph    morphDraw
 	morphSet vk.VkDescriptorSet
 	// centre and radius are the draw's world bounding sphere, resolved by
 	// prepareDraws; cullable is false for a shader that may move a vertex

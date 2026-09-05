@@ -21,7 +21,9 @@
 // same system in the 3D scene as camera-facing quads. Setting
 // Emitter.Stateless drops the per-particle state as well, computing
 // every particle from the seed and the clock, for effects whose
-// particles never interact.
+// particles never interact. Stop fixes its final birth time while
+// existing particles age out; Start resets the clock and emission.
+// Finished checks their lifetimes even before the next Draw.
 //
 // Emitter fields follow "zero means the default". An empty Emitter emits
 // nothing but is valid, and every preset is an Emitter a game can tweak

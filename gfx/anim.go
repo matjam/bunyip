@@ -876,7 +876,8 @@ func sampleWeights(ch gltf.Channel, t float32, out []float32) {
 
 // DrawModelAnimated draws a model under a transform with the player's
 // pose: node-animated parts move rigidly, skinned parts deform and morph
-// targets blend to the player's weights.
+// targets blend to the player's weights. Each draw captures its morph
+// pose, so players sharing a model can draw different expressions.
 func (g *Graphics) DrawModelAnimated(m *Model, t Transform, p *AnimPlayer) {
 	g.DrawModelAnimatedWith(m, t, p, nil)
 }
@@ -903,14 +904,15 @@ func (g *Graphics) DrawModelAnimatedMoved(m *Model, t, prev Transform, p *AnimPl
 	var joints []lin.Mat4
 	for i, part := range m.Parts {
 		mat := override.apply(i, part)
-		d := meshDraw{morph: m.morphOf[part.Mesh], morphSet: set}
+		d := meshDraw{mesh: part.Mesh, morphSet: set}
+		m.morphOf[part.Mesh].snapshot(&d)
 		if part.Mesh.skinned && part.skin >= 0 {
 			joints = p.jointMatrices(part.skin, joints[:0])
-			g.drawSkinned(part.Mesh, mat, world, was, joints, d)
+			g.drawSkinned(d.mesh, mat, world, was, joints, d)
 			continue
 		}
 		node := p.NodeMatrix(part.node)
-		d.mesh, d.mat = part.Mesh, mat
+		d.mat = mat
 		d.model, d.prev = world.Mul(node), was.Mul(node)
 		d.moved = d.prev != d.model
 		g.queueMesh(d)

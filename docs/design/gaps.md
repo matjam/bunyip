@@ -198,11 +198,6 @@ grow without ever idling the GPU are in.
   its sphere, and a cluster keeps 64 lights, so a light past that in a
   crowded cluster does not light it. A compute pass over the grid, and
   tighter bounds, would raise all three.
-- The shader uniform arena and the joint storage buffer still wait for
-  the device when they grow, because growing rewrites descriptor sets a
-  frame in flight may have bound. Both double, so it happens a handful
-  of times at most, and `FrameStats.Waits` counts it; new descriptor
-  sets retired with the old buffers would remove it.
 - Baked lightmaps: light arriving at a surface, stored per texel on the
   second UV set rather than sampled on a lattice. `LightProbeGrid` bakes
   irradiance at points and `ReflectionProbe` reflections in a volume, so
@@ -459,9 +454,10 @@ frame, the stored image and a diff to a temporary directory when they
 disagree. `-update` rerecords them and `-update -docs` also rewrites the
 walkthrough screenshots from the same run.
 
-- Hardware verification on Windows, of the Linux audio and gamepad
-  layers, and of the Linux window layer beyond the one desktop it has
-  run on; a GPU matrix in CI.
+- Hardware verification on Windows, of Linux gamepads, of macOS audio
+  capture, and of the Linux window layer beyond the one desktop it has
+  run on; a GPU matrix in CI. Linux audio output and capture have run
+  on real hardware.
 - The walkthrough screenshots in `docs/examples/` are still rewritten by
   hand in practice. The test can write them (`-update -docs`), but it
   writes what a 1.5 second run draws, which is not always the moment

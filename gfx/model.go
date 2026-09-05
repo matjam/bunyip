@@ -54,6 +54,9 @@ type morphMesh struct {
 	// the uploaded geometry is such a blend rather than the rest pose.
 	active  []morphWeight
 	blended bool
+	// drawn retains the current geometry view. Later uploads replace the
+	// mesh's buffers, while queued draws keep this view until retirement.
+	drawn *Mesh
 }
 
 // apply blends the targets by the weights and uploads the result when
@@ -210,6 +213,8 @@ func (m *Model) MorphWeights(node int) []float32 {
 // once blend in the vertex shader and cost nothing to change; past that
 // the blend runs here, one pass over the mesh's vertices per open target
 // plus an upload, each time the weights change.
+// DrawModel captures the current weights and geometry, so later changes
+// do not affect instances already queued.
 func (m *Model) SetMorphWeights(node int, weights []float32) error {
 	found := false
 	for _, mm := range m.morphs {
@@ -624,7 +629,7 @@ func topoOrder(nodes []gltf.Node) []int {
 }
 
 // DrawModel queues every part of the model under a world transform,
-// each with the material its file gave it.
+// each with the material its file gave it and its current morph pose.
 func (g *Graphics) DrawModel(m *Model, world lin.Mat4) {
 	g.DrawModelWith(m, world, nil)
 }
@@ -653,8 +658,10 @@ func (g *Graphics) DrawModelWith(m *Model, world lin.Mat4, override MaterialOver
 func (g *Graphics) DrawModelMoved(m *Model, world, prev lin.Mat4, override MaterialOverride) {
 	for i, p := range m.Parts {
 		at, was := world.Mul(p.World), prev.Mul(p.World)
-		g.queueMesh(meshDraw{mesh: p.Mesh, mat: override.apply(i, p), model: at, prev: was, moved: was != at,
-			morph: m.morphOf[p.Mesh], morphSet: m.morphSet()})
+		d := meshDraw{mesh: p.Mesh, mat: override.apply(i, p), model: at, prev: was, moved: was != at,
+			morphSet: m.morphSet()}
+		m.morphOf[p.Mesh].snapshot(&d)
+		g.queueMesh(d)
 	}
 }
 
@@ -668,7 +675,8 @@ func (m *Model) morphSet() vk.VkDescriptorSet {
 	return m.morphBuf.set
 }
 
-// Destroy frees the model's meshes and textures.
+// Destroy frees the model's meshes, textures and morph targets after
+// queued and submitted draws have finished using them.
 func (m *Model) Destroy() {
 	if m.g != nil {
 		m.g.forget(m)

@@ -7,12 +7,12 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
-// A stateless emitter keeps nothing between frames. Particle i is born
+// A stateless emitter keeps no per-particle state. Particle i is born
 // at i/Rate seconds after Start, and everything random about it comes
 // from hashing the seed with i, so the same index always gives the same
 // particle. Its position at any age is a closed form rather than a sum
 // of steps, which is what lets the whole stream be rebuilt each frame
-// from the clock alone.
+// from the clock and, after Stop, a final birth time.
 
 // mix is a 64-bit integer hash (SplitMix64's finaliser). It spreads
 // nearby indices apart, which matters because the indices a frame draws
@@ -96,8 +96,8 @@ func travel(v0, accel lin.Vec2, damping, t float32) lin.Vec2 {
 	return v0.Sub(term).Mul(rise).Add(term.Mul(t))
 }
 
-// statelessRange returns the indices of the particles alive at the
-// system's clock, newest last, and how long each has to live at most.
+// statelessRange returns the possible live particle indices at the
+// system's clock, newest last, and their maximum lifetime.
 func (s *GPUSystem) statelessRange() (first, last int64, maxLife float32) {
 	e := &s.e
 	maxLife = max(e.Lifetime.Max, e.Lifetime.Min)
@@ -109,7 +109,11 @@ func (s *GPUSystem) statelessRange() (first, last int64, maxLife float32) {
 		return 0, -1, maxLife
 	}
 	now := float64(s.clock)
-	last = int64(math.Floor(now * rate))
+	lastBirth := now
+	if !s.running {
+		lastBirth = min(lastBirth, float64(s.stoppedAt))
+	}
+	last = int64(math.Floor(lastBirth * rate))
 	// The indices run back past zero, so at a clock of zero the stream
 	// already holds a lifetime of particles born at negative times. That
 	// is what makes a stateless emitter need no Prewarm: rain is already
@@ -117,13 +121,47 @@ func (s *GPUSystem) statelessRange() (first, last int64, maxLife float32) {
 	first = int64(math.Ceil((now - float64(maxLife)) * rate))
 	// Max caps the stream from the newest end, so raising the rate past
 	// the cap thins the oldest rather than refusing to draw the newest.
+	// After Stop, that end stays fixed so excluded older births cannot
+	// return as the remaining particles age out.
 	if n := int64(e.max()); last-first+1 > n {
 		first = last - n + 1
 	}
 	return first, last, maxLife
 }
 
-// buildStatelessQuads fills s.quads from the clock alone.
+// birth samples the attributes preceding lifetime in the stream so
+// drawing and lifetime queries use the same random value for it.
+func (h *stream) birth(e *Emitter) (spawn lin.Vec2, angle, speed, life float32) {
+	spawn = h.shapeOffset(&e.Shape)
+	angle = e.Direction + (h.next()-0.5)*e.Spread
+	speed = h.pick(e.Speed)
+	life = h.pick(e.Lifetime)
+	if life <= 0 {
+		life = 1
+	}
+	return
+}
+
+// statelessHasLiveParticles checks actual lifetimes, regardless of
+// whether a particle's current size or colour makes it visible.
+func (s *GPUSystem) statelessHasLiveParticles() bool {
+	first, last, _ := s.statelessRange()
+	if last < first {
+		return false
+	}
+	invRate := 1 / s.e.Rate
+	for i := last; i >= first; i-- {
+		h := newStream(s.e.Seed, i)
+		_, _, _, life := h.birth(&s.e)
+		age := s.clock - float32(i)*invRate
+		if age >= 0 && age < life {
+			return true
+		}
+	}
+	return false
+}
+
+// buildStatelessQuads fills s.quads from the clock and birth cutoff.
 func (s *GPUSystem) buildStatelessQuads(offset lin.Vec2) {
 	e := &s.e
 	s.quads = s.quads[:0]
@@ -149,13 +187,7 @@ func (s *GPUSystem) buildStatelessQuads(offset lin.Vec2) {
 		h := newStream(e.Seed, i)
 		// The draws come in the order emit makes them, so an emitter
 		// switched between the two paths looks the same.
-		spawn := h.shapeOffset(&e.Shape)
-		angle := e.Direction + (h.next()-0.5)*e.Spread
-		speed := h.pick(e.Speed)
-		life := h.pick(e.Lifetime)
-		if life <= 0 {
-			life = 1
-		}
+		spawn, angle, speed, life := h.birth(e)
 		size := h.pick(e.Size)
 		if size <= 0 {
 			size, _ = e.baseSize()

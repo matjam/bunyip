@@ -161,16 +161,38 @@ type morphWeight struct {
 	weight float32
 }
 
-// instance fills a draw's morph fields of the instance record: where the
-// mesh's deltas start, how far apart its targets are, and the active
-// targets with their weights.
-func (mm *morphMesh) instance(in *meshInstance) {
-	if mm == nil || len(mm.active) == 0 {
+// morphDraw is the immutable morph block captured when a draw is queued.
+type morphDraw struct {
+	info    [4]float32
+	weights [MaxGPUMorphTargets]float32
+	indices [2]uint32
+}
+
+// snapshot captures both the shader weights and the uploaded geometry.
+// The original mesh owns the buffers and retires them after pending draws;
+// this cached view only keeps their values. Unchanged GPU geometry reuses
+// the view, so changing shader weights does not allocate per draw or frame.
+func (mm *morphMesh) snapshot(d *meshDraw) {
+	if mm == nil {
 		return
 	}
-	in.morph = [4]float32{float32(mm.gpuBase), float32(mm.vertices()), float32(len(mm.active)), 0}
-	for k, a := range mm.active {
-		in.morphW[k] = a.weight
-		in.morphIdx[k/4] |= uint32(a.target) << (8 * (k % 4))
+	m := mm.mesh
+	if old := mm.drawn; old == nil || old.vbuf != m.vbuf || old.ibuf != m.ibuf ||
+		old.Min != m.Min || old.Max != m.Max || old.boundsFixed != m.boundsFixed {
+		view := *m
+		mm.drawn = &view
 	}
+	d.mesh = mm.drawn
+	if len(mm.active) == 0 {
+		return
+	}
+	d.morph.info = [4]float32{float32(mm.gpuBase), float32(mm.vertices()), float32(len(mm.active)), 0}
+	for k, a := range mm.active {
+		d.morph.weights[k] = a.weight
+		d.morph.indices[k/4] |= uint32(a.target) << (8 * (k % 4))
+	}
+}
+
+func (d morphDraw) instance(in *meshInstance) {
+	in.morph, in.morphW, in.morphIdx = d.info, d.weights, d.indices
 }

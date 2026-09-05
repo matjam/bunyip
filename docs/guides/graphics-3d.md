@@ -243,6 +243,10 @@ Malformed buffer bounds and animation accessor shapes or key counts
 return errors from the glTF loader. Translation and scale outputs are
 three-component vectors, rotations are four-component vectors, and
 morph weights are scalars; cubic keys include both tangent records.
+The loader also rejects cyclic hierarchies, repeated children, multiple
+parents and invalid node or scene references before resolving resources.
+Scene roots must be parentless and unique within a scene; different
+scenes may share roots. Deep valid trees have no traversal depth cutoff.
 
 ```go
 doc, err := gltf.Load("assets/ship.glb")

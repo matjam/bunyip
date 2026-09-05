@@ -38,7 +38,10 @@ func Load(path string) (*Document, error) {
 
 // Parse decodes .gltf JSON or a .glb container from memory. resolve may be
 // nil when every buffer and image is embedded. Invalid buffer bounds and
-// animation accessor shapes or key counts return an error.
+// animation accessor shapes or key counts return an error. The hierarchy
+// must be a forest with unique children and valid child, scene-root and
+// default-scene indices. Malformed hierarchies return errors before resolving
+// external resources.
 func Parse(data []byte, resolve Resolver) (*Document, error) {
 	l := &loader{resolve: resolve}
 	jsonData := data
@@ -93,6 +96,9 @@ type loader struct {
 }
 
 func (l *loader) build() (*Document, error) {
+	if err := l.validateHierarchy(); err != nil {
+		return nil, err
+	}
 	if err := l.loadBuffers(); err != nil {
 		return nil, err
 	}
@@ -120,7 +126,7 @@ func (l *loader) build() (*Document, error) {
 	return doc, nil
 }
 
-// nodes converts the hierarchy with parent links.
+// nodes converts the validated hierarchy with parent links.
 func (l *loader) nodes() []Node {
 	out := make([]Node, len(l.j.Nodes))
 	for i, n := range l.j.Nodes {
@@ -155,9 +161,7 @@ func (l *loader) nodes() []Node {
 	}
 	for i, n := range out {
 		for _, c := range n.Children {
-			if c >= 0 && c < len(out) {
-				out[c].Parent = i
-			}
+			out[c].Parent = i
 		}
 	}
 	return out
@@ -617,30 +621,35 @@ func (l *loader) imageOf(ref *jsonTextureRef) (image int, linear bool) {
 	return image, linear
 }
 
-// instances walks the default scene and flattens node transforms.
+// instances walks the validated default scene in preorder. The explicit
+// stack preserves deep trees without a recursion limit; strict trees and
+// unique roots ensure each selected node is processed exactly once.
 func (l *loader) instances() []Instance {
 	var out []Instance
-	var walk func(n int, parent lin.Mat4, depth int)
-	walk = func(n int, parent lin.Mat4, depth int) {
-		if n < 0 || n >= len(l.j.Nodes) || depth > 64 {
-			return
-		}
-		node := l.j.Nodes[n]
-		world := parent.Mul(nodeLocal(node))
+	type pending struct {
+		node   int
+		parent lin.Mat4
+	}
+	var stack []pending
+	roots := l.sceneRoots()
+	for i := len(roots) - 1; i >= 0; i-- {
+		stack = append(stack, pending{roots[i], lin.Identity()})
+	}
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		node := l.j.Nodes[p.node]
+		world := p.parent.Mul(nodeLocal(node))
 		if node.Mesh != nil && *node.Mesh >= 0 && *node.Mesh < len(l.j.Meshes) {
-			inst := Instance{Name: node.Name, Mesh: *node.Mesh, Node: n, Skin: -1, World: world}
+			inst := Instance{Name: node.Name, Mesh: *node.Mesh, Node: p.node, Skin: -1, World: world}
 			if node.Skin != nil {
 				inst.Skin = *node.Skin
 			}
 			out = append(out, inst)
 		}
-		for _, c := range node.Children {
-			walk(c, world, depth+1)
+		for i := len(node.Children) - 1; i >= 0; i-- {
+			stack = append(stack, pending{node.Children[i], world})
 		}
-	}
-	roots := l.sceneRoots()
-	for _, r := range roots {
-		walk(r, lin.Identity(), 0)
 	}
 	return out
 }
@@ -648,13 +657,13 @@ func (l *loader) instances() []Instance {
 func (l *loader) sceneRoots() []int {
 	if len(l.j.Scenes) > 0 {
 		s := 0
-		if l.j.Scene != nil && *l.j.Scene >= 0 && *l.j.Scene < len(l.j.Scenes) {
+		if l.j.Scene != nil {
 			s = *l.j.Scene
 		}
 		return l.j.Scenes[s].Nodes
 	}
 	// No scenes: treat every node that is nobody's child as a root.
-	child := map[int]bool{}
+	child := make([]bool, len(l.j.Nodes))
 	for _, n := range l.j.Nodes {
 		for _, c := range n.Children {
 			child[c] = true
