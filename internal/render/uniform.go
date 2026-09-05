@@ -44,7 +44,7 @@ func (d *Device) newUniformSets(size, storageSize vk.VkDeviceSize, stages vk.VkS
 		poolSizes = append(poolSizes, vk.VkDescriptorPoolSize{Type: vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DescriptorCount: FramesInFlight})
 	}
 	layoutInfo := vk.VkDescriptorSetLayoutCreateInfo{
-		SType: vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		SType:        vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		BindingCount: uint32(len(bindings)), PBindings: &bindings[0],
 	}
 	if err := vk.Check("vkCreateDescriptorSetLayout", vk.VkCreateDescriptorSetLayout(d.Handle, &layoutInfo, nil, &u.Layout)); err != nil {

@@ -311,7 +311,7 @@ func (c *cubeFaces) texel(face, x, y int) (r, g, b float32) {
 	}
 	x = min(max(x, 0), c.side-1)
 	y = min(max(y, 0), c.side-1)
-	i := ((y*c.side) + (c.side - 1 - x)) * 8
+	i := ((y * c.side) + (c.side - 1 - x)) * 8
 	return getF16(p[i:]), getF16(p[i+2:]), getF16(p[i+4:])
 }
 
