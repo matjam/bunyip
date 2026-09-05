@@ -544,6 +544,36 @@ pick by the camera's distance to the model's origin; `LOD.Pick` lets you
 choose the level yourself. Walk `LOD.Levels` in `Shutdown` to destroy
 the meshes.
 
+The coarsest level of all is an impostor: the model baked into pictures
+of itself. `BakeImpostor(model, opts)` renders the model from a ring of
+directions around it into one atlas texture, and `DrawImpostor(impostor,
+pos, yaw, tint)` draws the view nearest the camera as a cutout
+billboard, so a distant tree costs one quad and no vertex work. Set
+`Impostor.Distance` and call `DrawModelImpostor(model, impostor,
+transform)` to draw the model up close and the impostor beyond.
+Impostors of one model share an atlas, so a forest of them is one
+instanced draw.
+
+`ImpostorOptions` chooses `Views` (8 by default, at most
+`MaxImpostorViews`), `Resolution` in pixels per view (128), the `Pitch`
+each view looks down from (15 degrees, so match it to the camera's usual
+elevation) and the `Light` to bake under. The bake fixes its lighting
+into the atlas the same way for every view, so an impostor does not turn
+its shading as the sun moves; keep them far enough away that this does
+not read. It runs a frame of its own and reads the views back, so call
+it from `Init` or `Update`, never from `Draw`.
+
+```go
+// In Init: pines beyond forty units become one quad each.
+g.pineFar, err = ctx.Gfx.BakeImpostor(g.pine, gfx.ImpostorOptions{Views: 12, Resolution: 96})
+g.pineFar.Distance = 40
+
+// In Draw:
+for _, t := range g.forest {
+	gr.DrawModelImpostor(g.pine, g.pineFar, t)
+}
+```
+
 ```go
 // A fine rock near, a faceted one far, nothing beyond seventy units.
 fine, _ := ctx.Gfx.NewMesh(gfx.SphereMesh(16, 32))

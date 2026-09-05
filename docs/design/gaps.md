@@ -154,7 +154,8 @@ ground fog, frustum culling with a public `Frustum`, bounds that follow
 a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, software occlusion culling from
 `AddOccluder3D`, a static bounding volume hierarchy behind
-`NewStaticBatch`, levels of detail, spot lights
+`NewStaticBatch`, levels of detail and impostors baked from a model,
+spot lights
 with shadows, per-light culling in the shadow pass, thirty-two lights a
 frame, heightfield and primitive meshes, dynamic mesh updates, colour
 grading LUTs, and nearest or repeating sampling for render textures are
@@ -162,7 +163,10 @@ in.
 
 - Point light shadows (cube maps); the directional light and up to four
   spot lights a frame cast shadows.
-- Impostors: billboards baked from a model.
+- Impostors bake a ring of views around a model, not an octahedral set,
+  so one seen from far above shows the wrong picture, and their lighting
+  is baked the same way relative to every view, so it does not turn with
+  the sun.
 - Clustered lighting for hundreds of lights; a frame keeps its first
   thirty-two and `FrameStats.LightsDropped` counts the rest.
 - The shader uniform arena and the joint storage buffer still wait for
