@@ -96,9 +96,9 @@ type meshPass struct {
 	// model with targets owns a buffer and a set; morphNone is the empty
 	// one every other draw binds, because the vertex prelude names the
 	// buffer whether or not the draw reads it.
-	morphDesc *render.DescriptorSets
-	morphNone vk.VkDescriptorSet
-	morphZero *render.Buffer
+	morphDesc     *render.DescriptorSets
+	morphNone     vk.VkDescriptorSet
+	morphZero     *render.Buffer
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
 	shadowAtlas   *render.Target      // every shadow map, see shadowRegion
 	shadowFormat  vk.VkFormat         // the atlas's depth format, which the shadow pipelines render to

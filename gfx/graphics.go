@@ -60,8 +60,8 @@ type Graphics struct {
 	dbgFontFailed bool
 	occ           occlusionBuffer // the software occlusion depth buffer, reused every frame
 	rec           recordScratch   // long-lived arguments for the recording commands
-	viewport      vk.VkRect2D   // the main output's pixel rectangle; zero means the whole window
-	res           resources     // the live resources a debug view lists
+	viewport      vk.VkRect2D     // the main output's pixel rectangle; zero means the whole window
+	res           resources       // the live resources a debug view lists
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view

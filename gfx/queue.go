@@ -72,7 +72,7 @@ type drawQueue struct {
 	colorMatrix  *ColorMatrix // recolouring in force, nil for none
 	lights       lights2D     // this frame's 2D lights
 	lightsDirty  bool
-	shadows      bool         // some light this frame casts shadows
+	shadows      bool       // some light this frame casts shadows
 	occluders    []lin.Vec2 // this frame's 2D occluder polygons, run after run
 	occluderRuns []int32    // how many points each occluder has
 	// meshOccluders are the meshes AddOccluder3D marked as blocking the
@@ -80,18 +80,18 @@ type drawQueue struct {
 	meshOccluders []meshOccluder
 	// batches are the static batches DrawBatch queued, expanded into
 	// draws once the frustum and the occluders are known.
-	batches []*StaticBatch
-	shadowTex    *Texture     // the polar shadow maps, one row per light
-	shadowPix    []byte       // the strip's pixels, filled each frame
-	shadowDist   []float32    // one light's distances, reused across lights
-	xform        lin.Affine   // composed 2D transform in force
-	xforms       []lin.Affine // transform stack below it
-	skyCached    skyKey       // the sky whose harmonics are in skySH
-	skySH        [9]lin.Vec4
-	lines        lineStream         // debug lines drawn over the 3D scene
-	parts        particleStream     // instanced particles, 2D and 3D
-	probes       []*ReflectionProbe // this frame's reflection probes
-	grid         *LightProbeGrid    // this frame's irradiance grid, nil for none
+	batches    []*StaticBatch
+	shadowTex  *Texture     // the polar shadow maps, one row per light
+	shadowPix  []byte       // the strip's pixels, filled each frame
+	shadowDist []float32    // one light's distances, reused across lights
+	xform      lin.Affine   // composed 2D transform in force
+	xforms     []lin.Affine // transform stack below it
+	skyCached  skyKey       // the sky whose harmonics are in skySH
+	skySH      [9]lin.Vec4
+	lines      lineStream         // debug lines drawn over the 3D scene
+	parts      particleStream     // instanced particles, 2D and 3D
+	probes     []*ReflectionProbe // this frame's reflection probes
+	grid       *LightProbeGrid    // this frame's irradiance grid, nil for none
 }
 
 func (q *drawQueue) reset() {
