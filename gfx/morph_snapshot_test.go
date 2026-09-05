@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/matjam/bunyip/gltf"
+	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -77,7 +78,15 @@ func TestMorphDrawSnapshotsRendered(t *testing.T) {
 		}
 		return weights
 	}
-	for _, dedicated := range []bool{false, true} {
+	for _, allocation := range []struct {
+		name  string
+		usage vk.VkBufferUsageFlags
+	}{
+		{"pooled", 0},
+		{"dedicated", vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT},
+		{"vertex_only", vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT},
+		{"index_only", vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT},
+	} {
 		for _, skinned := range []bool{false, true} {
 			for _, tc := range []struct {
 				name    string
@@ -90,15 +99,11 @@ func TestMorphDrawSnapshotsRendered(t *testing.T) {
 				{"gpu cpu gpu", [][]float32{few(0, 0.25), all(0.75), few(8, 0.5)}},
 			} {
 				name := map[bool]string{false: "plain/", true: "skinned/"}[skinned] + tc.name
-				if dedicated {
-					name = "dedicated/" + name
-				}
+				name = allocation.name + "/" + name
 				t.Run(name, func(t *testing.T) {
 					g := newHeadless(t, 192, 96)
 					enableGeometryReadback(t)
-					if dedicated {
-						dedicateGeometryBuffers(t)
-					}
+					dedicateGeometryUsage(t, allocation.usage)
 					g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true})
 					load := func() *Model {
 						m, err := g.LoadModel(morphSnapshotDoc(skinned))

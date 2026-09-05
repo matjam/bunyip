@@ -14,10 +14,18 @@ import (
 // TestDenseSphereAllocationRendered holds geometry and buffer sizes fixed
 // while selecting the allocator's shared-block or separate-memory path.
 func TestDenseSphereAllocationRendered(t *testing.T) {
-	for _, dedicated := range []bool{false, true} {
-		t.Run(fmt.Sprintf("dedicated=%t", dedicated), func(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage vk.VkBufferUsageFlags
+	}{
+		{"none", 0},
+		{"vertex", vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT},
+		{"index", vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT},
+		{"both", vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT},
+	} {
+		t.Run(fmt.Sprintf("dedicated=%s", tc.name), func(t *testing.T) {
 			g := newHeadless(t, 96, 96)
-			geometryAllocationProbe(t, dedicated)
+			dedicateGeometryUsage(t, tc.usage)
 			verts, indices := SphereMesh(32, 64)
 			mesh, err := g.NewMesh(verts, indices)
 			if err != nil {
@@ -39,15 +47,26 @@ func TestDenseSphereAllocationRendered(t *testing.T) {
 func dedicateGeometryBuffers(t *testing.T) { geometryAllocationProbe(t, true) }
 
 func geometryAllocationProbe(t *testing.T, dedicated bool) {
+	usage := vk.VkBufferUsageFlags(0)
+	if dedicated {
+		usage = vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+	}
+	dedicateGeometryUsage(t, usage)
+}
+
+func dedicateGeometryUsage(t *testing.T, dedicatedUsage vk.VkBufferUsageFlags) {
 	t.Helper()
 	create, requirements, bind := vk.VkCreateBuffer, vk.VkGetBufferMemoryRequirements, vk.VkBindBufferMemory
 	sizes := make(map[vk.VkBuffer]vk.VkDeviceSize)
+	usages := make(map[vk.VkBuffer]vk.VkBufferUsageFlags)
 	vk.VkCreateBuffer = func(device vk.VkDevice, info *vk.VkBufferCreateInfo, allocator *vk.VkAllocationCallbacks, buffer *vk.VkBuffer) vk.VkResult {
 		result := create(device, info, allocator, buffer)
 		if result == vk.VK_SUCCESS {
 			delete(sizes, *buffer)
+			delete(usages, *buffer)
 			if info.Usage&vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT != 0 && info.Usage&(vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT) != 0 {
 				sizes[*buffer] = info.Size
+				usages[*buffer] = info.Usage
 			}
 		}
 		return result
@@ -55,6 +74,7 @@ func geometryAllocationProbe(t *testing.T, dedicated bool) {
 	vk.VkGetBufferMemoryRequirements = func(device vk.VkDevice, buffer vk.VkBuffer, req *vk.VkMemoryRequirements) {
 		requirements(device, buffer, req)
 		if size, ok := sizes[buffer]; ok {
+			dedicated := usages[buffer]&dedicatedUsage != 0
 			t.Logf("geometry size=%d required=%d alignment=%d dedicated=%t", size, req.Size, req.Alignment, dedicated)
 			if dedicated {
 				// This is the allocator's dedicated threshold. Enlarging the
@@ -65,7 +85,7 @@ func geometryAllocationProbe(t *testing.T, dedicated bool) {
 	}
 	vk.VkBindBufferMemory = func(device vk.VkDevice, buffer vk.VkBuffer, memory vk.VkDeviceMemory, offset vk.VkDeviceSize) vk.VkResult {
 		if size, ok := sizes[buffer]; ok {
-			t.Logf("geometry size=%d bound at offset=%d dedicated=%t", size, offset, dedicated)
+			t.Logf("geometry size=%d bound at offset=%d dedicated=%t", size, offset, usages[buffer]&dedicatedUsage != 0)
 		}
 		return bind(device, buffer, memory, offset)
 	}
