@@ -626,6 +626,29 @@ darkening creases and contact points, 0 to 1 with a default of 0.6, over
 buffer instead of the scene while you tune it. `Vignette`, `Saturation`
 and `Contrast` are the grade, and `NoAntiAlias` skips the FXAA pass.
 
+`Samples` multisamples the scene pass: 1 (the default), 2, 4 or 8,
+clamped to what the GPU supports, which `Graphics.MaxSamples` reports.
+Every triangle edge is then resolved from that many coverage samples,
+which is the one anti-aliasing that does not blur the picture, at the
+cost of that many times the scene's colour and depth memory and
+bandwidth. Shading still runs once a pixel, so the cost is in the
+attachments rather than in the fragment programs. Set `NoAntiAlias` with
+it: FXAA over an already resolved image only softens it again.
+
+```go
+p := gfx.DefaultPost()
+p.Samples, p.NoAntiAlias = 4, true
+gr.SetPost(p)
+```
+
+Changing `Samples` rebuilds the scene targets and the pipelines that draw
+into them at the start of the next frame, so it belongs in a settings
+menu rather than in a per-frame update. Everything after the scene pass
+reads the resolved single-sample images, so ambient occlusion, decals,
+reflections and the transmission snapshot behave the same at every sample
+count; the depth they read is sample zero of each pixel, which is exact
+except on an edge, where it is one of the surfaces covering it.
+
 `PostSettings.LUT` grades the finished colours through a lookup table.
 `NeutralLUT(n)` returns the identity strip of n slices (16 or 32 are
 usual); paste it into a corner of a screenshot, grade that in an image
@@ -657,6 +680,39 @@ the texture, with its own camera and its own lighting. It renders before
 the main frame, so the result can be drawn in the same frame.
 `RenderTexture.Texture()` is the texture to draw with, `SetView` sets its
 2D coordinate space, and `Read` copies the pixels back.
+
+`RenderTextureOptions` also chooses what the surface is made of.
+`Format` picks the colour format: `ColorScreen` matches the window, eight
+bits a channel with sRGB encoding, and is the default; `ColorHDR` is
+sixteen-bit floating point RGBA, so values above 1 survive into whatever
+reads the texture; `ColorMask` is one eight-bit channel, for a mask, a
+height field or a coverage buffer. `NoDepth` leaves out the depth buffer
+of the surface's own pass, which nothing tests against, and saves the
+memory; a 3D scene drawn into it still works, because the scene has a
+depth buffer of its own. `Samples` multisamples the surface itself, so
+every edge drawn into it, 2D paths and triangles included, is resolved
+from that many coverage samples; it is separate from
+`PostSettings.Samples`, which multisamples the 3D scene behind the
+composite, here as on screen.
+
+`Read` decodes whatever format the surface was made with: a `ColorHDR`
+surface comes back encoded the way the screen is, so values above 1 clip,
+and a `ColorMask` surface comes back as grey. `ReadDepth` returns the
+depth the last 3D scene left, one float a pixel from the top-left corner,
+0 at the near plane and 1 at the far plane. Both wait for the GPU and
+copy the whole image to the host, so they belong in tools, tests and
+one-off queries rather than in a frame.
+
+```go
+// A mask for a fog-of-war lookup: one channel, no depth, cheap to sample.
+mask, err := gr.NewRenderTextureOptions(256, 256, gfx.RenderTextureOptions{
+	Format: gfx.ColorMask, NoDepth: true,
+})
+// A portrait with smooth edges on its own vector frame.
+portrait, err := gr.NewRenderTextureOptions(512, 512, gfx.RenderTextureOptions{
+	Samples: 4,
+})
+```
 
 ```go
 // A minimap: the same world from straight above, drawn as a sprite.
@@ -732,8 +788,9 @@ shadowed spot light is another pass and every shadowed point light is
 six; lights, which are per-fragment work over the part of the view their
 range reaches; transmission, which copies the scene before
 drawing transmissive meshes; post, where ambient occlusion and bloom are
-full-screen passes a zero turns off; and render textures, which are
-whole extra frames.
+full-screen passes a zero turns off; multisampling, which multiplies the
+scene's colour and depth bandwidth by its sample count; and render
+textures, which are whole extra frames.
 
 Transparency sorts by distance to the camera per draw, not per triangle,
 so two blended meshes that interpenetrate pick an order and keep it, and

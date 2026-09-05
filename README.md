@@ -40,8 +40,8 @@ window.
   image-based lighting, fog; reflection probes, baked light probe grids
   and screen-space reflections; instancing, frustum culling and levels
   of detail; billboards, decals, outlines and x-ray; dynamic meshes and
-  terrain; SSAO, bloom, FXAA, tone mapping and colour grading; render
-  textures and picking.
+  terrain; SSAO, bloom, multisampling, FXAA, tone mapping and colour
+  grading; render textures and picking.
 - Interface: immediate-mode widgets with themes and skins, from panels
   and windows to tables, trees, menus, modals, text editing, drag and
   drop, and keyboard or gamepad navigation, with an accessibility tree.

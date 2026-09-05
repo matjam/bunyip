@@ -155,9 +155,10 @@ a skinned pose and `Mesh.SetBounds` and `Shader.VertexBounds` for the
 meshes culling cannot bound on its own, levels of detail, spot and point
 lights with shadows, per-light culling in the shadow pass, clustered
 forward lighting for a thousand lights a frame, heightfield and primitive
-meshes, dynamic mesh updates, colour grading LUTs, nearest or repeating
-sampling for render textures, and per-frame buffers that grow without
-ever idling the GPU are in.
+meshes, dynamic mesh updates, colour grading LUTs, multisampling of the
+scene pass, render textures that choose their colour format, their depth
+and their own sample count and can be read back as pixels or as depth,
+and per-frame buffers that grow without ever idling the GPU are in.
 
 - Soft shadows beyond the fixed nine-tap filter: no contact hardening,
   and a cube face's filter is clamped inside the face, so a point light's
@@ -191,11 +192,11 @@ ever idling the GPU are in.
   rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
 - Volumetrics: god rays, and atmospheric scattering for the sky rather
   than the parametric gradient. Fog is a per-pixel fade, not a medium.
-- Temporal anti-aliasing and MSAA; FXAA is the only option.
+- Temporal anti-aliasing. Multisampling and FXAA are both in
+  (`PostSettings.Samples` and `NoAntiAlias`); nothing accumulates across
+  frames, so neither settles a shimmering edge the way TAA would.
 - Depth of field, motion blur and lens effects.
 - Order-independent transparency; blended draws are sorted per mesh.
-- Render texture options beyond sampling: colour format, no depth,
-  multisampling, and reading the depth back.
 - Culling is per draw and by bounding sphere. There is no bounding
   volume hierarchy or spatial index, so a frame still pays a frustum
   test for every draw it queues, and a draw whose shape leaves its

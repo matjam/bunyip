@@ -76,8 +76,9 @@ type RenderTextureOptions struct {
 }
 
 // NewRenderTexture creates an offscreen surface in pixels. It has the
-// full 3D pipeline (shadows, bloom, post) but no anti-aliasing pass, and
-// samples with linear filtering; NewRenderTextureOptions chooses.
+// full 3D pipeline (shadows, bloom, post) but no FXAA pass, matches the
+// window's colour format and samples with linear filtering;
+// NewRenderTextureOptions chooses all of that, multisampling included.
 func (g *Graphics) NewRenderTexture(width, height int) (*RenderTexture, error) {
 	return g.NewRenderTextureOptions(width, height, RenderTextureOptions{})
 }

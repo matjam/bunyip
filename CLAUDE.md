@@ -74,6 +74,24 @@ runs the shadow atlas pass, the HDR pass (sky, opaque, blended,
 debug lines), decals, then the post pass composites. Colours are linear
 and non-premultiplied in the API, premultiplied in the 2D stream.
 
+**Multisampling.** `PostSettings.Samples` (1, 2, 4 or 8, clamped by
+`Device.SampleCount`) multisamples the HDR scene pass. A `render.Target`
+then holds `MSColor` and `MSDepth` beside `Color` and `Depth`, renders
+into the multisampled pair and resolves into the single-sample pair as
+the pass ends: colour by averaging, depth by taking sample zero, both
+declared on the attachment rather than as a separate command. Everything
+downstream (ambient occlusion, decals, reflections, the transmission
+snapshot, `RenderTexture.ReadDepth`) reads the single-sample images and
+needs no cases of its own. The shadow atlas and every post pass stay
+single-sample. A pipeline must match its pass's attachments, so
+`PipelineDesc.Samples` carries the count, `pipeKey.out` carries an
+`outKey` (colour format, whether there is depth, sample count), and the
+fixed pipelines are built per output through `pipeCache` in
+`gfx/pipes.go`. The window's own format at one sample is the zero
+`outKey`, so a plain render texture shares the screen's pipelines.
+Changing the sample count rebuilds the scene targets at the start of the
+next frame's rendering, in `Graphics.end`, where no pass is open.
+
 **Descriptor sets for meshes.** Set 0 is the material: thirteen
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
 the environment cube, the thickness map, the scene copy for
@@ -244,6 +262,14 @@ render pass, so text tests draw one frame.
   output storage; copy in and out (see `gfx/text.go`).
 - The render-target colour images need `TRANSFER_DST` because
   `ClearColorForSampling` clears them before their first pass.
+- `BeginSwapchainPass` stores its depth attachment rather than
+  discarding it, though nothing reads it. A depth attachment that is
+  cleared and discarded in a pass that records no draw takes a driver
+  fast path that keeps the sample count of the pass before it, and after
+  a multisampled scene pass that faults the GPU with a depth-target size
+  violation. A frame that only updates a render texture is exactly that
+  shape, and `internal/render/multisample_test.go` pins it. Storing a
+  depth buffer that was only cleared costs almost nothing.
 - Uploads inside a frame (`NewMesh`, `Mesh.Update`, `UpdateSkinned`,
   `NewTexture`, `Texture.Write`, `NewEnvironment`) copy through the
   per-slot staging arena (`render.Staging`, taken with
