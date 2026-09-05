@@ -370,7 +370,7 @@ func Pack(dir, out string) error {
 
 func stored(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".png", ".jpg", ".jpeg", ".ogg", ".mp3", ".zip", ".pak", ".glb", ".webp", ".mp4":
+	case ".png", ".jpg", ".jpeg", ".ogg", ".mp3", ".zip", ".pak", ".glb", ".webp", ".mp4", ".ktx2":
 		return true
 	}
 	return false

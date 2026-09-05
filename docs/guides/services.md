@@ -136,6 +136,27 @@ and every `gfx.AnimPlayer`, mesh pointer and node index the game holds
 refers to the old ones; a game that wants it loads the model again and
 rebinds what pointed at it.
 
+### The texture pipeline
+
+`bunyip-tex` compresses a PNG or JPEG into a KTX2 file holding BC blocks
+and the whole mip chain, so a texture takes a quarter to an eighth of
+the GPU memory it would as RGBA and nothing is compressed or
+downsampled while the game runs:
+
+```
+bunyip-tex -format bc7 -outdir build/textures art/textures/*.png
+bunyip-pack -o game.pak build
+```
+
+`asset.Texture` reads a name ending in `.ktx2` through
+`gfx.NewCompressedTexture` and anything else through the image decoders,
+so a game changes the extension and nothing else, and `Reloader.Texture`
+watches either kind. Packs store `.ktx2` files as they are, since block
+data does not deflate. The
+[2D graphics guide](graphics-2d.html) has the formats and what each is
+for, and `gfx/ktx2` is the package under both the tool and the loader
+for a game with its own pipeline.
+
 ## Saves and settings
 
 [save](../pkg/save.html) writes JSON documents into the platform's data

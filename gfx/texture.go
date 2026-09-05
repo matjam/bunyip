@@ -21,6 +21,7 @@ type Texture struct {
 	external      bool // image owned elsewhere (render textures)
 	data          bool // sampled without gamma decoding; pixels upload as given
 	mipmapped     bool // a full mip chain was asked for, so Replace makes one again
+	compressed    bool // block-compressed on the GPU, so texels cannot be written into it
 	destroyed     bool // Destroy was called; the image lives until the frame retires it
 	g             *Graphics
 }
@@ -154,6 +155,9 @@ func (t *Texture) Replace(src image.Image) error {
 	if t.external {
 		return fmt.Errorf("gfx: a render texture's image cannot be replaced")
 	}
+	if t.compressed {
+		return fmt.Errorf("gfx: a compressed texture takes a KTX2 file; use ReplaceCompressed")
+	}
 	b := src.Bounds()
 	if b.Dx() <= 0 || b.Dy() <= 0 {
 		return fmt.Errorf("gfx: texture has empty bounds %v", b)
@@ -174,16 +178,23 @@ func (t *Texture) format() vk.VkFormat {
 	return vk.VK_FORMAT_R8G8B8A8_SRGB
 }
 
-// replaceTexels gives the texture a fresh image of a new size and
-// retires the old one. The descriptor sets that named the old image go
-// with it, so the next draw builds them again from the new view.
+// replaceTexels gives the texture a fresh image of a new size from
+// uncompressed texels.
 func (t *Texture) replaceTexels(w, h int, pix []byte, format vk.VkFormat) error {
-	g := t.g
 	mips := t.mipmapped && w > 1 && h > 1
-	img, err := g.uploadTexture(vk.VkExtent2D{Width: uint32(w), Height: uint32(h)}, format, pix, mips)
+	img, err := t.g.uploadTexture(vk.VkExtent2D{Width: uint32(w), Height: uint32(h)}, format, pix, mips)
 	if err != nil {
 		return err
 	}
+	return t.swapImage(img, w, h, textureBytes(w, h, mips))
+}
+
+// swapImage puts a freshly built image behind the texture and retires
+// the old one. The descriptor sets that named the old image go with it,
+// so the next draw builds them again from the new view, and the old
+// image lives until the frames that may still sample it have finished.
+func (t *Texture) swapImage(img *render.Image, w, h, bytes int) error {
+	g := t.g
 	set, err := g.textureSet(img.View, g.sampler(!t.nearest, t.repeat))
 	if err != nil {
 		img.Destroy()
@@ -195,7 +206,7 @@ func (t *Texture) replaceTexels(w, h int, pix []byte, format vk.VkFormat) error 
 	g.forgetTexture(t)
 	t.img, t.set, t.altSet = img, set, 0
 	t.Width, t.Height = w, h
-	g.track(t, Resource{Kind: ResourceTexture, Width: w, Height: h, Bytes: textureBytes(w, h, mips)})
+	g.track(t, Resource{Kind: ResourceTexture, Width: w, Height: h, Bytes: bytes})
 	g.deferDestroy(func() {
 		g.descriptors.Free(oldSet)
 		if oldAlt != 0 {
@@ -265,6 +276,9 @@ func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Tex
 func (t *Texture) Write(x, y int, src image.Image) error {
 	if t.img == nil || t.destroyed {
 		return fmt.Errorf("gfx: write to a destroyed texture")
+	}
+	if t.compressed {
+		return fmt.Errorf("gfx: a compressed texture holds blocks, not texels, so it cannot be written into")
 	}
 	b := src.Bounds()
 	r := image.Rect(x, y, x+b.Dx(), y+b.Dy()).Intersect(image.Rect(0, 0, t.Width, t.Height))
