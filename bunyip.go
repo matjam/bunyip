@@ -43,6 +43,7 @@ import (
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/internal/platform"
+	"github.com/matjam/bunyip/lin"
 )
 
 // Config describes the window and the loop.
@@ -252,6 +253,11 @@ type Context struct {
 	visible   bool
 	closeReq  bool
 	cursor    Cursor
+
+	// The main output's pixel rectangle and the window's pixel density
+	// are shared by pointer input and the inverse text-input mapping.
+	viewport       lin.Rect
+	pixelsPerPoint float32
 }
 
 // waker is what the context needs from the platform app.
@@ -392,9 +398,19 @@ func (c *Context) SetClipboard(text string) error { return c.app.SetClipboard(te
 // SetTextInputRect tells the operating system's input method where text
 // is being entered, in view units from the top-left, so that candidate
 // windows for languages such as Japanese open beside the field. Text
-// fields in the ui package call it for you.
+// fields in the ui package call it for you. The rectangle follows the
+// fixed view's scaling and letterboxing.
 func (c *Context) SetTextInputRect(x, y, w, h float32) {
-	c.win.SetTextInputRect(float64(x), float64(y), float64(w), float64(h))
+	// A minimized window can have no drawable area. Wait for a valid
+	// size before sending a rectangle to the platform.
+	if c.Width <= 0 || c.Height <= 0 || c.viewport.W <= 0 || c.viewport.H <= 0 || c.pixelsPerPoint <= 0 {
+		return
+	}
+	pp := float64(c.pixelsPerPoint)
+	sx := float64(c.viewport.W) / float64(c.Width) / pp
+	sy := float64(c.viewport.H) / float64(c.Height) / pp
+	c.win.SetTextInputRect(float64(c.viewport.X)/pp+float64(x)*sx,
+		float64(c.viewport.Y)/pp+float64(y)*sy, float64(w)*sx, float64(h)*sy)
 }
 
 // SetFullscreen enters or leaves full-screen mode.

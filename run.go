@@ -190,11 +190,6 @@ type loop struct {
 	input hook.Input
 	audio hook.Audio
 
-	// The main output's pixel rectangle and the window's pixels per point,
-	// for mapping pointer positions into view units.
-	viewport       lin.Rect
-	pixelsPerPoint float32
-
 	// pausedNow is the pause the loop last put on the mixer, so that it
 	// writes the mixer on a change and never otherwise.
 	pausedNow bool
@@ -212,12 +207,12 @@ func (l *loop) applySize() {
 	w := l.win
 	pw, ph := w.PixelSize()
 	width, height := w.Size()
-	l.pixelsPerPoint = float32(w.Scale())
+	l.ctx.pixelsPerPoint = float32(w.Scale())
 	l.gfx.Resize(pw, ph)
 	cfg := l.cfg
 	if cfg.ViewWidth <= 0 || cfg.ViewHeight <= 0 {
-		l.viewport = lin.R(0, 0, float32(pw), float32(ph))
-		l.ctx.Width, l.ctx.Height, l.ctx.Scale = float32(width), float32(height), l.pixelsPerPoint
+		l.ctx.viewport = lin.R(0, 0, float32(pw), float32(ph))
+		l.ctx.Width, l.ctx.Height, l.ctx.Scale = float32(width), float32(height), l.ctx.pixelsPerPoint
 		l.ctx.Gfx.SetView(float32(width), float32(height))
 		if err := l.ctx.Gfx.SetViewport(lin.Rect{}); err != nil {
 			l.ctx.Log.Error("bunyip: viewport", "err", err)
@@ -240,23 +235,25 @@ func (l *loop) applySize() {
 	}
 	rw := float32(math.Round(float64(vw * sx)))
 	rh := float32(math.Round(float64(vh * sy)))
-	l.viewport = lin.R(float32(math.Floor(float64((float32(pw)-rw)/2))), float32(math.Floor(float64((float32(ph)-rh)/2))), rw, rh)
+	l.ctx.viewport = lin.R(float32(math.Floor(float64((float32(pw)-rw)/2))), float32(math.Floor(float64((float32(ph)-rh)/2))), rw, rh)
 	l.ctx.Width, l.ctx.Height, l.ctx.Scale = vw, vh, rw/vw
 	l.ctx.Gfx.SetView(vw, vh)
-	if err := l.ctx.Gfx.SetViewport(l.viewport); err != nil {
+	if err := l.ctx.Gfx.SetViewport(l.ctx.viewport); err != nil {
 		l.ctx.Log.Error("bunyip: viewport", "err", err)
 	}
 }
 
 // toView maps a pointer position in window points into view units.
 func (l *loop) toView(x, y float64) (float32, float32) {
-	px, py := float32(x)*l.pixelsPerPoint, float32(y)*l.pixelsPerPoint
-	return (px - l.viewport.X) / l.viewport.W * l.ctx.Width, (py - l.viewport.Y) / l.viewport.H * l.ctx.Height
+	c := l.ctx
+	px, py := float32(x)*c.pixelsPerPoint, float32(y)*c.pixelsPerPoint
+	return (px - c.viewport.X) / c.viewport.W * c.Width, (py - c.viewport.Y) / c.viewport.H * c.Height
 }
 
 // toViewDelta maps a pointer movement in window points into view units.
 func (l *loop) toViewDelta(dx, dy float64) (float32, float32) {
-	return float32(dx) * l.pixelsPerPoint / l.viewport.W * l.ctx.Width, float32(dy) * l.pixelsPerPoint / l.viewport.H * l.ctx.Height
+	c := l.ctx
+	return float32(dx) * c.pixelsPerPoint / c.viewport.W * c.Width, float32(dy) * c.pixelsPerPoint / c.viewport.H * c.Height
 }
 
 func (l *loop) run() error {

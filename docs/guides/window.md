@@ -81,6 +81,10 @@ Pointer positions and pointer movement are mapped out of window points
 and into view units before the game sees them, so a click inside the
 letterboxed image lands on the sprite that is drawn there. A click on a
 black bar maps outside the view's rectangle.
+`Context.SetTextInputRect` applies the inverse mapping to its view-unit
+rectangle, including letterbox offsets, stretching and display density,
+so input-method candidate windows line up with the drawn field. Updates
+are skipped while a minimized window has no drawable area.
 
 Underneath, the swapchain and the render targets are sized in pixels from
 the window's framebuffer size, so a fixed view still renders at the

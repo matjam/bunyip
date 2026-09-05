@@ -83,6 +83,9 @@ if ctx.CursorCaptured() {
 During `Draw` the "changed" accessors cover the whole drawn frame, so an
 immediate-mode interface built in `Draw` sees every press even when the
 frame ran several updates or none.
+Keyboard, mouse and gamepad button transitions are reported once per
+drawn frame. Drawing without an intervening update does not repeat an
+edge, and drawing does not consume the edge still pending for Update.
 
 ## Gamepads
 

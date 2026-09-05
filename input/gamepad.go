@@ -79,10 +79,8 @@ func (s *State) Gamepad(i int) *Gamepad {
 	}
 	g := s.gamepads[i]
 	if s.drawing {
-		for b := range g.pressed {
-			g.pressed[b] = g.pressed[b] || g.framePressed[b]
-			g.released[b] = g.released[b] || g.frameReleased[b]
-		}
+		g.pressed = g.framePressed
+		g.released = g.frameReleased
 	}
 	return &g
 }

@@ -529,7 +529,9 @@ func (f *aseFile) oldPalette(r *aseReader, kind int) error {
 			c := color.RGBA{R: r.u8(), G: r.u8(), B: r.u8(), A: 255}
 			if kind == aseChunkOldPalette2 {
 				// Six-bit channels, scaled up to eight.
-				c.R, c.G, c.B = c.R*255/63, c.G*255/63, c.B*255/63
+				c.R = uint8(uint16(c.R) * 255 / 63)
+				c.G = uint8(uint16(c.G) * 255 / 63)
+				c.B = uint8(uint16(c.B) * 255 / 63)
 			}
 			f.out.Palette[at+i] = c
 		}
