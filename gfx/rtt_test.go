@@ -89,3 +89,118 @@ func TestPicking(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// drawIntoTexture renders two frames of body into a fresh render texture
+// with the given options and reads it back.
+func drawIntoTexture(t *testing.T, g *Graphics, opts RenderTextureOptions, body func()) (*RenderTexture, *image.RGBA) {
+	t.Helper()
+	rt, err := g.NewRenderTextureOptions(64, 64, opts)
+	if err != nil {
+		t.Fatalf("NewRenderTextureOptions: %v", err)
+	}
+	t.Cleanup(rt.Destroy)
+	for range 2 {
+		ok, err := g.begin(Black)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if !ok {
+			continue
+		}
+		g.DrawTo(rt, Black, body)
+		if _, err := g.end(false); err != nil {
+			t.Fatalf("end: %v", err)
+		}
+	}
+	img, err := rt.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	return rt, img
+}
+
+// TestRenderTextureFormats draws the same white rectangle into a surface
+// of each colour format and reads each one back.
+func TestRenderTextureFormats(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1})
+	white := func() { g.FillRect(16, 16, 32, 32, White) }
+	cases := []struct {
+		name string
+		opts RenderTextureOptions
+	}{
+		{"screen", RenderTextureOptions{}},
+		{"hdr", RenderTextureOptions{Format: ColorHDR}},
+		{"mask", RenderTextureOptions{Format: ColorMask}},
+		{"no depth", RenderTextureOptions{NoDepth: true}},
+		{"mask without depth", RenderTextureOptions{Format: ColorMask, NoDepth: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, img := drawIntoTexture(t, g, c.opts, white)
+			if v := img.RGBAAt(32, 32).R; v < 200 {
+				t.Errorf("centre red %d: the rectangle should be white", v)
+			}
+			if v := img.RGBAAt(2, 2).R; v > 20 {
+				t.Errorf("corner red %d: outside the rectangle should be black", v)
+			}
+		})
+	}
+}
+
+// TestRenderTextureNoDepth checks that leaving out the surface's depth
+// buffer still draws a 3D scene, which has a depth buffer of its own.
+func TestRenderTextureNoDepth(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1})
+	cv, ci := CubeMesh()
+	cube, err := g.NewMesh(cv, ci)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cube.Destroy()
+	scene := func() {
+		g.SetCamera(Camera{Position: lin.V3(0, 0, 2.5)})
+		g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: Color{3, 3, 3, 1}, Ambient: Color{0.2, 0.2, 0.2, 1}})
+		g.DrawMesh(cube, Material{BaseColor: Color{1, 0, 0, 1}, Roughness: 1}, lin.Identity())
+	}
+	_, img := drawIntoTexture(t, g, RenderTextureOptions{NoDepth: true}, scene)
+	if c := img.RGBAAt(32, 32); c.R < 150 || c.G > 80 {
+		t.Errorf("centre %v: expected the red cube", c)
+	}
+}
+
+// TestRenderTextureReadDepth reads back the depth a 3D scene left in a
+// render texture: nearer where the cube stands than where it does not.
+func TestRenderTextureReadDepth(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	g.SetPost(PostSettings{Exposure: 1, Saturation: 1, Contrast: 1})
+	cv, ci := CubeMesh()
+	cube, err := g.NewMesh(cv, ci)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cube.Destroy()
+	rt, _ := drawIntoTexture(t, g, RenderTextureOptions{}, func() {
+		g.SetCamera(Camera{Position: lin.V3(0, 0, 2.5)})
+		g.SetLight(Light{Direction: lin.V3(0, 0, -1), Color: Color{3, 3, 3, 1}})
+		g.DrawMesh(cube, Material{BaseColor: White, Roughness: 1}, lin.Identity())
+	})
+	depth, err := rt.ReadDepth()
+	if err != nil {
+		t.Fatalf("ReadDepth: %v", err)
+	}
+	if len(depth) != 64*64 {
+		t.Fatalf("ReadDepth gave %d values, want %d", len(depth), 64*64)
+	}
+	centre, corner := depth[32*64+32], depth[2*64+2]
+	if centre <= 0 || centre >= 1 {
+		t.Errorf("centre depth %v: the cube should lie between the planes", centre)
+	}
+	if corner < 0.999 {
+		t.Errorf("corner depth %v: nothing was drawn there, so it should be the far plane", corner)
+	}
+	if centre >= corner {
+		t.Errorf("centre depth %v should be nearer than the corner %v", centre, corner)
+	}
+}

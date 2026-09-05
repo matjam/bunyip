@@ -6,6 +6,7 @@ import (
 
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
+	"github.com/matjam/bunyip/lin"
 )
 
 // RenderTexture is an offscreen surface that draws like the screen and is
@@ -16,7 +17,8 @@ type RenderTexture struct {
 	target        *render.Target
 	scene         *sceneTargets
 	queue         *drawQueue
-	out           outKey // the surface's colour format, depth and samples
+	out           outKey      // the surface's colour format, depth and samples
+	format        ColorFormat // what Read has to decode
 	g             *Graphics
 }
 
@@ -102,7 +104,7 @@ func (g *Graphics) NewRenderTextureOptions(width, height int, opts RenderTexture
 		depthFormat = vk.VK_FORMAT_UNDEFINED
 	}
 	samples := g.r.Device.SampleCount(opts.Samples)
-	rt := &RenderTexture{Width: width, Height: height, g: g}
+	rt := &RenderTexture{Width: width, Height: height, format: opts.Format, g: g}
 	// The window's own format and a single sample are the zero key, so a
 	// plain render texture draws with the screen's pipelines.
 	rt.out = outKey{noDepth: opts.NoDepth, samples: sampleKey(samples)}
@@ -146,8 +148,51 @@ func (g *Graphics) NewRenderTextureOptions(width, height int, opts RenderTexture
 func (rt *RenderTexture) Texture() *Texture { return rt.tex }
 
 // Read copies the last rendered image back from the GPU, after waiting
-// for it to finish: thumbnails, saved portraits, tests.
-func (rt *RenderTexture) Read() (*image.RGBA, error) { return rt.tex.Read() }
+// for it to finish: thumbnails, saved portraits, tests. Whatever the
+// surface's colour format, the result is an ordinary image: a ColorHDR
+// surface is encoded the way the screen is, so values above 1 clip, and a
+// ColorMask surface reads as grey, its one channel copied into red, green
+// and blue alike.
+func (rt *RenderTexture) Read() (*image.RGBA, error) {
+	switch rt.format {
+	case ColorHDR:
+		return rt.readHDR()
+	case ColorMask:
+		return rt.readMask()
+	}
+	return rt.tex.Read()
+}
+
+// readHDR converts a half-float surface into an ordinary image, encoded
+// like the screen's format.
+func (rt *RenderTexture) readHDR() (*image.RGBA, error) {
+	pix, err := rt.g.r.Device.ReadImageRaw(rt.target.Color, 8)
+	if err != nil {
+		return nil, err
+	}
+	out := image.NewRGBA(image.Rect(0, 0, rt.Width, rt.Height))
+	for i := range rt.Width * rt.Height {
+		for c := range 3 {
+			out.Pix[i*4+c] = linearToSRGB8(getF16(pix[i*8+c*2:]))
+		}
+		out.Pix[i*4+3] = uint8(lin.Clamp(getF16(pix[i*8+6:])*255+0.5, 0, 255))
+	}
+	return out, nil
+}
+
+// readMask spreads a single-channel surface over the three colour
+// channels, so it saves as a readable grey image.
+func (rt *RenderTexture) readMask() (*image.RGBA, error) {
+	pix, err := rt.g.r.Device.ReadImageRaw(rt.target.Color, 1)
+	if err != nil {
+		return nil, err
+	}
+	out := image.NewRGBA(image.Rect(0, 0, rt.Width, rt.Height))
+	for i, v := range pix {
+		out.Pix[i*4], out.Pix[i*4+1], out.Pix[i*4+2], out.Pix[i*4+3] = v, v, v, 255
+	}
+	return out, nil
+}
 
 // ReadDepth copies the depth the last 3D scene drawn into this texture
 // left behind, one float per pixel, row-major from the top-left corner:
