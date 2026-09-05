@@ -358,14 +358,26 @@ gr.AddPoint(gfx.PointLight{Position: lampPos, Range: 14,
 	Color: gfx.Color{R: 6, G: 5.4, B: 4, A: 1}, Shadows: true})
 ```
 
-Plan around the limits. A frame keeps its first `MaxLights` (32) point
+Lights are clustered. The view is cut into a grid of sixteen tiles
+across, nine down and twenty-four slices into the distance, spaced
+exponentially, and each frame's lights are sorted into the clusters they
+reach. A fragment loops over its own cluster's lights alone, so a scene
+can add hundreds without every one costing every pixel, and a light with
+a small range costs only the part of the view it lights. Give a light
+the smallest `Range` that looks right: the range is what decides how
+much of the grid it lands in.
+
+Plan around the limits. A frame keeps its first `MaxLights` (1024) point
 and spot lights, gives shadow maps to the first `MaxSpotShadows` (4)
 spot lights that ask and cube maps to the first `MaxPointShadows` (4)
-point lights; the rest shine without. Sort by distance to the camera and
-add the nearest first; `FrameStats.LightsDropped` counts the lights a
-frame refused, so a scene can tell when it went over. The cascades, the
-spot maps and the cube faces all share one depth atlas, so shadows cost
-one texture binding however many lights cast them.
+point lights; the rest shine without. One cluster keeps 32 lights, so a
+light past that in a crowded part of the view does not light it. Sort by
+distance to the camera and add the nearest first;
+`FrameStats.LightsDropped` counts the lights a frame refused and
+`FrameStats.Lights` the ones it kept, so a scene can tell when it went
+over. The cascades, the spot maps and the cube faces all share one depth
+atlas, so shadows cost one texture binding however many lights cast
+them.
 
 For image-based lighting, `NewEnvironment` turns an equirectangular
 panorama into a light probe and `NewEnvironmentHDR` does the same for a
@@ -627,9 +639,10 @@ Draw calls cost more than triangles. A high `Draws3D` next to a low
 `Instances` means batching is breaking. Merge static geometry with
 `AppendMesh` or share a material across a crowd to collapse the calls.
 After that, look at the costs in order: shadows, where halving
-`ShadowDistance` doubles the effective resolution at no cost and every
-shadowed spot light is another pass; lights, which are per-fragment work
-over the meshes they reach; transmission, which copies the scene before
+`ShadowDistance` doubles the effective resolution at no cost, every
+shadowed spot light is another pass and every shadowed point light is
+six; lights, which are per-fragment work over the part of the view their
+range reaches; transmission, which copies the scene before
 drawing transmissive meshes; post, where ambient occlusion and bloom are
 full-screen passes a zero turns off; and render textures, which are
 whole extra frames.

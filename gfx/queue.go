@@ -29,6 +29,9 @@ type drawQueue struct {
 	light        Light
 	hasCam       bool
 	points       []pointLight
+	clusters     clusterGrid // this frame's lights, sorted into the view's clusters
+	spotSlots    []int32     // each light's spot shadow map, or -1
+	pointSlots   []int32     // each light's cube shadow map slot, or -1
 	uniforms     *render.UniformSets
 	inst         instanceStream
 	joints       []lin.Mat4 // joint matrices for skinned draws this frame
@@ -109,7 +112,7 @@ func (q *drawQueue) destroy() {
 func (g *Graphics) newQueue(w, h float32) (*drawQueue, error) {
 	q := &drawQueue{light: defaultLight(), xform: lin.Identity2(), pixelW: w}
 	var err error
-	if q.uniforms, err = g.r.Device.NewUniformSets(frameUniformsSize, meshStages); err != nil {
+	if q.uniforms, err = g.r.Device.NewFrameSets(frameUniformsSize, frameStorage(), meshStages); err != nil {
 		return nil, err
 	}
 	if q.jointBuf, err = g.r.Device.NewStorageSets(64*128, vk.VK_SHADER_STAGE_VERTEX_BIT); err != nil {

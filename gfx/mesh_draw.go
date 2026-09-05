@@ -13,10 +13,14 @@ import (
 )
 
 const (
-	hdrFormat       = vk.VK_FORMAT_R16G16B16A16_SFLOAT
-	shadowMapSize   = 2048
-	shadowCascades  = 3
-	maxPointLights  = 32
+	hdrFormat      = vk.VK_FORMAT_R16G16B16A16_SFLOAT
+	shadowMapSize  = 2048
+	shadowCascades = 3
+	// maxPointLights is how many point and spot lights a frame keeps.
+	// They live in a storage buffer and are found through the cluster
+	// grid, so what a frame costs follows the lights each part of the
+	// view holds rather than the number the scene added.
+	maxPointLights  = 1024
 	maxSpotShadows  = 4    // spot lights with shadow maps in one frame
 	spotShadowSize  = 1024 // pixels across a spot light's shadow map
 	maxPointShadows = 4    // point lights with cube shadow maps in one frame
@@ -152,6 +156,18 @@ const meshStages = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_B
 
 var frameUniformsSize = vk.VkDeviceSize(unsafe.Sizeof(frameUniforms{}))
 
+// frameStorage is the size of each storage buffer in the per-frame set,
+// in binding order after the frame block: the light records, the cluster
+// table and the light index list. They are fixed sizes, so a frame
+// writes them without the device wait a resize would cost.
+func frameStorage() []vk.VkDeviceSize {
+	return []vk.VkDeviceSize{
+		vk.VkDeviceSize(maxPointLights * lightRecordSize),
+		vk.VkDeviceSize(2 * clusterCount * 4),
+		vk.VkDeviceSize(clusterIndices * 4),
+	}
+}
+
 func defaultLight() Light {
 	return Light{Direction: lin.V3(-0.5, -1, -0.3), Color: Color{1, 1, 1, 1}, Ambient: Color{0.15, 0.15, 0.18, 1}}
 }
@@ -182,11 +198,8 @@ type frameUniforms struct {
 	params        lin.Vec4
 	splits        lin.Vec4
 	radii         lin.Vec4
-	pointPos      [maxPointLights]lin.Vec4
-	pointColor    [maxPointLights]lin.Vec4 // w = cos of a spot's inner cone, 2 for a point light
-	spotDir       [maxPointLights]lin.Vec4 // w = cos of a spot's outer cone, -2 for a point light
-	sh            [9]lin.Vec4              // environment irradiance
-	env           lin.Vec4                 // intensity, mip count, kind (1 image, 2 procedural sky)
+	sh            [9]lin.Vec4 // environment irradiance
+	env           lin.Vec4    // intensity, mip count, kind (1 image, 2 procedural sky)
 	invViewProj   lin.Mat4
 	horizon       lin.Vec4                 // sky at the horizon, w = air (1 - vacuum)
 	skyUp         lin.Vec4                 // up axis, w = stars
@@ -195,10 +208,13 @@ type frameUniforms struct {
 	fog           lin.Vec4                 // fog colour, w = exponential density
 	fogRange      lin.Vec4                 // linear start, end; ground fog height, falloff
 	spotViewProj  [maxSpotShadows]lin.Mat4 // each shadowed spot light's projection
-	spotInfo      [maxPointLights]lin.Vec4 // x = spot map index or -1, y = range, z = cube map slot or -1
 	// pointViewProj holds the six face projections of each shadowed
 	// point light, slot by slot, in the order of pointFaces.
 	pointViewProj [maxPointShadows * 6]lin.Mat4
+	// cluster is the cluster grid's mapping: tile width and height in
+	// pixels, then the scale and bias from a view depth to a slice. The
+	// lights themselves are in the storage buffers of the same set.
+	cluster lin.Vec4
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -216,7 +232,7 @@ func (g *Graphics) initMeshPass() error {
 	mp.matSets = map[materialKey]vk.VkDescriptorSet{}
 	dev := g.r.Device
 	var err error
-	layout, err := dev.NewUniformSets(frameUniformsSize, meshStages)
+	layout, err := dev.NewFrameSets(frameUniformsSize, frameStorage(), meshStages)
 	if err != nil {
 		return err
 	}
@@ -413,8 +429,8 @@ func (g *Graphics) SetLight(l Light) { g.cur.light = l }
 
 // AddPointLight adds a light shining from a point in every direction
 // for this frame, fading to nothing rng units away: torches, muzzle
-// flashes, glowing ore. A frame keeps its first 32 point and spot lights
-// (MaxLights); add the nearest ones first when a scene has more.
+// flashes, glowing ore. A frame keeps its first 1024 point and spot
+// lights (MaxLights); add the nearest ones first when a scene has more.
 func (g *Graphics) AddPointLight(pos lin.Vec3, c Color, rng float32) {
 	g.AddPoint(PointLight{Position: pos, Color: c, Range: rng})
 }
@@ -444,7 +460,11 @@ func (g *Graphics) AddPoint(p PointLight) {
 	g.stats.Lights++
 }
 
-// MaxLights is how many point and spot lights a frame keeps.
+// MaxLights is how many point and spot lights a frame keeps. The lights
+// are sorted into a grid of clusters over the view, and a fragment is
+// lit by its own cluster's lights alone, so a scene may add hundreds
+// without every one costing every pixel. A cluster keeps 32 lights, and
+// a light past that in a crowded part of the view does not light it.
 const MaxLights = maxPointLights
 
 // AddSpotLight adds a light shining from a point along dir in a cone,
@@ -811,11 +831,13 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// writeUniforms fills the queue's frame block for the slot. It runs
-// after prepareDraws, whose caster bounds the cascades need, and keeps
-// the cascade matrices for the shadow pass to cull against.
-func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
+// writeUniforms fills the queue's frame block for the slot and uploads
+// the frame's lights and cluster grid. It runs after prepareDraws, whose
+// caster bounds the cascades need, and keeps the cascade matrices for
+// the shadow pass to cull against.
+func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32) error {
 	q.ensureCamera()
+	aspect := float32(extent.Width) / float32(extent.Height)
 	l := q.light
 	strength := l.ShadowStrength
 	if strength == 0 {
@@ -841,26 +863,11 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		sun:           l.Direction.Norm().Mul(-1).Vec4(sky.SunSize),
 		sunColor:      lin.V4(sky.Sun.R, sky.Sun.G, sky.Sun.B, 1),
 	}
-	for i, p := range q.points {
-		u.pointPos[i] = p.pos.Vec4(p.rng)
-		u.pointColor[i] = lin.V4(p.color.R, p.color.G, p.color.B, 2)
-		u.spotDir[i] = lin.V4(0, 0, 0, -2)
-		u.spotInfo[i] = lin.V4(-1, p.rng, -1, 0)
-		if p.spot {
-			u.pointColor[i].W = p.cosInner
-			u.spotDir[i] = p.dir.Vec4(p.cosOuter)
-		}
-	}
 	lights, spotMats := q.spotShadows()
-	for k, i := range lights {
-		u.spotViewProj[k] = spotMats[k]
-		u.spotInfo[i].X = float32(k)
-	}
+	copy(u.spotViewProj[:], spotMats)
 	points, pointMats := q.pointShadows()
 	copy(u.pointViewProj[:], pointMats)
-	for k, i := range points {
-		u.spotInfo[i].Z = float32(k)
-	}
+	u.cluster = q.clusters.clusterParams(float32(extent.Width), float32(extent.Height))
 	if f := l.Fog; f.End > f.Start || f.Density > 0 {
 		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
 		u.fogRange = lin.V4(f.Start, f.End, f.Height, f.HeightFalloff)
@@ -878,7 +885,38 @@ func (q *drawQueue) writeUniforms(slot int, aspect, time float32) error {
 		u.env = lin.V4(1, 0, 2, 0)
 	}
 	u.invViewProj = u.viewProj.Inverse()
-	return q.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u)))
+	if err := q.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u))); err != nil {
+		return err
+	}
+	return q.writeLights(slot, aspect, lights, points)
+}
+
+// writeLights builds the frame's light records and cluster grid and
+// uploads them to the slot's storage buffers, which are part of the same
+// per-frame set as the frame block. spots and cubes name the lights that
+// got a spot map and a cube map, so a shadowed light's map travels with
+// its record.
+func (q *drawQueue) writeLights(slot int, aspect float32, spots, cubes []int) error {
+	n := len(q.points)
+	q.spotSlots = slices.Grow(q.spotSlots[:0], n)[:n]
+	q.pointSlots = slices.Grow(q.pointSlots[:0], n)[:n]
+	for i := range n {
+		q.spotSlots[i], q.pointSlots[i] = -1, -1
+	}
+	for k, i := range spots {
+		q.spotSlots[i] = int32(k)
+	}
+	for k, i := range cubes {
+		q.pointSlots[i] = int32(k)
+	}
+	q.clusters.build(q.points, q.spotSlots, q.pointSlots, q.camera, aspect)
+	if err := q.uniforms.WriteStorage(slot, 0, q.clusters.lightBytes()); err != nil {
+		return err
+	}
+	if err := q.uniforms.WriteStorage(slot, 1, q.clusters.tableBytes()); err != nil {
+		return err
+	}
+	return q.uniforms.WriteStorage(slot, 2, q.clusters.indexBytes())
 }
 
 func boolFloat(b bool) float32 {
@@ -1117,7 +1155,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err != nil {
 		return err
 	}
-	if err := q.writeUniforms(fr.Slot, aspect, g.time); err != nil {
+	if err := q.writeUniforms(fr.Slot, t.extent, g.time); err != nil {
 		return err
 	}
 	seen, seenBlended := opaque.slice(0, q.visOpaque), blended.slice(0, q.visBlended)

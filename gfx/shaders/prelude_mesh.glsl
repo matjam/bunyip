@@ -9,9 +9,9 @@
 //
 // Lighting is metallic-roughness PBR: Cook-Torrance with GGX
 // distribution, Schlick Fresnel and Smith-GGX visibility; one shadowed
-// directional light, up to eight point lights, image-based or hemisphere
-// ambient, plus clearcoat, sheen and subsurface lobes when a material
-// asks for them.
+// directional light, the point and spot lights of the fragment's own
+// cluster, image-based or hemisphere ambient, plus clearcoat, sheen and
+// subsurface lobes when a material asks for them.
 // Set 0 keeps images and samplers apart: thirteen sampled images and one
 // array of four samplers shared by every material (linear repeat, linear
 // clamp, nearest repeat, nearest clamp). A texture's own filtering and
@@ -49,9 +49,6 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 params;       // x = shadow map size, y = shadows enabled, z = point light count, w = time
     vec4 splits;       // view-space distances where cascades end
     vec4 radii;        // half-size of each cascade's orthographic box
-    vec4 pointPos[32];   // xyz, w = range
-    vec4 pointColor[32]; // rgb, w = cos of a spot light's inner cone (2 for a point light)
-    vec4 spotDir[32];    // xyz a spot light's direction, w = cos of its outer cone (-2 for a point light)
     vec4 sh[9];        // environment irradiance as spherical harmonics
     vec4 env;          // x intensity, y mip count, z = 1 when an environment is set
     mat4 invViewProj;
@@ -62,9 +59,28 @@ layout(set = 1, binding = 0) uniform Frame {
     vec4 fog;          // rgb the fog colour, w = exponential density
     vec4 fogRange;     // x start, y end of linear fog; z height, w falloff of ground fog
     mat4 spotViewProj[4];  // shadowed spot lights' projections
-    vec4 spotInfo[32];     // x = a light's spot map index or -1, y = range, z = its cube map slot or -1
     mat4 pointViewProj[24]; // four shadowed point lights, six faces each
+    vec4 cluster;      // xy tile size in pixels, zw the depth slice's scale and bias
 } frame;
+
+// The frame's point and spot lights, and the cluster grid that says
+// which of them reach a fragment: sixteen tiles across the view, nine
+// down and twenty-four slices into the distance, the slices spaced
+// exponentially. cells holds each cluster's first index and count in
+// lightIndex, which holds indices into lights. gfx/cluster.go fills all
+// three each frame.
+struct LightData {
+    vec4 posRange; // xyz position, w range
+    vec4 color;    // rgb colour, w = cos of a spot's inner cone (2 for a point light)
+    vec4 dir;      // xyz a spot's direction, w = cos of its outer cone (-2 for a point light)
+    vec4 info;     // x = spot map index or -1, y = cube map slot or -1
+};
+layout(std430, set = 1, binding = 1) readonly buffer Lights { LightData lights[]; };
+layout(std430, set = 1, binding = 2) readonly buffer Clusters { uvec2 cells[]; };
+layout(std430, set = 1, binding = 3) readonly buffer LightIndex { uint lightIndex[]; };
+const uint CLUSTER_X = 16u;
+const uint CLUSTER_Y = 9u;
+const uint CLUSTER_Z = 24u;
 
 // One atlas holds every shadow map: the three cascades of 2048 in three
 // quadrants of the square top, four spot maps of 1024 in the fourth, and
@@ -390,10 +406,21 @@ vec3 lobes(Surface s, vec3 n, vec3 v, vec3 l, vec3 radiance) {
     return color;
 }
 
+// clusterAt is the cluster this fragment sits in: its tile across the
+// view and its slice into the distance.
+uint clusterAt() {
+    uvec2 tile = uvec2(max(gl_FragCoord.xy, vec2(0.0)) / max(frame.cluster.xy, vec2(1.0)));
+    tile = min(tile, uvec2(CLUSTER_X - 1u, CLUSTER_Y - 1u));
+    float slice = log2(max(vViewDepth, 1e-4)) * frame.cluster.z + frame.cluster.w;
+    uint z = uint(clamp(slice, 0.0, float(CLUSTER_Z - 1u)));
+    return tile.x + tile.y * CLUSTER_X + z * CLUSTER_X * CLUSTER_Y;
+}
+
 vec3 ambient(Surface s, vec3 n, vec3 v);
 
 // light runs the engine's lighting over a surface: the shadowed
-// directional light, the point lights and the ambient term.
+// directional light, the lights of the fragment's own cluster, and the
+// ambient term.
 vec3 light(Surface s) {
     vec3 n = normalize(s.normal);
     vec3 v = s.viewDir;
@@ -401,26 +428,27 @@ vec3 light(Surface s) {
     float shadow = mix(1.0, shadowFactor(n, l), frame.lightColor.w);
     vec3 color = lobes(s, n, v, l, frame.lightColor.rgb * shadow);
 
-    int count = int(frame.params.z);
-    for (int i = 0; i < count; i++) {
-        vec3 d = frame.pointPos[i].xyz - s.worldPos;
+    uvec2 cell = cells[clusterAt()];
+    for (uint c = 0u; c < cell.y; c++) {
+        LightData ld = lights[lightIndex[cell.x + c]];
+        vec3 d = ld.posRange.xyz - s.worldPos;
         float dist = length(d);
-        float range = max(frame.pointPos[i].w, 1e-3);
+        float range = max(ld.posRange.w, 1e-3);
         float att = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
         att *= att / max(dist * dist, 1e-3);
-        float cone = frame.spotDir[i].w;
+        float cone = ld.dir.w;
         if (cone > -1.5) {
             // A spot light: full inside the inner cone, fading to nothing
             // at the outer one.
-            float cd = dot(-d / dist, frame.spotDir[i].xyz);
-            att *= smoothstep(cone, max(frame.pointColor[i].w, cone + 1e-3), cd);
-            int k = int(frame.spotInfo[i].x);
+            float cd = dot(-d / dist, ld.dir.xyz);
+            att *= smoothstep(cone, max(ld.color.w, cone + 1e-3), cd);
+            int k = int(ld.info.x);
             if (k >= 0 && att > 0.0) att *= spotShadowFactor(k, n, d / dist, dist, cone);
         } else {
-            int slot = int(frame.spotInfo[i].z);
+            int slot = int(ld.info.y);
             if (slot >= 0 && att > 0.0) att *= pointShadowFactor(slot, n, d / dist, dist);
         }
-        color += lobes(s, n, v, d / dist, frame.pointColor[i].rgb * att);
+        color += lobes(s, n, v, d / dist, ld.color.rgb * att);
     }
     return color + ambient(s, n, v) * s.occlusion;
 }
