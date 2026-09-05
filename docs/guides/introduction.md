@@ -51,7 +51,9 @@ a window, so the whole engine is testable on a build machine.
   tree to keep in step with the game.
 - **Self-verifying examples.** Every example takes `-seconds` and
   `-shot`, runs unattended to a screenshot, and the renderer's tests
-  read pixels back from a headless surface.
+  read pixels back from a headless surface. Each one also has a
+  [walkthrough](../examples/index.html) that quotes the whole program and
+  explains it section by section.
 
 ## The shape of a game
 
@@ -106,3 +108,8 @@ need before its API reference.
    [animation](animation.html), [the interface](ui.html).
 4. **Simulation**: [physics](physics.html), [orbits](space.html).
 5. **Audio**: [audio](audio.html).
+
+Alongside them are the [example programs](../examples/index.html), one
+walkthrough per directory under `examples/`. A guide explains an area;
+a walkthrough reads one complete program in that area line by line, so
+it is the fastest way to see how the pieces fit together.

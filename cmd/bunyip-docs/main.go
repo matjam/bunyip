@@ -1,8 +1,16 @@
 // Command bunyip-docs renders the module's documentation as a static
-// website: guides written in Markdown, every package's godoc with its
-// examples, a symbol search, and links back to the source on GitHub.
+// website: guides written in Markdown, a walkthrough of every example
+// program, every package's godoc with its examples, a symbol search, and
+// links back to the source on GitHub.
 //
 //	go run ./cmd/bunyip-docs -out site
+//
+// The example walkthroughs are the Markdown files in docs/examples, one
+// per directory under examples, with the same front matter as a guide
+// plus an example key naming the directory. A screenshot beside a
+// walkthrough, docs/examples/<name>.png, is shown at the top of its
+// page. The pages of examples/ are not rendered as packages; the
+// walkthroughs document them instead.
 package main
 
 import (
@@ -50,13 +58,12 @@ var groups = []struct {
 	Title string
 	Paths []string
 }{
-	{"Engine", []string{"bunyip", "input"}},
+	{"Engine", []string{"bunyip", "input", "console"}},
 	{"Graphics", []string{"gfx", "anim", "ui", "particle", "tiled", "gltf", "lin"}},
-	{"Simulation", []string{"ecs", "phys", "orbit", "orbit/sol"}},
+	{"Simulation", []string{"ecs", "phys", "phys/soft", "orbit", "orbit/sol"}},
 	{"Audio", []string{"audio", "audio/tracker"}},
 	{"Services", []string{"asset", "save", "locale", "rng", "timer", "tween", "grid", "network"}},
 	{"Tools", []string{"cmd/"}},
-	{"Example programs", []string{"examples/"}},
 }
 
 // guideGroups orders the guide sections, from a guide's `group` front
@@ -67,9 +74,10 @@ var guideGroups = []string{"Start", "Engine", "Graphics", "Simulation", "Audio"}
 func main() {
 	out := flag.String("out", "site", "output directory")
 	guides := flag.String("guides", "docs/guides", "directory of Markdown guides")
+	walkthroughs := flag.String("examples", "docs/examples", "directory of Markdown example walkthroughs")
 	base := flag.String("base", siteURL, "the URL the site is published at, for the llms.txt index")
 	flag.Parse()
-	site, err := build(".", *guides)
+	site, err := build(".", *guides, *walkthroughs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bunyip-docs:", err)
 		os.Exit(1)
@@ -86,9 +94,12 @@ func main() {
 type Site struct {
 	Guides      []*Guide
 	GuideGroups []GuideGroup
+	Programs    []*Program
 	Packages    []*Package
 	Groups      []Group
 	Base        string // the published URL, with a trailing slash
+	guideDir    string
+	exampleDir  string // the directory of Markdown walkthroughs
 	pages       map[string][]byte
 	symbols     []symbol
 }
@@ -115,6 +126,28 @@ type Guide struct {
 }
 
 type heading struct{ ID, Text string }
+
+// Program is one example program: the walkthrough in docs/examples, the
+// screenshot beside it, and the links to the source. An example with no
+// walkthrough yet is still listed, with Missing set.
+type Program struct {
+	Title, Name, Summary string
+	Body                 template.HTML
+	Markdown             string // the source, with the front matter replaced by a heading
+	Headings             []heading
+	Files                []string // the .go files of examples/<name>
+	Shot                 bool     // docs/examples/<name>.png exists
+	Missing              bool     // no walkthrough is written yet
+}
+
+// URL is the walkthrough's page, relative to the site root.
+func (p *Program) URL() string { return "examples/" + p.Name + ".html" }
+
+// MarkdownURL is the walkthrough's Markdown page, beside the HTML one.
+func (p *Program) MarkdownURL() string { return "examples/" + p.Name + ".md" }
+
+// SourceURL is the example's directory on GitHub.
+func (p *Program) SourceURL() string { return repo + "/tree/main/examples/" + p.Name }
 
 // Package is one rendered package.
 type Package struct {
@@ -184,12 +217,15 @@ type symbol struct {
 	Kind string `json:"kind"`
 }
 
-func build(root, guideDir string) (*Site, error) {
-	site := &Site{pages: map[string][]byte{}}
+func build(root, guideDir, exampleDir string) (*Site, error) {
+	site := &Site{pages: map[string][]byte{}, guideDir: guideDir, exampleDir: exampleDir}
 	if err := site.loadPackages(root); err != nil {
 		return nil, err
 	}
 	if err := site.loadGuides(guideDir); err != nil {
+		return nil, err
+	}
+	if err := site.loadPrograms(filepath.Join(root, "examples"), exampleDir); err != nil {
 		return nil, err
 	}
 	site.group()
@@ -197,7 +233,9 @@ func build(root, guideDir string) (*Site, error) {
 }
 
 // loadPackages walks the module for Go packages outside internal and
-// testdata directories.
+// testdata directories. The examples are skipped: they are documented by
+// the walkthroughs in docs/examples rather than as packages, and their
+// unexported helpers do not belong in the symbol index.
 func (s *Site) loadPackages(root string) error {
 	var dirs []string
 	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -206,7 +244,7 @@ func (s *Site) loadPackages(root string) error {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if p != root && (strings.HasPrefix(name, ".") || name == "internal" || name == "testdata" || name == "third_party" || name == "site" || name == "bin" || name == "docs") {
+			if p != root && (strings.HasPrefix(name, ".") || name == "internal" || name == "testdata" || name == "third_party" || name == "site" || name == "bin" || name == "docs" || name == "examples") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -554,6 +592,43 @@ func isBuiltinType(s string) bool {
 	return false
 }
 
+// newMarkdown builds the Markdown renderer the guides and the example
+// walkthroughs share.
+func newMarkdown() goldmark.Markdown {
+	return goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithParserOptions(mdparser.WithAutoHeadingID()),
+		goldmark.WithRendererOptions(ghtml.WithUnsafe()))
+}
+
+// frontMatter splits a leading block fenced by "---" lines off a
+// Markdown source and returns its keys with the body that follows. A
+// source with no such block comes back unchanged with no keys.
+func frontMatter(src string) (map[string]string, string) {
+	meta := map[string]string{}
+	if !strings.HasPrefix(src, "---\n") {
+		return meta, src
+	}
+	end := strings.Index(src[4:], "\n---")
+	if end < 0 {
+		return meta, src
+	}
+	for _, line := range strings.Split(src[4:4+end], "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		meta[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return meta, src[4+end+4:]
+}
+
+// markdownLinks points a page's internal links at the Markdown copies of
+// the pages they name, so the Markdown a language model reads stays
+// inside the Markdown site.
+func markdownLinks(body string) string {
+	body = strings.ReplaceAll(body, ".html)", ".md)")
+	return strings.ReplaceAll(body, ".html#", ".md#")
+}
+
 // loadGuides renders every Markdown file in dir; a leading front matter
 // block gives title, order and summary.
 func (s *Site) loadGuides(dir string) error {
@@ -561,8 +636,7 @@ func (s *Site) loadGuides(dir string) error {
 	if err != nil {
 		return fmt.Errorf("guides: %w", err)
 	}
-	md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithParserOptions(mdparser.WithAutoHeadingID()),
-		goldmark.WithRendererOptions(ghtml.WithUnsafe()))
+	md := newMarkdown()
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
@@ -572,29 +646,15 @@ func (s *Site) loadGuides(dir string) error {
 			return err
 		}
 		g := &Guide{Slug: strings.TrimSuffix(e.Name(), ".md"), Title: strings.TrimSuffix(e.Name(), ".md")}
-		body := string(raw)
-		if strings.HasPrefix(body, "---\n") {
-			end := strings.Index(body[4:], "\n---")
-			if end >= 0 {
-				for _, line := range strings.Split(body[4:4+end], "\n") {
-					k, v, _ := strings.Cut(line, ":")
-					v = strings.TrimSpace(v)
-					switch strings.TrimSpace(k) {
-					case "title":
-						g.Title = v
-					case "order":
-						g.Order, _ = strconv.Atoi(v)
-					case "summary":
-						g.Summary = v
-					case "group":
-						g.Group = v
-					}
-				}
-				body = body[4+end+4:]
-			}
+		meta, body := frontMatter(string(raw))
+		if v, ok := meta["title"]; ok {
+			g.Title = v
 		}
+		g.Order, _ = strconv.Atoi(meta["order"])
+		g.Summary = meta["summary"]
+		g.Group = meta["group"]
 		// The Markdown copy links to the Markdown pages.
-		g.Markdown = "# " + g.Title + "\n\n" + strings.TrimLeft(strings.ReplaceAll(body, ".html)", ".md)"), "\n")
+		g.Markdown = "# " + g.Title + "\n\n" + strings.TrimLeft(markdownLinks(body), "\n")
 		var buf bytes.Buffer
 		if err := md.Convert([]byte(body), &buf); err != nil {
 			return fmt.Errorf("%s: %w", e.Name(), err)
@@ -606,6 +666,80 @@ func (s *Site) loadGuides(dir string) error {
 	}
 	s.groupGuides()
 	return nil
+}
+
+// loadPrograms lists every example program, in alphabetical order, and
+// renders the walkthrough written for it. srcDir is the examples
+// directory of the module; docDir holds one Markdown walkthrough per
+// example, named for its directory. An example with no walkthrough is
+// still listed, so the site holds together while one is being written.
+func (s *Site) loadPrograms(srcDir, docDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return fmt.Errorf("examples: %w", err)
+	}
+	md := newMarkdown()
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		files, err := goFiles(filepath.Join(srcDir, name))
+		if err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			continue
+		}
+		p := &Program{Title: name, Name: name, Files: files}
+		if _, err := os.Stat(filepath.Join(docDir, name+".png")); err == nil {
+			p.Shot = true
+		}
+		raw, err := os.ReadFile(filepath.Join(docDir, name+".md"))
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			p.Missing = true
+			p.Summary = "the walkthrough for this example is not written yet"
+			p.Markdown = "# " + p.Title + "\n\n" + p.Summary + "\n"
+			s.Programs = append(s.Programs, p)
+			continue
+		}
+		meta, body := frontMatter(string(raw))
+		if v, ok := meta["title"]; ok {
+			p.Title = v
+		}
+		p.Summary = meta["summary"]
+		p.Markdown = "# " + p.Title + "\n\n" + strings.TrimLeft(markdownLinks(body), "\n")
+		var buf bytes.Buffer
+		if err := md.Convert([]byte(body), &buf); err != nil {
+			return fmt.Errorf("%s: %w", name+".md", err)
+		}
+		rendered := highlightFences(buf.String())
+		p.Body = template.HTML(rendered)
+		p.Headings = collectHeadings(rendered)
+		s.Programs = append(s.Programs, p)
+	}
+	sort.Slice(s.Programs, func(i, j int) bool { return s.Programs[i].Name < s.Programs[j].Name })
+	return nil
+}
+
+// goFiles lists the Go files of one directory, sorted, without
+// descending into subdirectories.
+func goFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // groupGuides sorts the guides into their sections: the sections in the
@@ -697,6 +831,31 @@ func (s *Site) group() {
 	}
 }
 
+// copyImages copies every file that is not Markdown from src into dst,
+// creating dst when src holds any. A missing src is not an error.
+func copyImages(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // write renders every page into dir.
 func (s *Site) write(dir string) error {
 	if err := os.MkdirAll(filepath.Join(dir, "pkg"), 0o755); err != nil {
@@ -712,30 +871,20 @@ func (s *Site) write(dir string) error {
 	if err := os.WriteFile(filepath.Join(dir, "symbols.json"), syms, 0o644); err != nil {
 		return err
 	}
-	// Images the guides refer to sit beside them in docs/guides and are
-	// copied next to the rendered pages, so a guide's relative link works
-	// both on the site and when the Markdown is read in the repository.
-	if entries, err := os.ReadDir("docs/guides"); err == nil {
-		if err := os.MkdirAll(filepath.Join(dir, "guides"), 0o755); err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if e.IsDir() || strings.HasSuffix(e.Name(), ".md") {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join("docs/guides", e.Name()))
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(filepath.Join(dir, "guides", e.Name()), data, 0o644); err != nil {
-				return err
-			}
-		}
+	// Images the pages refer to sit beside their Markdown, in docs/guides
+	// and docs/examples, and are copied next to the rendered pages, so a
+	// relative link works both on the site and when the Markdown is read
+	// in the repository.
+	if err := copyImages(s.guideDir, filepath.Join(dir, "guides")); err != nil {
+		return err
+	}
+	if err := copyImages(s.exampleDir, filepath.Join(dir, "examples")); err != nil {
+		return err
 	}
 	tmpl := template.Must(template.New("site").Funcs(template.FuncMap{
 		"depth": func(url string) string { return strings.Repeat("../", strings.Count(url, "/")) },
 		"short": shortName,
-	}).Parse(layoutTmpl + indexTmpl + guideTmpl + packageTmpl))
+	}).Parse(layoutTmpl + indexTmpl + guideTmpl + programTmpl + packageTmpl))
 	render := func(url, name string, data any) error {
 		var buf bytes.Buffer
 		if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
@@ -773,6 +922,24 @@ func (s *Site) write(dir string) error {
 		}
 		fmt.Fprintf(&full, "\n\n---\n\n%s", g.Markdown)
 	}
+	if len(s.Programs) > 0 {
+		if err := render("examples/index.html", "programIndex", page{Site: s, URL: "examples/index.html", Title: "Example programs", Programs: true, Markdown: "examples/index.md"}); err != nil {
+			return err
+		}
+		if err := writeText("examples/index.md", s.programIndexMarkdown()); err != nil {
+			return err
+		}
+	}
+	for _, p := range s.Programs {
+		if err := render(p.URL(), "program", page{Site: s, URL: p.URL(), Title: p.Title, Program: p, Markdown: p.MarkdownURL()}); err != nil {
+			return err
+		}
+		md := programMarkdown(p)
+		if err := writeText(p.MarkdownURL(), md); err != nil {
+			return err
+		}
+		fmt.Fprintf(&full, "\n\n---\n\n%s", md)
+	}
 	for _, p := range s.Packages {
 		if err := render(p.URL, "package", page{Site: s, URL: p.URL, Title: shortName(p.Rel), Package: p, Markdown: p.MarkdownURL()}); err != nil {
 			return err
@@ -807,6 +974,13 @@ func (s *Site) llmsIndex() string {
 			fmt.Fprintf(&b, "- [%s](%sguides/%s.md): %s\n", g.Title, s.Base, g.Slug, g.Summary)
 		}
 	}
+	if len(s.Programs) > 0 {
+		b.WriteString("\n## Example programs\n\n")
+		fmt.Fprintf(&b, "Every example runs headless to a screenshot; each walkthrough explains the whole program section by section. The list: %sexamples/index.md\n\n", s.Base)
+		for _, p := range s.Programs {
+			fmt.Fprintf(&b, "- [%s](%s%s): %s\n", p.Title, s.Base, p.MarkdownURL(), p.Summary)
+		}
+	}
 	for _, grp := range s.Groups {
 		fmt.Fprintf(&b, "\n## %s\n\n", grp.Title)
 		for _, p := range grp.Packages {
@@ -814,6 +988,31 @@ func (s *Site) llmsIndex() string {
 		}
 	}
 	return b.String()
+}
+
+// programIndexMarkdown lists every example with its summary.
+func (s *Site) programIndexMarkdown() string {
+	var b strings.Builder
+	b.WriteString("# Example programs\n\n")
+	b.WriteString("One directory per example under `examples/`. Every one takes `-seconds N` and `-shot file.png`, so a run verifies itself without anyone watching the screen, and every one has a walkthrough that explains its source section by section.\n\n")
+	for _, p := range s.Programs {
+		fmt.Fprintf(&b, "- [%s](%s.md): %s\n", p.Title, p.Name, p.Summary)
+	}
+	return b.String()
+}
+
+// programMarkdown renders one walkthrough as the Markdown page, with the
+// screenshot and the link to the source ahead of the body.
+func programMarkdown(p *Program) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n", p.Title)
+	if p.Shot {
+		fmt.Fprintf(&b, "![%s](%s.png)\n\n", p.Title, p.Name)
+	}
+	fmt.Fprintf(&b, "Source: [`examples/%s`](%s) (%s)\n\n", p.Name, p.SourceURL(), strings.Join(p.Files, ", "))
+	body := strings.TrimPrefix(p.Markdown, "# "+p.Title+"\n\n")
+	b.WriteString(body)
+	return strings.TrimSpace(b.String()) + "\n"
 }
 
 // packageMarkdown renders a package's reference as Markdown.
@@ -898,6 +1097,8 @@ type page struct {
 	Title    string
 	Markdown string // the same page as Markdown, relative to the site root
 	Guide    *Guide
+	Program  *Program
+	Programs bool // this is the list of example programs
 	Package  *Package
 }
 
@@ -933,6 +1134,10 @@ const layoutTmpl = `{{define "layout"}}<!doctype html>
 {{end}}{{range .Site.Groups}}<section><h4>{{.Title}}</h4><ul>
 {{range .Packages}}<li><a href="{{$.Root}}{{.URL}}"{{if $.Active .URL}} class="active"{{end}}>{{short .Rel}}</a></li>
 {{end}}</ul></section>
+{{end}}{{if .Site.Programs}}<section><h4>Example programs</h4><ul>
+<li><a href="{{.Root}}examples/index.html"{{if .Active "examples/index.html"}} class="active"{{end}}>All examples</a></li>
+{{range .Site.Programs}}<li><a href="{{$.Root}}{{.URL}}"{{if $.Active .URL}} class="active"{{end}}>{{.Title}}</a></li>
+{{end}}</ul></section>
 {{end}}</nav>
 <main class="content">
 {{template "body" .}}
@@ -942,7 +1147,7 @@ const layoutTmpl = `{{define "layout"}}<!doctype html>
 </html>{{end}}`
 
 const indexTmpl = `{{define "index"}}{{template "layout" .}}{{end}}
-{{define "body"}}{{if .Package}}{{template "packageBody" .}}{{else if .Guide}}{{template "guideBody" .}}{{else}}{{template "indexBody" .}}{{end}}{{end}}
+{{define "body"}}{{if .Package}}{{template "packageBody" .}}{{else if .Guide}}{{template "guideBody" .}}{{else if .Program}}{{template "programBody" .}}{{else if .Programs}}{{template "programIndexBody" .}}{{else}}{{template "indexBody" .}}{{end}}{{end}}
 {{define "indexBody"}}
 <div class="hero">
 <h1>Bunyip</h1>
@@ -959,6 +1164,11 @@ const indexTmpl = `{{define "index"}}{{template "layout" .}}{{end}}
 {{range .Site.GuideGroups}}<h3>{{.Title}}</h3><ul class="guide-list">
 {{range .Guides}}<li><a href="guides/{{.Slug}}.html">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
 {{end}}</ul>
+{{end}}{{if .Site.Programs}}<h2>Example programs</h2>
+<p>Every example runs headless to a screenshot, and every one has a <a href="examples/index.html">walkthrough</a> that explains its source section by section.</p>
+<ul class="guide-list">
+{{range .Site.Programs}}<li><a href="{{.URL}}">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
+{{end}}</ul>
 {{end}}<h2>Packages</h2>
 {{range .Site.Groups}}<h3>{{.Title}}</h3><table class="pkgs">
 {{range .Packages}}<tr><td><a href="{{.URL}}">{{short .Rel}}</a></td><td>{{.Synopsis}}</td></tr>
@@ -972,6 +1182,32 @@ const guideTmpl = `{{define "guide"}}{{template "layout" .}}{{end}}
 {{if .Guide.Headings}}<aside class="toc"><h4>On this page</h4><ul>{{range .Guide.Headings}}<li><a href="#{{.ID}}">{{.Text}}</a></li>{{end}}</ul></aside>{{end}}
 <h1>{{.Guide.Title}}</h1>
 {{.Guide.Body}}
+</article>
+{{end}}`
+
+const programTmpl = `{{define "program"}}{{template "layout" .}}{{end}}
+{{define "programBody"}}
+{{$p := .Program}}
+<article class="guide">
+{{if $p.Headings}}<aside class="toc"><h4>On this page</h4><ul>{{range $p.Headings}}<li><a href="#{{.ID}}">{{.Text}}</a></li>{{end}}</ul></aside>{{end}}
+<p class="crumbs">Example <code>examples/{{$p.Name}}</code></p>
+<h1>{{$p.Title}}</h1>
+{{if $p.Shot}}<p class="shot"><img src="{{$p.Name}}.png" alt="{{$p.Title}}"></p>{{end}}
+{{if $p.Missing}}<p>The walkthrough for this example is not written yet. Read the source until it is.</p>{{end}}
+{{$p.Body}}
+<h2 id="files">Source files</h2>
+<p class="files">{{range $p.Files}}<a href="` + repo + `/blob/main/examples/{{$p.Name}}/{{.}}">{{.}}</a> {{end}}</p>
+<p><a href="{{$p.SourceURL}}">The whole directory on GitHub</a></p>
+</article>
+{{end}}
+{{define "programIndex"}}{{template "layout" .}}{{end}}
+{{define "programIndexBody"}}
+<article class="guide">
+<h1>Example programs</h1>
+<p>One directory per example under <code>examples/</code>. Every one takes <code>-seconds N</code> and <code>-shot file.png</code>, so a run verifies itself without anyone watching the screen, and every one has a walkthrough that explains its source section by section.</p>
+<ul class="guide-list">
+{{range .Site.Programs}}<li><a href="{{.Name}}.html">{{.Title}}</a>{{if .Summary}} <span class="dim">— {{.Summary}}</span>{{end}}</li>
+{{end}}</ul>
 </article>
 {{end}}`
 

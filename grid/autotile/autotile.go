@@ -5,21 +5,29 @@
 // changed cell at a time with Cell. The package is pure logic: frames
 // are ints for gfx.Tilemap or anything else, and -1 means no tile.
 //
-// Four rule kinds cover the usual tilesets. Edge16 matches the four
-// edge neighbours and needs 16 tiles: walls, pipes, fences. Blob47
-// matches all eight neighbours, reduced to the 47 distinct cases: the
-// standard blob terrain set. Corner16 is the dual grid: each tile sits
-// on a corner between four cells and needs 16 tiles. Wang matches
-// terrain colours on tile edges, corners or both, for any number of
-// terrains meeting with proper transitions; tilesets authored in the
-// Tiled editor's terrain tool convert to it through the tiled package.
-// ExpandBlob composes the 47 blob tiles from a six-tile template so an
-// artist draws six tiles instead of 47.
+// Five rule kinds cover the usual tilesets. Edge16 matches the four
+// edge neighbours and needs 16 tiles: walls, pipes, fences. Edge64 is
+// its hexagonal counterpart, matching the six neighbours of a hexagon
+// with 64 tiles. Blob47 matches all eight neighbours, reduced to the 47
+// distinct cases: the standard blob terrain set. Corner16 is the dual
+// grid: each tile sits on a corner between four cells and needs 16
+// tiles. Wang matches terrain colours on tile edges, corners or both,
+// for any number of terrains meeting with proper transitions; tilesets
+// authored in the Tiled editor's terrain tool convert to it through the
+// tiled package. ExpandBlob composes the 47 blob tiles from a six-tile
+// template so an artist draws six tiles instead of 47.
 //
 // Directions follow Tiled's clockwise order from north: N, NE, E, SE,
-// S, SW, W, NW. All zero values are usable defaults: a Mapper with only
-// Rules set treats the map border as continuing each cell's terrain and
-// varies tile variants with seed zero.
+// S, SW, W, NW. A Mapper's Layout says where each direction's neighbour
+// lies: Square, hexagons in staggered rows or columns, hexagons in
+// axial coordinates, or an isometric diamond grid whose directions are
+// the tile's directions on screen. A hexagonal layout has six
+// neighbours and no diagonals, so it takes Edge64 or Wang rules; Blob47
+// and Corner16 need the eight neighbours of a square or isometric grid.
+//
+// All zero values are usable defaults: a Mapper with only Rules set
+// works on a square grid, treats the map border as continuing each
+// cell's terrain and varies tile variants with seed zero.
 package autotile
 
 import "sort"
@@ -44,6 +52,7 @@ type ruleKind int
 
 const (
 	kindEdge16 ruleKind = iota
+	kindEdge64
 	kindCorner16
 	kindBlob47
 	kindWang
@@ -71,6 +80,17 @@ type Rules struct {
 // empty.
 func Edge16(terrain int, frames [16]int) *Rules {
 	return maskRules(kindEdge16, terrain, frames[:])
+}
+
+// Edge64 builds rules that match the six neighbours of cells with the
+// given terrain id on a hexagonal layout. frames is indexed by a 6-bit
+// mask of connected neighbours, bit i being the i-th direction the
+// layout uses, clockwise: for the rows layouts north-east, east,
+// south-east, south-west, west and north-west, and for the columns
+// layouts north, north-east, south-east, south, south-west and
+// north-west. Frame -1 leaves a case empty.
+func Edge64(terrain int, frames [64]int) *Rules {
+	return maskRules(kindEdge64, terrain, frames[:])
 }
 
 // Corner16 builds dual-grid rules for cells with the given terrain id.
@@ -147,6 +167,9 @@ func (r *Rules) connected(neighbour, terrain int) bool {
 // continues each cell's own terrain, and variants are seeded with zero.
 type Mapper struct {
 	Rules *Rules
+	// Layout is the grid's shape, which says where each direction's
+	// neighbour lies. The zero value is Square.
+	Layout Layout
 	// Seed varies which variant each cell picks; the choice is a pure
 	// function of Seed and the cell position, so reapplying is stable.
 	Seed uint64
@@ -183,8 +206,9 @@ func (m *Mapper) Apply(w, h int, terrain func(x, y int) int, set func(x, y, fram
 }
 
 // Cell recomputes the cells a change at (x, y) can affect: the cell and
-// its eight neighbours, or the four surrounding corners for Corner16
-// rules. Call it after editing one cell instead of reapplying the map.
+// the neighbours the layout gives it, or the four surrounding corners
+// for Corner16 rules. Call it after editing one cell instead of
+// reapplying the map.
 func (m *Mapper) Cell(x, y, w, h int, terrain func(x, y int) int, set func(x, y, frame int)) {
 	if m.Rules == nil {
 		return
@@ -199,11 +223,13 @@ func (m *Mapper) Cell(x, y, w, h int, terrain func(x, y int) int, set func(x, y,
 		}
 		return
 	}
-	for cy := y - 1; cy <= y+1; cy++ {
-		for cx := x - 1; cx <= x+1; cx++ {
-			if cx >= 0 && cy >= 0 && cx < w && cy < h {
-				set(cx, cy, m.frame(cx, cy, w, h, terrain))
-			}
+	if x >= 0 && y >= 0 && x < w && y < h {
+		set(x, y, m.frame(x, y, w, h, terrain))
+	}
+	for _, d := range m.Layout.dirs() {
+		cx, cy := m.Layout.Neighbour(x, y, d)
+		if cx >= 0 && cy >= 0 && cx < w && cy < h {
+			set(cx, cy, m.frame(cx, cy, w, h, terrain))
 		}
 	}
 }
@@ -220,6 +246,13 @@ func (m *Mapper) at(x, y, w, h, own int, terrain func(x, y int) int) int {
 	return terrain(x, y)
 }
 
+// look reads the terrain of the cell one step from (x, y) in a
+// direction, through the layout and the border policy.
+func (m *Mapper) look(x, y, w, h, own, dir int, terrain func(x, y int) int) int {
+	nx, ny := m.Layout.Neighbour(x, y, dir)
+	return m.at(nx, ny, w, h, own, terrain)
+}
+
 // frame picks the frame for one cell under edge, blob or Wang rules.
 func (m *Mapper) frame(x, y, w, h int, terrain func(x, y int) int) int {
 	r := m.Rules
@@ -233,21 +266,30 @@ func (m *Mapper) frame(x, y, w, h int, terrain func(x, y int) int) int {
 	mask := 0
 	switch r.kind {
 	case kindEdge16:
-		for i, d := range []int{DirN, DirE, DirS, DirW} {
-			o := dirOffset[d]
-			if r.connected(m.at(x+o[0], y+o[1], w, h, t, terrain), t) {
+		for i, d := range [4]int{DirN, DirE, DirS, DirW} {
+			if r.connected(m.look(x, y, w, h, t, d, terrain), t) {
+				mask |= 1 << i
+			}
+		}
+	case kindEdge64:
+		for i, d := range m.Layout.dirs() {
+			if r.connected(m.look(x, y, w, h, t, d, terrain), t) {
 				mask |= 1 << i
 			}
 		}
 	case kindBlob47:
 		raw := uint8(0)
 		for d := range 8 {
-			o := dirOffset[d]
-			if r.connected(m.at(x+o[0], y+o[1], w, h, t, terrain), t) {
+			if r.connected(m.look(x, y, w, h, t, d, terrain), t) {
 				raw |= 1 << d
 			}
 		}
 		mask = BlobIndex(raw)
+	}
+	if mask >= len(r.slots) {
+		// Edge64 rules under a square layout, which has eight neighbours
+		// and so masks the frames do not cover.
+		return -1
 	}
 	return m.pick(x, y, r.slots[mask])
 }

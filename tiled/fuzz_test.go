@@ -49,6 +49,7 @@ func FuzzParseTileset(f *testing.F) {
 func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"width":2,"height":2,"tilewidth":16,"tileheight":16,"layers":[{"type":"tilelayer","name":"a","width":2,"height":2,"data":[1,2,3,4]}],"tilesets":[{"firstgid":1,"name":"t","tilewidth":16,"tileheight":16,"tilecount":4,"columns":2,"image":"t.png","imagewidth":32,"imageheight":32}]}`))
 	f.Add([]byte(`{"layers":[{"type":"tilelayer","encoding":"base64","compression":"zlib","data":"eJw="}]}`))
+	f.Add([]byte(`{"width":1,"height":1,"layers":[{"type":"tilelayer","name":"a","width":1,"height":1,"encoding":"base64","compression":"zstd","data":"KLUv/QQAIQAAAQAAAFFTyx8="}]}`))
 	f.Add([]byte(`{"layers":[{"type":"objectgroup","objects":[{"polygon":[{"x":0,"y":0}]}]}]}`))
 	f.Add([]byte(`{}`))
 	f.Add([]byte{})

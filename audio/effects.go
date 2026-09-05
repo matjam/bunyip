@@ -68,7 +68,10 @@ func (f *lowPass) process(c biquad, buf []float32) {
 
 // ReverbSettings describe a reverb, which voices feed through their Reverb
 // send. Zero RoomSize, Damping and Width take the defaults 0.5, 0.5 and 1;
-// a zero Wet turns the reverb off, so the zero value is no reverb.
+// a zero Wet turns the reverb off, so the zero value is no reverb. Every
+// field runs from 0 to 1 and values outside that are clamped when the
+// reverb uses them, because a room larger than 1 has feedback that never
+// decays.
 type ReverbSettings struct {
 	RoomSize float32 // 0..1, how long the tail rings
 	Damping  float32 // 0..1, how quickly highs die away
@@ -296,16 +299,25 @@ func newReverb(rate int) *reverb {
 
 func (r *reverb) set(s ReverbSettings) {
 	s = s.withDefaults()
-	feedback := s.RoomSize*0.28 + 0.7
-	damp := s.Damping * 0.4
+	// The comb feedback reaches 0.98 at a room size of 1. Sizes are
+	// clamped here rather than in the setter, because a feedback of one
+	// or more never decays: the tail grows until the output is a solid
+	// clamped block and then reaches NaN.
+	feedback := clamp01(s.RoomSize)*0.28 + 0.7
+	damp := clamp01(s.Damping) * 0.4
+	width := clamp01(s.Width)
 	for i := range r.combL {
 		r.combL[i].feedback, r.combL[i].damp = feedback, damp
 		r.combR[i].feedback, r.combR[i].damp = feedback, damp
 	}
 	const scaleWet = 3
-	r.wet1 = s.Wet * scaleWet * (s.Width/2 + 0.5)
-	r.wet2 = s.Wet * scaleWet * ((1 - s.Width) / 2)
+	wet := max(s.Wet, 0)
+	r.wet1 = wet * scaleWet * (width/2 + 0.5)
+	r.wet2 = wet * scaleWet * ((1 - width) / 2)
 }
+
+// clamp01 holds a setting to the 0..1 the effects are designed for.
+func clamp01(v float32) float32 { return max(0, min(1, v)) }
 
 // process runs the send buffer through the reverb and adds the tail to out.
 func (r *reverb) process(send, out []float32) {

@@ -5,14 +5,15 @@
 // a map in one form may name an external tileset in the other. Parse and
 // Load need no GPU. Build turns a Map into gfx tilemaps for drawing.
 //
-// A Map has tile layers (CSV or base64 with zlib or gzip compression,
-// flipped and rotated tiles), object layers (rectangles, ellipses,
+// A Map has tile layers (CSV or base64 with zlib, gzip or zstd
+// compression, flipped and rotated tiles), object layers (rectangles, ellipses,
 // points, polygons and polylines with their names, types and custom
 // properties, for spawn points, triggers and collision shapes), image
 // layers and groups, and tilesets embedded or external with per-tile
 // animations, collision shapes, properties and terrain sets from the
 // terrain tool (a WangSet converts to grid/autotile rules with its
-// Rules method). Build loads the
+// Rules method, or RulesFor with the layout Map.Layout gives a
+// hexagonal map). Build loads the
 // tilesets' images, makes one gfx.Tilemap per tile layer with the
 // animations wired up, and returns a Level whose Draw draws the layers
 // in order. Keep the object layers to place your own entities.
@@ -31,12 +32,23 @@ import (
 type Map struct {
 	Width, Height         int // in tiles; the chunk bounds for infinite maps
 	TileWidth, TileHeight int // in pixels
-	Orientation           string
-	BackgroundColor       color.RGBA // zero when the map has none
-	Infinite              bool
-	Layers                []Layer
-	Tilesets              []Tileset // sorted by FirstGID
-	Properties            Properties
+	// Orientation is "orthogonal", "isometric", "staggered" or
+	// "hexagonal".
+	Orientation string
+	// StaggerAxis is "x" or "y" on a hexagonal or staggered map: which
+	// axis the shifted rows or columns run along. It is empty otherwise.
+	StaggerAxis string
+	// StaggerIndex is "odd" or "even" on a hexagonal or staggered map:
+	// which rows or columns are shifted. It is empty otherwise.
+	StaggerIndex string
+	// HexSideLength is the length in pixels of the hexagon side that lies
+	// along the stagger axis. It is zero except on hexagonal maps.
+	HexSideLength   int
+	BackgroundColor color.RGBA // zero when the map has none
+	Infinite        bool
+	Layers          []Layer
+	Tilesets        []Tileset // sorted by FirstGID
+	Properties      Properties
 }
 
 // LayerKind is what a layer holds.

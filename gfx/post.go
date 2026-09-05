@@ -232,7 +232,7 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D) (*sceneTargets, error) 
 	// The composite always binds the AO image; give it white until a pass
 	// runs. Every material set binds the scene copy, so it must be readable
 	// before the first transmissive draw.
-	if err := dev.OneShot(func(cb vk.VkCommandBuffer) {
+	if err := g.setup(func(cb vk.VkCommandBuffer) {
 		render.ClearColorForSampling(cb, t.aoB.Color)
 		render.ClearColorForSampling(cb, t.scene)
 	}); err != nil {

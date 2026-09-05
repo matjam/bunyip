@@ -13,6 +13,7 @@ import (
 	"testing/fstest"
 
 	"github.com/matjam/bunyip/audio"
+	"github.com/matjam/bunyip/ecs"
 )
 
 // encodeWAV16 writes PCM as a 16-bit WAV file.
@@ -193,5 +194,73 @@ func TestParseModelResolvesRelativeURIs(t *testing.T) {
 	_, err = parseModel(fs, "models/orphan.gltf")
 	if err == nil || !strings.Contains(err.Error(), "asset models/orphan.gltf:") || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("orphan error %v", err)
+	}
+}
+
+// sceneComponent is what the scene and prefab documents below carry;
+// the registered name is what the files hold.
+type sceneComponent struct {
+	HP   int
+	Team string
+}
+
+func init() { ecs.Register[sceneComponent]("asset.test") }
+
+func TestSceneAndPrefab(t *testing.T) {
+	scene := `{"version":1,"name":"arena","properties":{"wave":2},"entities":[
+		{"name":"boss","components":{"asset.test":{"HP":40,"Team":"red"}}},
+		{"name":"escort","parent":1,"prefab":"grunt","components":{"asset.test":{"HP":3,"Team":"red"}}}]}`
+	prefab := `{"components":{"asset.test":{"HP":1,"Team":"blue"}}}`
+	fs, err := OpenFS(FSSource(fstest.MapFS{
+		"levels/arena.scene.json": {Data: []byte(scene)},
+		"prefabs/grunt.json":      {Data: []byte(prefab)},
+		"levels/broken.json":      {Data: []byte(`{"version":9}`)},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+
+	doc, err := Scene(fs, "levels/arena.scene.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Name != "arena" || doc.Properties["wave"] != float64(2) || len(doc.Entities) != 2 {
+		t.Fatalf("scene %+v", doc)
+	}
+	grunt, err := Prefab(fs, "prefabs/grunt.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := ecs.NewWorld()
+	ecs.SetResource(w, ecs.PrefabLibrary{"grunt": grunt})
+	inst, err := w.Instantiate(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boss, ok := inst.Entity("boss")
+	if !ok {
+		t.Fatal("boss not spawned")
+	}
+	if c, _ := ecs.Get[sceneComponent](w, boss); c == nil || c.HP != 40 {
+		t.Fatalf("boss %+v", c)
+	}
+	escort, _ := inst.Entity("escort")
+	if p, ok := ecs.ParentOf(w, escort); !ok || p != boss {
+		t.Fatal("escort not parented to the boss")
+	}
+	if c, _ := ecs.Get[sceneComponent](w, escort); c == nil || c.HP != 3 || c.Team != "red" {
+		t.Fatalf("prefab override %+v", c)
+	}
+
+	if _, err := Scene(fs, "levels/broken.json"); err == nil || !strings.Contains(err.Error(), "asset levels/broken.json:") {
+		t.Fatalf("broken scene error %v", err)
+	}
+	_, err = Scene(fs, "levels/missing.json")
+	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "asset levels/missing.json:") {
+		t.Fatalf("missing scene error %v", err)
+	}
+	if _, err := Prefab(fs, "levels/missing.json"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing prefab error %v", err)
 	}
 }

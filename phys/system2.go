@@ -133,6 +133,8 @@ type state2 struct {
 	colliders *ecs.Query2[gfx.Transform2, Collider2]
 	distance  *ecs.Query1[DistanceJoint2]
 	revolute  *ecs.Query1[RevoluteJoint2]
+	prismatic *ecs.Query1[PrismaticJoint2]
+	wheel     *ecs.Query1[WheelJoint2]
 	spring    *ecs.Query1[SpringJoint2]
 	fixed     *ecs.Query1[FixedJoint2]
 	entries   []entry2
@@ -142,19 +144,31 @@ type state2 struct {
 	// Scratch kept between steps so a step allocates nothing: ss serves
 	// the step and qs the queries, which the game may call while the
 	// step's buffers still hold contacts.
-	ss, qs          scratch2
-	sweep           sweepState
-	contacts        []contact2
-	arbiters        []arbiter2
-	events          []pending2
-	reported        pairSet
-	rest            []float32
-	joints          []jointSolver2
-	items           []jointItem2
-	distanceSolvers []distanceSolver2
-	revoluteSolvers []revoluteSolver2
-	springSolvers   []springSolver2
-	fixedSolvers    []fixedSolver2
+	ss, qs scratch2
+	sweep  sweepState
+	// The buffers the sweeps and the queries gather their candidates
+	// into, and the hits a character controller reads back.
+	cands  []int32
+	qcands []candidate2
+	hits   []Hit2
+	// The furthest any moving body travels along the sweep axis this
+	// substep, which widens the band a moving pair is searched for in,
+	// and whether any body sweeps at all.
+	motion           float32
+	anyCCD           bool
+	contacts         []contact2
+	arbiters         []arbiter2
+	events           []pending2
+	reported         pairSet
+	rest             []float32
+	joints           []jointSolver2
+	items            []jointItem2
+	distanceSolvers  []distanceSolver2
+	revoluteSolvers  []revoluteSolver2
+	prismaticSolvers []prismaticSolver2
+	wheelSolvers     []wheelSolver2
+	springSolvers    []springSolver2
+	fixedSolvers     []fixedSolver2
 }
 
 // pending2 is a collision event waiting for the solver to say how hard
@@ -172,6 +186,8 @@ func stateOf2(w *ecs.World) *state2 {
 			colliders: ecs.NewQuery2[gfx.Transform2, Collider2](w),
 			distance:  ecs.NewQuery1[DistanceJoint2](w),
 			revolute:  ecs.NewQuery1[RevoluteJoint2](w),
+			prismatic: ecs.NewQuery1[PrismaticJoint2](w),
+			wheel:     ecs.NewQuery1[WheelJoint2](w),
 			spring:    ecs.NewQuery1[SpringJoint2](w),
 			fixed:     ecs.NewQuery1[FixedJoint2](w),
 		})
@@ -263,13 +279,20 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			b.AngVel *= max(0, 1-b.AngularDamping*h)
 		}
 	})
-	// Gather colliders with bounds.
+	// Gather colliders with bounds. The furthest a moving body travels
+	// and whether any of them sweeps are noted here, where each body is
+	// already in hand, rather than in a pass of their own.
 	s.entries = s.entries[:0]
+	s.motion, s.anyCCD = 0, false
 	s.colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
 		if c.Shape == nil {
 			return
 		}
 		b, _ := ecs.Get[Body2](w, e)
+		if b != nil && b.invMass > 0 {
+			s.motion = max(s.motion, abs32(b.Vel.X)*h)
+			s.anyCCD = s.anyCCD || b.CCD
+		}
 		cs, sn := cosSin(t.Rotation)
 		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
 		lo, hi := c.Shape.bounds(pos, t.Rotation)
@@ -356,7 +379,7 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			j.solve()
 		}
 		for i := range s.arbiters {
-			s.arbiters[i].solve()
+			s.arbiters[i].solve(true)
 		}
 	}
 	for _, p := range s.events {
@@ -367,6 +390,9 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 	}
 	// Continuous collision: clamp fast bodies to their first static hit.
 	for i := range en {
+		if !s.anyCCD {
+			break
+		}
 		e := &en[i]
 		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
 			continue
@@ -398,6 +424,15 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			t.Rotation += b.AngVel * h
 		}
 	})
+	// Relax: the positions have taken the correction the bias asked for,
+	// so take the speed it added back out. Without this a resting stack
+	// keeps the separating speed the bias gave it and never rests below
+	// the sleep threshold.
+	for range relaxIterations {
+		for i := range s.arbiters {
+			s.arbiters[i].solve(false)
+		}
+	}
 	s.sleep(settings, h)
 }
 
@@ -453,18 +488,20 @@ func (s *state2) sleep(settings *Settings2, h float32) {
 
 // sweepStatic sweeps a body's collider along delta against colliders
 // that cannot move this step and returns the fraction at which it first
-// touches one.
+// touches one. Candidates come from the broadphase's sorted axis, so the
+// cost is the colliders near the sweep rather than every collider.
 func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
 	slo, shi := e.lo.Min(e.lo.Add(delta)), e.hi.Max(e.hi.Add(delta))
 	ext := e.hi.Sub(e.lo)
 	minHalf := min(ext.X, ext.Y) / 2
 	best, found := float32(1), false
-	for i := range s.entries {
-		o := &s.entries[i]
+	s.cands = s.sweep.overlapping(s.cands[:0], slo.X, shi.X)
+	for _, ci := range s.cands {
+		o := &s.entries[ci]
 		if o == e || o.c.Trigger || active2(o.b) || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
-		if o.lo.X > shi.X || slo.X > o.hi.X || o.lo.Y > shi.Y || slo.Y > o.hi.Y {
+		if o.lo.Y > shi.Y || slo.Y > o.hi.Y {
 			continue
 		}
 		oext := o.hi.Sub(o.lo)
@@ -479,13 +516,18 @@ func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
 // other moving bodies: for each pair whose bounding circles meet along
 // their relative motion this substep, the body's shape is swept against
 // the other's and both are held at the moment they would touch, so the
-// next substep's contact catches them.
+// next substep's contact catches them. The search band is widened by the
+// furthest anything travels this substep, so a partner moving toward the
+// body is still found.
 func (s *state2) sweepDynamic(e *entry2, h float32) {
 	ca, ra := circleOfBounds2(e.lo, e.hi)
 	ext := e.hi.Sub(e.lo)
 	minHalf := min(ext.X, ext.Y) / 2
-	for i := range s.entries {
-		o := &s.entries[i]
+	slo := min(e.lo.X, e.lo.X+e.b.Vel.X*h) - s.motion
+	shi := max(e.hi.X, e.hi.X+e.b.Vel.X*h) + s.motion
+	s.cands = s.sweep.overlapping(s.cands[:0], slo, shi)
+	for _, ci := range s.cands {
+		o := &s.entries[ci]
 		if o == e || o.b == nil || o.b.invMass == 0 || o.c.Trigger || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
@@ -540,8 +582,12 @@ type solverContact2 struct {
 	tangent     lin.Vec2
 	massNormal  float32
 	massTangent float32
-	bias        float32
-	pn, pt      float32
+	// bias is the separating speed the position correction asks for and
+	// restBias the speed restitution asks for. They are kept apart
+	// because the relax pass drops the first and keeps the second.
+	bias     float32
+	restBias float32
+	pn, pt   float32
 }
 
 // bodyVel2 reads a body's velocity and inverse mass, or zeros for a
@@ -588,23 +634,31 @@ func initArbiter2(arb *arbiter2, a, b *entry2, contacts []contact2, h float32) {
 		// Restitution from the approach speed before the solve.
 		dv := vb.Add(crossSV(wb, sc.rB)).Sub(va).Sub(crossSV(wa, sc.rA))
 		if vn := dv.Dot(c.normal); vn < -restitutionThreshold {
-			sc.bias += -restitution * vn
+			sc.restBias = -restitution * vn
 		}
 		arb.contacts = append(arb.contacts, sc)
 	}
 }
 
-func (arb *arbiter2) solve() {
+// solve applies one pass of normal and friction impulses. With useBias
+// the normal impulse also drives the position correction; the relax pass
+// after the positions have moved calls it without, which takes the speed
+// that correction added back out.
+func (arb *arbiter2) solve(useBias bool) {
 	a, b := arb.ba, arb.bb
 	_, _, ima, iia := bodyVel2(a)
 	_, _, imb, iib := bodyVel2(b)
 	for i := range arb.contacts {
 		c := &arb.contacts[i]
+		bias := c.restBias
+		if useBias {
+			bias += c.bias
+		}
 		va, wa, _, _ := bodyVel2(a)
 		vb, wb, _, _ := bodyVel2(b)
 		dv := vb.Add(crossSV(wb, c.rB)).Sub(va).Sub(crossSV(wa, c.rA))
 		vn := dv.Dot(c.normal)
-		dpn := c.massNormal * (-vn + c.bias)
+		dpn := c.massNormal * (-vn + bias)
 		pn0 := c.pn
 		c.pn = max(pn0+dpn, 0)
 		dpn = c.pn - pn0
