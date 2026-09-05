@@ -343,6 +343,10 @@ grid.FOV(g.player, 9, opaque, func(p grid.Point) { seen[p] = true })
 
 The algorithms take a cost or passability function over points, not a
 `Grid`, so they work against whatever the game keeps its map in.
+Costs may be zero or fractional. `AStar` uses a zero heuristic because
+the callback supplies no positive lower bound on a step's cost; this
+preserves the cheapest-path guarantee but can explore more cells than
+a search with a known admissible distance estimate.
 
 `AStar`, `Dijkstra` and `FOV` allocate only their result. To search or
 cast sight every frame without allocating at all, keep a `Pathfinder`

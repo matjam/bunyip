@@ -26,7 +26,9 @@ type Settings struct {
 // Kepler puts an entity on an analytic two-body orbit around Primary:
 // planets around a star, moons around a planet. Its Body is written
 // each update from the elements; Mu zero means G times the primary's
-// mass.
+// mass. JSON encoding preserves the elapsed orbital phase for saves
+// and prefabs; older JSON without elapsed time starts at the elements'
+// epoch.
 type Kepler struct {
 	Primary  ecs.Entity
 	Elements Elements

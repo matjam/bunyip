@@ -15,6 +15,10 @@
 // numerically for free bodies under thrust and gravity, and writes
 // scaled positions into gfx.Transform relative to a floating origin, so
 // rendering keeps its precision at any camera position.
+// Kepler components preserve their orbital phase through ECS saves and
+// prefab JSON. Register the component and resource types with ecs.Register
+// before saving; omit the orbit system's private query cache with
+// ecs.SaveOptions.SkipUnregistered.
 package orbit
 
 import (

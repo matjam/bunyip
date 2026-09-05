@@ -144,6 +144,11 @@ g.hits = phys.RaycastAll3Into(g.hits[:0], w, ray, 0)
 g.near = phys.OverlapShape3Into(g.near[:0], w, blast, pos, lin.Quat{}, 0)
 ```
 
+The 3D query cache notices replaced colliders and edits to hull points or
+compound parts, including changes that preserve their outer bounds.
+Geometry changes refresh the cached snapshot; unchanged geometry reuses
+its placed parts without allocating.
+
 Casts and sweeps take their candidates from the broadphase's sorted axis
 rather than looking at every collider, order them along the sweep so the
 nearest is found first, and keep each collider's placed shape between

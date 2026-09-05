@@ -1,6 +1,8 @@
 package phys
 
 import (
+	"slices"
+
 	"github.com/matjam/bunyip/ecs"
 	"github.com/matjam/bunyip/lin"
 )
@@ -11,11 +13,10 @@ import (
 // geometry every frame places each of those shapes once instead of once
 // per query.
 //
-// A row is placed again when the collider's position, rotation, kind or
-// world bounds change, which covers moving it, turning it and resizing
-// it. A shape whose points move without any of those changing, such as a
-// ConvexHull edited in place, must be assigned to the collider again for
-// the cache to notice.
+// A row holds an owned snapshot of its local geometry. Exact comparisons
+// notice replacement shapes and edits to hull points or nested compound
+// parts even when the world bounds stay the same. The full entity handle
+// prevents a new occupant of a reused slot from inheriting the old row.
 type shapeCache3 struct {
 	rows []cachedParts3
 }
@@ -25,29 +26,67 @@ type cachedParts3 struct {
 	pos    lin.Vec3
 	rot    mat3
 	lo, hi lin.Vec3
-	kind   uint8
+	entity ecs.Entity
+	shape  Shape3
 	valid  bool
 }
 
-// shapeKinds are the concrete shapes a cached row may hold. The kind is
-// stored so swapping one shape for another of the same size and place is
-// noticed.
-func shapeKind3(s Shape3) uint8 {
-	switch s.(type) {
+// sameGeometry3 compares against a snapshot, never against the caller's
+// mutable slices. Geometry comparison allocates nothing and avoids the
+// world-space transforms and convex construction on an unchanged query.
+func sameGeometry3(a, b Shape3) bool {
+	switch a := a.(type) {
+	case nil:
+		return b == nil
 	case Sphere:
-		return 1
+		b, ok := b.(Sphere)
+		return ok && a == b
 	case Box3:
-		return 2
+		b, ok := b.(Box3)
+		return ok && a == b
 	case Capsule:
-		return 3
+		b, ok := b.(Capsule)
+		return ok && a == b
 	case ConvexHull:
-		return 4
+		b, ok := b.(ConvexHull)
+		return ok && slices.Equal(a.Points, b.Points)
 	case Compound3:
-		return 5
+		b, ok := b.(Compound3)
+		if !ok || len(a.Parts) != len(b.Parts) {
+			return false
+		}
+		for i, p := range a.Parts {
+			q := b.Parts[i]
+			if p.Offset != q.Offset || p.Rotation != q.Rotation || !sameGeometry3(p.Shape, q.Shape) {
+				return false
+			}
+		}
+		return true
 	case MeshShape:
-		return 6
+		// Meshes contribute no convex parts; mesh queries use their own
+		// triangle tree and retain the immutable-slice contract.
+		_, ok := b.(MeshShape)
+		return ok
 	}
-	return 0
+	return false
+}
+
+// snapshotGeometry3 owns every mutable slice that sameGeometry3 reads.
+// It is called only when geometry changes, not when its placement changes.
+func snapshotGeometry3(s Shape3) Shape3 {
+	switch s := s.(type) {
+	case ConvexHull:
+		return ConvexHull{Points: slices.Clone(s.Points)}
+	case Compound3:
+		parts := slices.Clone(s.Parts)
+		for i := range parts {
+			parts[i].Shape = snapshotGeometry3(parts[i].Shape)
+		}
+		return Compound3{Parts: parts}
+	case MeshShape:
+		return MeshShape{}
+	}
+	return s
 }
 
 // parts returns the collider's world-space convex parts, placing them
@@ -60,11 +99,14 @@ func (c *shapeCache3) parts(e ecs.Entity, s Shape3, pos lin.Vec3, rot mat3, lo, 
 		c.rows = append(c.rows, cachedParts3{})
 	}
 	r := &c.rows[i]
-	kind := shapeKind3(s)
-	if r.valid && r.kind == kind && r.pos == pos && r.rot == rot && r.lo == lo && r.hi == hi {
+	same := sameGeometry3(s, r.shape)
+	if r.valid && r.entity == e && same && r.pos == pos && r.rot == rot && r.lo == lo && r.hi == hi {
 		return r.parts
 	}
 	r.parts = appendConvexParts(r.parts[:0], s, pos, rot)
-	r.pos, r.rot, r.lo, r.hi, r.kind, r.valid = pos, rot, lo, hi, kind, true
+	if !same {
+		r.shape = snapshotGeometry3(s)
+	}
+	r.pos, r.rot, r.lo, r.hi, r.entity, r.valid = pos, rot, lo, hi, e, true
 	return r.parts
 }

@@ -6,7 +6,9 @@
 // Set, Fill, Each). The algorithms take a cost or passability function
 // over points, so they work on any map representation, not only a Grid.
 // AStar finds one path with four or eight-way movement and a cost per
-// step. Dijkstra fills a map of distances from many sources at once, and
+// step, including zero and fractional costs. It uses a zero heuristic
+// because the callback provides no positive lower bound on step costs.
+// Dijkstra fills a map of distances from many sources at once, and
 // units descend that map with Downhill, which moves many units towards
 // the player for the cost of one fill. FOV computes which cells are
 // visible from a point against an opacity function. Line walks the cells
@@ -104,8 +106,10 @@ func (g *Grid[T]) Each(fn func(x, y int, v T)) {
 // Blocked is the step cost of an impassable move.
 var Blocked = float32(math.Inf(1))
 
-// Cost gives the price of stepping from one cell to a neighbour, or
-// Blocked. Diagonal moves are only offered when the search allows them.
+// Cost gives the nonnegative price of stepping from one cell to a
+// neighbour, or Blocked. Zero and fractional costs are valid. Negative
+// costs are treated as blocked. Diagonal moves are only offered when
+// the search allows them.
 type Cost func(from, to Point) float32
 
 // AStar finds the cheapest path from start to goal on a w by h grid,
@@ -114,6 +118,8 @@ type Cost func(from, to Point) float32
 // search needs comes from a shared pool, so only the path is allocated.
 // A game that searches every frame keeps a Pathfinder instead and calls
 // its AStar method, which allocates nothing at all.
+// The search uses a zero heuristic to support every nonnegative cost;
+// this can explore more cells than a heuristic with a known cost bound.
 func AStar(w, h int, start, goal Point, diagonal bool, cost Cost) []Point {
 	pf := getPathfinder(w, h)
 	path, ok := pf.AStar(nil, start, goal, diagonal, cost)
@@ -202,6 +208,8 @@ func (p *Pathfinder) in(q Point) bool {
 // eight-way moves are considered. When there is no path it returns out
 // unchanged and false, so the caller keeps its buffer. Pass out as
 // buf[:0] to search every frame without allocating.
+// A zero heuristic preserves cheapest paths for zero and fractional
+// costs, ordering the search by accumulated cost as in Dijkstra.
 func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost Cost) ([]Point, bool) {
 	if !p.in(start) || !p.in(goal) {
 		return out, false
@@ -219,7 +227,7 @@ func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost C
 	p.g[si] = 0
 	p.came[si] = -1
 	p.seen[si] = p.gen
-	p.open.push(item{i: int32(si), f: heuristic(start, goal, diagonal)})
+	p.open.push(item{i: int32(si), f: 0})
 	for len(p.open) > 0 {
 		cur := p.open.pop()
 		ci := int(cur.i)
@@ -259,19 +267,11 @@ func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost C
 				p.seen[ni] = p.gen
 				p.g[ni] = ng
 				p.came[ni] = int32(ci)
-				p.open.push(item{i: int32(ni), f: ng + heuristic(n, goal, diagonal)})
+				p.open.push(item{i: int32(ni), f: ng})
 			}
 		}
 	}
 	return out, false
-}
-
-func heuristic(q, goal Point, diagonal bool) float32 {
-	dx, dy := abs(q.X-goal.X), abs(q.Y-goal.Y)
-	if diagonal {
-		return float32(max(dx, dy)) + (math.Sqrt2-1)*float32(min(dx, dy))
-	}
-	return float32(dx + dy)
 }
 
 // DijkstraInto fills dist with the cost from the nearest source to

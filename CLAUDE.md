@@ -494,8 +494,10 @@ render pass, so text tests draw one frame.
   its address only where the pointer cannot escape, or the whole value
   lands on the heap; `convexPair` and `meshContacts` keep theirs in the
   scratch for that reason. `phys/cache3.go` keeps each collider's placed
-  parts between queries, keyed by the collider's placement and bounds, so
-  a shape edited in place without moving goes stale.
+  parts between queries, keyed by the full entity handle, placement,
+  bounds and an owned geometry snapshot. Exact comparisons detect hull
+  and compound edits even when their outer bounds stay unchanged;
+  unchanged queries reuse the placed parts without allocating.
 - Each physics substep ends with a relax pass over the contacts that
   solves them again with the position-correction bias dropped. The bias
   leaves the bodies separating at about the sleep threshold, so without

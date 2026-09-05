@@ -94,6 +94,14 @@ origin. Set it to the ship's or camera's position each frame. The scene
 then stays near zero however far the ship has flown, which is the range
 where float32 rendering is precise.
 
+Register `Body`, `Kepler` and `Settings` with the ECS before saving an
+orbital world, and use `ecs.SaveOptions{SkipUnregistered: true}` to omit
+the orbit system's private query cache. Kepler's JSON includes its elapsed
+simulated time after time scaling, so a
+loaded world continues at the saved phase and remaps its `Primary`
+references to the restored entities. Older saves without elapsed time
+start at the elements' original epoch.
+
 `Predict` integrates a copy of a ship ahead and returns its path in
 scene units for drawing. The Kepler bodies move along their orbits
 during the prediction, so the path is correct even around a fast-moving
