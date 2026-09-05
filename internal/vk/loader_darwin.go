@@ -3,7 +3,6 @@ package vk
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 
 	"github.com/ebitengine/purego"
 )
@@ -64,25 +63,4 @@ func PrepareLayers() {
 	if wrote {
 		os.Setenv("VK_ADD_LAYER_PATH", dir)
 	}
-}
-
-var reLibraryPath = regexp.MustCompile(`"library_path"\s*:\s*"([^"/]+)"`)
-
-// rewriteManifest copies manifest into dir with library_path made absolute
-// against libDir, when the library exists there.
-func rewriteManifest(manifest, libDir, dir string) bool {
-	data, err := os.ReadFile(manifest)
-	if err != nil {
-		return false
-	}
-	m := reLibraryPath.FindSubmatch(data)
-	if m == nil {
-		return false
-	}
-	lib := filepath.Join(libDir, string(m[1]))
-	if _, err := os.Stat(lib); err != nil {
-		return false
-	}
-	out := reLibraryPath.ReplaceAll(data, []byte(`"library_path": "`+lib+`"`))
-	return os.WriteFile(filepath.Join(dir, filepath.Base(manifest)), out, 0o644) == nil
 }
