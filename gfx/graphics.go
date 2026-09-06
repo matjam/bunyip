@@ -19,6 +19,11 @@ import (
 // resource it creates and releases it when the engine closes, including
 // when game setup or drawing fails. Call a resource's Destroy method to
 // release it earlier, for example when unloading a level.
+//
+// GPU resources belong to the Graphics that created them. Passing resources
+// from another output to drawing or state methods panics before recording
+// their handles. Constructors and transfer methods with error results return
+// errors instead; text drawing reports invalid font ownership at submission.
 type Graphics struct {
 	r            *render.Renderer
 	descriptors  *render.DescriptorSets // five samplers: a texture and a shader's image0..3
@@ -60,22 +65,28 @@ type Graphics struct {
 	// sceneOut is the attachment set of the HDR pass being recorded: the
 	// pipelines drawn into it are built per sample count, and one queue
 	// is recorded at a time.
-	sceneOut      outKey
-	dbgFont       *Font // the built-in font, made on first use
-	dbgFontFailed bool
-	occ           occlusionBuffer // the software occlusion depth buffer, reused every frame
-	rec           recordScratch   // long-lived arguments for the recording commands
-	viewport      vk.VkRect2D     // the main output's pixel rectangle; zero means the whole window
-	res           resources       // the live resources a debug view lists
-	owned         resourceOwner   // resources released before renderer internals
-	destroyed     bool            // teardown has begun; the device is idle
+	sceneOut          outKey
+	dbgFont           *Font // the built-in font, made on first use
+	dbgFontFailed     bool
+	occ               occlusionBuffer // the software occlusion depth buffer, reused every frame
+	rec               recordScratch   // long-lived arguments for the recording commands
+	viewport          vk.VkRect2D     // the main output's pixel rectangle; zero means the whole window
+	viewScopes        int             // active WithView closures, including other targets
+	drawErr           error           // first failure from a void drawing method this frame
+	textOutlineShader *Shader
+	res               resources     // the live resources a debug view lists
+	owned             resourceOwner // resources released before renderer internals
+	destroyed         bool          // teardown has begun; the device is idle
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
 // maps onto it, the 3D scene renders at its size, and the window outside
 // it stays black. The engine sets it from Config's view size and scaling
-// policy; a zero rect means the whole window.
+// policy; a zero rect means the whole window. It panics inside WithView.
 func (g *Graphics) SetViewport(r lin.Rect) error {
+	if g.viewScopes > 0 {
+		panic("gfx: SetViewport inside WithView")
+	}
 	vp := vk.VkRect2D{Offset: vk.VkOffset2D{X: int32(r.X), Y: int32(r.Y)}, Extent: vk.VkExtent2D{Width: uint32(r.W), Height: uint32(r.H)}}
 	if r.W <= 0 || r.H <= 0 {
 		vp = vk.VkRect2D{}
@@ -147,9 +158,10 @@ func pixelRect(vp vk.VkRect2D, clip lin.Rect, sx, sy float32) vk.VkRect2D {
 	y0 := vp.Offset.Y + clipCoord(clip.Y*sy)
 	x1 := vp.Offset.X + clipCoord((clip.X+clip.W)*sx)
 	y1 := vp.Offset.Y + clipCoord((clip.Y+clip.H)*sy)
-	x0, y0 = max(x0, vp.Offset.X), max(y0, vp.Offset.Y)
-	x1 = min(x1, vp.Offset.X+int32(vp.Extent.Width))
-	y1 = min(y1, vp.Offset.Y+int32(vp.Extent.Height))
+	x0 = max(vp.Offset.X, min(x0, vp.Offset.X+int32(vp.Extent.Width)))
+	y0 = max(vp.Offset.Y, min(y0, vp.Offset.Y+int32(vp.Extent.Height)))
+	x1 = max(vp.Offset.X, min(x1, vp.Offset.X+int32(vp.Extent.Width)))
+	y1 = max(vp.Offset.Y, min(y1, vp.Offset.Y+int32(vp.Extent.Height)))
 	return vk.VkRect2D{Offset: vk.VkOffset2D{X: x0, Y: y0}, Extent: vk.VkExtent2D{Width: uint32(max(x1-x0, 0)), Height: uint32(max(y1-y0, 0))}}
 }
 
@@ -312,11 +324,16 @@ func (g *Graphics) spriteVert() []byte { return shaders.SpriteVert }
 func (g *Graphics) resize(width, height int) { g.r.Resize(width, height) }
 
 // SetView sets the 2D coordinate space: (0,0) top-left to (width,height)
-// bottom-right, whatever the framebuffer's pixel size.
-func (g *Graphics) SetView(width, height float32) { g.main.setView(width, height) }
+// bottom-right, whatever the framebuffer's pixel size. It panics inside WithView.
+func (g *Graphics) SetView(width, height float32) {
+	if g.viewScopes > 0 {
+		panic("gfx: SetView inside WithView")
+	}
+	g.main.setView(width, height)
+}
 
 // View returns the current 2D coordinate space size.
-func (g *Graphics) View() (float32, float32) { return g.main.viewW, g.main.viewH }
+func (g *Graphics) View() (float32, float32) { return g.cur.viewW, g.cur.viewH }
 
 // begin starts a frame cleared to clear. ok is false when the swapchain
 // was rebuilt and the frame should be skipped.
@@ -326,6 +343,7 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 		return ok, err
 	}
 	g.frameNo++
+	g.drawErr = nil
 	g.arena.Reset()
 	// BeginFrame waited on this slot's fence, so everything the last
 	// frame in this slot staged or retired is finished with.
@@ -353,6 +371,7 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 // Draw queues a sprite. A nil texture draws with a 1x1 white texture, so a
 // coloured rectangle is a tinted sprite.
 func (g *Graphics) Draw(tex *Texture, s Sprite) {
+	g.requireTextureOwner(tex)
 	if tex == nil {
 		tex = g.white
 	}
@@ -433,6 +452,7 @@ func projectPoints(axis lin.Vec2, points []lin.Vec2) (lo, hi float32) {
 // the primitive under sprites and paths, for games that build their own
 // geometry.
 func (g *Graphics) DrawTriangles(tex *Texture, verts []Vertex2D) {
+	g.requireTextureOwner(tex)
 	g.scratch = g.scratch[:0]
 	for _, v := range verts {
 		c := v.Color
@@ -455,6 +475,7 @@ type Vertex2D struct {
 // DrawIndexed queues textured triangles from vertices and indices,
 // three indices per triangle, for meshes whose vertices are shared.
 func (g *Graphics) DrawIndexed(tex *Texture, verts []Vertex2D, indices []uint32) {
+	g.requireTextureOwner(tex)
 	g.scratch = g.scratch[:0]
 	// A triangle with an index out of range is dropped whole, so the
 	// ones after it keep their vertices.
@@ -556,6 +577,9 @@ func (g *Graphics) Stats() FrameStats { return g.lastStats }
 // intersected with any enclosing clip. Pair with PopClip.
 func (g *Graphics) PushClip(r lin.Rect) {
 	q := g.cur
+	if !q.layout.IsIdentity() {
+		r = q.layout.TransformRect(r)
+	}
 	if n := len(q.clips); n > 0 {
 		r = intersectClip(q.clips[n-1], r)
 	}
@@ -595,6 +619,9 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	if g.frame == nil {
 		return nil, fmt.Errorf("gfx: end without begin")
 	}
+	if g.drawErr != nil {
+		return nil, g.drawErr
+	}
 	// The 2D shadow maps are built and uploaded before any pass is
 	// recorded, so every lit draw in the frame samples the same maps.
 	// This is also where a changed sample count takes effect, for the
@@ -619,7 +646,8 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	defer func() { g.frame = nil }()
 	g.cur = g.main
 	if err := g.uniforms.Write(fr.Slot, g.arena.Bytes()); err != nil {
-		return nil, err
+		g.recordDrawError(err)
+		return nil, g.drawErr
 	}
 	for _, sf := range g.subFrames {
 		if err := g.renderQueue(fr, sf.queue, sf.rt.scene, sf.rt.target); err != nil {
@@ -628,6 +656,9 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	}
 	if err := g.renderQueue(fr, g.main, g.post.main, nil); err != nil {
 		return nil, err
+	}
+	if g.drawErr != nil {
+		return nil, g.drawErr
 	}
 	img, err := g.r.EndFrame(fr, capture)
 	g.stats.Waits = int(g.r.Device.Waits() - g.waitBase)
@@ -817,6 +848,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 	var bound *render.Pipeline
 	var boundProj *lin.Mat4
 	var boundTransform lin.Affine
+	var boundFrame lin.Vec4
 	var boundVertices *render.Buffer
 	var boundClip lin.Rect
 	boundUniform := int32(-2)
@@ -862,7 +894,7 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 				render.SetScissorRect(cb, pixelRect(vp, s.clip, scaleX, scaleY))
 			}
 		}
-		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend, out: q.out})
+		pipe, err := s.shader.pipeline(pipeKey{blend: s.blend, customBlend: s.customBlend, stencil2D: s.stencil, out: q.out})
 		if err != nil {
 			return err
 		}
@@ -871,9 +903,11 @@ func (g *Graphics) flush2D(fr *render.Frame, q *drawQueue, vp vk.VkRect2D) error
 			vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 			boundProj, boundUniform = nil, -2
 		}
-		if s.proj != boundProj || s.transform != boundTransform {
+		if s.proj != boundProj || s.transform != boundTransform || s.frame != boundFrame {
 			boundProj = s.proj
 			boundTransform = s.transform
+			boundFrame = s.frame
+			rec.push.frame = s.frame
 			rec.push.proj = *s.proj
 			rec.push.transformX = lin.V4(s.transform.A, s.transform.B, s.transform.C, 0)
 			rec.push.transformY = lin.V4(s.transform.D, s.transform.E, s.transform.F, 0)

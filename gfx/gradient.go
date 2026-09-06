@@ -118,6 +118,9 @@ func (g *Graphics) DrawTextOnPath(f *Font, text string, p *Path, offset float32,
 	if len(subs) == 0 || len(subs[0].pts) < 2 {
 		return
 	}
+	if !g.checkDrawFont(f) {
+		return
+	}
 	pts := subs[0].pts
 	if subs[0].closed {
 		pts = append(pts, pts[0])
@@ -146,7 +149,12 @@ func (g *Graphics) DrawTextOnPath(f *Font, text string, p *Path, offset float32,
 	if c == (Color{}) {
 		c = White
 	}
-	for _, gl := range f.Shape(text, opts) {
+	glyphs, err := f.Shape(text, opts)
+	if err != nil {
+		g.recordDrawError(err)
+		return
+	}
+	for _, gl := range glyphs {
 		if gl.Empty {
 			continue
 		}
@@ -165,7 +173,9 @@ func (g *Graphics) DrawTextOnPath(f *Font, text string, p *Path, offset float32,
 		})
 	}
 	if f.dirty {
-		_ = f.flush()
+		if err := f.flush(); err != nil {
+			g.recordDrawError(err)
+		}
 	}
 }
 

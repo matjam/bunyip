@@ -2,6 +2,7 @@ package audio
 
 import (
 	"math"
+	"os"
 	"testing"
 	"time"
 )
@@ -55,8 +56,8 @@ func TestCaptureRefusedWithoutADevice(t *testing.T) {
 // moment. It skips when there is no capture device, which is the usual
 // case on a build machine.
 func TestCaptureDevice(t *testing.T) {
-	if testing.Short() {
-		t.Skip("capture opens the machine's microphone")
+	if os.Getenv("BUNYIP_TEST_AUDIO_HARDWARE") != "1" || testing.Short() {
+		t.Skip("microphone integration test requires BUNYIP_TEST_AUDIO_HARDWARE=1 without -short")
 	}
 	m := NewMixer(48000)
 	c, err := m.OpenCapture(CaptureOptions{})

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"math"
 
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
@@ -45,12 +46,15 @@ type TextureOptions struct {
 // NewTexture uploads an image without modifying it. Colour pixels are
 // premultiplied in linear light and stored as sRGB, so shaders sample
 // premultiplied linear colour. Data textures skip this colour conversion.
-// Empty bounds return an error; src must be non-nil. During Draw, the
+// Nil sources, empty bounds and unsupported dimensions return an error. During Draw, the
 // upload is recorded before rendering; outside a frame it waits for the GPU.
 func (g *Graphics) NewTexture(src image.Image, opts TextureOptions) (*Texture, error) {
-	b := src.Bounds()
-	if b.Dx() <= 0 || b.Dy() <= 0 {
-		return nil, fmt.Errorf("gfx: texture has empty bounds %v", b)
+	b, err := imageBounds(src)
+	if err != nil {
+		return nil, err
+	}
+	if err := g.validateTextureSize(b.Dx(), b.Dy()); err != nil {
+		return nil, err
 	}
 	t, err := g.newTexture(b.Dx(), b.Dy(), texelsOf(src, opts.Data), opts)
 	if err == nil {
@@ -75,7 +79,7 @@ func asRGBA(src image.Image) *image.RGBA {
 // for data textures, and premultiplied in linear light for colour ones.
 func texelsOf(src image.Image, data bool) []byte {
 	rgba := asRGBA(src)
-	pix := rgba.Pix
+	pix := rgba.Pix[:rgba.Rect.Dx()*rgba.Rect.Dy()*4]
 	if !data && needsLinearPremultiply(pix) {
 		// The caller's image is left as it is.
 		pix = append([]byte(nil), pix...)
@@ -157,7 +161,7 @@ func (g *Graphics) newTexture(w, h int, pix []byte, opts TextureOptions) (*Textu
 // texture's image belongs to the render texture, so replacing one is an
 // error.
 func (t *Texture) Replace(src image.Image) error {
-	if t.img == nil || t.destroyed {
+	if t == nil || t.img == nil || t.destroyed {
 		return fmt.Errorf("gfx: replace a destroyed texture")
 	}
 	if t.external {
@@ -166,9 +170,12 @@ func (t *Texture) Replace(src image.Image) error {
 	if t.compressed {
 		return fmt.Errorf("gfx: a compressed texture takes a KTX2 file; use ReplaceCompressed")
 	}
-	b := src.Bounds()
-	if b.Dx() <= 0 || b.Dy() <= 0 {
-		return fmt.Errorf("gfx: texture has empty bounds %v", b)
+	b, err := imageBounds(src)
+	if err != nil {
+		return err
+	}
+	if err := t.g.validateTextureSize(b.Dx(), b.Dy()); err != nil {
+		return err
 	}
 	if b.Dx() == t.Width && b.Dy() == t.Height {
 		// The same size keeps the image, so nothing that names the
@@ -266,8 +273,8 @@ func (t *Texture) setFor(f Filter) vk.VkDescriptorSet {
 // NewBlankTexture makes a transparent texture of a size, to be filled by
 // Write: a canvas to paint on, a video frame, a procedural map.
 func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Texture, error) {
-	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("gfx: blank texture needs a positive size")
+	if err := g.validateTextureSize(width, height); err != nil {
+		return nil, err
 	}
 	t, err := g.newTexture(width, height, make([]byte, width*height*4), opts)
 	if err == nil {
@@ -280,15 +287,26 @@ func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Tex
 // texture, and rebuilds the mip chain. Inside a frame (between the
 // engine's Begin and End, which is where Update and Draw run) the copy
 // is recorded into the frame and costs no wait, so video and painting
-// can write every frame; outside one it waits for the GPU first.
+// can write every frame; outside one it waits for the GPU first. Nil sources
+// and coordinate overflow return errors. Render-texture views reject Write;
+// use Graphics.DrawTo to change their pixels.
 func (t *Texture) Write(x, y int, src image.Image) error {
-	if t.img == nil || t.destroyed {
+	if t == nil || t.img == nil || t.destroyed {
 		return fmt.Errorf("gfx: write to a destroyed texture")
 	}
 	if t.compressed {
 		return fmt.Errorf("gfx: a compressed texture holds blocks, not texels, so it cannot be written into")
 	}
-	b := src.Bounds()
+	if t.external {
+		return fmt.Errorf("gfx: a render texture's image cannot be written into; use DrawTo")
+	}
+	b, err := imageBounds(src)
+	if err != nil {
+		return err
+	}
+	if x > math.MaxInt-b.Dx() || y > math.MaxInt-b.Dy() {
+		return fmt.Errorf("gfx: texture write coordinates overflow")
+	}
 	r := image.Rect(x, y, x+b.Dx(), y+b.Dy()).Intersect(image.Rect(0, 0, t.Width, t.Height))
 	if r.Empty() {
 		return nil
@@ -313,22 +331,67 @@ func (t *Texture) Write(x, y int, src image.Image) error {
 	return g.r.Device.WriteImage(t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), rgba.Pix)
 }
 
-// Read copies the texture's pixels back from the GPU, premultiplied as
-// they are stored. It waits for the GPU first; use it for screenshots of
-// render textures and tests, not per frame. A compressed texture holds
+// Read copies pixels back from the GPU as an ordinary Go image, with colours
+// premultiplied in sRGB space. Data texture channels retain their stored values.
+// It waits for the GPU and is only valid outside an active frame; queued uploads
+// and rendering have not been submitted during Update or Draw. A compressed texture holds
 // blocks rather than texels, so reading one is an error; decode its
 // KTX2 file with gfx/ktx2 instead.
 func (t *Texture) Read() (*image.RGBA, error) {
-	if t.img == nil || t.destroyed {
+	if t == nil || t.img == nil || t.destroyed {
 		return nil, fmt.Errorf("gfx: read from a destroyed texture")
 	}
 	if t.compressed {
 		return nil, fmt.Errorf("gfx: a compressed texture holds blocks, not texels; decode the KTX2 file with gfx/ktx2 instead")
 	}
+	if t.g.frame != nil {
+		return nil, fmt.Errorf("gfx: texture read requires a completed frame")
+	}
+	switch t.img.Format {
+	case vk.VK_FORMAT_R8G8B8A8_SRGB, vk.VK_FORMAT_B8G8R8A8_SRGB, vk.VK_FORMAT_R8G8B8A8_UNORM, vk.VK_FORMAT_B8G8R8A8_UNORM:
+	default:
+		return nil, fmt.Errorf("gfx: texture format requires RenderTexture.Read")
+	}
 	if err := t.g.r.Device.WaitIdle(); err != nil {
 		return nil, err
 	}
-	return t.g.r.Device.ReadImage(t.img)
+	out, err := t.g.r.Device.ReadImage(t.img)
+	if err == nil && !t.data {
+		srgbPremultiply(out.Pix)
+	}
+	return out, err
+}
+
+func (g *Graphics) validateTextureSize(w, h int) error {
+	if w <= 0 || h <= 0 || uint64(w) > math.MaxUint32 || uint64(h) > math.MaxUint32 || w > math.MaxInt/4 || h > math.MaxInt/4/w {
+		return fmt.Errorf("gfx: texture dimensions are invalid or overflow storage")
+	}
+	if g == nil || g.r == nil {
+		return fmt.Errorf("gfx: graphics is not initialized")
+	}
+	limit := g.r.Device.Limits().MaxImageDimension2D
+	if uint64(w) > uint64(limit) || uint64(h) > uint64(limit) {
+		return fmt.Errorf("gfx: texture exceeds the device dimension limit %d", limit)
+	}
+	return nil
+}
+
+// srgbPremultiply converts sampled storage back to Go's sRGB-premultiplied RGBA.
+func srgbPremultiply(pix []byte) {
+	for i := 0; i+3 < len(pix); i += 4 {
+		a := pix[i+3]
+		if a == 255 {
+			continue
+		}
+		if a == 0 {
+			clear(pix[i : i+3])
+			continue
+		}
+		af := float32(a) / 255
+		for k := range 3 {
+			pix[i+k] = uint8(float32(linearToSRGB8(srgbToLinear(pix[i+k])/af))*af + 0.5)
+		}
+	}
 }
 
 // Destroy frees the texture. Called inside a frame it costs no wait: the

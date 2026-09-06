@@ -65,7 +65,9 @@ func TestGeometry2DMatchesImmediate(t *testing.T) {
 						}
 						if mode == "lit" {
 							g.SetLights2D(Black, Light2D{Pos: lin.V2(55, 40), Radius: 75, Height: 5})
-							g.litShader.SetUniforms(&g.cur.lights)
+							if err := g.litShader.SetUniforms(&g.cur.lights); err != nil {
+								t.Fatal(err)
+							}
 							g.Shaded(g.litShader, func() { g.Transformed(lin.Translate2(24, 24).Mul(lin.Scale2(2, 2)), draw) })
 							return
 						}

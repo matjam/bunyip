@@ -25,6 +25,13 @@ type xControls struct {
 	freePicture      func(unsafe.Pointer, uint32) xcbCookie
 	createCursor     func(unsafe.Pointer, uint32, uint32, uint16, uint16) xcbCookie
 	err              error
+	geometry         func(unsafe.Pointer, uint32) xcbCookie
+	geometryReply    func(unsafe.Pointer, xcbCookie, unsafe.Pointer) *embeddedGeometry
+	createChild      func(unsafe.Pointer, uint8, uint32, uint32, int16, int16, uint16, uint16, uint16, uint16, uint32, uint32, *uint32) xcbCookie
+	attributes       func(unsafe.Pointer, uint32, uint32, *uint32) xcbCookie
+	focus            func(unsafe.Pointer, uint8, uint32, uint32) xcbCookie
+	getAttributes    func(unsafe.Pointer, uint32) xcbCookie
+	attributesReply  func(unsafe.Pointer, xcbCookie, unsafe.Pointer) *embeddedAttributes
 }
 
 func (a *App) windowControls() (*xControls, error) {
@@ -52,6 +59,12 @@ func (a *App) windowControls() (*xControls, error) {
 			}
 		}
 	}
+	for name, target := range map[string]any{"xcb_get_geometry": &c.geometry, "xcb_get_geometry_reply": &c.geometryReply, "xcb_create_window_checked": &c.createChild, "xcb_change_window_attributes_checked": &c.attributes, "xcb_set_input_focus_checked": &c.focus, "xcb_get_window_attributes": &c.getAttributes, "xcb_get_window_attributes_reply": &c.attributesReply} {
+		if err := load(lib, name, target); err != nil {
+			c.err = err
+			return c, err
+		}
+	}
 	return c, nil
 }
 func (a *App) checked(c *xControls, cookie xcbCookie) error {
@@ -68,7 +81,7 @@ func (w *Window) Capabilities() WindowCapabilities {
 		return WindowCapabilities{Resize: true, CursorImage: w.wl.app.shm != nil}
 	}
 	c, err := w.app.windowControls()
-	return WindowCapabilities{Resize: err == nil, Show: err == nil, Hide: err == nil, Focus: true, AlwaysOnTop: true, CursorImage: err == nil && c.formats != nil, PointerPosition: true}
+	return WindowCapabilities{Resize: err == nil && w.parent == 0, Show: err == nil, Hide: err == nil, Focus: true, AlwaysOnTop: w.parent == 0, CursorImage: err == nil && c.formats != nil, PointerPosition: true, EmbeddedBounds: w.parent != 0}
 }
 
 func (w *Window) RefreshCursor() {
@@ -80,6 +93,9 @@ func (w *Window) RefreshCursor() {
 	}
 }
 func (w *Window) SetSize(width, height int) error {
+	if w.parent != 0 {
+		return ErrUnsupported
+	}
 	if width <= 0 || height <= 0 || width > 65535 || height > 65535 {
 		return errors.New("platform: window dimensions must be in 1..65535")
 	}
@@ -139,6 +155,13 @@ func (w *Window) RequestFocus() error {
 		return ErrUnsupported
 	}
 	a := w.app
+	if w.parent != 0 {
+		c, err := a.windowControls()
+		if err != nil {
+			return err
+		}
+		return a.checked(c, c.focus(a.conn, 1, w.id, 0))
+	}
 	var ev [32]byte
 	msg := (*xcbClientMessageEvent)(unsafe.Pointer(&ev[0]))
 	msg.ResponseType, msg.Format, msg.Window, msg.Type = xcbClientMessage, 32, w.id, a.atom("_NET_ACTIVE_WINDOW")
@@ -148,6 +171,9 @@ func (w *Window) RequestFocus() error {
 	return nil
 }
 func (w *Window) SetAlwaysOnTop(on bool) error {
+	if w.parent != 0 {
+		return ErrUnsupported
+	}
 	if w.wl != nil {
 		return ErrUnsupported
 	}

@@ -151,7 +151,9 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 	gr.SetCamera(gfx.Camera{Position: lin.V3(6*float32(math.Sin(float64(t)*0.2)), 4.5, 6*float32(math.Cos(float64(t)*0.2))), Target: lin.V3(0, 0, 0)})
 	gr.SetLight(gfx.Light{Direction: lin.V3(-0.4, -1, -0.3), Color: gfx.Color{R: 1.5, G: 1.4, B: 1.3, A: 1},
 		Sky: gfx.Sky{Zenith: gfx.Color{R: 0.25, G: 0.3, B: 0.4, A: 1}, Ground: gfx.Color{R: 0.1, G: 0.05, B: 0.03, A: 1}}, Shadows: true, ShadowDistance: 20})
-	g.lava.SetUniforms(struct{ Heat float32 }{g.heat})
+	if err := g.lava.SetUniforms(struct{ Heat float32 }{g.heat}); err != nil {
+		return err
+	}
 	gr.DrawMesh(g.cube, gfx.Material{Shader: g.lava}, lin.Translate(lin.V3(0, -0.5, 0)).Mul(lin.Scale(lin.V3(8, 0.4, 8))))
 	for i := range 5 {
 		a := float64(i) * 2 * math.Pi / 5
@@ -159,17 +161,23 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			lin.Translate(lin.V3(2.5*float32(math.Cos(a)), 0.2, 2.5*float32(math.Sin(a)))).Mul(lin.Rotate(t+float32(i), lin.V3(0, 1, 0))).Mul(lin.Scale(lin.V3(0.8, 0.8, 0.8))))
 	}
 	// A flag on a pole: the vertex hook ripples the cloth and its shadow.
-	g.flag.SetUniforms(struct{ Strength float32 }{g.wind})
+	if err := g.flag.SetUniforms(struct{ Strength float32 }{g.wind}); err != nil {
+		return err
+	}
 	gr.DrawMesh(g.cube, gfx.Material{BaseColor: gfx.RGB(90, 90, 100), Roughness: 0.5}, lin.Translate(lin.V3(0, 1.2, 0)).Mul(lin.Scale(lin.V3(0.06, 3.2, 0.06))))
 	gr.DrawMesh(g.cloth, gfx.Material{Shader: g.flag, DoubleSided: true}, lin.Translate(lin.V3(0.05, 1.6, 0)).Mul(lin.Rotate(t*0.2, lin.V3(0, 1, 0))))
 
 	// 2D: the wave shader over a checker, then the dissolve.
-	g.wave.SetUniforms(struct{ Amplitude, Frequency float32 }{g.amplitude, 24})
+	if err := g.wave.SetUniforms(struct{ Amplitude, Frequency float32 }{g.amplitude, 24}); err != nil {
+		return err
+	}
 	gr.Shaded(g.wave, func() {
 		gr.Draw(g.checker, gfx.Sprite{Pos: lin.V2(ctx.Width-300, 20), Size: lin.V2(260, 180)})
 	})
 	progress := float32(0.5 - 0.5*math.Cos(float64(t)*0.8))
-	g.dissolve.SetUniforms(struct{ Progress, Edge float32 }{progress, 0.08})
+	if err := g.dissolve.SetUniforms(struct{ Progress, Edge float32 }{progress, 0.08}); err != nil {
+		return err
+	}
 	gr.Shaded(g.dissolve, func() {
 		gr.Draw(g.checker, gfx.Sprite{Pos: lin.V2(ctx.Width-300, 220), Size: lin.V2(260, 180), Color: gfx.RGB(120, 200, 255)})
 	})

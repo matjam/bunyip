@@ -45,7 +45,7 @@ func (a *App) registerViewClass() (objc.Class, error) {
 	}
 	nsArray := objc.GetClass("NSArray")
 	windowOf := func(self objc.ID) *Window {
-		return a.windows[self.Send(c.sel.window)]
+		return a.views[self]
 	}
 	// text returns the Go string of an NSString or NSAttributedString.
 	text := func(obj objc.ID) string {

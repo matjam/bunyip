@@ -5,6 +5,12 @@
 // the post pass tone-maps it, and sprites, text and paths draw over the
 // top in layer order, preserving submission order within each layer.
 //
+// GPU resources belong to the Graphics that created them. Different windows
+// use independent devices, so upload resources separately for each output.
+// Drawing and state methods panic before using foreign GPU resources;
+// constructors and transfers with error results return errors. Text drawing
+// reports invalid font ownership through frame submission. See Graphics.
+//
 // # 2D
 //
 // Textures come from images (NewTexture), pixel writes (Texture.Write)

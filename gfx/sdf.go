@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"fmt"
 	"image"
 	"math"
 
@@ -42,6 +43,7 @@ func (f *Font) addSDF(face uint8, gid font.GID) glyph {
 	w, h := (mw+os-1)/os, (mh+os-1)/os
 	x, y, placed := f.packer.place(w, h)
 	if !placed {
+		f.glyphErr = fmt.Errorf("gfx: glyph atlas is full (%d by %d); increase FontOptions.AtlasSize", f.packer.width, f.packer.height)
 		return glyph{empty: true}
 	}
 	field := distanceField(mask, sdfSpread*os)

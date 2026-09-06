@@ -41,6 +41,12 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 		return nil, err
 	}
 	d := &Device{QueueFamily: g.queueFamily, Name: g.name, log: inst.log, gpu: g, anisotropy: 1}
+	complete := false
+	defer func() {
+		if !complete && d.Handle != 0 {
+			d.Destroy()
+		}
+	}()
 	d.alloc.dev = d
 	// Enabling the swapchain extension without VK_KHR_surface on the
 	// instance violates VUID-vkCreateDevice-ppEnabledExtensionNames-01387,
@@ -106,7 +112,7 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 		return nil, err
 	}
 	runtime.KeepAlive(extNames)
-	if err := vk.LoadDevice(d.Handle); err != nil {
+	if err := vk.LoadDevice(inst.Handle); err != nil {
 		return nil, err
 	}
 	vk.VkGetDeviceQueue(d.Handle, g.queueFamily, 0, &d.Queue)
@@ -120,6 +126,7 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	}
 	d.log.Info("render: device created", "gpu", g.name, "api", vk.FormatVersion(g.props.ApiVersion),
 		"queueFamily", g.queueFamily, "portabilitySubset", d.portability)
+	complete = true
 	return d, nil
 }
 

@@ -177,7 +177,10 @@ func DefaultPost() PostSettings {
 // when the frame submits, so they cannot choose different post effects.
 // A change to Samples
 // takes effect on the next frame, which rebuilds the scene targets.
-func (g *Graphics) SetPost(p PostSettings) { g.post.settings = p }
+func (g *Graphics) SetPost(p PostSettings) {
+	g.requireTextureOwner(p.LUT)
+	g.post.settings = p
+}
 
 // Post returns the current settings.
 func (g *Graphics) Post() PostSettings { return g.post.settings }

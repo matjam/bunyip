@@ -65,11 +65,17 @@ func controls() *struct {
 
 // SetTitle changes the window's title.
 func (w *Window) SetTitle(title string) {
+	if w.parent != 0 {
+		return
+	}
 	w.nsWindow.Send(w.app.c.sel.setTitle, w.app.c.nsString(title))
 }
 
 // SetSizeLimits bounds the content size in points; zero lifts a bound.
 func (w *Window) SetSizeLimits(minW, minH, maxW, maxH int) {
+	if w.parent != 0 {
+		return
+	}
 	s := controls()
 	lo := nsSize{Width: float64(max(minW, 0)), Height: float64(max(minH, 0))}
 	hi := nsSize{Width: 1e7, Height: 1e7}
@@ -151,6 +157,9 @@ func (w *Window) nsImage(img image.Image) objc.ID {
 
 // SetIcon sets the application's Dock icon from an image.
 func (w *Window) SetIcon(img image.Image) {
+	if w.parent != 0 {
+		return
+	}
 	if img == nil {
 		return
 	}
@@ -204,6 +213,9 @@ func (w *Window) screenHeight() float64 {
 // SetPosition moves the window's frame so its top-left is at (x, y)
 // points from the screen's top-left.
 func (w *Window) SetPosition(x, y int) {
+	if w.parent != 0 {
+		return
+	}
 	frame := objc.Send[nsRect](w.nsWindow, w.app.c.sel.frame)
 	origin := nsPoint{X: float64(x), Y: w.screenHeight() - float64(y) - frame.Size.Height}
 	w.nsWindow.Send(controls().setFrameOrigin, origin)
@@ -212,12 +224,18 @@ func (w *Window) SetPosition(x, y int) {
 // Position returns the window frame's top-left in points from the
 // screen's top-left.
 func (w *Window) Position() (int, int) {
+	if w.parent != 0 {
+		return 0, 0
+	}
 	frame := objc.Send[nsRect](w.nsWindow, w.app.c.sel.frame)
 	return int(frame.Origin.X), int(w.screenHeight() - frame.Origin.Y - frame.Size.Height)
 }
 
 // SetAlwaysOnTop floats the window above other applications' windows.
 func (w *Window) SetAlwaysOnTop(on bool) error {
+	if w.parent != 0 {
+		return ErrUnsupported
+	}
 	level := 0 // NSNormalWindowLevel
 	if on {
 		level = 3 // NSFloatingWindowLevel

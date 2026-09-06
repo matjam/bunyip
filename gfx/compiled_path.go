@@ -41,7 +41,24 @@ type compiledPathPart struct {
 // CompilePath tessellates a path once using opts, independently of current
 // graphics state. DrawPath applies the current transform, camera, clipping,
 // layer, blend and shader. Empty paths compile successfully and draw nothing.
+// Paint textures and gradients must belong to this Graphics; foreign paints
+// return an error before any geometry is uploaded.
 func (g *Graphics) CompilePath(path *Path, opts PathOptions) (*CompiledPath, error) {
+	var paints []*Texture
+	if f := opts.Fill; f != nil {
+		paints = append(paints, f.Texture)
+		if f.Gradient != nil {
+			paints = append(paints, f.Gradient.tex)
+		}
+	}
+	if s := opts.Stroke; s != nil && s.Gradient != nil {
+		paints = append(paints, s.Gradient.tex)
+	}
+	for _, tex := range paints {
+		if err := g.textureOwnerError(tex); err != nil {
+			return nil, err
+		}
+	}
 	if path == nil {
 		return nil, fmt.Errorf("gfx: compile nil path")
 	}
@@ -117,6 +134,9 @@ func (c *CompiledPath) Destroy() {
 func (g *Graphics) DrawPath(path *CompiledPath) {
 	if path == nil {
 		return
+	}
+	if path.g != g && len(path.parts) > 0 {
+		panic("gfx: compiled path belongs to another Graphics")
 	}
 	for _, p := range path.parts {
 		g.DrawGeometry(p.texture, p.geometry)

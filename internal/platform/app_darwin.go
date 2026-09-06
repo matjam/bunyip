@@ -14,14 +14,18 @@ func init() {
 
 // App is the connection to the window system. Create one per process.
 type App struct {
-	c        *cocoa
-	nsApp    objc.ID
-	delegate objc.Class
-	view     objc.Class // BunyipView: NSView plus NSTextInputClient
-	tsel     textSel
-	windows  map[objc.ID]*Window
-	pending  []Event
-	mods     Mods
+	c           *cocoa
+	nsApp       objc.ID
+	delegate    objc.Class
+	view        objc.Class // BunyipView: NSView plus NSTextInputClient
+	tsel        textSel
+	windows     map[objc.ID]*Window
+	pending     []Event
+	mods        Mods
+	standalone  bool
+	hosted      bool
+	views       map[objc.ID]*Window
+	mouseTarget *Window
 }
 
 // NewApp initialises AppKit for a windowed application.
@@ -30,17 +34,14 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{c: c, windows: map[objc.ID]*Window{}}
+	a := &App{c: c, windows: map[objc.ID]*Window{}, views: map[objc.ID]*Window{}}
 	a.nsApp = objc.ID(c.NSApplication).Send(c.sel.sharedApplication)
-	a.nsApp.Send(c.sel.setActivationPolicy, nsApplicationActivationPolicyRegular)
 	if a.delegate, err = a.registerDelegateClass(); err != nil {
 		return nil, err
 	}
 	if a.view, err = a.registerViewClass(); err != nil {
 		return nil, err
 	}
-	a.nsApp.Send(c.sel.finishLaunching)
-	a.nsApp.Send(c.sel.activateIgnoringOtherApps, true)
 	return a, nil
 }
 
@@ -67,6 +68,7 @@ func (a *App) Poll(wait bool) []Event {
 		}
 	}
 	a.nsApp.Send(c.sel.updateWindows)
+	a.syncEmbedded()
 	return a.pending
 }
 

@@ -20,13 +20,16 @@
 // Voice.Seek waits for the block in flight, because it moves the
 // playhead being read.
 //
-// The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3) take the whole
+// The decoders (Decode, DecodeWAV, DecodeOGG, DecodeMP3, DecodeFLAC) take the whole
 // file as bytes. OpenMusic borrows a seekable reader; OpenMusicFile owns
 // a file and releases it after Music.Close joins decoding.
 //
-// OpenCapture records from the machine's default input into a ring the
+// OpenCapture records from a selected input into a ring the
 // game drains with Read. It is separate from the mix: what it records is
 // not played back unless the game plays it.
+// Record retains bounded PCM; RecordPCM and RecordWAV stream to borrowed
+// writers, and RecordWAVFile owns its output file. Stop joins capture and
+// output processing. PCM and Sound expose WriteWAV and SaveWAV for export.
 //
 // Playback advances only when an output device pulls mixed blocks.
 // Headless runs, Config.NoAudio and unavailable output devices leave
@@ -56,19 +59,24 @@ import (
 // also needs mixMu. Stream implementations must avoid lock cycles with
 // callers on other goroutines.
 type Mixer struct {
-	mu         sync.Mutex
-	mixMu      sync.Mutex // held across a block; guards playback position
-	rate       int
-	voices     []*Voice
-	master     float32
-	paused     bool
-	maxVoices  int
-	stopFrames int  // length of a stop's ramp to silence, about a millisecond
-	noDevice   bool // the run opened no audio device, so capture is refused
-	scratch    []float32
-	sendBuf    []float32
-	listener   Listener
-	finished   []func() // OnDone callbacks to run once the lock is released
+	deviceMu       sync.Mutex
+	deviceCond     *sync.Cond
+	changingDevice bool
+	output         *outputSession // deviceMu
+	activeOutput   *outputSession // mixMu: only this endpoint may advance playback
+	mu             sync.Mutex
+	mixMu          sync.Mutex // held across a block; guards playback position
+	rate           int
+	voices         []*Voice
+	master         float32
+	paused         bool
+	maxVoices      int
+	stopFrames     int  // length of a stop's ramp to silence, about a millisecond
+	noDevice       bool // the run opened no audio device, so capture is refused
+	scratch        []float32
+	sendBuf        []float32
+	listener       Listener
+	finished       []func() // OnDone callbacks to run once the lock is released
 
 	// The block being mixed. Only the mixer's thread touches these, under
 	// mixMu, and they are reused from block to block so mixing allocates
@@ -364,6 +372,10 @@ type voiceMix struct {
 // its own thread, through internal/hook.
 func (m *Mixer) mix(out []float32) {
 	m.mixMu.Lock()
+	m.mixLocked(out)
+}
+
+func (m *Mixer) mixLocked(out []float32) {
 	clear(out)
 	frames := len(out) / 2
 	send := m.snapshot(out)

@@ -29,6 +29,16 @@ func (d driver) FeedGamepad(i int, connected bool, name string, buttons [hook.Ga
 	d.s.feedGamepad(i, connected, name, buttons, axes)
 }
 
+func (d driver) FeedGamepadInfo(i int, info hook.GamepadInfo) {
+	if i < 0 || i >= MaxGamepads {
+		return
+	}
+	if !d.s.gamepads[i].Connected {
+		info = hook.GamepadInfo{}
+	}
+	d.s.gamepads[i].Info = GamepadInfo(info)
+}
+
 func (d driver) FeedChar(r rune)               { d.s.feedChar(r) }
 func (d driver) FeedComposition(text string)   { d.s.feedComposition(text) }
 func (d driver) FeedMouseMove(x, y float32)    { d.s.feedMouseMove(x, y) }

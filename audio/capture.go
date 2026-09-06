@@ -3,6 +3,7 @@ package audio
 import (
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -17,12 +18,16 @@ var ErrNoDevice = errors.New("audio: this run has no audio device")
 // CaptureOptions shape a capture stream. Zero values mean the defaults
 // noted.
 type CaptureOptions struct {
+	DeviceID string  // empty selects the system default input; see InputDevices
 	Rate     int     // samples per second; 0 is the mixer's rate
-	Channels int     // 0 is 1, mono
-	Buffer   float32 // seconds held before the oldest samples are dropped; 0 is 0.5
+	Channels int     // 1..32; 0 is 1, mono
+	Buffer   float32 // finite positive seconds held before dropping oldest samples; 0 is 0.5
 }
 
-// Capture is a running recording from the machine's default input. The
+var openCaptureInput = audioout.OpenCaptureDevice
+
+// Capture is a running recording from the input selected by CaptureOptions.
+// An empty DeviceID uses the machine's default input. The
 // device fills a ring buffer from its own thread and the game drains it
 // with Read, which does not wait for samples to arrive. It briefly
 // shares a mutex with the device's buffer writer. Samples
@@ -46,8 +51,8 @@ type Capture struct {
 	level atomic.Uint32 // the last block's RMS, as float32 bits
 }
 
-// OpenCapture starts recording from the machine's default input, the one
-// the desktop is set to. It returns an error when the run has no audio
+// OpenCapture starts recording from DeviceID or the system default input.
+// It returns an error when the run has no audio
 // device, when the operating system has no capture backend, or when the
 // device refuses to open, which is what happens on a machine with no
 // microphone and on macOS when the player has not granted microphone
@@ -62,22 +67,34 @@ func (m *Mixer) OpenCapture(opts CaptureOptions) (*Capture, error) {
 	if noDevice {
 		return nil, ErrNoDevice
 	}
-	if opts.Rate > 0 {
-		rate = opts.Rate
+	opts, err := normalizeCaptureOptions(opts, rate)
+	if err != nil {
+		return nil, err
 	}
-	channels := max(opts.Channels, 1)
-	seconds := opts.Buffer
-	if seconds <= 0 {
-		seconds = 0.5
-	}
-	c := &Capture{rate: rate, channels: channels,
-		ring: make([]float32, max(int(seconds*float32(rate))*channels, channels))}
-	dev, err := audioout.OpenCapture(rate, channels, c.write)
+	c := &Capture{rate: opts.Rate, channels: opts.Channels,
+		ring: make([]float32, max(int(float64(opts.Buffer)*float64(opts.Rate))*opts.Channels, opts.Channels))}
+	dev, err := openCaptureInput(opts.DeviceID, opts.Rate, opts.Channels, c.write)
 	if err != nil {
 		return nil, err
 	}
 	c.dev = dev
 	return c, nil
+}
+
+func normalizeCaptureOptions(opts CaptureOptions, rate int) (CaptureOptions, error) {
+	if opts.Rate == 0 {
+		opts.Rate = rate
+	}
+	if opts.Channels == 0 {
+		opts.Channels = 1
+	}
+	if opts.Buffer == 0 {
+		opts.Buffer = 0.5
+	}
+	if opts.Rate <= 0 || opts.Channels < 1 || opts.Channels > 32 || uint64(opts.Rate) > math.MaxUint32/4/uint64(opts.Channels) || !finite(opts.Buffer) || opts.Buffer <= 0 || float64(opts.Buffer)*float64(opts.Rate)*float64(opts.Channels) >= float64(math.MaxInt/4) || strings.ContainsRune(opts.DeviceID, 0) {
+		return opts, errors.New("audio: invalid capture device, rate, channels or buffer duration")
+	}
+	return opts, nil
 }
 
 // Rate is the sample rate the stream records at.

@@ -85,7 +85,7 @@ func TestAutoHyphenateFollowsLanguage(t *testing.T) {
 	const word = "Bundesregierung"
 	width, _ := f.Measure(word, TextOptions{})
 	de := TextOptions{Width: width * 0.7, Language: "de", AutoHyphenate: true}
-	lines := f.Layout(word, de)
+	lines := layoutStrings(t, f, word, de)
 	if len(lines) != 2 || lines[0] != "Bundesre" {
 		t.Errorf("German auto-hyphenation gave %q, want a break at Bundesre-", lines)
 	}
@@ -93,7 +93,7 @@ func TestAutoHyphenateFollowsLanguage(t *testing.T) {
 	// where it overflows instead.
 	none := de
 	none.Language = "kl"
-	if lines := f.Layout(word, none); slices.Equal(lines, f.Layout(word, de)) {
+	if lines := layoutStrings(t, f, word, none); slices.Equal(lines, layoutStrings(t, f, word, de)) {
 		t.Errorf("a language without patterns hyphenated %q into %q", word, lines)
 	}
 	// The explicit hyphenator wins over the language.
@@ -102,14 +102,14 @@ func TestAutoHyphenateFollowsLanguage(t *testing.T) {
 	english := de
 	english.Language, english.AutoHyphenate = "", false
 	english.Hyphenate = EnglishHyphenator()
-	if !slices.Equal(f.Layout(word, both), f.Layout(word, english)) {
-		t.Errorf("Hyphenate did not win over Language: %q vs %q", f.Layout(word, both), f.Layout(word, english))
+	if !slices.Equal(layoutStrings(t, f, word, both), layoutStrings(t, f, word, english)) {
+		t.Errorf("Hyphenate did not win over Language: %q vs %q", layoutStrings(t, f, word, both), layoutStrings(t, f, word, english))
 	}
-	if slices.Equal(f.Layout(word, english), lines) {
+	if slices.Equal(layoutStrings(t, f, word, english), lines) {
 		t.Errorf("the English and German hyphenators break %q the same way, so the case proves nothing", word)
 	}
 	// The two are cached apart, so the German lines are still German.
-	if lines2 := f.Layout(word, de); !slices.Equal(lines, lines2) {
+	if lines2 := layoutStrings(t, f, word, de); !slices.Equal(lines, lines2) {
 		t.Errorf("the language cache mixed hyphenators: %q then %q", lines, lines2)
 	}
 }

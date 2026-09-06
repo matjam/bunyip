@@ -44,6 +44,7 @@ const MaxGamepads = 4
 
 // Gamepad is one controller's current state.
 type Gamepad struct {
+	Info                            GamepadInfo               // native metadata and mapped capabilities; empty when disconnected
 	Connected                       bool                      // controller is currently present
 	Name                            string                    // device-provided display name
 	Buttons                         [GamepadButtonCount]bool  // held buttons

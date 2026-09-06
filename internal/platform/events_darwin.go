@@ -29,7 +29,7 @@ func (a *App) handleEvent(ev objc.ID) bool {
 		a.push(Event{Kind: EventWake})
 		return false
 	}
-	w := a.windows[ev.Send(c.sel.window)]
+	w := a.windowForEvent(ev, kind)
 	if w == nil {
 		return true
 	}
@@ -153,6 +153,7 @@ func modsFromFlags(flags uint) Mods {
 // content view; AppKit's origin is bottom-left.
 func (a *App) mousePos(w *Window, ev objc.ID) (float64, float64) {
 	p := objc.Send[nsPoint](ev, a.c.sel.locationInWindow)
+	p = objc.Send[nsPoint](w.view, objc.RegisterName("convertPoint:fromView:"), p, objc.ID(0))
 	return p.X, float64(w.height) - p.Y
 }
 

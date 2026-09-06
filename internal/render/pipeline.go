@@ -30,6 +30,7 @@ type PipelineDesc struct {
 	// so a pass that changes sample count needs its own pipelines.
 	Samples        vk.VkSampleCountFlagBits
 	NoColor        bool    // depth-only pass (shadow maps)
+	NoColorWrite   bool    // keep the colour attachment but disable its writes
 	DepthBias      float32 // constant depth bias, for shadow passes
 	DepthSlopeBias float32
 	// DepthClamp clamps a fragment's depth to the viewport's range instead
@@ -72,13 +73,16 @@ var PremultipliedOver = BlendFactors{
 }
 
 // StencilState is a stencil test applied to both faces: fragments pass
-// when (stencil & 0xff) Compare Ref, and passing fragments apply Pass
-// to the stored value when Write is set.
+// using Vulkan's comparison of masked Ref against masked stored value.
+// Pass, Fail and DepthFail update the stored value when Write is set.
+// Zero masks mean all eight bits, preserving the ordinary full-mask case.
 type StencilState struct {
-	Compare vk.VkCompareOp
-	Ref     uint32
-	Write   bool
-	Pass    vk.VkStencilOp
+	Compare             vk.VkCompareOp
+	Ref                 uint32
+	Write               bool
+	Pass                vk.VkStencilOp
+	Fail, DepthFail     vk.VkStencilOp
+	ReadMask, WriteMask uint32 // zero means all eight bits; Write controls updates
 }
 
 // StencilWrite marks every fragment drawn with ref.
@@ -197,16 +201,25 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 	}
 	if s := desc.Stencil; s != nil && HasStencil(desc.DepthFormat) {
 		op := vk.VkStencilOpState{
-			FailOp: vk.VK_STENCIL_OP_KEEP, PassOp: s.Pass, DepthFailOp: vk.VK_STENCIL_OP_KEEP,
-			CompareOp: s.Compare, CompareMask: 0xff, Reference: s.Ref,
+			FailOp: s.Fail, PassOp: s.Pass, DepthFailOp: s.DepthFail,
+			CompareOp: s.Compare, CompareMask: s.ReadMask, Reference: s.Ref,
+		}
+		if op.CompareMask == 0 {
+			op.CompareMask = 0xff
 		}
 		if s.Write {
-			op.WriteMask = 0xff
+			op.WriteMask = s.WriteMask
+			if op.WriteMask == 0 {
+				op.WriteMask = 0xff
+			}
 		}
 		depth.StencilTestEnable = vk.VK_TRUE
 		depth.Front, depth.Back = op, op
 	}
 	attachments := []vk.VkPipelineColorBlendAttachmentState{blendState(desc.Blend, desc.Factors)}
+	if desc.NoColorWrite {
+		attachments[0].ColorWriteMask = 0
+	}
 	formats := []vk.VkFormat{desc.ColorFormat}
 	for _, a := range desc.ExtraColor {
 		attachments = append(attachments, blendState(a.Blend, a.Factors))

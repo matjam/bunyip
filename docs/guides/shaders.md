@@ -48,9 +48,14 @@ Then in the game:
 
 ```go
 wave, err := ctx.Gfx.NewShader(waveSPV)
+if err != nil {
+	return err
+}
 wave.SetImage(0, noise)
 ...
-wave.SetUniforms(struct{ Amplitude, Frequency float32 }{0.03, 24})
+if err := wave.SetUniforms(struct{ Amplitude, Frequency float32 }{0.03, 24}); err != nil {
+	return err
+}
 ctx.Gfx.Shaded(wave, func() {
 	ctx.Gfx.Draw(tex, sprite)
 })
@@ -61,16 +66,43 @@ sets it as state, and nil restores the default. Each draw keeps the
 uniform values and images that were set when it was queued, so changing
 them between draws is cheap.
 
-Uniforms are a struct, or a pointer to a struct, copied byte for byte.
-Match GLSL's std140 offsets with explicit Go padding: scalars align to
-4 bytes, `lin.Vec2` to 8, and `lin.Vec3`, `lin.Vec4` and `lin.Mat4`
-to 16. Go only aligns these float32 structs to 4 bytes. For example,
-`struct{ Gain float32; _ [3]float32; Tint lin.Vec4 }` places `Tint` at
-byte 16. A scalar may fill the fourth word after a `Vec3`; a subsequent
-vector may need padding. Arrays also need std140 strides, including
-16 bytes per scalar element. Use only fixed-size numeric fields and
-padding. The engine does not convert or validate the layout, and
-`SetUniforms` panics for a block outside 1..1024 bytes.
+`SetUniforms` takes a struct or non-nil pointer to one and packs std140
+offsets, array strides and zero padding automatically. Exported fields follow
+declaration order. Use `float32`, `int32`, `uint32` and `bool` for GLSL scalars;
+`lin.Vec2`, `lin.Vec3`, `lin.Vec4` and `gfx.Color` for float vectors; and
+`lin.Mat3` or `lin.Mat4` for column-major matrices. Fixed arrays and nested
+structs work recursively. Named scalar types keep their scalar representation.
+
+For example, these declarations match without padding fields:
+
+```glsl
+UNIFORMS uniform Params {
+    vec3 direction;
+    float strength;
+    float weights[2];
+    mat3 basis;
+} u;
+```
+
+```go
+func setEffect(shader *gfx.Shader) error {
+	return shader.SetUniforms(struct {
+		Direction lin.Vec3
+		Strength  float32
+		Weights   [2]float32
+		Basis     lin.Mat3
+	}{lin.V3(0, 1, 0), 0.5, [2]float32{0.25, 0.75}, lin.Mat3{1, 0, 0, 0, 1, 0, 0, 0, 1}})
+}
+```
+
+An array such as `[4]float32` means a GLSL scalar array with 16-byte element
+strides, not a `vec4`; use `lin.Vec4` for that. The caller matches GLSL field
+order and types. The engine validates the Go representation and packed size,
+but does not inspect the shader's declarations. Strings, slices, pointers
+inside a block, unexported fields, `int` and `float64` return errors. Blocks
+must contain 1..1024 packed bytes. Errors leave the previous uniforms intact;
+successful calls copy the values, so callers can reuse their input struct.
+GPU arena allocation or upload failures are reported through frame submission.
 
 ## A mesh shader
 
@@ -109,8 +141,13 @@ create it with `NewMeshShader`, and set it on a material:
 
 ```go
 lava, err := ctx.Gfx.NewMeshShader(lavaSPV)
+if err != nil {
+	return err
+}
 lava.SetImage(0, noise)
-lava.SetUniforms(struct{ Heat float32 }{1})
+if err := lava.SetUniforms(struct{ Heat float32 }{1}); err != nil {
+	return err
+}
 ctx.Gfx.DrawMesh(slab, gfx.Material{Shader: lava}, model)
 ```
 

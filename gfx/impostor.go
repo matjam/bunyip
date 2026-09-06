@@ -128,7 +128,11 @@ func (im *Impostor) Destroy() {
 // The colour of each view comes from the model with its own materials,
 // and its shape from a second pass that draws the model unlit and white,
 // so the atlas is a hard cutout with no background bleeding into it.
+// A model or material resource from another Graphics returns an error.
 func (g *Graphics) BakeImpostor(m *Model, opts ImpostorOptions) (*Impostor, error) {
+	if err := g.modelOwnerError(m, true); err != nil {
+		return nil, err
+	}
 	if m == nil || len(m.Parts) == 0 {
 		return nil, fmt.Errorf("gfx: an impostor needs a model with parts")
 	}
@@ -323,6 +327,7 @@ func (g *Graphics) DrawImpostor(im *Impostor, pos lin.Vec3, yaw float32, tint Co
 	if im == nil || im.tex == nil {
 		return
 	}
+	g.requireTextureOwner(im.tex)
 	q := g.cur
 	q.ensureCamera()
 	k := im.view(q.camera.Position.Sub(pos), yaw)
@@ -345,6 +350,10 @@ func (g *Graphics) DrawImpostor(im *Impostor, pos lin.Vec3, yaw float32, tint Co
 // at any distance, and a nil model draws the impostor at any distance,
 // so a game can bake lazily and still call this every frame.
 func (g *Graphics) DrawModelImpostor(m *Model, im *Impostor, t Transform) {
+	g.requireModelOwner(m, true)
+	if im != nil {
+		g.requireTextureOwner(im.tex)
+	}
 	q := g.cur
 	q.ensureCamera()
 	pos := t.Position

@@ -31,7 +31,7 @@ type audioStreamBasicDescription struct {
 type auRenderCallbackStruct struct {
 	_      structs.HostLayout
 	Proc   uintptr
-	RefCon unsafe.Pointer
+	RefCon uintptr // opaque registry ID, not a Go pointer
 }
 
 type audioBuffer struct {
@@ -84,7 +84,7 @@ func loadAudioToolbox() error {
 	loadOnce.Do(func() {
 		lib, err := purego.Dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", purego.RTLD_NOW|purego.RTLD_GLOBAL)
 		if err != nil {
-			loadErr = fmt.Errorf("audioout: load AudioToolbox: %w", err)
+			loadErr = fmt.Errorf("%w: load AudioToolbox: %v", ErrUnsupported, err)
 			return
 		}
 		purego.RegisterLibFunc(&audioComponentFindNext, lib, "AudioComponentFindNext")
@@ -102,14 +102,21 @@ func loadAudioToolbox() error {
 
 // Device is a running default-output audio unit.
 type Device struct {
-	Rate     int
-	unit     uintptr
-	id       uintptr
-	callback Callback
+	closeOnce    sync.Once
+	queue        uintptr
+	queueMu      sync.Mutex
+	queueStopped bool
+	Rate         int
+	unit         uintptr
+	id           uintptr
+	callback     Callback
 }
 
 // Open starts the default output at rate Hz, stereo float32.
-func Open(rate int, cb Callback) (*Device, error) {
+func openDevice(id string, rate int, cb Callback) (*Device, error) {
+	if id != "" {
+		return openQueueOutput(id, rate, cb)
+	}
 	if err := loadAudioToolbox(); err != nil {
 		return nil, err
 	}
@@ -136,7 +143,7 @@ func Open(rate int, cb Callback) (*Device, error) {
 	nextID++
 	devices[d.id] = d
 	devicesMu.Unlock()
-	cbs := auRenderCallbackStruct{Proc: renderCallback, RefCon: *(*unsafe.Pointer)(unsafe.Pointer(&d.id))}
+	cbs := auRenderCallbackStruct{Proc: renderCallback, RefCon: d.id}
 	if st := audioUnitSetProperty(d.unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, unsafe.Pointer(&cbs), uint32(unsafe.Sizeof(cbs))); st != 0 {
 		d.Close()
 		return nil, fmt.Errorf("audioout: set render callback: %d", st)
@@ -154,6 +161,17 @@ func Open(rate int, cb Callback) (*Device, error) {
 
 // Close stops and releases the unit.
 func (d *Device) Close() {
+	d.closeOnce.Do(d.close)
+}
+
+func (d *Device) close() {
+	if d.queue != 0 {
+		d.queueMu.Lock()
+		d.queueStopped = true
+		d.queueMu.Unlock()
+		audioQueueStop(d.queue, 1)
+		audioQueueDispose(d.queue, 1)
+	}
 	if d.unit != 0 {
 		audioOutputUnitStop(d.unit)
 		audioUnitUninitialize(d.unit)
@@ -167,8 +185,7 @@ func (d *Device) Close() {
 
 // onRender runs on Core Audio's real-time thread. It fills every buffer in
 // the list from the device's callback and writes silence if the device is gone.
-func onRender(refCon unsafe.Pointer, _ *uint32, _ unsafe.Pointer, _ uint32, frames uint32, data *audioBufferList) int32 {
-	id := *(*uintptr)(unsafe.Pointer(&refCon))
+func onRender(id uintptr, _ *uint32, _ unsafe.Pointer, _ uint32, frames uint32, data *audioBufferList) int32 {
 	devicesMu.Lock()
 	d := devices[id]
 	devicesMu.Unlock()

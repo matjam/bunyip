@@ -140,7 +140,7 @@ func TestTextLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Destroy()
-	lines := f.Layout("the quick brown fox jumps over the lazy dog", TextOptions{Width: 120})
+	lines := layoutStrings(t, f, "the quick brown fox jumps over the lazy dog", TextOptions{Width: 120})
 	if len(lines) < 3 {
 		t.Errorf("expected wrapping into several lines, got %q", lines)
 	}
@@ -149,7 +149,7 @@ func TestTextLayout(t *testing.T) {
 			t.Errorf("line %q is %.0f wide", l, w)
 		}
 	}
-	if got := f.Layout("a\nb", TextOptions{}); len(got) != 2 {
+	if got := layoutStrings(t, f, "a\nb", TextOptions{}); len(got) != 2 {
 		t.Errorf("newline split: %q", got)
 	}
 	w, h := f.Measure("hello\nworld", TextOptions{})

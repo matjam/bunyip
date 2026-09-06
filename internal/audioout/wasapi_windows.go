@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -25,7 +26,7 @@ var (
 	avrt                  = syscall.NewLazyDLL("avrt.dll")
 	procAvSetMmThreadChar = avrt.NewProc("AvSetMmThreadCharacteristicsW")
 	procAvRevertMmThread  = avrt.NewProc("AvRevertMmThreadCharacteristics")
-	errUnsupported        = errors.New("audioout: WASAPI unavailable")
+	errUnsupported        = ErrUnsupported
 
 	// proAudio is the scheduler class an audio thread asks for, so the
 	// output and capture loops are not descheduled mid-buffer.
@@ -64,9 +65,23 @@ const (
 // index.
 type comObject struct{ vtbl *[64]uintptr }
 
+// call forwards native arguments through a Go wrapper. The directive makes
+// Go pointers converted by callers escape and remain live across SyscallN.
+//
+//go:uintptrescapes
 func (o *comObject) call(index int, args ...uintptr) uintptr {
-	all := append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)
-	r, _, _ := syscall.SyscallN(o.vtbl[index], all...)
+	r := callCOM(o.vtbl[index], uintptr(unsafe.Pointer(o)), args...)
+	runtime.KeepAlive(o)
+	return r
+}
+
+// callCOM also makes a Go-owned synthetic receiver escape in native tests.
+// Production receivers point to COM-owned memory.
+//
+//go:uintptrescapes
+func callCOM(method, object uintptr, args ...uintptr) uintptr {
+	all := append([]uintptr{object}, args...)
+	r, _, _ := syscall.SyscallN(method, all...)
 	return r
 }
 
@@ -87,32 +102,52 @@ type waveFormatExtensible struct {
 
 // Device is an open WASAPI output stream.
 type Device struct {
-	Rate    int
-	client  *comObject
-	render  *comObject
-	event   uintptr
-	stop    chan struct{}
-	done    chan struct{}
-	cb      Callback
-	frames  uint32
-	scratch []float32
+	closeOnce sync.Once
+	Rate      int
+	client    *comObject
+	render    *comObject
+	event     uintptr
+	stop      chan struct{}
+	done      chan struct{}
+	cb        Callback
+	frames    uint32
+	scratch   []float32
 }
 
 // Open starts stereo float32 output at rate, calling cb for frames.
-func Open(rate int, cb Callback) (*Device, error) {
-	if procCoCreateInstance.Find() != nil {
-		return nil, errUnsupported
+func openDevice(id string, rate int, cb Callback) (*Device, error) {
+	type result struct {
+		dev *Device
+		err error
 	}
-	procCoInitializeEx.Call(0, coinitMultithreaded)
-	var enum *comObject
-	if hr, _, _ := procCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidMMDeviceEnumerator)), 0, clsctxAll,
-		uintptr(unsafe.Pointer(&iidIMMDeviceEnumerator)), uintptr(unsafe.Pointer(&enum))); int32(hr) < 0 {
-		return nil, fmt.Errorf("audioout: CoCreateInstance(MMDeviceEnumerator): %#x", hr)
+	ready := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := startCOM(); err != nil {
+			ready <- result{err: err}
+			return
+		}
+		defer procCoUninitialize.Call()
+		d, err := openWASAPI(id, rate, cb)
+		ready <- result{d, err}
+		if err == nil {
+			d.loop()
+		}
+	}()
+	r := <-ready
+	return r.dev, r.err
+}
+
+func openWASAPI(id string, rate int, cb Callback) (*Device, error) {
+	enum, err := createWASAPIEnumerator()
+	if err != nil {
+		return nil, err
 	}
 	defer enum.release()
-	var dev *comObject
-	if hr := enum.call(4, eRender, eConsole, uintptr(unsafe.Pointer(&dev))); int32(hr) < 0 { // GetDefaultAudioEndpoint
-		return nil, fmt.Errorf("audioout: GetDefaultAudioEndpoint: %#x", hr)
+	dev, err := endpoint(enum, id, eRender)
+	if err != nil {
+		return nil, err
 	}
 	defer dev.release()
 	var client *comObject
@@ -130,55 +165,77 @@ func Open(rate int, cb Callback) (*Device, error) {
 		return nil, fmt.Errorf("audioout: IAudioClient.Initialize: %#x", hr)
 	}
 	var frames uint32
-	client.call(4, uintptr(unsafe.Pointer(&frames))) // GetBufferSize
-	event, _, _ := procCreateEventW.Call(0, 0, 0, 0)
+	if hr := client.call(4, uintptr(unsafe.Pointer(&frames))); int32(hr) < 0 || frames == 0 {
+		client.release()
+		return nil, fmt.Errorf("audioout: GetBufferSize: %#x, %d frames", hr, frames)
+	}
+	event := createAudioEvent()
 	if event == 0 {
 		client.release()
 		return nil, errors.New("audioout: CreateEvent failed")
 	}
 	if hr := client.call(13, event); int32(hr) < 0 { // SetEventHandle
 		client.release()
+		closeAudioEvent(event)
 		return nil, fmt.Errorf("audioout: SetEventHandle: %#x", hr)
 	}
 	var render *comObject
 	if hr := client.call(14, uintptr(unsafe.Pointer(&iidIAudioRenderClient)), uintptr(unsafe.Pointer(&render))); int32(hr) < 0 { // GetService
 		client.release()
+		closeAudioEvent(event)
 		return nil, fmt.Errorf("audioout: GetService(IAudioRenderClient): %#x", hr)
 	}
 	d := &Device{Rate: rate, client: client, render: render, event: event, stop: make(chan struct{}), done: make(chan struct{}), cb: cb, frames: frames}
-	d.fill()                                  // prime the buffer before starting
+	if err := d.fill(); err != nil {
+		render.release()
+		client.release()
+		closeAudioEvent(event)
+		return nil, fmt.Errorf("audioout: prime output: %w", err)
+	}
 	if hr := client.call(10); int32(hr) < 0 { // Start
 		// Not Close: that waits for the loop goroutine, which has not
 		// been started, so it would wait forever.
 		render.release()
 		client.release()
-		procCloseHandle.Call(event)
+		closeAudioEvent(event)
 		return nil, fmt.Errorf("audioout: IAudioClient.Start: %#x", hr)
 	}
-	go d.loop()
 	return d, nil
 }
 
 // fill writes as many frames as the buffer has room for.
-func (d *Device) fill() {
+func (d *Device) fill() error {
 	var padding uint32
-	d.client.call(6, uintptr(unsafe.Pointer(&padding))) // GetCurrentPadding
+	if hr := d.client.call(6, uintptr(unsafe.Pointer(&padding))); int32(hr) < 0 {
+		return fmt.Errorf("audioout: GetCurrentPadding: %#x", hr)
+	}
+	if padding > d.frames {
+		return fmt.Errorf("audioout: invalid output padding %d > %d", padding, d.frames)
+	}
 	avail := d.frames - padding
 	if avail == 0 {
-		return
+		return nil
 	}
 	var data *float32
 	if hr := d.render.call(3, uintptr(avail), uintptr(unsafe.Pointer(&data))); int32(hr) < 0 || data == nil { // GetBuffer
-		return
+		return fmt.Errorf("audioout: GetBuffer: %#x", hr)
 	}
 	out := unsafe.Slice(data, int(avail)*2)
 	d.cb(out)
-	d.render.call(4, uintptr(avail), 0) // ReleaseBuffer
+	if hr := d.render.call(4, uintptr(avail), 0); int32(hr) < 0 {
+		return fmt.Errorf("audioout: ReleaseBuffer: %#x", hr)
+	}
+	return nil
 }
 
 func (d *Device) loop() {
-	runtime.LockOSThread()
 	defer close(d.done)
+	defer func() {
+		d.client.call(11)
+		d.render.release()
+		d.client.release()
+		closeAudioEvent(d.event)
+	}()
 	var taskIndex uint32
 	task, _, _ := procAvSetMmThreadChar.Call(uintptr(unsafe.Pointer(proAudio)), uintptr(unsafe.Pointer(&taskIndex)))
 	if task != 0 {
@@ -191,23 +248,13 @@ func (d *Device) loop() {
 			return
 		default:
 		}
-		d.fill()
+		if d.fill() != nil {
+			return
+		}
 	}
 }
 
 // Close stops the stream.
 func (d *Device) Close() {
-	if d.client == nil {
-		return
-	}
-	close(d.stop)
-	procSetEvent.Call(d.event)
-	<-d.done
-	d.client.call(11) // Stop
-	if d.render != nil {
-		d.render.release()
-	}
-	d.client.release()
-	procCloseHandle.Call(d.event)
-	d.client, d.render = nil, nil
+	d.closeOnce.Do(func() { close(d.stop); procSetEvent.Call(d.event); <-d.done })
 }

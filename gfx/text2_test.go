@@ -84,7 +84,7 @@ func TestLetterSpacingJustifyRich(t *testing.T) {
 		t.Errorf("justified first line ends at x %d, want near 104", right)
 	}
 	// Hyphenation splits a long word across the wrap.
-	lines := f.Layout("supercalifragilistic", TextOptions{Width: 60, Hyphenate: EnglishHyphenator()})
+	lines := layoutStrings(t, f, "supercalifragilistic", TextOptions{Width: 60, Hyphenate: EnglishHyphenator()})
 	if len(lines) < 2 {
 		t.Errorf("hyphenated wrap gave %d lines: %q", len(lines), lines)
 	}

@@ -2,9 +2,11 @@ package gfx
 
 import (
 	"cmp"
+	"fmt"
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/language"
@@ -42,9 +44,13 @@ const (
 
 // TextOptions lays out text.
 type TextOptions struct {
-	Width       float32 // wrap width in view units (column height for vertical text); zero means no wrapping
-	Align       Align
-	LineSpacing float32 // multiplier; zero means 1
+	Underline     bool
+	Strikethrough bool
+	OutlineWidth  float32 // view units; zero disables the outline
+	OutlineColor  Color   // zero follows the effective text colour
+	Width         float32 // wrap width in view units (column height for vertical text); zero means no wrapping
+	Align         Align
+	LineSpacing   float32 // multiplier; zero means 1
 	// Size is the em size to draw at; zero means the font's own. SDF fonts
 	// stay crisp at any size; bitmap fonts resample their atlas.
 	Size float32
@@ -270,17 +276,37 @@ type Glyph struct {
 
 // Shape lays out one line of text and returns its glyphs in visual order,
 // for drawing them yourself with Draw and the font's Texture, or for
-// hit-testing.
-func (f *Font) Shape(text string, opts TextOptions) []Glyph {
+// hit-testing. This low-level operation ignores block alignment, wrapping and
+// decorations; Layout handles those. Rasterization and upload errors are
+// returned explicitly. The source must be one valid UTF-8 line.
+func (f *Font) Shape(text string, opts TextOptions) ([]Glyph, error) {
+	if f == nil || f.destroyed {
+		return nil, fmt.Errorf("gfx: shaping requires a live font")
+	}
+	if !utf8.ValidString(text) || strings.Contains(text, "\n") {
+		return nil, fmt.Errorf("gfx: Shape requires one valid UTF-8 line; use Layout for blocks")
+	}
+	if err := validateTextOptions(opts); err != nil {
+		return nil, err
+	}
+	if _, err := validateTextArithmetic(f, []*Font{f}, nil, opts, text); err != nil {
+		return nil, err
+	}
+	f.glyphErr = nil
 	opts = opts.resolved()
 	var out []Glyph
 	for _, line := range f.wrap(text, opts, 0) {
 		out = f.appendLine(out, text, line, lin.V2(0, f.Ascent), 0)
 	}
 	if f.dirty {
-		_ = f.flush()
+		if err := f.flush(); err != nil {
+			return nil, err
+		}
 	}
-	return out
+	if f.glyphErr != nil {
+		return nil, f.glyphErr
+	}
+	return out, nil
 }
 
 // endsSoftHyphen reports whether a line's last glyph sits on a soft
@@ -407,6 +433,10 @@ func (g *Graphics) DrawText(f *Font, text string, x, y float32, c Color) {
 // DrawGlyphs draws glyphs from Shape with the text's origin at (x, y),
 // scaled by scale (1, or zero, for the font's own size).
 func (g *Graphics) DrawGlyphs(f *Font, glyphs []Glyph, x, y, scale float32, c Color) {
+	if f == nil || f.destroyed || f.g != g {
+		g.recordDrawError(fmt.Errorf("gfx: drawing glyphs requires a live font owned by this Graphics"))
+		return
+	}
 	k := scale
 	if k <= 0 {
 		k = 1
@@ -421,48 +451,6 @@ func (g *Graphics) DrawGlyphs(f *Font, glyphs []Glyph, x, y, scale float32, c Co
 		}
 		g.Draw(f.atlas, Sprite{Pos: lin.V2(x+gl.Pos.X*k, y+gl.Pos.Y*k), Size: gl.Size.Mul(k), UV0: gl.UV0, UV1: gl.UV1, Color: tint})
 	}
-}
-
-// Layout splits text into the lines DrawTextBlock would draw, breaking
-// by the Unicode line-breaking rules at the options' width. A line
-// broken by a Hyphenator is given without the soft hyphens the
-// hyphenator inserted and without the hyphen drawn at the break.
-func (f *Font) Layout(text string, opts TextOptions) []string {
-	opts = opts.resolved()
-	var out []string
-	for para := range strings.SplitSeq(text, "\n") {
-		// The lines index the shaped text, which carries the soft hyphens
-		// hyphenation inserted, so they are cut from that and the soft
-		// hyphens taken back out.
-		lines, shaped := f.wrapText(para, opts, opts.Width)
-		if len(lines) == 0 {
-			out = append(out, "")
-			continue
-		}
-		var runes []rune
-		for _, line := range lines {
-			lo, hi := -1, 0
-			for _, run := range line {
-				if lo < 0 || run.Runes.Offset < lo {
-					lo = run.Runes.Offset
-				}
-				hi = max(hi, run.Runes.Offset+run.Runes.Count)
-			}
-			if lo < 0 {
-				out = append(out, "")
-				continue
-			}
-			if runes == nil {
-				runes = []rune(shaped)
-			}
-			s := string(runes[lo:min(hi, len(runes))])
-			for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-				s = s[:len(s)-1]
-			}
-			out = append(out, strings.ReplaceAll(s, "­", ""))
-		}
-	}
-	return out
 }
 
 // Measure returns the size text takes when drawn with the options: one
@@ -507,12 +495,6 @@ func (f *Font) Measure(text string, opts TextOptions) (w, h float32) {
 // and Angle rotates it about (x, y). Vertical text runs down from (x, y)
 // in columns stepping left, so x is the right edge.
 func (g *Graphics) DrawTextBlock(f *Font, text string, x, y float32, opts TextOptions, c Color) {
-	if opts.Angle != 0 {
-		g.Transformed(lin.Translate2(x, y).Mul(lin.Rotate2(opts.Angle)).Mul(lin.Translate2(-x, -y)), func() {
-			g.drawLines(f, text, x, y, opts, c)
-		})
-		return
-	}
 	g.drawLines(f, text, x, y, opts, c)
 }
 
@@ -520,11 +502,15 @@ func (g *Graphics) DrawTextBlock(f *Font, text string, x, y float32, opts TextOp
 // the layout are uploaded before the sprites are queued, so a glyph first
 // drawn this frame is in the atlas the frame samples.
 func (g *Graphics) drawLines(f *Font, text string, x, y float32, opts TextOptions, c Color) {
-	glyphs := f.blockGlyphs(text, opts)
-	if f.dirty {
-		_ = f.flush()
+	if !g.checkDrawFont(f) {
+		return
 	}
-	g.DrawGlyphs(f, glyphs, x, y, f.sizeScale(opts.Size), c)
+	l, err := f.Layout(text, opts)
+	if err != nil {
+		g.recordDrawError(err)
+		return
+	}
+	g.DrawTextLayout(l, x, y, c)
 }
 
 // blockGlyphs returns a block's glyphs positioned relative to its origin

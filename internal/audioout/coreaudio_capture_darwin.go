@@ -37,12 +37,15 @@ type audioQueueBuffer struct {
 var (
 	captureOnce             sync.Once
 	captureErr              error
-	audioQueueNewInput      func(format *audioStreamBasicDescription, callback uintptr, userData unsafe.Pointer, runLoop uintptr, runLoopMode uintptr, flags uint32, queue *uintptr) int32
+	audioQueueNewInput      func(format *audioStreamBasicDescription, callback uintptr, userData uintptr, runLoop uintptr, runLoopMode uintptr, flags uint32, queue *uintptr) int32
 	audioQueueAllocBuffer   func(queue uintptr, size uint32, buffer **audioQueueBuffer) int32
 	audioQueueEnqueueBuffer func(queue uintptr, buffer *audioQueueBuffer, packets uint32, descs unsafe.Pointer) int32
 	audioQueueStart         func(queue uintptr, startTime unsafe.Pointer) int32
 	audioQueueStop          func(queue uintptr, immediate uint32) int32
 	audioQueueDispose       func(queue uintptr, immediate uint32) int32
+	audioQueueSetProperty   func(queue uintptr, property uint32, data unsafe.Pointer, size uint32) int32
+	audioQueueNewOutput     func(format *audioStreamBasicDescription, callback uintptr, userData uintptr, runLoop uintptr, runLoopMode uintptr, flags uint32, queue *uintptr) int32
+	queueOutputCallback     uintptr
 	inputCallback           uintptr
 
 	// captures lets the C callback find its device without passing a Go
@@ -56,7 +59,7 @@ func loadAudioQueue() error {
 	captureOnce.Do(func() {
 		lib, err := purego.Dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", purego.RTLD_NOW|purego.RTLD_GLOBAL)
 		if err != nil {
-			captureErr = fmt.Errorf("audioout: load AudioToolbox: %w", err)
+			captureErr = fmt.Errorf("%w: load AudioToolbox: %v", ErrUnsupported, err)
 			return
 		}
 		purego.RegisterLibFunc(&audioQueueNewInput, lib, "AudioQueueNewInput")
@@ -65,7 +68,10 @@ func loadAudioQueue() error {
 		purego.RegisterLibFunc(&audioQueueStart, lib, "AudioQueueStart")
 		purego.RegisterLibFunc(&audioQueueStop, lib, "AudioQueueStop")
 		purego.RegisterLibFunc(&audioQueueDispose, lib, "AudioQueueDispose")
+		purego.RegisterLibFunc(&audioQueueSetProperty, lib, "AudioQueueSetProperty")
+		purego.RegisterLibFunc(&audioQueueNewOutput, lib, "AudioQueueNewOutput")
 		inputCallback = purego.NewCallback(onCapture)
+		queueOutputCallback = purego.NewCallback(onQueueOutput)
 	})
 	return captureErr
 }
@@ -92,7 +98,7 @@ const (
 
 // OpenCapture starts recording interleaved float32 at rate from the
 // default input, calling cb from the queue's own thread.
-func OpenCapture(rate, channels int, cb CaptureCallback) (*CaptureDevice, error) {
+func openCaptureDevice(id string, rate, channels int, cb CaptureCallback) (*CaptureDevice, error) {
 	if err := loadAudioQueue(); err != nil {
 		return nil, err
 	}
@@ -111,9 +117,13 @@ func OpenCapture(rate, channels int, cb CaptureCallback) (*CaptureDevice, error)
 	capturesMu.Unlock()
 	// A nil run loop and mode put the callback on a thread of the
 	// queue's own, which is what a game wants.
-	if st := audioQueueNewInput(&format, inputCallback, *(*unsafe.Pointer)(unsafe.Pointer(&d.id)), 0, 0, 0, &d.queue); st != 0 {
+	if st := audioQueueNewInput(&format, inputCallback, d.id, 0, 0, 0, &d.queue); st != 0 {
 		d.forget()
 		return nil, fmt.Errorf("audioout: AudioQueueNewInput: %d", st)
+	}
+	if err := setQueueDevice(d.queue, id, true); err != nil {
+		d.Close()
+		return nil, err
 	}
 	for range captureBuffers {
 		var buf *audioQueueBuffer
@@ -155,8 +165,7 @@ func (d *CaptureDevice) forget() {
 // onCapture runs on the queue's thread with a buffer of recorded frames.
 // It hands the samples to the device's callback and gives the buffer
 // straight back, unless the device has been closed.
-func onCapture(userData unsafe.Pointer, queue uintptr, buffer *audioQueueBuffer, _ unsafe.Pointer, _ uint32, _ unsafe.Pointer) {
-	id := *(*uintptr)(unsafe.Pointer(&userData))
+func onCapture(id uintptr, queue uintptr, buffer *audioQueueBuffer, _ unsafe.Pointer, _ uint32, _ unsafe.Pointer) {
 	capturesMu.Lock()
 	d := captures[id]
 	capturesMu.Unlock()

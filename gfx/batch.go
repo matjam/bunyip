@@ -23,12 +23,15 @@ type BatchItem struct {
 // share both are still merged into one instanced call.
 //
 // A batch does not own its meshes or textures; destroy those as usual.
+// Its meshes, materials and shader belong to the Graphics that built it;
+// constructing or drawing with resources from another Graphics panics.
 // Build one with NewStaticBatch and draw it with DrawBatch. Anything
 // that moves belongs in DrawMesh instead: the hierarchy is built from
 // the models given and is not rebuilt. Mesh geometry and bounds must also
 // remain fixed; rebuild the batch after changing either. Include any
 // shader displacement in mesh bounds before building the hierarchy.
 type StaticBatch struct {
+	g     *Graphics
 	items []meshDraw // prepared draws, in hierarchy order
 	nodes []batchNode
 	lo    lin.Vec3
@@ -50,7 +53,12 @@ type batchNode struct {
 // that draws nothing. Building costs one pass over the items per level
 // of the tree, so do it at load rather than every frame.
 func (g *Graphics) NewStaticBatch(items []BatchItem) *StaticBatch {
-	b := &StaticBatch{}
+	for _, it := range items {
+		if it.Mesh != nil {
+			g.requireMeshOwner(it.Mesh, it.Material)
+		}
+	}
+	b := &StaticBatch{g: g}
 	for _, it := range items {
 		if it.Mesh == nil {
 			continue
@@ -195,6 +203,9 @@ func (b *StaticBatch) Bounds() (min, max lin.Vec3) {
 func (g *Graphics) DrawBatch(b *StaticBatch) {
 	if b == nil || len(b.items) == 0 {
 		return
+	}
+	if b.g != g {
+		panic("gfx: static batch belongs to another Graphics")
 	}
 	g.cur.batches = append(g.cur.batches, b)
 }

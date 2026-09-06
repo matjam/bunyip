@@ -57,9 +57,12 @@ type Particles3D struct {
 // particleBatch is one instanced draw: a run of the queue's quads with
 // the texture, blend and layer they were submitted with.
 type particleBatch struct {
-	set   vk.VkDescriptorSet
-	blend Blend
-	layer int32
+	set         vk.VkDescriptorSet
+	blend       Blend
+	customBlend customBlend
+	stencil     stencil2D
+	group       uint32
+	layer       int32
 	// seq is how far the 2D stream had got when the batch was
 	// submitted, which orders it against the sprite draws of the same
 	// layer: a batch drawn before a sprite in the game's code is drawn
@@ -70,6 +73,8 @@ type particleBatch struct {
 	// held by value because the stream's projection table is rebuilt
 	// each frame and moves.
 	proj         lin.Mat4
+	frame        lin.Vec4
+	clip         lin.Rect
 	first, count uint32
 }
 
@@ -139,8 +144,8 @@ type particlePass struct {
 	// Both are built per blend mode and then per output, since a render
 	// texture chooses its own colour format and depth and the scene may
 	// be multisampled.
-	flat  [blendCount]*pipeCache // 2D, into the sprite stream's pass
-	scene [blendCount]*pipeCache // 3D, over the finished scene
+	flat  map[flatParticleKey]*pipeCache // 2D, into the sprite stream's pass
+	scene [blendCount]*pipeCache         // 3D, over the finished scene
 	push  push2D
 	push3 particle3DPush
 	set   vk.VkDescriptorSet
@@ -179,23 +184,33 @@ func particleLayout() ([]vk.VkVertexInputBindingDescription, []vk.VkVertexInputA
 // flatPipeline returns the 2D particle pipeline for a blend mode and an
 // output, building it on first use. It writes the same formats as the
 // sprite pipelines, because it records into the same pass.
-func (g *Graphics) flatPipeline(b Blend, out outKey) (*render.Pipeline, error) {
-	if g.particles.flat[b] == nil {
+type flatParticleKey struct {
+	blend   Blend
+	custom  customBlend
+	stencil stencil2D
+}
+
+func (g *Graphics) flatPipeline(key flatParticleKey, out outKey) (*render.Pipeline, error) {
+	if g.particles.flat == nil {
+		g.particles.flat = make(map[flatParticleKey]*pipeCache)
+	}
+	if g.particles.flat[key] == nil {
 		bindings, attrs := particleLayout()
 		c, err := newPipeCache(g.r.Device, render.PipelineDesc{
 			Vert: shaders.ParticleVert, Frag: shaders.ParticleFrag,
 			ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
 			Bindings: bindings, Attributes: attrs,
-			Blend: true, Factors: b.factors(),
+			Blend: true, Factors: key.custom.factors(key.blend),
+			Stencil: key.stencil.renderState(), NoColorWrite: key.stencil.options.NoColor,
 			PushConstantSize: push2DSize,
 			SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout},
 		})
 		if err != nil {
 			return nil, err
 		}
-		g.particles.flat[b] = c
+		g.particles.flat[key] = c
 	}
-	return g.particles.flat[b].at(out)
+	return g.particles.flat[key].at(out)
 }
 
 // scenePipeline returns the 3D particle pipeline for a blend mode and an
@@ -221,12 +236,13 @@ func (g *Graphics) scenePipeline(b Blend, out outKey) (*render.Pipeline, error) 
 }
 
 func (p *particlePass) destroy() {
-	for _, set := range [][blendCount]*pipeCache{p.flat, p.scene} {
-		for _, c := range set {
-			c.destroy()
-		}
+	for _, c := range p.flat {
+		c.destroy()
 	}
-	p.flat, p.scene = [blendCount]*pipeCache{}, [blendCount]*pipeCache{}
+	for _, c := range p.scene {
+		c.destroy()
+	}
+	p.flat, p.scene = nil, [blendCount]*pipeCache{}
 }
 
 // DrawParticles queues a batch of 2D particles as one instanced draw,
@@ -247,6 +263,7 @@ func (g *Graphics) DrawParticles(tex *Texture, quads []ParticleQuad) {
 
 // drawParticlesBlend is DrawParticles with an explicit blend mode.
 func (g *Graphics) drawParticlesBlend(tex *Texture, quads []ParticleQuad, blend Blend) {
+	g.requireTextureOwner(tex)
 	if len(quads) == 0 {
 		return
 	}
@@ -256,9 +273,12 @@ func (g *Graphics) drawParticlesBlend(tex *Texture, quads []ParticleQuad, blend 
 	q := g.cur
 	first, count := q.parts.add(quads)
 	q.parts.flat = append(q.parts.flat, particleBatch{
-		set: tex.setFor(FilterDefault), blend: blend, layer: q.layer, seq: q.stream.nextSequence(),
-		proj: q.spriteProj, first: first, count: count,
+		set: tex.setFor(FilterDefault), blend: blend, customBlend: q.customBlend, stencil: q.stencil2D, group: q.stream.group, layer: q.layer, seq: q.stream.nextSequence(),
+		proj: q.spriteProj, frame: g.frame2DState(), first: first, count: count,
 	})
+	if n := len(q.clips); n > 0 {
+		q.parts.flat[len(q.parts.flat)-1].clip = q.clips[n-1]
+	}
 	// The sprite run that follows must not merge into the one before, or
 	// this batch would have nowhere to go between them.
 	q.stream.breakRun = true
@@ -274,6 +294,7 @@ func (g *Graphics) drawParticlesBlend(tex *Texture, quads []ParticleQuad, blend 
 // so additive and unlit effects suit them best. The slice is copied, so
 // it may be reused as soon as the call returns.
 func (g *Graphics) DrawParticles3D(tex *Texture, quads []ParticleQuad, opts Particles3D) {
+	g.requireTextureOwner(tex)
 	if len(quads) == 0 {
 		return
 	}
@@ -299,6 +320,9 @@ func (g *Graphics) prepareParticles(q *drawQueue, slot int) error {
 		return err
 	}
 	slices.SortStableFunc(q.parts.flat, func(a, b particleBatch) int {
+		if c := cmp.Compare(a.group, b.group); c != 0 {
+			return c
+		}
 		if c := cmp.Compare(a.layer, b.layer); c != 0 {
 			return c
 		}
@@ -311,25 +335,29 @@ func (g *Graphics) prepareParticles(q *drawQueue, slot int) error {
 // the draw d, and returns where it stopped; all records the rest.
 // flush2D calls it between draws so particles interleave with sprites
 // by layer and, within a layer, by the order they were submitted in. A
-// batch carries no clip rectangle, so the first one restores the full
-// viewport scissor.
+// batch carries its view's projection and clip. Restore the full viewport
+// scissor after drawing so the sprite stream can apply its next clip.
 func (g *Graphics) drawFlatParticles(cb vk.VkCommandBuffer, q *drawQueue, at int, d draw2D, all bool, vp vk.VkRect2D) (int, error) {
 	batches := q.parts.flat
 	pp := &g.particles
-	for first := true; at < len(batches); first = false {
+	start := at
+	for at < len(batches) {
 		b := batches[at]
-		if !all && (b.layer > d.layer || b.layer == d.layer && b.seq > d.seq) {
+		if !all && (b.group > d.state.group || b.group == d.state.group && (b.layer > d.layer || b.layer == d.layer && b.seq > d.seq)) {
 			break
 		}
-		if first {
+		if b.clip == (lin.Rect{}) {
 			render.SetScissorRect(cb, vp)
+		} else {
+			render.SetScissorRect(cb, pixelRect(vp, b.clip, float32(vp.Extent.Width)/q.rootW, float32(vp.Extent.Height)/q.rootH))
 		}
-		pipe, err := g.flatPipeline(b.blend, q.out)
+		pipe, err := g.flatPipeline(flatParticleKey{blend: b.blend, custom: b.customBlend, stencil: b.stencil}, q.out)
 		if err != nil {
 			return at, err
 		}
 		pp.off = 0
 		pp.push.proj = b.proj
+		pp.push.frame = b.frame
 		vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 		vk.CmdBindVertexBuffers(cb, 0, 1, &q.parts.buffers[q.parts.slot].Handle, &pp.off)
 		vk.CmdPushConstants(cb, pipe.Layout, vk.VK_SHADER_STAGE_VERTEX_BIT|vk.VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -340,6 +368,9 @@ func (g *Graphics) drawFlatParticles(cb vk.VkCommandBuffer, q *drawQueue, at int
 		g.stats.Draws2D++
 		g.stats.Particles += int(b.count)
 		at++
+	}
+	if at > start {
+		render.SetScissorRect(cb, vp)
 	}
 	return at, nil
 }

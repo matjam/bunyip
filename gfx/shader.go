@@ -5,7 +5,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"unsafe"
 
 	"github.com/matjam/bunyip/gfx/shaders"
 	"github.com/matjam/bunyip/internal/render"
@@ -79,9 +78,12 @@ func (b Blend) factors() *render.BlendFactors {
 
 // SetBlend sets the blend mode for later 2D drawing in the current
 // queue. It is reset to BlendAlpha at the start of each frame.
-func (g *Graphics) SetBlend(b Blend) { g.cur.blend = b }
+func (g *Graphics) SetBlend(b Blend) {
+	g.cur.blend, g.cur.customBlend = b, customBlend{}
+}
 
-// Blend returns the current 2D blend mode.
+// Blend returns the current built-in 2D blend mode. CustomBlended temporarily
+// overrides its equations without changing this value.
 func (g *Graphics) Blend() Blend { return g.cur.blend }
 
 // PushTransform composes a transform onto the 2D transform stack: later
@@ -139,6 +141,8 @@ type Shader struct {
 
 // pipeKey selects a pipeline variant of a shader.
 type pipeKey struct {
+	customBlend  customBlend
+	stencil2D    stencil2D
 	blend        Blend // 2D: the blend mode; mesh: BlendAlpha for translucent materials, BlendReplace for opaque
 	skinned      bool
 	doubleSided  bool
@@ -314,7 +318,8 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 			Vert: g.spriteVert(), Frag: s.frag,
 			ColorFormat: g.r.Swapchain.Format, DepthFormat: g.r.DepthFormat,
 			Bindings: bindings, Attributes: attrs,
-			Blend: true, Factors: key.blend.factors(),
+			Blend: true, Factors: key.customBlend.factors(key.blend),
+			Stencil: key.stencil2D.renderState(), NoColorWrite: key.stencil2D.options.NoColor,
 			PushConstantSize: push2DSize,
 			SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout, g.uniforms.Layout},
 		})
@@ -327,43 +332,48 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 	return p, nil
 }
 
-// SetUniforms copies a struct's bytes as the shader's uniform block for
-// draws from now on. Pass a struct or a non-nil pointer to one, containing
-// only fixed-size numeric fields and explicit padding. Go does not insert
-// std140 padding: align scalars to 4 bytes, Vec2 to 8, and Vec3, Vec4 and
-// Mat4 to 16. A scalar may occupy the fourth word after a Vec3. Arrays
-// require std140's element strides, including 16-byte strides for scalars.
-// SetUniforms performs no layout conversion or validation and panics for
-// non-struct values or blocks outside 1..1024 bytes.
-func (s *Shader) SetUniforms(v any) {
+// SetUniforms packs a struct or non-nil pointer to one into a std140 block
+// for subsequent draws. Fields follow declaration order and must be exported.
+// Supported values are float32, int32, uint32, bool (including named scalar
+// types), lin.Vec2/Vec3/Vec4, Color, lin.Mat3/Mat4, fixed arrays and nested
+// structs. Matrices are column-major. A plain [N]float32 is a scalar array,
+// with 16-byte strides; use lin vector/matrix types for GLSL vectors/matrices.
+// Padding is automatic and zeroed. No Go memory is retained. Unsupported
+// fields or blocks exceeding 1024 packed bytes return errors and preserve
+// the previous block. The caller must match the shader's declarations;
+// this does not inspect SPIR-V or perform numeric precision conversions.
+func (s *Shader) SetUniforms(v any) error {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
-		panic("gfx: SetUniforms wants a struct")
+		return fmt.Errorf("gfx: SetUniforms wants a struct or non-nil pointer to one")
 	}
-	size := int(rv.Type().Size())
-	if size == 0 || size > maxUniformBlock {
-		panic(fmt.Sprintf("gfx: uniform block of %d bytes; want 1..%d", size, maxUniformBlock))
+	plan, err := cachedUniformPlan(rv.Type())
+	if err != nil {
+		return fmt.Errorf("gfx: shader uniforms: %w", err)
 	}
-	// Copy out of an addressable value.
-	if !rv.CanAddr() {
-		tmp := reflect.New(rv.Type()).Elem()
-		tmp.Set(rv)
-		rv = tmp
+	size := uniformAlign(plan.size, 16)
+	if cap(s.block) < size {
+		s.block = make([]byte, size)
+	} else {
+		s.block = s.block[:size]
+		clear(s.block)
 	}
-	src := unsafe.Slice((*byte)(rv.Addr().UnsafePointer()), size)
-	s.block = append(s.block[:0], src...)
+	plan.pack(s.block, rv)
 	s.dirty = true
+	return nil
 }
 
 // SetImage binds a texture as image0..image3 for draws from now on; nil
 // unbinds it (the shader then samples white).
+// A texture from another Graphics panics without changing the binding.
 func (s *Shader) SetImage(slot int, t *Texture) {
 	if slot < 0 || slot >= len(s.images) {
 		panic(fmt.Sprintf("gfx: image slot %d; want 0..3", slot))
 	}
+	s.g.requireTextureOwner(t)
 	s.images[slot] = t
 }
 
@@ -378,6 +388,7 @@ func (s *Shader) uniformOffset() int32 {
 	if s.dirty || s.frame != g.frameNo {
 		off, err := g.arena.Add(s.block)
 		if err != nil {
+			g.recordDrawError(fmt.Errorf("gfx: shader uniforms: %w", err))
 			return -1
 		}
 		s.offset, s.frame, s.dirty = off, g.frameNo, false
@@ -427,7 +438,9 @@ func (s *Shader) retirePipelines() {
 
 // SetShader makes later 2D drawing in the current queue use a sprite
 // shader; nil restores the default. It is reset at the start of each frame.
+// A shader from another Graphics panics without changing the current shader.
 func (g *Graphics) SetShader(s *Shader) {
+	g.requireShaderOwner(s)
 	if s != nil && s.mesh {
 		panic("gfx: SetShader wants a sprite shader; use Material.Shader for meshes")
 	}

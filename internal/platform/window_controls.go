@@ -13,6 +13,7 @@ var ErrUnsupported = errors.New("platform: operation unsupported by this backend
 // request can still be declined by desktop policy or fail at runtime.
 type WindowCapabilities struct {
 	Resize, Show, Hide, Focus, AlwaysOnTop, CursorImage, PointerPosition bool
+	EmbeddedBounds                                                       bool
 }
 
 // VideoMode describes a mode reported by the display system. Dimensions are

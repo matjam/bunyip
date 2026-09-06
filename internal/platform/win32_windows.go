@@ -163,13 +163,6 @@ type trackMouseEventStruct struct {
 	HoverTime uint32
 }
 
-type rawInputDevice struct {
-	UsagePage uint16
-	Usage     uint16
-	Flags     uint32
-	Target    uintptr
-}
-
 type rawInputHeader struct {
 	Type   uint32
 	Size   uint32
@@ -208,6 +201,8 @@ type App struct {
 	mods     Mods
 	mu       sync.Mutex // guards nothing hot; Wake posts a message instead
 	wndProc  uintptr
+	rawMouse rawMouseRegistration
+	hosted   bool
 
 	pendingSurrogate rune // high half of a WM_CHAR surrogate pair
 }
@@ -216,7 +211,6 @@ var theApp *App // the window procedure has no user pointer
 
 // NewApp registers the window class.
 func NewApp() (*App, error) {
-	procSetProcessDpiAwarenessCt.Call(dpiAwarenessPerV2)
 	inst, _, _ := procGetModuleHandleW.Call(0)
 	a := &App{instance: inst, windows: map[uintptr]*Window{}}
 	a.wndProc = syscall.NewCallback(a.windowProc)
@@ -240,20 +234,24 @@ func NewApp() (*App, error) {
 
 // Window is one top-level Win32 window.
 type Window struct {
-	app       *App
-	hwnd      uintptr
-	width     int
-	height    int
-	scale     float64
-	closed    bool
-	captured  bool
-	tracking  bool
-	fullscr   bool
-	savedRect rect
-	style     uintptr
-	inputRect textRect
-	mouseX    float64
-	mouseY    float64
+	app           *App
+	hwnd          uintptr
+	width         int
+	height        int
+	scale         float64
+	closed        bool
+	captured      bool
+	tracking      bool
+	fullscr       bool
+	savedRect     rect
+	style         uintptr
+	inputRect     textRect
+	parent        uintptr
+	manualBounds  bool
+	embeddedFocus bool
+	hostLost      bool
+	mouseX        float64
+	mouseY        float64
 
 	minimized              bool
 	shown                  bool
@@ -270,6 +268,23 @@ type textRect struct{ X, Y, W, H float64 }
 
 // NewWindow opens a window and shows it.
 func (a *App) NewWindow(cfg Config) (*Window, error) {
+	if cfg.Parent != nil {
+		return a.newEmbedded(cfg)
+	}
+	if !a.hosted {
+		procSetProcessDpiAwarenessCt.Call(dpiAwarenessPerV2)
+	}
+	if a.hosted {
+		if err := a.checkHostRawMouse(); err != nil {
+			return nil, err
+		}
+	}
+	if err := a.rawMouse.ensure(func(rid rawInputDevice) error {
+		ok, _, err := procRegisterRawInputDevices.Call(uintptr(unsafe.Pointer(&rid)), 1, unsafe.Sizeof(rid))
+		return winControlError("RegisterRawInputDevices", ok, err)
+	}); err != nil {
+		return nil, err
+	}
 	style := uintptr(wsOverlappedWindow)
 	if !cfg.Resizable {
 		style &^= wsThickFrame | wsMaximizeBox
@@ -279,6 +294,7 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	hwnd, _, err := procCreateWindowExW.Call(wsExAppWindow, uintptr(a.class), uintptr(unsafe.Pointer(utf16z(cfg.Title))),
 		style|wsVisible, cwUseDefault, cwUseDefault, uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top), 0, 0, a.instance, 0)
 	if hwnd == 0 {
+		a.releaseRawMouse()
 		return nil, fmt.Errorf("platform: CreateWindowEx: %w", err)
 	}
 	// ShowWindow below puts the window on screen, so it starts visible;
@@ -286,9 +302,6 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	w := &Window{app: a, hwnd: hwnd, style: style, scale: 1, shown: true, visible: true}
 	a.windows[hwnd] = w
 	a.wakeWnd.CompareAndSwap(0, hwnd)
-	// Relative mouse motion arrives as raw input even while captured.
-	rid := rawInputDevice{UsagePage: hidUsagePageGen, Usage: hidUsageMouse, Target: hwnd}
-	procRegisterRawInputDevices.Call(uintptr(unsafe.Pointer(&rid)), 1, unsafe.Sizeof(rid))
 	procShowWindow.Call(hwnd, swShow)
 	w.updateGeometry()
 	return w, nil
@@ -357,6 +370,7 @@ func (a *App) Poll(wait bool) []Event {
 		syscall.SyscallN(addrTranslateMessage, uintptr(unsafe.Pointer(&m)))
 		syscall.SyscallN(addrDispatchMessageW, uintptr(unsafe.Pointer(&m)))
 	}
+	a.syncEmbedded()
 	return a.pending
 }
 
@@ -429,7 +443,15 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 	case wmDestroy:
 		w.closed = true
 		delete(a.windows, hwnd)
-		a.wakeWnd.CompareAndSwap(hwnd, 0)
+		if a.wakeWnd.Load() == hwnd {
+			var next uintptr
+			for id, other := range a.windows {
+				if !other.closed && (next == 0 || id < next) {
+					next = id
+				}
+			}
+			a.wakeWnd.Store(next)
+		}
 		return 0
 	case wmShowWindow:
 		w.shown = wparam != 0
@@ -454,9 +476,11 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 		w.updateGeometry()
 		return 0
 	case wmSetFocus:
+		w.embeddedFocus = true
 		a.push(Event{Kind: EventFocus, Window: w, Focused: true})
 		return 0
 	case wmKillFocus:
+		w.embeddedFocus = false
 		a.push(Event{Kind: EventFocus, Window: w, Focused: false})
 		return 0
 	case wmKeyDown, wmSysKeyDown:
@@ -520,6 +544,9 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 		// The system cleans up after WM_INPUT in DefWindowProc.
 		break
 	case wmLButtonDown, wmRButtonDown, wmMButtonDown, wmXButtonDown:
+		if w.parent != 0 {
+			procSetFocus.Call(hwnd)
+		}
 		procSetCapture.Call(hwnd)
 		a.push(w.mouseButton(message, wparam, lparam, EventMouseDown))
 		return 0
@@ -591,10 +618,13 @@ func (w *Window) updateVisible() {
 func (w *Window) Visible() bool { return w.visible }
 
 // Closed reports whether the window has been destroyed.
-func (w *Window) Closed() bool { return w.closed }
+func (w *Window) Closed() bool { return w.closed || w.hostLost }
 
 // Close destroys the window.
 func (w *Window) Close() {
+	defer w.app.releaseRawMouse()
+	w.SetCursorCaptured(false)
+	w.SetCursorVisible(true)
 	defer func() {
 		if w.customCursor != 0 {
 			procDestroyCursor.Call(w.customCursor)
@@ -617,6 +647,9 @@ func (w *Window) Fullscreen() bool { return w.fullscr }
 // SetFullscreen switches between a borderless monitor-sized window and
 // the previous framed one.
 func (w *Window) SetFullscreen(on bool) {
+	if w.parent != 0 {
+		return
+	}
 	if on == w.fullscr {
 		return
 	}

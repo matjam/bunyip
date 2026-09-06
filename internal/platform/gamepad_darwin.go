@@ -56,8 +56,10 @@ func (a *App) Gamepads() []GamepadState {
 			continue // micro or directional gamepads are not mapped
 		}
 		st := GamepadState{Connected: true, Name: a.vendorName(ctl)}
+		st.Info = input.GamepadInfo{Name: st.Name, Backend: "gamecontroller"}
 		button := func(b input.GamepadButton, sel objc.SEL) {
 			if el := pad.Send(sel); el != 0 {
+				st.Info.Buttons[b] = true
 				st.Buttons[b] = objc.Send[bool](el, c.sel.isPressed)
 			}
 		}
@@ -87,20 +89,27 @@ func (a *App) Gamepads() []GamepadState {
 			}{{input.ButtonDpadUp, c.sel.up}, {input.ButtonDpadDown, c.sel.down}, {input.ButtonDpadLeft, c.sel.left}, {input.ButtonDpadRight, c.sel.right}}
 			for _, d := range dirs {
 				if el := dpad.Send(d.sel); el != 0 {
+					st.Info.Buttons[d.b] = true
 					st.Buttons[d.b] = objc.Send[bool](el, c.sel.isPressed)
 				}
 			}
 		}
 		if stick := pad.Send(c.sel.leftThumbstick); stick != 0 {
+			st.Info.Axes[input.AxisLeftX] = stick.Send(c.sel.xAxis) != 0
+			st.Info.Axes[input.AxisLeftY] = stick.Send(c.sel.yAxis) != 0
 			st.Axes[input.AxisLeftX] = axisOf(stick.Send(c.sel.xAxis))
 			st.Axes[input.AxisLeftY] = axisOf(stick.Send(c.sel.yAxis))
 		}
 		if stick := pad.Send(c.sel.rightThumbstick); stick != 0 {
+			st.Info.Axes[input.AxisRightX] = stick.Send(c.sel.xAxis) != 0
+			st.Info.Axes[input.AxisRightY] = stick.Send(c.sel.yAxis) != 0
 			st.Axes[input.AxisRightX] = axisOf(stick.Send(c.sel.xAxis))
 			st.Axes[input.AxisRightY] = axisOf(stick.Send(c.sel.yAxis))
 		}
 		st.Axes[input.AxisLeftTrigger] = axisOf(pad.Send(c.sel.leftTrigger))
+		st.Info.Axes[input.AxisLeftTrigger] = pad.Send(c.sel.leftTrigger) != 0
 		st.Axes[input.AxisRightTrigger] = axisOf(pad.Send(c.sel.rightTrigger))
+		st.Info.Axes[input.AxisRightTrigger] = pad.Send(c.sel.rightTrigger) != 0
 		out = append(out, st)
 	}
 	return out

@@ -26,36 +26,42 @@ import (
 // framebuffer's pixel density and drawn in view units, so text is crisp
 // on high-DPI displays. Create fonts with NewFont or NewSDFFont; Graphics
 // releases their atlases at shutdown, or Destroy releases one earlier.
-// The atlas has a fixed capacity: glyphs that do
-// not fit are omitted, so choose FontOptions.AtlasSize for the character
-// set and raster size the game needs.
+// The base atlas has fixed capacity: Layout and Shape report glyphs that
+// cannot fit. Choose FontOptions.AtlasSize for the character set and raster
+// size the game needs. Lazy outline atlases are also owned by the font.
 type Font struct {
 	Size       float32 // em size in view units
 	LineHeight float32 // baseline to baseline
 	Ascent     float32 // baseline to the top of the tallest glyph
 	Descent    float32 // baseline to the bottom of the deepest glyph, positive
 
-	faces     []*fontFace // the main face first, then fallbacks
-	features  []shaping.FontFeature
-	atlas     *Texture
-	glyphs    map[glyphKey]glyph
-	scale     float32 // atlas pixels per view unit
-	pxPerEm   float32 // face pixels per em, the shaping size
-	packer    shelfPacker
-	pix       *image.RGBA
-	dirty     bool
-	dirtyRect image.Rectangle // the atlas pixels changed since the last flush
-	sdf       bool
-	g         *Graphics
-	shaper    shaping.HarfbuzzShaper
-	seg       shaping.Segmenter
-	wrapper   shaping.LineWrapper
-	runs      genCache[runKey, []shaping.Output]
-	lines     genCache[lineKey, []shaping.Line]
-	blocks    genCache[blockKey, []Glyph]
-	measures  genCache[measureKey, lin.Vec2]
-	scratch   textScratch
-	rast      *vector.Rasterizer
+	faces         []*fontFace // the main face first, then fallbacks
+	features      []shaping.FontFeature
+	atlas         *Texture
+	glyphs        map[glyphKey]glyph
+	scale         float32 // atlas pixels per view unit
+	pxPerEm       float32 // face pixels per em, the shaping size
+	packer        shelfPacker
+	pix           *image.RGBA
+	dirty         bool
+	dirtyRect     image.Rectangle // the atlas pixels changed since the last flush
+	sdf           bool
+	g             *Graphics
+	shaper        shaping.HarfbuzzShaper
+	seg           shaping.Segmenter
+	wrapper       shaping.LineWrapper
+	runs          genCache[runKey, []shaping.Output]
+	lines         genCache[lineKey, []shaping.Line]
+	blocks        genCache[blockKey, []Glyph]
+	measures      genCache[measureKey, lin.Vec2]
+	scratch       textScratch
+	layouts       genCache[textLayoutKey, *TextLayout]
+	ink           map[glyphKey]lin.Rect
+	destroyed     bool
+	glyphErr      error
+	outlinePages  []*outlinePage
+	outlineBudget int
+	rast          *vector.Rasterizer
 }
 
 // fontFace is one parsed face and the metrics it contributes.
@@ -79,9 +85,12 @@ type glyph struct {
 
 // FontOptions tunes a font.
 type FontOptions struct {
-	AtlasSize int       // texture side in pixels; default 1024
-	Preload   []rune    // glyphs rendered up front; ASCII is always included
-	Ranges    [][2]rune // inclusive ranges rendered up front
+	// OutlinePages limits lazy outline-atlas pages; zero allows 16. Pages
+	// reuse power-of-two distance spreads, so animating width reuses them.
+	OutlinePages int
+	AtlasSize    int       // texture side in pixels; default 1024
+	Preload      []rune    // glyphs rendered up front; ASCII is always included
+	Ranges       [][2]rune // inclusive ranges rendered up front
 
 	// Fallbacks are further TTF/OTF fonts consulted, in order, for runs of
 	// text the main font has no glyphs for: a CJK or Arabic font behind a
@@ -107,19 +116,26 @@ func (g *Graphics) newFont(ttf []byte, size float32, opts FontOptions, scale, px
 	if size <= 0 {
 		return nil, fmt.Errorf("gfx: font size must be positive")
 	}
+	if opts.OutlinePages < 0 {
+		return nil, fmt.Errorf("gfx: OutlinePages must be nonnegative")
+	}
 	side := opts.AtlasSize
 	if side <= 0 {
 		side = 1024
 	}
 	f := &Font{
-		Size:    size,
-		glyphs:  map[glyphKey]glyph{},
-		scale:   scale,
-		pxPerEm: pxPerEm,
-		sdf:     sdf,
-		packer:  shelfPacker{width: side, height: side, pad: 1},
-		pix:     image.NewRGBA(image.Rect(0, 0, side, side)),
-		g:       g,
+		outlineBudget: opts.OutlinePages,
+		Size:          size,
+		glyphs:        map[glyphKey]glyph{},
+		scale:         scale,
+		pxPerEm:       pxPerEm,
+		sdf:           sdf,
+		packer:        shelfPacker{width: side, height: side, pad: 1},
+		pix:           image.NewRGBA(image.Rect(0, 0, side, side)),
+		g:             g,
+	}
+	if f.outlineBudget == 0 {
+		f.outlineBudget = 16
 	}
 	// A cached block is one glyph per character, so the glyph cache is
 	// bounded by the glyphs it holds rather than by how many blocks.
@@ -233,10 +249,7 @@ func (f *Font) faceIndex(face *font.Face) uint8 {
 
 // pixelScale is framebuffer pixels per view unit along X.
 func (g *Graphics) pixelScale() float32 {
-	if g.main.viewW <= 0 {
-		return 1
-	}
-	return float32(g.mainExtent().Width) / g.main.viewW
+	return g.drawingPixelScale()
 }
 
 func fixedToFloat(v fixed.Int26_6) float32 { return float32(v) / 64 }
@@ -253,7 +266,9 @@ func (f *Font) glyph(face uint8, gid font.GID) glyph {
 	} else {
 		gl = f.add(face, gid)
 	}
-	f.glyphs[key] = gl
+	if f.glyphErr == nil {
+		f.glyphs[key] = gl
+	}
 	return gl
 }
 
@@ -364,6 +379,7 @@ func (f *Font) add(face uint8, gid font.GID) glyph {
 	w, h := mask.Rect.Dx(), mask.Rect.Dy()
 	x, y, placed := f.packer.place(w, h)
 	if !placed {
+		f.glyphErr = fmt.Errorf("gfx: glyph atlas is full (%d by %d); increase FontOptions.AtlasSize", f.packer.width, f.packer.height)
 		return glyph{empty: true} // atlas full; drawn as nothing rather than garbage
 	}
 	for yy := range h {
@@ -399,6 +415,7 @@ func (f *Font) addBitmap(face uint8, gid font.GID, bm font.GlyphBitmap) glyph {
 	h := max(1, int(float32(b.Dy())*k+0.5))
 	x, y, placed := f.packer.place(w, h)
 	if !placed {
+		f.glyphErr = fmt.Errorf("gfx: glyph atlas is full (%d by %d); increase FontOptions.AtlasSize", f.packer.width, f.packer.height)
 		return glyph{empty: true}
 	}
 	dst := f.pix.SubImage(image.Rect(x, y, x+w, y+h)).(*image.RGBA)
@@ -477,6 +494,13 @@ func (f *Font) Texture() *Texture { return f.atlas }
 
 // Destroy frees the atlas.
 func (f *Font) Destroy() {
+	f.destroyed = true
+	for _, page := range f.outlinePages {
+		if page.texture != nil {
+			page.texture.Destroy()
+		}
+	}
+	f.outlinePages = nil
 	f.g.forget(f)
 	f.g.owned.remove(f)
 	if f.atlas != nil {

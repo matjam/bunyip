@@ -56,6 +56,11 @@ import (
 
 // Config describes the window and the loop.
 type Config struct {
+	// Parent embeds the output in borrowed native content. Nil opens a top-level
+	// window. Embedded content initially fits its parent; SetBounds switches to
+	// manual placement. Width/Height, Title, Icon and Resizable do not configure
+	// the borrowed host. Wayland and headless embedding are unsupported.
+	Parent    *NativeParent
 	Title     string // window title; empty means "Bunyip"
 	Width     int    // window content width in points; nonpositive means 1280
 	Height    int    // window content height in points; nonpositive means 720
@@ -73,18 +78,19 @@ type Config struct {
 	// beyond MaxCatchUp.
 	MaxCatchUp time.Duration
 	MaxSteps   int
-	// PauseUnfocused stops updates and silences the mixer while the
+	// PauseUnfocused stops this window's updates while the
 	// window does not have focus, so a game does not play on behind
 	// another window; frames still draw. Off by default: a server, a
 	// music player or a game with real-time multiplayer keeps running.
+	// The shared mixer pauses only when all active windows are paused.
 	PauseUnfocused bool
-	// PauseHidden stops updates and silences the mixer while the window
+	// PauseHidden stops updates while the window
 	// cannot be seen, in the same way PauseUnfocused does for focus. A
 	// window is hidden while it is minimised, and while it is wholly
 	// covered by other windows on the platforms that report that. Off by
 	// default, and a headless run is always visible. With both settings
-	// on the game is paused while either is true, and the loop writes the
-	// mixer only when that changes, so a mixer the game paused itself
+	// on this window is paused while either is true. The loop writes the
+	// mixer only when the all-windows pause state changes, so a mixer the game paused itself
 	// stays paused.
 	PauseHidden bool
 
@@ -198,6 +204,9 @@ type Shutdowner interface {
 // render texture the game created is gone and must be created again.
 // Input, mixer and console are also new. Restore mixer/bus settings and
 // restart desired playback; old voice handles belong to the discarded mixer.
+// Device loss in any additional window tears down the entire application
+// family. Recreate additional windows from the main game's Recover callback;
+// old Window handles are closed and their contexts are no longer usable.
 // Games without Recover get the error from Run instead.
 type Recoverer interface {
 	Recover(ctx *Context) error
@@ -269,6 +278,7 @@ type Context struct {
 	redraw    bool
 	shot      string
 	win       windowControl
+	owner     *Window
 	focused   bool
 	visible   bool
 	closeReq  bool
@@ -455,7 +465,8 @@ func (c *Context) SetCursorCaptured(on bool) { c.win.SetCursorCaptured(on) }
 // CursorCaptured reports the capture state.
 func (c *Context) CursorCaptured() bool { return c.win.CursorCaptured() }
 
-// Quit ends the loop after the current callback.
+// Quit closes this window and its descendants after the current callback.
+// On the main context it ends Run and closes every additional window.
 func (c *Context) Quit() { c.quit = true }
 
 // SetTimeScale changes how fast game time runs: 0.5 is slow motion, 2 is

@@ -656,6 +656,7 @@ func (g *Graphics) DrawModelWith(m *Model, world lin.Mat4, override MaterialOver
 // world transform it was drawn with last frame, which the velocity
 // buffer carries for temporal anti-aliasing and motion blur.
 func (g *Graphics) DrawModelMoved(m *Model, world, prev lin.Mat4, override MaterialOverride) {
+	g.requireModelOwner(m, override == nil)
 	for i, p := range m.Parts {
 		at, was := world.Mul(p.World), prev.Mul(p.World)
 		d := meshDraw{mesh: p.Mesh, mat: override.apply(i, p), model: at, prev: was, moved: was != at,

@@ -560,18 +560,20 @@ func (m *Material) marksStencil() bool { return m.StencilWrite != StencilKeep &&
 type StencilTest uint8
 
 const (
-	StencilAlways   StencilTest = iota // no test at all: the default
-	StencilEqual                       // only where the buffer holds StencilRef
-	StencilNotEqual                    // only where it holds anything else
-	StencilLess                        // only where it holds less than StencilRef
-	StencilGreater                     // only where it holds more than StencilRef
-	StencilNever                       // nowhere: mark the buffer and draw nothing
+	StencilAlways       StencilTest = iota // no test at all: the default
+	StencilEqual                           // only where the buffer holds StencilRef
+	StencilNotEqual                        // only where it holds anything else
+	StencilLess                            // only where it holds less than StencilRef
+	StencilGreater                         // only where it holds more than StencilRef
+	StencilNever                           // reject every fragment; only its Fail operation can update stencil
+	StencilLessEqual                       // only where it holds at most StencilRef
+	StencilGreaterEqual                    // only where it holds at least StencilRef
 	stencilTestCount
 )
 
 // String names the stencil test.
 func (s StencilTest) String() string {
-	names := [...]string{"always", "equal", "not-equal", "less", "greater", "never"}
+	names := [...]string{"always", "equal", "not-equal", "less", "greater", "never", "less-equal", "greater-equal"}
 	if int(s) < len(names) {
 		return names[s]
 	}
@@ -593,6 +595,10 @@ func (s StencilTest) compareOp() vk.VkCompareOp {
 		return vk.VK_COMPARE_OP_LESS
 	case StencilNever:
 		return vk.VK_COMPARE_OP_NEVER
+	case StencilLessEqual:
+		return vk.VK_COMPARE_OP_GREATER_OR_EQUAL
+	case StencilGreaterEqual:
+		return vk.VK_COMPARE_OP_LESS_OR_EQUAL
 	}
 	return vk.VK_COMPARE_OP_ALWAYS
 }
@@ -602,17 +608,20 @@ func (s StencilTest) compareOp() vk.VkCompareOp {
 type StencilOp uint8
 
 const (
-	StencilKeep      StencilOp = iota // leave the value alone: the default
-	StencilReplace                    // store StencilRef
-	StencilIncrement                  // add one, stopping at 255
-	StencilDecrement                  // subtract one, stopping at 0
-	StencilZero                       // store zero
+	StencilKeep          StencilOp = iota // leave the value alone: the default
+	StencilReplace                        // store StencilRef
+	StencilIncrement                      // add one, stopping at 255
+	StencilDecrement                      // subtract one, stopping at 0
+	StencilZero                           // store zero
+	StencilInvert                         // invert all bits
+	StencilIncrementWrap                  // add one, wrapping 255 to zero
+	StencilDecrementWrap                  // subtract one, wrapping zero to 255
 	stencilOpCount
 )
 
 // String names the stencil operation.
 func (o StencilOp) String() string {
-	names := [...]string{"keep", "replace", "increment", "decrement", "zero"}
+	names := [...]string{"keep", "replace", "increment", "decrement", "zero", "invert", "increment-wrap", "decrement-wrap"}
 	if int(o) < len(names) {
 		return names[o]
 	}
@@ -630,6 +639,12 @@ func (o StencilOp) vkOp() vk.VkStencilOp {
 		return vk.VK_STENCIL_OP_DECREMENT_AND_CLAMP
 	case StencilZero:
 		return vk.VK_STENCIL_OP_ZERO
+	case StencilInvert:
+		return vk.VK_STENCIL_OP_INVERT
+	case StencilIncrementWrap:
+		return vk.VK_STENCIL_OP_INCREMENT_AND_WRAP
+	case StencilDecrementWrap:
+		return vk.VK_STENCIL_OP_DECREMENT_AND_WRAP
 	}
 	return vk.VK_STENCIL_OP_KEEP
 }

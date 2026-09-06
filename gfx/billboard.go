@@ -34,6 +34,11 @@ type Billboard struct {
 
 // DrawBillboard draws a camera-facing quad in the scene.
 func (g *Graphics) DrawBillboard(b Billboard) {
+	tex := b.Texture
+	if tex == nil {
+		tex = b.Region.Tex
+	}
+	g.requireTextureOwner(tex)
 	q := g.cur
 	cam := q.camera
 	if !q.hasCam {
@@ -63,10 +68,6 @@ func (g *Graphics) DrawBillboard(b Billboard) {
 	rot := lin.QuatLookAt(forward.Norm(), up)
 	pos := b.Position.Add(rot.Rotate(lin.V3(b.Offset.X*size.X, b.Offset.Y*size.Y, 0)))
 	model := lin.TRS(pos, rot, lin.V3(size.X, size.Y, 1))
-	tex := b.Texture
-	if tex == nil {
-		tex = b.Region.Tex
-	}
 	mat := Material{Texture: tex, BaseColor: b.Color, Unlit: !b.Lit, DoubleSided: true, NoDepthTest: b.OnTop, NoDepthWrite: b.OnTop}
 	if b.Cutout {
 		mat.AlphaCutoff = 0.5
@@ -99,6 +100,9 @@ func (g *Graphics) DrawText3D(f *Font, text string, pos lin.Vec3, scale float32,
 	if f == nil || text == "" {
 		return
 	}
+	if !g.checkDrawFont(f) {
+		return
+	}
 	if scale <= 0 {
 		scale = 0.01
 	}
@@ -112,7 +116,11 @@ func (g *Graphics) DrawText3D(f *Font, text string, pos lin.Vec3, scale float32,
 	}
 	up, _, _, _ := cam.defaults()
 	rot := lin.QuatLookAt(cam.Target.Sub(cam.Position).Norm(), up)
-	glyphs := f.Shape(text, opts)
+	glyphs, err := f.Shape(text, opts)
+	if err != nil {
+		g.recordDrawError(err)
+		return
+	}
 	w, _ := f.Measure(text, opts)
 	tex := f.Texture()
 	if tex == nil {

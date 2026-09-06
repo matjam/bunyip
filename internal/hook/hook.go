@@ -77,6 +77,7 @@ type Input interface {
 	FeedFocusLost()
 	// FeedGamepad replaces controller i's state.
 	FeedGamepad(i int, connected bool, name string, buttons [GamepadButtonCount]bool, axes [GamepadAxisCount]float32)
+	FeedGamepadInfo(i int, info GamepadInfo)
 	// EndUpdate clears the per-update transients, first latching them for
 	// Draw.
 	EndUpdate()
@@ -91,6 +92,10 @@ type Input interface {
 
 // Audio is the mixer as the output device pulls from it.
 type Audio interface {
+	// OpenOutput opens the default playback endpoint owned by the mixer.
+	OpenOutput() error
+	// CloseOutput stops and releases the mixer's current playback endpoint.
+	CloseOutput()
 	// Mix writes len(out)/2 stereo frames. The output device calls it
 	// from its own thread.
 	Mix(out []float32)

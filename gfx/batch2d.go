@@ -31,13 +31,17 @@ const push2DSize = 112
 // state2D is everything a run of 2D vertices needs to be drawn. Runs
 // with equal state become one draw call.
 type state2D struct {
-	set       vk.VkDescriptorSet // the texture and the shader's images
-	shader    *Shader
-	uniform   int32 // arena offset of the shader's uniforms, -1 for none
-	blend     Blend
-	clip      lin.Rect
-	proj      *lin.Mat4
-	transform lin.Affine
+	set         vk.VkDescriptorSet // the texture and the shader's images
+	shader      *Shader
+	uniform     int32 // arena offset of the shader's uniforms, -1 for none
+	blend       Blend
+	customBlend customBlend
+	stencil     stencil2D
+	group       uint32
+	clip        lin.Rect
+	proj        *lin.Mat4
+	transform   lin.Affine
+	frame       lin.Vec4
 }
 
 // item2D is a submitted run of vertices with its sort keys.
@@ -91,6 +95,7 @@ type stream2D struct {
 	// two sprite draws that would otherwise become one.
 	breakRun bool
 	sequence int32
+	group    uint32 // ordered phases, separated by stencil operations
 }
 
 const initialVertexCapacity = 6 * 4096
@@ -152,6 +157,11 @@ func (s *stream2D) nextSequence() int32 {
 	return seq
 }
 
+func (s *stream2D) barrier() {
+	s.group++
+	s.breakRun = true
+}
+
 func (s *stream2D) addGeometry(st state2D, layer int32, key float32, data *geometry2DData) {
 	s.items = append(s.items, item2D{state: st, first: int32(len(s.verts)), layer: layer, key: key, seq: s.nextSequence(), geometry: data, breaks: s.breakRun})
 	s.breakRun = false
@@ -174,6 +184,7 @@ func (s *stream2D) reset() {
 	s.keyed = false
 	s.breakRun = false
 	s.sequence = 0
+	s.group = 0
 }
 
 // maxLayerSpread is how many layers wide a frame may be before the
@@ -186,6 +197,18 @@ const maxLayerSpread = 1 << 16
 // within a layer. Layers are small integers, so a counting sort over the
 // layer range does it in two passes and is stable by construction.
 func (s *stream2D) sortItems() {
+	if s.group != 0 {
+		slices.SortStableFunc(s.items, func(x, y item2D) int {
+			if c := cmp.Compare(x.state.group, y.state.group); c != 0 {
+				return c
+			}
+			if c := cmp.Compare(x.layer, y.layer); c != 0 {
+				return c
+			}
+			return cmp.Compare(x.key, y.key)
+		})
+		return
+	}
 	lo, hi := s.items[0].layer, s.items[0].layer
 	for i := range s.items {
 		lo = min(lo, s.items[i].layer)
@@ -337,6 +360,8 @@ func (g *Graphics) emit(tex *Texture, verts []vertex2D) { g.emitFiltered(tex, ve
 
 // emitFiltered is emit with a per-draw filtering override.
 func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
+	g.requireTextureOwner(tex)
+	g.requireShaderOwner(g.cur.shader)
 	if len(verts) == 0 {
 		return
 	}
@@ -351,6 +376,8 @@ func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
 
 // state2D snapshots shared drawing state for streamed and persistent geometry.
 func (g *Graphics) state2D(tex *Texture, filter Filter) state2D {
+	g.requireTextureOwner(tex)
+	g.requireShaderOwner(g.cur.shader)
 	q := g.cur
 	if tex == nil {
 		tex = g.white
@@ -365,7 +392,7 @@ func (g *Graphics) state2D(tex *Texture, filter Filter) state2D {
 			shader = g.matrixShader
 		}
 	}
-	st := state2D{shader: shader, uniform: shader.uniformOffset(), blend: q.blend, proj: q.stream.proj(q.spriteProj), transform: lin.Identity2()}
+	st := state2D{shader: shader, uniform: shader.uniformOffset(), blend: q.blend, customBlend: q.customBlend, stencil: q.stencil2D, group: q.stream.group, proj: q.stream.proj(q.spriteProj), transform: lin.Identity2(), frame: g.frame2DState()}
 	if n := len(q.clips); n > 0 {
 		st.clip = q.clips[n-1]
 	}

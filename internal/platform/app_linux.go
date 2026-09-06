@@ -53,13 +53,14 @@ type App struct {
 	mu         sync.Mutex
 
 	// X11.
-	x        *xlib
-	controls *xControls
-	conn     unsafe.Pointer
-	screen   *xcbScreen
-	windows  map[uint32]*Window
-	wakeWin  atomic.Uint32 // the window Wake targets; read off the main goroutine
-	mods     Mods
+	x             *xlib
+	controls      *xControls
+	conn          unsafe.Pointer
+	screen        *xcbScreen
+	windows       map[uint32]*Window
+	parentWatches map[uint32]*parentWatch
+	wakeWin       atomic.Uint32 // the window Wake targets; read off the main goroutine
+	mods          Mods
 
 	atomWMProtocols, atomWMDelete, atomNetWMName, atomUTF8, atomNetWMState, atomNetWMFullscreen, atomWake uint32
 	atomNetWMHidden                                                                                       uint32
@@ -94,20 +95,23 @@ type Window struct {
 	wl  *wlWindow // nil under X11
 
 	// X11.
-	id        uint32
-	width     int
-	height    int
-	closed    bool
-	captured  bool
-	fullscr   bool
-	mapped    bool
-	obscured  bool
-	wmHidden  bool // _NET_WM_STATE_HIDDEN: the window manager minimised it
-	visible   bool
-	cursor    uint32 // the invisible cursor while captured
-	inputRect textRect
-	mouseX    float64
-	mouseY    float64
+	id           uint32
+	parent       uint32
+	manualBounds bool
+	hostLost     bool
+	width        int
+	height       int
+	closed       bool
+	captured     bool
+	fullscr      bool
+	mapped       bool
+	obscured     bool
+	wmHidden     bool // _NET_WM_STATE_HIDDEN: the window manager minimised it
+	visible      bool
+	cursor       uint32 // the invisible cursor while captured
+	inputRect    textRect
+	mouseX       float64
+	mouseY       float64
 
 	minW, minH, maxW, maxH int // content size limits; zero is none
 	cursorHidden           bool
@@ -117,6 +121,20 @@ type Window struct {
 }
 
 type textRect struct{ X, Y, W, H float64 }
+
+func (a *App) refreshWakeWindow(removed uint32) {
+	if a.wakeWin.Load() != removed {
+		return
+	}
+	var next uint32
+	for id, w := range a.windows {
+		if !w.closed && (next == 0 || id < next) {
+			next = id
+		}
+	}
+	a.clipOwned = false // destroying its owner window releases the native selection
+	a.wakeWin.Store(next)
+}
 
 // NewApp connects to the window system, Wayland first and X11 second.
 func NewApp() (*App, error) {
@@ -143,6 +161,9 @@ func NewApp() (*App, error) {
 
 // NewWindow opens a window and shows it.
 func (a *App) NewWindow(cfg Config) (*Window, error) {
+	if cfg.Parent != nil {
+		return a.newEmbedded(cfg)
+	}
 	if a.wl != nil {
 		w := &Window{app: a}
 		wl, err := a.wl.newWindow(w, cfg)
@@ -235,7 +256,7 @@ func (w *Window) Closed() bool {
 	if w.wl != nil {
 		return w.wl.closed
 	}
-	return w.closed
+	return w.closed || w.hostLost
 }
 
 // Close destroys the window.
@@ -261,6 +282,9 @@ func (w *Window) Fullscreen() bool {
 // Under Wayland the answer arrives as a configure, so Fullscreen only
 // changes once the compositor agrees.
 func (w *Window) SetFullscreen(on bool) {
+	if w.parent != 0 {
+		return
+	}
 	if w.wl != nil {
 		w.wl.setFullscreen(on)
 		return

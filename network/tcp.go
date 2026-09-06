@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,7 +18,8 @@ type Conn struct {
 	events     chan Event
 	activityMu sync.Mutex
 	activity   func()
-	sendMu     sync.Mutex
+	sendInit   sync.Once
+	sendGate   chan struct{}
 	closed     chan struct{}
 	once       sync.Once
 	ID         int // server-assigned, 1 upward; 0 on the client side
@@ -28,8 +30,33 @@ type Conn struct {
 // Addr returns the peer's address.
 func (c *Conn) Addr() string { return c.c.RemoteAddr().String() }
 
-// Send encodes and writes one message; it is safe from any goroutine.
+// DefaultSendTimeout bounds writer acquisition and network I/O for Send and
+// the entire sequential Broadcast. Encoding runs synchronously; a custom
+// marshaler that blocks cannot be interrupted by this timeout.
+const DefaultSendTimeout = 5 * time.Second
+
+// Send encodes and writes one message with DefaultSendTimeout. It is safe from
+// any goroutine. Use SendContext to choose a shorter or longer budget.
 func (c *Conn) Send(msg any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
+	defer cancel()
+	return c.SendContext(ctx, msg)
+}
+
+// SendContext encodes and writes one message. Cancellation covers waiting for
+// another sender and transport writes, including TLS; encoding is synchronous
+// and cannot interrupt a custom marshaler. A context without a deadline may
+// wait indefinitely. Concurrent sends are serialized in acquisition order.
+//
+// Cancellation before transport I/O leaves the connection usable. An interrupted
+// TLS handshake or transport write failure closes it, since a partial frame or TLS write error
+// can prevent further messages from being decoded. A successful write means the
+// transport accepted the frame, not that the peer processed it. Cancellation
+// racing after a complete frame does not turn that successful send into an error.
+func (c *Conn) SendContext(ctx context.Context, msg any) (err error) {
+	if err := sendContextErr(ctx); err != nil {
+		return err
+	}
 	data, err := c.reg.encode(msg)
 	if err != nil {
 		return err
@@ -37,15 +64,106 @@ func (c *Conn) Send(msg any) error {
 	if len(data) > MaxMessage {
 		return fmt.Errorf("network: message of %d bytes exceeds MaxMessage", len(data))
 	}
-	var hdr [4]byte
-	binary.BigEndian.PutUint32(hdr[:], uint32(len(data)))
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
-	if _, err := c.c.Write(hdr[:]); err != nil {
+	c.sendInit.Do(func() { c.sendGate = make(chan struct{}, 1) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closed:
+		return net.ErrClosed
+	case c.sendGate <- struct{}{}:
+	}
+	defer func() { <-c.sendGate }()
+	if err := sendContextErr(ctx); err != nil {
 		return err
 	}
-	_, err = c.c.Write(data)
-	return err
+	select {
+	case <-c.closed:
+		return net.ErrClosed
+	default:
+	}
+	// TLS's implicit Write handshake may already be waiting in the reader.
+	// A write deadline cannot interrupt its read or mutex wait; HandshakeContext
+	// cancels that work by closing the underlying transport when necessary.
+	if tlsConn, ok := c.c.(interface{ HandshakeContext(context.Context) error }); ok {
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			c.Close()
+			return fmt.Errorf("network: TLS handshake: %w", err)
+		}
+	}
+	deadline, _ := ctx.Deadline()
+	if err := c.c.SetWriteDeadline(deadline); err != nil {
+		c.Close()
+		return fmt.Errorf("network: set write deadline: %w", err)
+	}
+	canceled := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		defer close(canceled)
+		if c.c.SetWriteDeadline(time.Now()) != nil {
+			c.Close()
+		}
+	})
+	defer func() {
+		// Join an already running callback before clearing its deadline. Otherwise
+		// it could expire the next sender's write after this sender releases the gate.
+		if !stopCancel() {
+			<-canceled
+		}
+		if clearErr := c.c.SetWriteDeadline(time.Time{}); clearErr != nil && err == nil {
+			c.Close()
+			err = fmt.Errorf("network: clear write deadline: %w", clearErr)
+		}
+	}()
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], uint32(len(data)))
+	started, err := writeFramePart(ctx, c.c, hdr[:])
+	if err == nil {
+		_, err = writeFramePart(ctx, c.c, data)
+	}
+	if err != nil {
+		if started {
+			c.Close()
+		}
+		cause := ctx.Err()
+		var timeout net.Error
+		if cause == nil && !deadline.IsZero() && !time.Now().Before(deadline) && errors.As(err, &timeout) && timeout.Timeout() {
+			cause = context.DeadlineExceeded
+		}
+		return errors.Join(err, cause)
+	}
+	return nil
+}
+
+func writeFramePart(ctx context.Context, w io.Writer, p []byte) (started bool, err error) {
+	for len(p) > 0 {
+		if err := sendContextErr(ctx); err != nil {
+			return started, err
+		}
+		started = true
+		n, err := w.Write(p)
+		if n < 0 || n > len(p) {
+			return started, fmt.Errorf("network: invalid write count %d for %d bytes", n, len(p))
+		}
+		p = p[n:]
+		if err != nil {
+			return started, err
+		}
+		if n == 0 {
+			return started, io.ErrShortWrite
+		}
+	}
+	return started, nil
+}
+
+// A socket deadline may fire before the context's timer goroutine publishes
+// cancellation. Do not start another frame or broadcast peer in that interval.
+func sendContextErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // Close ends the connection; the other side sees a Disconnected event.
@@ -54,7 +172,9 @@ func (c *Conn) Send(msg any) error {
 func (c *Conn) Close() error {
 	var err error
 	c.once.Do(func() {
-		close(c.closed)
+		if c.closed != nil {
+			close(c.closed)
+		}
 		err = c.c.Close()
 	})
 	return err
@@ -237,19 +357,37 @@ func (s *Server) Conns() []*Conn {
 	return out
 }
 
-// Broadcast sends a message to every connection, skipping any in except.
-// Sends run sequentially and may block; individual send errors are
-// ignored. Use Conns and Conn.Send when delivery errors must be handled.
-func (s *Server) Broadcast(msg any, except ...*Conn) {
+// Broadcast sends to every connection except those in except. Sends run
+// sequentially with one shared DefaultSendTimeout budget. The returned map
+// contains failed peers only; nil means every selected peer accepted its frame.
+func (s *Server) Broadcast(msg any, except ...*Conn) map[*Conn]error {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
+	defer cancel()
+	return s.BroadcastContext(ctx, msg, except...)
+}
+
+// BroadcastContext sends sequentially with one shared context budget. It returns
+// failed peers only, including peers not reached before cancellation. Nil means
+// every selected peer accepted its frame. Encoding runs synchronously for each
+// peer and a blocking custom marshaler cannot be interrupted. The connection
+// snapshot and iteration order are unspecified; sends may block the caller.
+func (s *Server) BroadcastContext(ctx context.Context, msg any, except ...*Conn) map[*Conn]error {
+	var failures map[*Conn]error
 	for _, c := range s.Conns() {
 		skip := false
 		for _, e := range except {
 			skip = skip || e == c
 		}
 		if !skip {
-			c.Send(msg)
+			if err := c.SendContext(ctx, msg); err != nil {
+				if failures == nil {
+					failures = make(map[*Conn]error)
+				}
+				failures[c] = err
+			}
 		}
 	}
+	return failures
 }
 
 // Close stops accepting and closes every connection.

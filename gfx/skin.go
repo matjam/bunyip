@@ -116,6 +116,7 @@ func (g *Graphics) DrawSkinnedMoved(m *Mesh, mat Material, model, prev lin.Mat4,
 // drawSkinned is DrawSkinnedMoved with the morph fields of a draw filled
 // in, which is the path an animated model takes.
 func (g *Graphics) drawSkinned(m *Mesh, mat Material, model, prev lin.Mat4, joints []lin.Mat4, d meshDraw) {
+	g.requireMeshOwner(m, mat)
 	if !m.skinned || len(joints) == 0 {
 		d.mesh, d.mat, d.model, d.prev, d.moved = m, mat, model, prev, prev != model
 		g.queueMesh(d)

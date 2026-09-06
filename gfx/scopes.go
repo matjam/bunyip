@@ -42,9 +42,9 @@ func (g *Graphics) ConfigurePost(edit func(*PostSettings)) {
 // queue's mode, including when draw panics.
 func (g *Graphics) Blended(b Blend, draw func()) {
 	q := g.cur
-	previous := q.blend
-	q.blend = b
-	defer func() { q.blend = previous }()
+	previous, custom := q.blend, q.customBlend
+	g.SetBlend(b)
+	defer func() { q.blend, q.customBlend = previous, custom }()
 	draw()
 }
 
@@ -77,7 +77,7 @@ func (g *Graphics) ColorMatrixed(m ColorMatrix, draw func()) {
 	defer func() {
 		q.colorMatrix = previous
 		if g.cur == q && previous != nil {
-			g.matrixShader.SetUniforms(previous)
+			g.recordDrawError(g.matrixShader.SetUniforms(previous))
 		}
 	}()
 	draw()

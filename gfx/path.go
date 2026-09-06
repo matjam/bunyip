@@ -358,10 +358,7 @@ type StrokeOptions struct {
 // queue: one framebuffer pixel through the camera and transform.
 func (g *Graphics) fringe() float32 {
 	q := g.cur
-	px := q.pixelW / q.viewW
-	if q == g.main {
-		px = g.pixelScale()
-	}
+	px := g.drawingPixelScale()
 	zoom := float32(1)
 	if q.hasCam2D && q.cam2D.Zoom != 0 {
 		zoom = q.cam2D.Zoom
@@ -375,6 +372,10 @@ func (g *Graphics) fringe() float32 {
 
 // FillPath fills the path's interior with a colour.
 func (g *Graphics) FillPath(p *Path, c Color, opts FillOptions) {
+	g.requireTextureOwner(opts.Texture)
+	if opts.Gradient != nil {
+		g.requireTextureOwner(opts.Gradient.tex)
+	}
 	tex, verts := g.fillPath(p, c, opts, g.fringe())
 	g.emit(tex, verts)
 }
@@ -616,6 +617,9 @@ func (b *filler) run(subs []subpath) {
 
 // StrokePath outlines the path with a colour.
 func (g *Graphics) StrokePath(p *Path, c Color, opts StrokeOptions) {
+	if opts.Gradient != nil {
+		g.requireTextureOwner(opts.Gradient.tex)
+	}
 	tex, verts := g.strokePath(p, c, opts, g.fringe())
 	g.emit(tex, verts)
 }

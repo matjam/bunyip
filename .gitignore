@@ -6,6 +6,7 @@
 !examples/testdata/*.png
 *.spv
 !**/shaders/*.spv
+!gfx/testdata/uniforms.frag.spv
 .DS_Store
 
 # Binaries that a bare go build of an example drops in the repository root.

@@ -142,6 +142,7 @@ type decal struct {
 // to the world; the texture is projected along the box's y axis, its
 // x and z spanning the image, and fades on surfaces facing away from it.
 func (g *Graphics) DrawDecal(tex *Texture, box lin.Mat4, tint Color) {
+	g.requireTextureOwner(tex)
 	if tex == nil {
 		tex = g.white
 	}
@@ -557,7 +558,10 @@ func jitterProjection(p lin.Mat4, j lin.Vec2) lin.Mat4 {
 }
 
 // SetLight sets the directional light, ambient term and shadow settings.
-func (g *Graphics) SetLight(l Light) { g.cur.light = l }
+func (g *Graphics) SetLight(l Light) {
+	g.requireEnvironmentOwner(l.Environment)
+	g.cur.light = l
+}
 
 // AddPointLight adds a light shining from a point in every direction
 // for this frame, fading to nothing rng units away: torches, muzzle
@@ -723,6 +727,7 @@ func (g *Graphics) DrawMeshMoved(m *Mesh, mat Material, model, prev lin.Mat4) {
 // queueMesh fills a draw's defaults, captures its shader's uniforms, and
 // adds it to the current queue.
 func (g *Graphics) queueMesh(d meshDraw) {
+	g.requireMeshOwner(d.mesh, d.mat)
 	if d.mat.BaseColor == (Color{}) {
 		d.mat.BaseColor = White
 	}

@@ -37,7 +37,7 @@ func TestDrawingScopesRestore(t *testing.T) {
 		{"camera", func(fn func()) { g.WithCamera2D(Camera2D{Position: lin.V2(4, 5), Zoom: 2}, fn) }},
 		{"blend", func(fn func()) { g.Blended(BlendAdd, fn) }},
 		{"transform", func(fn func()) { g.Transformed(lin.Translate2(10, 20), fn) }},
-		{"shader", func(fn func()) { g.Shaded(&Shader{}, fn) }},
+		{"shader", func(fn func()) { g.Shaded(&Shader{g: g}, fn) }},
 		{"color matrix", func(fn func()) { g.ColorMatrixed(Invert(), fn) }},
 		{"clip", func(fn func()) { g.Clip(lin.Rect{X: 2, Y: 3, W: 20, H: 25}, fn) }},
 	} {

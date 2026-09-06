@@ -895,6 +895,7 @@ func (g *Graphics) DrawModelAnimatedWith(m *Model, t Transform, p *AnimPlayer, o
 // velocity buffer carries for temporal anti-aliasing and motion blur.
 // The pose's own motion is not carried; see DrawSkinnedMoved.
 func (g *Graphics) DrawModelAnimatedMoved(m *Model, t, prev Transform, p *AnimPlayer, override MaterialOverride) {
+	g.requireModelOwner(m, override == nil)
 	world, was := t.Matrix(), prev.Matrix()
 	for _, mm := range m.morphs {
 		if w := p.MorphWeights(mm.node); w != nil {

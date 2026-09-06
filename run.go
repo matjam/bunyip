@@ -15,7 +15,6 @@ import (
 	"github.com/matjam/bunyip/console"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
-	"github.com/matjam/bunyip/internal/audioout"
 	"github.com/matjam/bunyip/internal/hook"
 	"github.com/matjam/bunyip/internal/platform"
 	"github.com/matjam/bunyip/internal/render"
@@ -78,6 +77,13 @@ func runOnce(cfg Config, game Game) error {
 	if os.Getenv("BUNYIP_FIXED_CLOCK") != "" {
 		cfg.FixedClock = true // the examples test, comparing against stored images
 	}
+	parent, err := cfg.Parent.platform()
+	if err != nil {
+		return err
+	}
+	if cfg.Headless && parent != nil {
+		return ErrUnsupported
+	}
 	if cfg.FixedStep <= 0 {
 		cfg.FixedStep = time.Second / 60
 	}
@@ -106,7 +112,7 @@ func runOnce(cfg Config, game Game) error {
 			return err
 		}
 		cfg.Log.Debug("bunyip: window backend", "backend", platform.Backend())
-		pw, err := pa.NewWindow(platform.Config{Title: cfg.Title, Width: cfg.Width, Height: cfg.Height, Resizable: cfg.Resizable})
+		pw, err := pa.NewWindow(platform.Config{Parent: parent, Title: cfg.Title, Width: cfg.Width, Height: cfg.Height, Resizable: cfg.Resizable})
 		if err != nil {
 			return err
 		}
@@ -128,23 +134,22 @@ func runOnce(cfg Config, game Game) error {
 	defer gd.Destroy()
 	in := hook.NewInput()
 	mix := hook.NewMixer(audioRate)
+	defer mix.CloseOutput()
 	if cfg.NoAudio || cfg.Headless {
 		// No device at all was asked for, so the mixer refuses to record
 		// from one either.
 		mix.SetDevice(false)
 	} else {
-		dev, err := audioout.Open(audioRate, mix.Mix)
+		err := mix.OpenOutput()
 		if err != nil {
 			cfg.Log.Warn("bunyip: audio output unavailable, continuing silent", "err", err)
-		} else {
-			defer dev.Close()
 		}
 	}
 	// The drivers stay in the loop; the game sees the public values.
 	l := &loop{cfg: cfg, app: app, win: win, game: game, gfx: gd, input: in, audio: mix,
 		ctx: &Context{Gfx: gd.Game().(*gfx.Graphics), Input: in.Game().(*input.State), Log: cfg.Log,
 			Audio: mix.Game().(*audio.Mixer), Clear: gfx.RGB(24, 24, 32), win: win, app: app, Alpha: 1,
-			focused: true, visible: true, timeScale: 1, budget: cfg.DrawBudget}}
+			focused: cfg.Parent == nil, visible: true, timeScale: 1, budget: cfg.DrawBudget}}
 	if cfg.Console {
 		// The console tees the log, so it is built before anything the
 		// game logs during Init.
@@ -165,6 +170,9 @@ func runOnce(cfg Config, game Game) error {
 	}
 	l.applySize()
 	defer l.ctx.cleanup()
+	l.renderer = r
+	family := newWindowFamily(l)
+	defer func() { family.closing = true; family.closeChildren(family.root) }()
 	if cfg.recovering {
 		if err := game.(Recoverer).Recover(l.ctx); err != nil {
 			return err
@@ -175,18 +183,28 @@ func runOnce(cfg Config, game Game) error {
 		}
 	}
 	if shut, ok := game.(Shutdowner); ok {
-		defer shut.Shutdown(l.ctx)
+		defer func() {
+			family.closing = true
+			defer shut.Shutdown(l.ctx)
+			family.closeChildren(family.root)
+		}()
 	}
 	return l.run()
 }
 
 type loop struct {
-	cfg     Config
-	app     eventSource
-	win     window
-	game    Game
-	ctx     *Context
-	overlay overlay
+	cfg              Config
+	app              eventSource
+	win              window
+	game             Game
+	ctx              *Context
+	overlay          overlay
+	renderer         *render.Renderer
+	family           *windowFamily
+	handle           *Window
+	eventWindow      *platform.Window
+	clock            windowClock
+	ready, wasPaused bool
 
 	// The engine's side of the public values in ctx: the frame, the event
 	// feed and the audio pull, none of which a game calls.
@@ -261,102 +279,11 @@ func (l *loop) toViewDelta(dx, dy float64) (float32, float32) {
 }
 
 func (l *loop) run() error {
-	start := time.Now()
-	last := start
-	var accumulator time.Duration
-	var frames int64 // frames drawn, which is the clock under FixedClock
-	step := l.cfg.FixedStep
-	l.ctx.Input.SetStep(float32(step.Seconds()))
-	catchUp := l.cfg.MaxCatchUp
-	if catchUp <= 0 {
-		catchUp = 250 * time.Millisecond
+	if l.family == nil {
+		newWindowFamily(l)
 	}
-	if catchUp < step {
-		catchUp = step // clamping below one step would never run an update
-	}
-	for !l.ctx.quit && !l.win.Closed() {
-		wasPaused := l.paused()
-		wait := l.cfg.TurnBased && !l.ctx.redraw
-		l.ctx.redraw = false
-		l.handleEvents(l.app.Poll(wait))
-		if l.ctx.quit || l.win.Closed() {
-			break
-		}
-		for i, g := range l.app.Gamepads() {
-			l.input.FeedGamepad(i, g.Connected, g.Name, g.Buttons, g.Axes)
-		}
-		l.overlay.toggle(l.ctx.Input)
-		now := time.Now()
-		elapsed := now.Sub(last)
-		last = now
-		paused := l.paused()
-		if wasPaused || paused {
-			// Poll can block until the event that resumes the game. Its
-			// waiting time still belongs to the pause, even on that frame.
-			elapsed = 0
-			accumulator = 0
-		}
-		l.beginFrame(now)
-		l.ctx.Time = now.Sub(start).Seconds()
-		if l.cfg.FixedClock && !l.cfg.TurnBased {
-			// The clock is the frame count, so the run does not depend on
-			// how long the machine took: exactly one update a frame, at
-			// exactly one step, and nothing left over to interpolate.
-			// Nothing paces it either, so a headless run goes as fast as
-			// the machine allows.
-			l.ctx.Time = float64(frames) * step.Seconds()
-			l.ctx.Delta = step.Seconds() * l.ctx.timeScale
-			frames++
-			if !paused {
-				if err := l.update(); err != nil {
-					return err
-				}
-			}
-			l.ctx.Alpha = 0
-			if err := l.draw(); err != nil {
-				return err
-			}
-			continue
-		}
-		if l.cfg.TurnBased {
-			l.ctx.Delta = elapsed.Seconds() * l.ctx.timeScale
-			if !paused {
-				if err := l.update(); err != nil {
-					return err
-				}
-			}
-			l.ctx.Alpha = 1
-		} else {
-			accumulator += elapsed
-			if accumulator > catchUp { // do not spiral after a stall
-				accumulator = catchUp
-			}
-			// The step is fixed; the time it covers is scaled, so slow
-			// motion runs the same number of updates over less game time.
-			l.ctx.Delta = step.Seconds() * l.ctx.timeScale
-			for steps := 0; accumulator >= step; steps++ {
-				if l.cfg.MaxSteps > 0 && steps >= l.cfg.MaxSteps {
-					accumulator = 0 // drop the rest of the lost time
-					break
-				}
-				accumulator -= step
-				if err := l.update(); err != nil {
-					return err
-				}
-			}
-			l.ctx.Alpha = float32(accumulator) / float32(step)
-		}
-		if err := l.draw(); err != nil {
-			return err
-		}
-		if l.cfg.Headless {
-			// Nothing paces a headless run, so keep it to the update rate.
-			if rest := step - time.Since(now); rest > 0 {
-				time.Sleep(rest)
-			}
-		}
-	}
-	return nil
+	l.resetClock()
+	return l.family.run()
 }
 
 func (l *loop) update() error {
@@ -471,6 +398,10 @@ func (l *loop) paused() bool {
 // that changes nothing leaves the mixer alone: a game that paused its own
 // mixer keeps it paused across a focus change it did not ask to react to.
 func (l *loop) applyPause() {
+	if l.family != nil {
+		l.family.applyPause()
+		return
+	}
 	paused := l.paused()
 	if paused == l.pausedNow {
 		return

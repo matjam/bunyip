@@ -9,9 +9,12 @@ import (
 )
 
 func (w *Window) Capabilities() WindowCapabilities {
-	return WindowCapabilities{Resize: true, Show: true, Hide: true, Focus: true, AlwaysOnTop: true, CursorImage: true, PointerPosition: true}
+	return WindowCapabilities{Resize: w.parent == 0, Show: true, Hide: true, Focus: true, AlwaysOnTop: w.parent == 0, CursorImage: true, PointerPosition: true, EmbeddedBounds: w.parent != 0}
 }
 func (w *Window) SetSize(width, height int) error {
+	if w.parent != 0 {
+		return ErrUnsupported
+	}
 	if width <= 0 || height <= 0 {
 		return errors.New("platform: window dimensions must be positive")
 	}
@@ -19,14 +22,28 @@ func (w *Window) SetSize(width, height int) error {
 	return nil
 }
 func (w *Window) Show() error {
+	if w.parent != 0 {
+		w.view.Send(objc.RegisterName("setHidden:"), false)
+		return nil
+	}
 	w.nsWindow.Send(objc.RegisterName("orderFront:"), objc.ID(0))
 	return nil
 }
 func (w *Window) Hide() error {
+	if w.parent != 0 {
+		w.view.Send(objc.RegisterName("setHidden:"), true)
+		return nil
+	}
 	w.nsWindow.Send(objc.RegisterName("orderOut:"), objc.ID(0))
 	return nil
 }
 func (w *Window) RequestFocus() error {
+	if w.parent != 0 {
+		if !objc.Send[bool](w.nsWindow, w.app.tsel.makeFirstResponder, w.view) {
+			return errors.New("platform: host declined embedded focus")
+		}
+		return nil
+	}
 	w.nsWindow.Send(w.app.c.sel.makeKeyAndOrderFront, objc.ID(0))
 	return nil
 }
@@ -38,7 +55,8 @@ func (w *Window) SetPointerPosition(x, y float64) error {
 	// NSWindow converts its content-base point into global AppKit coordinates;
 	// Quartz uses the main screen's top edge as its Y origin.
 	_, height := w.Size()
-	p := objc.Send[nsPoint](w.nsWindow, objc.RegisterName("convertPointToScreen:"), nsPoint{X: x, Y: float64(height) - y})
+	p := objc.Send[nsPoint](w.view, objc.RegisterName("convertPoint:toView:"), nsPoint{X: x, Y: float64(height) - y}, objc.ID(0))
+	p = objc.Send[nsPoint](w.nsWindow, objc.RegisterName("convertPointToScreen:"), p)
 	p.Y = w.screenHeight() - p.Y
 	if status := warp(p); status != 0 {
 		return fmt.Errorf("platform: warp pointer: CoreGraphics status %d", status)

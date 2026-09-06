@@ -1,6 +1,7 @@
 package audioout
 
 import (
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,6 +10,9 @@ import (
 // TestOpenPullsFrames opens the default output and waits for Core Audio to
 // ask for frames. It skips when no output device exists.
 func TestOpenPullsFrames(t *testing.T) {
+	if os.Getenv("BUNYIP_TEST_AUDIO_HARDWARE") != "1" || testing.Short() {
+		t.Skip("output integration test requires BUNYIP_TEST_AUDIO_HARDWARE=1 without -short")
+	}
 	var frames atomic.Int64
 	d, err := Open(48000, func(out []float32) {
 		clear(out)

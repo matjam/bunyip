@@ -31,6 +31,7 @@ func Backend() string { return backendName }
 
 // Config describes a window to open.
 type Config struct {
+	Parent    *NativeParent
 	Title     string
 	Width     int // content size in points (logical pixels)
 	Height    int
@@ -81,6 +82,7 @@ var ErrNoClipboard = errors.New("platform: clipboard is not available on this pl
 
 // GamepadState is one controller's inputs as read this poll.
 type GamepadState struct {
+	Info      input.GamepadInfo
 	Connected bool
 	Name      string
 	Buttons   [input.GamepadButtonCount]bool

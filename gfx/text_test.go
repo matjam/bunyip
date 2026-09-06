@@ -42,7 +42,7 @@ func TestShapeKerning(t *testing.T) {
 	if f, err = g.NewFont(goregular.TTF, 20, FontOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	glyphs := f.Shape("Hi there", TextOptions{})
+	glyphs := shapeGlyphs(t, f, "Hi there", TextOptions{})
 	if len(glyphs) != 8 {
 		t.Fatalf("got %d glyphs for 8 runes", len(glyphs))
 	}
@@ -64,7 +64,7 @@ func TestShapeRightToLeft(t *testing.T) {
 	// Arabic joins letters into forms and lam-alef into a ligature: fewer
 	// glyphs than runes, laid out so the first letter is rightmost.
 	text := "السلام"
-	glyphs := f.Shape(text, TextOptions{})
+	glyphs := shapeGlyphs(t, f, text, TextOptions{})
 	if len(glyphs) >= len([]rune(text)) {
 		t.Errorf("Arabic shaped into %d glyphs for %d runes; expected joining and a lam-alef ligature", len(glyphs), len([]rune(text)))
 	}
@@ -76,7 +76,7 @@ func TestShapeRightToLeft(t *testing.T) {
 		t.Errorf("glyph positions should increase left to right: %.1f .. %.1f", first.Pos.X, last.Pos.X)
 	}
 	// Mixed text: the Hebrew word inside a Latin sentence is reversed, the rest is not.
-	mixed := f.Shape("say שלום now", TextOptions{})
+	mixed := shapeGlyphs(t, f, "say שלום now", TextOptions{})
 	var hebrew []Glyph
 	for _, gl := range mixed {
 		if gl.Index >= 4 && gl.Index < 4+len("שלום") {
@@ -100,7 +100,7 @@ func TestFallbackFont(t *testing.T) {
 	defer f.Destroy()
 	// Go Regular has no Arabic; the fallback supplies it, and Latin stays
 	// with the main face.
-	glyphs := f.Shape("ok مرحبا", TextOptions{})
+	glyphs := shapeGlyphs(t, f, "ok مرحبا", TextOptions{})
 	drawn := 0
 	for _, gl := range glyphs {
 		if !gl.Empty {
@@ -121,7 +121,7 @@ func TestLayoutWrapsByUnicodeRules(t *testing.T) {
 	defer f.Destroy()
 	text := "the quick brown fox jumps over the lazy dog"
 	full, _ := f.Measure(text, TextOptions{})
-	lines := f.Layout(text, TextOptions{Width: full / 3})
+	lines := layoutStrings(t, f, text, TextOptions{Width: full / 3})
 	if len(lines) < 3 {
 		t.Fatalf("wrapped into %d lines at a third of the width: %q", len(lines), lines)
 	}
@@ -216,7 +216,7 @@ func TestVerticalText(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Destroy()
-	glyphs := f.Shape("abc", TextOptions{Direction: DirectionTTB})
+	glyphs := shapeGlyphs(t, f, "abc", TextOptions{Direction: DirectionTTB})
 	if len(glyphs) != 3 || glyphs[2].Pos.Y <= glyphs[0].Pos.Y {
 		t.Errorf("vertical text should step down: %+v", glyphs)
 	}

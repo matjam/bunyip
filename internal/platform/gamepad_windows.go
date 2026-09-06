@@ -11,8 +11,9 @@ import (
 // XInput controller support. The library is optional: without it there
 // are simply no gamepads.
 var (
-	xinput          = syscall.NewLazyDLL("xinput1_4.dll")
-	procXInputState = xinput.NewProc("XInputGetState")
+	xinput                 = syscall.NewLazyDLL("xinput1_4.dll")
+	procXInputState        = xinput.NewProc("XInputGetState")
+	procXInputCapabilities = xinput.NewProc("XInputGetCapabilities")
 )
 
 type xinputGamepad struct {
@@ -62,6 +63,27 @@ var xiButtons = [...]struct {
 // xiStates is the array Gamepads fills and returns, reused every poll.
 var xiStates [input.MaxGamepads]GamepadState
 
+type xinputCapabilities struct {
+	Type, Subtype uint8
+	Flags         uint16
+	Gamepad       xinputGamepad
+	Vibration     [2]uint16
+}
+
+func xinputInfo(c xinputCapabilities) input.GamepadInfo {
+	i := input.GamepadInfo{Name: "XInput controller", Backend: "xinput"}
+	for _, b := range xiButtons {
+		i.Buttons[b.btn] = c.Gamepad.Buttons&b.mask != 0
+	}
+	i.Axes[input.AxisLeftX] = c.Gamepad.ThumbLX != 0
+	i.Axes[input.AxisLeftY] = c.Gamepad.ThumbLY != 0
+	i.Axes[input.AxisRightX] = c.Gamepad.ThumbRX != 0
+	i.Axes[input.AxisRightY] = c.Gamepad.ThumbRY != 0
+	i.Axes[input.AxisLeftTrigger] = c.Gamepad.LeftTrigger != 0
+	i.Axes[input.AxisRightTrigger] = c.Gamepad.RightTrigger != 0
+	return i
+}
+
 // xiRetry is when each empty slot may be polled again. XInputGetState on
 // a slot with no controller is slow, so an empty one is only asked once
 // a second; plugging a controller in is noticed within that second.
@@ -97,6 +119,16 @@ func (a *App) Gamepads() []GamepadState {
 			continue
 		}
 		g := GamepadState{Connected: true, Name: "XInput controller"}
+		g.Info = xiStates[i].Info
+		if !xiStates[i].Connected {
+			g.Info = input.GamepadInfo{Name: g.Name, Backend: "xinput"}
+			if procXInputCapabilities.Find() == nil {
+				var caps xinputCapabilities
+				if result, _, _ := procXInputCapabilities.Call(uintptr(i), 0, uintptr(unsafe.Pointer(&caps))); result == 0 {
+					g.Info = xinputInfo(caps)
+				}
+			}
+		}
 		for _, b := range xiButtons {
 			g.Buttons[b.btn] = st.Gamepad.Buttons&b.mask != 0
 		}

@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/matjam/bunyip/lin"
@@ -317,6 +318,7 @@ func (f *Font) addCanvas(c *colorCanvas, ox, oy int) (glyph, bool) {
 	}
 	x, y, placed := f.packer.place(c.w, c.h)
 	if !placed {
+		f.glyphErr = fmt.Errorf("gfx: glyph atlas is full (%d by %d); increase FontOptions.AtlasSize", f.packer.width, f.packer.height)
 		return glyph{empty: true}, true // atlas full; drawn as nothing
 	}
 	for yy := range c.h {

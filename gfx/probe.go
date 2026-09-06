@@ -125,6 +125,9 @@ func (p *ReflectionProbe) volume() float32 {
 // the rest in FrameStats.ProbesDropped. A probe that has not been baked
 // is ignored.
 func (g *Graphics) AddProbe(p *ReflectionProbe) {
+	if p != nil {
+		g.requireEnvironmentOwner(p.env)
+	}
 	if p == nil || p.env == nil || p.env.cube == nil || p.kind() == 0 {
 		return
 	}

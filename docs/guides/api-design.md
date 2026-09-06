@@ -12,6 +12,15 @@ concrete values and typed methods handle the state that survives them.
 
 For the language choices behind this approach, see [Why Go?](why-go.html).
 
+Input bindings retain physical `input.Key` values. For labels and logical
+lookup, request a `ctx.KeyboardLayout()` snapshot when refreshing binding UI:
+`layout.Label(key)` supplies a native label with a physical-name fallback, and
+`layout.KeysFor(input.TextSymbol("a"))` returns every matching physical key.
+These snapshots exclude modifiers, locks and pending text composition;
+`Chars` and `Composition` remain the text-entry APIs. Gamepad snapshots include
+`Info.HasButton` and `Info.HasAxis` for the controls mapped by the backend.
+See [Input](input.html) for platform limits and examples.
+
 ## Let the engine manage the loop
 
 `Run` creates the window, graphics, input and audio services and makes
@@ -95,6 +104,29 @@ runs only after successful `Init` or `Recover`; cleanup also runs when
 either setup method fails. Remaining callbacks still run if one panics.
 For caller-owned music, `ctx.Cleanup(music.Close)` follows the same pattern.
 
+Each additional window has its own Graphics and Input. Create its textures,
+fonts and other GPU resources through that window's context; a texture from
+one output cannot be drawn by another. Ownership checks reject foreign
+resources before using their GPU handles. The windows share one audio mixer.
+Closing a parent closes its children, while closing a child leaves its parent
+running. Native embedding borrows the host window or view and creates an
+owned rendering child; keep the host alive until Bunyip finishes teardown.
+See [Windows](window.html) for the lifecycle and platform restrictions.
+
+Audio output belongs to the mixer, but recording is an explicit acquisition.
+Register a recorder's `Close` with `ctx.Cleanup` when it should last for the
+context, or stop it earlier. `Recorder.Stop` returns an independent PCM
+snapshot. Writer-based recording borrows the writer; `RecordWAVFile` owns
+and closes the file it creates. The default recording limit is 30 seconds,
+so forgetting to stop a memory recording cannot grow it indefinitely.
+See [Audio](audio.html) for capture, completion and error handling.
+
+A reusable `TextLayout` owns CPU layout data and borrows its font atlases.
+It needs no cleanup, and its measurement queries remain usable after font
+destruction. Drawing it still requires live fonts from the current Graphics.
+This distinction lets durable game data outlive a rendering resource without
+pretending that the GPU resource is still available.
+
 ## Put temporary work inside a closure
 
 A drawing scope makes the affected calls visible and restores the prior
@@ -109,8 +141,10 @@ ctx.Gfx.Layered(2, func() {
 ctx.Gfx.DebugText(20, 20, "Camera and layer restored")
 ```
 
-`Blended`, `Transformed`, `Shaded`, `ColorMatrixed` and `Clip` follow the
-same pattern. `DrawTo` scopes the render target. These scopes restore
+`Blended`, `CustomBlended`, `Transformed`, `Shaded`, `ColorMatrixed` and
+`Clip` follow the same pattern. `WithView` scopes a destination viewport
+and virtual size; `Masked` scopes stencil coverage. `DrawTo` scopes the
+render target. These scopes restore
 state; they do not undo drawing already queued.
 
 UI uses closures to keep a frame and its layout together. Create the
@@ -205,6 +239,13 @@ hero, err := loadHero(ctx.Gfx, embedded)
 and `os.DirFS` need no shutdown action. An `asset.FS` with open packs does.
 If you open an individual `fs.File`, close that handle before its backing
 filesystem; helpers such as `fs.ReadFile` manage their own temporary handles.
+
+Shader parameters follow the same principle: `Shader.SetUniforms` copies an
+ordinary struct and inserts the GPU's required padding. Use exported fields
+and the documented scalar, vector and matrix types; unsupported fields return
+an error and preserve the previous parameters. Game code describes the
+values, while the engine handles their byte layout. See [Shaders](shaders.html)
+for matching Go and shader declarations.
 
 ## Keep device work on the game goroutine
 

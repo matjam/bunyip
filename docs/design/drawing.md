@@ -131,16 +131,18 @@ var waveSPV []byte
 
 ```go
 wave, err := ctx.Gfx.NewShader(waveSPV)
-wave.SetUniforms(struct{ Amplitude, Time float32 }{0.02, t})
+if err := wave.SetUniforms(struct{ Amplitude, Time float32 }{0.02, t}); err != nil {
+	return err
+}
 wave.SetImage(0, noise)
 g.Shaded(wave, func() { g.Draw(tex, s) })
 g.SetShader(wave) // or as state; nil restores the default
 ```
 
-Uniforms are any struct laid out by std140 rules (use `float32`,
-`lin.Vec2`, `lin.Vec4`, `lin.Mat4`; `lin.Vec3` needs padding, as the
-documentation says). `SetUniforms` copies the bytes into a per-frame
-arena, so changing uniforms between draws is cheap and each draw keeps
+Uniforms use exported fields with explicit scalar, vector and matrix types.
+`SetUniforms` automatically packs std140 offsets and array strides, returning
+errors for unsupported fields or oversized blocks. A per-frame arena holds
+the packed bytes, so changing uniforms between draws is cheap and each draw keeps
 the values it was queued with. Images 0..3 are extra textures.
 
 Mesh shaders are surface shaders: the game adjusts the inputs to the
@@ -190,7 +192,10 @@ g.DrawTextBlock(f, text, x, y, gfx.TextOptions{
 	Direction: gfx.DirectionAuto, // or LTR, RTL, TTB (vertical)
 	Language:  "tr",
 }, c)
-glyphs := f.Shape("مرحبا", gfx.TextOptions{}) // positioned glyphs for custom drawing
+glyphs, err := f.Shape("مرحبا", gfx.TextOptions{}) // positioned glyphs for custom drawing
+if err != nil {
+	return err
+}
 g.DrawGlyphs(f, glyphs, x, y, c)
 ```
 

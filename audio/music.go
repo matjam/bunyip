@@ -15,8 +15,8 @@ import (
 	"github.com/jfreymuth/oggvorbis"
 )
 
-// Music plays WAV, Ogg Vorbis or MP3 through a two-second PCM buffer
-// filled on a decoder goroutine. Ogg and MP3 decode incrementally; WAV
+// Music plays WAV, Ogg Vorbis, MP3 or FLAC through a two-second PCM buffer
+// filled on a decoder goroutine. Ogg, MP3 and FLAC decode incrementally; WAV
 // is decoded completely at open and retained in memory.
 // Open one with Mixer.OpenMusicFile or Mixer.OpenMusic, start it with
 // Mixer.PlayStream, and Close it when the game is done with it.
@@ -76,6 +76,8 @@ func (m *Mixer) OpenMusic(r io.ReadSeeker, loop bool) (*Music, error) {
 		dec, err = newWAVDecoder(r)
 	case bytes.Equal(head[:], []byte("OggS")):
 		dec, err = newOggDecoder(r)
+	case bytes.Equal(head[:], []byte("fLaC")):
+		dec, err = newFLACDecoder(r)
 	case isMP3(head[:]):
 		dec, err = newMP3Decoder(r)
 	default:
@@ -102,7 +104,7 @@ func (m *Mixer) OpenMusic(r io.ReadSeeker, loop bool) (*Music, error) {
 	return mu, nil
 }
 
-// OpenMusicFile opens a WAV, Ogg Vorbis or MP3 file for streaming.
+// OpenMusicFile opens a WAV, Ogg Vorbis, MP3 or FLAC file for streaming.
 // Music owns the file and closes it after the decoder stops. Failure
 // closes the file before returning. Loop restarts playback at the end.
 func (m *Mixer) OpenMusicFile(path string, loop bool) (*Music, error) {
@@ -134,6 +136,7 @@ func (mu *Music) Buffered() float64 {
 // always knows it. Ogg Vorbis reads it from the last page at open; MP3
 // scans the frame headers at open. Either reports 0 when its reader could
 // not seek to find out.
+// FLAC uses STREAMINFO's sample count, which may also be unknown (0).
 func (mu *Music) Duration() float64 {
 	return float64(mu.length) / float64(mu.dec.Rate())
 }
@@ -144,7 +147,9 @@ func (mu *Music) Duration() float64 {
 // position is dropped. Seeking past the end ends the music, or starts it
 // over when it loops. A decoder that fails to seek ends the music and
 // reports through Err. WAV and Ogg Vorbis seek exactly; MP3 decodes from
-// the previous frame boundary. Prefer Voice.Seek on a playing voice so
+// the previous frame boundary. FLAC seeks exactly by scanning frames,
+// rewinding when necessary, with memory bounded to one decoded frame.
+// Prefer Voice.Seek on a playing voice so
 // its Position follows. Music whose voice has already ended can be sought
 // and played again with PlayStream.
 func (mu *Music) Seek(seconds float64) error {

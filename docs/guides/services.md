@@ -471,8 +471,34 @@ callback to avoid recursion. A captured callback may finish after
 replacement or removal. Nil disables future captures. UDP uses the same
 registration behavior; its notifications can cover multiple events.
 TCP event queues hold 1024 events and apply backpressure when full.
-Sends may block on network I/O. `Broadcast` sends sequentially and
-discards per-connection errors; use `Conns` and `Send` to handle them.
+TCP and TLS `Send` use a five-second `DefaultSendTimeout`, covering
+writer acquisition, a pending TLS handshake, and transport writes.
+`SendContext(ctx, msg)` accepts your own cancellation and deadline;
+`context.Background()` explicitly permits an indefinite wait. Encoding
+runs synchronously, so a custom marshaler that blocks cannot be
+interrupted. Sends still block the caller; use a short context budget
+or send from your own worker when the game loop must remain responsive.
+
+Cancellation while waiting for another sender leaves the connection
+usable. An interrupted TLS handshake or failed write closes it to avoid
+continuing after a partial frame or an unusable TLS stream. Send errors
+preserve `errors.Is` checks for `context.Canceled` and
+`context.DeadlineExceeded`. A completed send means the transport
+accepted the message, not that the peer processed it.
+
+`Broadcast` sends sequentially with one shared five-second budget for
+all selected peers. `BroadcastContext` uses one caller-supplied budget.
+Both return a `map[*network.Conn]error` containing only failed peers,
+including peers not reached before cancellation; nil means every
+selected peer accepted its message. Connection iteration order is
+unspecified. Handle individual errors directly:
+
+```go
+for peer, err := range server.Broadcast(Chat{From: "server", Text: "Ready"}) {
+	fmt.Printf("peer %d: %v\n", peer.ID, err)
+}
+```
+
 Complete registry registration before opening connections and leave it
 unchanged while network goroutines use it.
 

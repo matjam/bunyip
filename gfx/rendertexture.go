@@ -154,8 +154,19 @@ func (rt *RenderTexture) Texture() *Texture { return rt.tex }
 // surface's colour format, the result is an ordinary image: a ColorHDR
 // surface is encoded the way the screen is, so values above 1 clip, and a
 // ColorMask surface reads as grey, its one channel copied into red, green
-// and blue alike.
+// and blue alike. Colours follow Go's sRGB-premultiplied alpha convention.
+// Calls during an active frame return an error; its queued draws have not
+// been submitted yet.
 func (rt *RenderTexture) Read() (*image.RGBA, error) {
+	if rt == nil || rt.tex == nil || rt.tex.destroyed || rt.target == nil {
+		return nil, fmt.Errorf("gfx: read from a destroyed render texture")
+	}
+	if rt.g.frame != nil {
+		return nil, fmt.Errorf("gfx: render texture read requires a completed frame")
+	}
+	if err := rt.g.r.Device.WaitIdle(); err != nil {
+		return nil, err
+	}
 	switch rt.format {
 	case ColorHDR:
 		return rt.readHDR()
@@ -174,10 +185,13 @@ func (rt *RenderTexture) readHDR() (*image.RGBA, error) {
 	}
 	out := image.NewRGBA(image.Rect(0, 0, rt.Width, rt.Height))
 	for i := range rt.Width * rt.Height {
+		a := lin.Clamp(getF16(pix[i*8+6:]), 0, 1)
 		for c := range 3 {
-			out.Pix[i*4+c] = linearToSRGB8(getF16(pix[i*8+c*2:]))
+			if a > 0 {
+				out.Pix[i*4+c] = uint8(float32(linearToSRGB8(getF16(pix[i*8+c*2:])/a))*a + 0.5)
+			}
 		}
-		out.Pix[i*4+3] = uint8(lin.Clamp(getF16(pix[i*8+6:])*255+0.5, 0, 255))
+		out.Pix[i*4+3] = uint8(a*255 + 0.5)
 	}
 	return out, nil
 }
@@ -206,10 +220,17 @@ func (rt *RenderTexture) readMask() (*image.RGBA, error) {
 // It waits for the GPU and copies the whole image back to the host, so
 // it is for tools, tests and one-off queries rather than for every
 // frame. Read only after a completed 3D render; no previous depth content
-// is guaranteed before that. Missing or destroyed scene targets return an error.
+// is guaranteed before that. Active frames and missing or destroyed scene
+// targets return an error.
 func (rt *RenderTexture) ReadDepth() ([]float32, error) {
-	if rt.scene == nil || rt.scene.hdr == nil || rt.scene.hdr.Depth == nil {
+	if rt == nil || rt.scene == nil || rt.scene.hdr == nil || rt.scene.hdr.Depth == nil {
 		return nil, fmt.Errorf("gfx: render texture has no depth to read")
+	}
+	if rt.g.frame != nil {
+		return nil, fmt.Errorf("gfx: depth read requires a completed frame")
+	}
+	if err := rt.g.r.Device.WaitIdle(); err != nil {
+		return nil, err
 	}
 	return rt.g.r.Device.ReadDepth(rt.scene.hdr.Depth)
 }
@@ -257,7 +278,12 @@ func (rt *RenderTexture) Destroy() {
 // global and uses the final SetPost settings when the frame submits.
 // The previous output is restored even when draw panics; drawing already
 // queued is not rolled back. This call does not submit GPU work itself.
+// A render texture from another Graphics panics before switching output or
+// invoking draw.
 func (g *Graphics) DrawTo(rt *RenderTexture, clear Color, draw func()) {
+	if rt != nil && rt.g != g {
+		panic("gfx: render texture belongs to another Graphics")
+	}
 	if g.frame == nil {
 		return
 	}
@@ -268,7 +294,7 @@ func (g *Graphics) DrawTo(rt *RenderTexture, clear Color, draw func()) {
 		// These uniforms live on shared shaders, so restore the outer
 		// queue's values along with its active output.
 		if prev.colorMatrix != nil {
-			g.matrixShader.SetUniforms(prev.colorMatrix)
+			g.recordDrawError(g.matrixShader.SetUniforms(prev.colorMatrix))
 		}
 		prev.lightsDirty = true
 	}()

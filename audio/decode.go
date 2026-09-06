@@ -82,7 +82,7 @@ func DecodeOGG(data []byte) (pcm PCM, err error) {
 	return PCM{Samples: samples, Channels: format.Channels, Rate: format.SampleRate}, nil
 }
 
-// Decode picks a sampled-audio decoder (WAV, Ogg Vorbis, MP3) from the
+// Decode picks a sampled-audio decoder (WAV, Ogg Vorbis, MP3, FLAC) from the
 // data's magic bytes. Tracker modules are music, not clips; see PlayModule.
 func Decode(data []byte) (PCM, error) {
 	switch {
@@ -90,6 +90,8 @@ func Decode(data []byte) (PCM, error) {
 		return DecodeWAV(data)
 	case bytes.HasPrefix(data, []byte("OggS")):
 		return DecodeOGG(data)
+	case bytes.HasPrefix(data, []byte("fLaC")):
+		return DecodeFLAC(data)
 	case isMP3(data):
 		return DecodeMP3(data)
 	}

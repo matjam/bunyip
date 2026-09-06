@@ -58,9 +58,11 @@ type drawQueue struct {
 	out          outKey
 	viewW        float32
 	viewH        float32
-	pixelW       float32  // framebuffer width in pixels (render textures; the screen asks the swapchain)
-	proj         lin.Mat4 // screen-space projection
-	spriteProj   lin.Mat4 // projection for sprite draws right now
+	rootW, rootH float32    // coordinate space of the whole target
+	layout       lin.Affine // current local view coordinates to root view coordinates
+	pixelW       float32    // framebuffer width in pixels (render textures; the screen asks the swapchain)
+	proj         lin.Mat4   // screen-space projection
+	spriteProj   lin.Mat4   // projection for sprite draws right now
 	cam2D        Camera2D
 	hasCam2D     bool
 	visible      lin.Rect // the 2D camera's view in world units, for culling sprites
@@ -69,6 +71,11 @@ type drawQueue struct {
 	clips        []lin.Rect // clip stack; the last entry applies
 	shader       *Shader    // 2D shader in force, nil for the default
 	blend        Blend
+	customBlend  customBlend
+	stencil2D    stencil2D
+	maskDepth    uint8
+	maskTests    uint8        // completed masks required by the current phase
+	maskWrites   uint8        // mask bits the current phase's drawing constructs
 	colorMatrix  *ColorMatrix // recolouring in force, nil for none
 	lights       lights2D     // this frame's 2D lights
 	lightsDirty  bool
@@ -112,6 +119,10 @@ func (q *drawQueue) reset() {
 	q.clips = q.clips[:0]
 	q.shader = nil
 	q.blend = BlendAlpha
+	q.customBlend = customBlend{}
+	q.stencil2D = stencil2D{}
+	q.maskDepth = 0
+	q.maskTests, q.maskWrites = 0, 0
 	q.colorMatrix = nil
 	q.lights = lights2D{Ambient: lin.V4(1, 1, 1, 0)}
 	q.lightsDirty = true
@@ -169,6 +180,8 @@ func (g *Graphics) newQueue(w, h float32) (*drawQueue, error) {
 
 func (q *drawQueue) setView(w, h float32) {
 	q.viewW, q.viewH = w, h
+	q.rootW, q.rootH = w, h
+	q.layout = lin.Identity2()
 	q.proj = lin.Ortho2D(w, h)
 	if q.hasCam2D {
 		q.spriteProj = q.proj.Mul(q.cam2D.Matrix(w, h))

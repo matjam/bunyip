@@ -116,7 +116,7 @@ func (g *Graphics) SetColorMatrix(m *ColorMatrix) {
 	q := g.cur
 	q.colorMatrix = m
 	if m != nil {
-		g.matrixShader.SetUniforms(m)
+		g.recordDrawError(g.matrixShader.SetUniforms(m))
 	}
 }
 
@@ -192,9 +192,11 @@ func (g *Graphics) SetLights2D(ambient Color, lights ...Light2D) {
 // that cast shadows are blocked by the occluders AddOccluder2D added
 // this frame.
 func (g *Graphics) DrawLit(tex, normal *Texture, s Sprite) {
+	g.requireTextureOwner(tex)
+	g.requireTextureOwner(normal)
 	q := g.cur
 	if q.lightsDirty {
-		g.litShader.SetUniforms(&q.lights)
+		g.recordDrawError(g.litShader.SetUniforms(&q.lights))
 		q.lightsDirty = false
 	}
 	g.litShader.SetImage(0, normal)

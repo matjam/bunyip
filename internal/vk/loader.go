@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
+	"reflect"
 
 	"github.com/ebitengine/purego"
 )
@@ -13,6 +13,8 @@ import (
 var VkGetInstanceProcAddr func(instance VkInstance, pName string) PFN_vkVoidFunction
 
 var libHandle uintptr
+
+var boundDeviceInstance VkInstance
 
 // LibraryEnv names the environment variable that overrides the library search.
 const LibraryEnv = "BUNYIP_VULKAN_LIBRARY"
@@ -59,19 +61,30 @@ func LoadInstance(instance VkInstance) error {
 	return nil
 }
 
-// LoadDevice binds the device-level commands for device, resolving through
-// vkGetDeviceProcAddr so that calls skip the loader's dispatch trampoline.
-func LoadDevice(device VkDevice) error {
-	if VkGetDeviceProcAddr == nil {
+// LoadDevice binds device commands through the owning instance's dispatch.
+// These entry points can be used with every device created from that instance;
+// device-specific entry points cannot safely back the global command table.
+func LoadDevice(instance VkInstance) error {
+	if VkGetInstanceProcAddr == nil || instance == 0 {
 		return errors.New("vk: LoadInstance must run before LoadDevice")
 	}
+	if boundDeviceInstance == instance {
+		return nil
+	}
 	bindDeviceCommands(func(cmd string) uintptr {
-		name, keep := CString(cmd)
-		addr := VkGetDeviceProcAddr(device, name)
-		runtime.KeepAlive(keep)
-		return uintptr(addr)
+		return uintptr(VkGetInstanceProcAddr(instance, cmd))
 	})
+	boundDeviceInstance = instance
 	return nil
+}
+
+// ClearInstance clears instance and device command tables after the last
+// instance owner has been destroyed. Global creation commands remain loaded.
+func ClearInstance() {
+	boundDeviceInstance = 0
+	missing := func(string) uintptr { return 0 }
+	bindDeviceCommands(missing)
+	bindInstanceCommands(missing)
 }
 
 // libraryCandidates lists library paths to try in order: the environment
@@ -89,6 +102,10 @@ func libraryCandidates() []string {
 // recorded.
 func bind(fptr any, addr uintptr) {
 	if addr == 0 {
+		reflect.ValueOf(fptr).Elem().SetZero()
+		if slot, ok := fastAddrs[fptr]; ok {
+			*slot = 0
+		}
 		return
 	}
 	purego.RegisterFunc(fptr, addr)

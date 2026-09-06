@@ -6,8 +6,9 @@ summary: sounds, music, positional voices, reverb, occlusion, effects and tracke
 ---
 
 The [audio](../pkg/audio.html) package mixes in Go on the output device's
-own thread. A game gets a `Mixer` from `ctx.Audio` and never touches the
-device.
+own thread. A game gets a `Mixer` from `ctx.Audio`; the engine opens and
+owns the default output. Optional device enumeration and selection let
+the game choose another endpoint through that mixer.
 
 The engine still supplies `ctx.Audio` in headless mode, with `NoAudio`,
 or when output initialization fails. Without output callbacks, sound
@@ -25,7 +26,7 @@ must not call `Voice.Seek`: seeking needs that same playback lock.
 ## Sounds and voices
 
 `NewSound` converts decoded PCM to the mixer's format; `Decode` reads
-WAV, Ogg Vorbis and MP3 from bytes, and `Sine` synthesises a tone for
+WAV, Ogg Vorbis, MP3 and native FLAC from bytes, and `Sine` synthesises a tone for
 tests and placeholders. `Play` starts a `Voice` with options: volume,
 pan, loop, pitch, a fade-in, a low-pass cutoff, a reverb send, occlusion
 and a priority. The voice can be adjusted while it runs: `SetVolume`,
@@ -56,7 +57,7 @@ immediately. Keep callbacks short and send game-state changes back to
 the game loop.
 
 ```go
-pcm, err := audio.Decode(data) // WAV, Ogg Vorbis or MP3 bytes
+pcm, err := audio.Decode(data) // WAV, Ogg Vorbis, MP3 or FLAC bytes
 if err != nil {
 	return err
 }
@@ -101,8 +102,10 @@ not have to be handed one.
 ## Pausing
 
 To pause every voice at once, call `Mixer.SetPaused`. A pause menu calls
-it, and the engine calls it for you when `Config.PauseUnfocused` is set
-and the window loses focus. `Bus.SetPaused` pauses one bus and
+it, and the engine applies automatic pausing when every active window
+requests it through its focus/minimized pause settings. In a single
+window, `Config.PauseUnfocused` pauses audio when that window loses focus.
+`Bus.SetPaused` pauses one bus and
 `Voice.SetPaused` one voice. A pause fades out over the block it lands
 in and the resume fades back in, so neither clicks. Each level is kept
 separately, so resuming the mixer leaves a paused bus paused.
@@ -138,11 +141,17 @@ for _, b := range []*audio.Bus{ctx.Audio.Music(), ctx.Audio.Effects(), ctx.Audio
 
 ## Music
 
-`OpenMusicFile` plays WAV, Ogg or MP3 through a two-second buffer filled by
-a decoder goroutine. Ogg and MP3 decode incrementally; WAV is decoded
+`OpenMusicFile` plays WAV, Ogg, MP3 or native FLAC through a two-second buffer filled by
+a decoder goroutine. Ogg, MP3 and FLAC decode incrementally; WAV is decoded
 fully at open and held in memory. `PlayStream` plays it, and `Close`
 joins the decoder before closing the owned file.
-`Music.Duration` and `Music.Seek` work for all three formats.
+`Music.Duration` and `Music.Seek` work for all four formats. FLAC duration
+comes from STREAMINFO (0 when unknown). FLAC seeks scan forward, rewinding
+when necessary, and retain at most one decoded FLAC frame. A distant seek
+can take time, but opening does not decode the whole track or build an index.
+FLAC decoding accepts 1..8 channels and 4..24-bit samples; playback accepts
+mono/stereo. Frame CRCs are checked; whole-stream MD5 is not. 32-bit FLAC
+and Ogg-encapsulated FLAC are not supported.
 Looping retains resampling history across the track boundary, including
 tracks as short as one source frame. An explicit seek resets that history;
 nonlooping playback includes the final frame's interval.
@@ -395,8 +404,8 @@ n := ctx.Audio.Playing() // for the debug overlay
 
 ## Microphone input
 
-`OpenCapture` records from the machine's default input, the one the
-desktop is set to. It hands back a `Capture` whose `Read` copies
+`OpenCapture` records from the default input or `CaptureOptions.DeviceID`.
+It hands back a `Capture` whose `Read` copies
 whatever is buffered without waiting for new samples, so the game loop
 can call it every update. The read briefly shares a mutex with the
 device's buffer writer. `Level` is the root mean square of the block that arrived most
@@ -432,6 +441,112 @@ game's back. On macOS the operating system asks the player for
 microphone access the first time a game records, and a sandboxed
 application needs the audio-input entitlement. `go run ./examples/audio
 -mic` records and draws a level meter.
+
+## Audio devices
+
+Normal games open the system-default output automatically. `NewMixer`
+alone opens no hardware. `OutputDevices()` and `InputDevices()` enumerate
+endpoints without starting playback or recording. Each `DeviceInfo` has
+an opaque local selection `ID`, a display `Name`, and a `Default` flag.
+Names need not be unique; save and pass the ID when selecting an endpoint.
+IDs can become unavailable after hardware, driver or configuration changes.
+Linux lists configured ALSA PCMs, including virtual routing endpoints;
+macOS uses device UIDs, and Windows uses WASAPI endpoint IDs.
+
+```go
+outputs, err := ctx.Audio.OutputDevices()
+if err != nil {
+	return err
+}
+// Present outputs[i].Name, retaining outputs[i].ID for the selected row.
+if len(outputs) > 0 {
+	if err := ctx.Audio.SetOutputDevice(outputs[0].ID); err != nil {
+		return err // the previous output remains active
+	}
+}
+```
+
+`SetOutputDevice("")` selects system-default routing. A replacement opens
+with a silent callback before it takes over, so two devices never advance
+the mixer together. Failure preserves the old output; success can briefly
+produce silence while preserving voice positions. The old device is
+closed after handoff. `OutputDevice()` reports the chosen endpoint and
+whether the mixer owns an output. Empty ID with Default true represents
+the default routing choice, not a physical destination or live health
+query; the OS may change its destination. There is no device-change
+notification or automatic recovery after an endpoint disconnects.
+
+The engine closes its current output at shutdown. For a standalone mixer,
+call `CloseOutput()` when finished; a later `SetOutputDevice` can reopen it.
+Selection and close calls are safe from game goroutines and serialize with
+one another. Do not invoke either from audio callbacks, including
+`Stream.Read` and `OnDone`, because device shutdown waits for callbacks.
+`ErrDeviceUnavailable` identifies unavailable endpoints and
+`ErrDeviceUnsupported` identifies missing backends. A headless run or
+`Config.NoAudio` returns `ErrNoDevice` for enumeration, selection and capture.
+
+To select a microphone, pass an ID from `InputDevices()` in
+`CaptureOptions.DeviceID`. Empty selects the system default. Capture
+remains explicit and caller-owned: opening an output or enumerating inputs
+does not record, persist or transmit audio. Close each Capture when done.
+
+## Recording and WAV export
+
+`Record` owns a Capture and a worker that retains PCM. `RecordOptions`
+contains `CaptureOptions` and `MaxDuration`; zero duration means 30 seconds.
+The duration bounds both elapsed capture time and the number of complete
+source frames. Negative durations, sub-frame limits and overflowing sample
+counts are rejected. Reaching the limit is a normal stop.
+
+```go
+rec, err := ctx.Audio.Record(audio.RecordOptions{MaxDuration: 10 * time.Second})
+if err != nil {
+	return err
+}
+ctx.Cleanup(func() { rec.Close() })
+...
+pcm, err := rec.Stop() // stop input, drain accepted frames and join
+if err != nil {
+	return err
+}
+clip, err := ctx.Audio.NewSound(pcm)
+```
+
+`Recorder.Stop` returns an independent PCM copy, including partial data on
+error. Repeated calls return equivalent copies. `Close` joins and retains
+the data for a later Stop. `Done()` closes after capture and worker cleanup;
+`Err()` reports the terminal error after Done closes. Neither creating a
+mixer nor enumerating devices starts a recording.
+
+For longer recordings without retaining all samples, `RecordPCM` streams
+raw interleaved signed 16-bit little-endian samples to a borrowed
+`io.Writer`. `RecordWAV` writes PCM16 WAV to a borrowed `io.WriteSeeker`,
+starting at its current offset and finalizing the header when stopped;
+it leaves the writer positioned after the WAV and open. `RecordWAVFile`
+creates or replaces a file and owns its closure. These return `Recording`,
+whose `Stop()` and `Close()` return errors, plus the same Done and Err
+methods. Capture and conversion buffers remain bounded independently of
+recording length. A requested WAV maximum must fit RIFF's 32-bit file-size
+limit; choose an explicit duration for recordings longer than 30 seconds.
+
+Stop closes capture promptly even if output is blocked, then waits for
+the writer to finish. A borrowed writer must unblock its own Write/Seek
+calls. Do not call Stop or Close from those callbacks. Capture ring drops
+stop the recording with `ErrCaptureDropped`; write, header-finalization
+and owned-file close errors are returned together. Data written before an
+error may be partial. Recording APIs perform no automatic transmission.
+
+`PCM.WriteWAV(w)` and `Sound.WriteWAV(w)` export PCM16 WAV to a borrowed
+writer; `SaveWAV(path)` owns the created file. Samples are rounded and
+clamped to [-1,1]; non-finite samples, incomplete frames and invalid
+rate/channel/RIFF sizes are rejected before writing. Sound exports stereo
+at its mixer rate.
+
+Normal tests use synthetic samples and never open microphones or outputs.
+Hardware integration tests are explicit opt-ins, for example
+`BUNYIP_TEST_AUDIO_HARDWARE=1 CGO_ENABLED=0 go test ./audio -run '^TestCaptureDevice$'`
+records briefly from the default microphone. On macOS, the same environment
+flag enables `go test ./internal/audioout -run '^TestOpenPullsFrames$'`.
 
 ## Looking inside the mixer
 

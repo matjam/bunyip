@@ -26,12 +26,14 @@ type Instance struct {
 	log        *slog.Logger
 	messenger  vk.VkDebugUtilsMessengerEXT
 	debugUtils bool
+	owner      *instanceOwner
+	extensions []string
 }
 
 // NewInstance creates an instance with the given surface extensions, adding
 // portability enumeration (needed to see MoltenVK) and debug utils when
 // the loader offers them.
-func NewInstance(cfg Config, surfaceExts []string) (*Instance, error) {
+func createInstance(cfg Config, surfaceExts []string) (*Instance, error) {
 	if err := vk.Load(); err != nil {
 		return nil, err
 	}
@@ -51,6 +53,12 @@ func NewInstance(cfg Config, surfaceExts []string) (*Instance, error) {
 		return nil, err
 	}
 	inst := &Instance{log: log}
+	success := false
+	defer func() {
+		if !success && inst.Handle != 0 {
+			inst.destroyInstance()
+		}
+	}()
 	exts := slices.Clone(surfaceExts)
 	var flags vk.VkInstanceCreateFlags
 	if slices.Contains(available, vk.VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) {
@@ -74,6 +82,7 @@ func NewInstance(cfg Config, surfaceExts []string) (*Instance, error) {
 			return nil, fmt.Errorf("render: instance extension %s is not available", e)
 		}
 	}
+	inst.extensions = slices.Clone(exts)
 
 	appName := newCStrings([]string{cfg.AppName, "bunyip"})
 	extNames := newCStrings(exts)
@@ -114,11 +123,12 @@ func NewInstance(cfg Config, surfaceExts []string) (*Instance, error) {
 		}
 	}
 	log.Debug("render: instance created", "extensions", exts, "layers", enabledLayers)
+	success = true
 	return inst, nil
 }
 
 // Destroy releases the instance. Every object created from it must already be gone.
-func (i *Instance) Destroy() {
+func (i *Instance) destroyInstance() {
 	if i.messenger != 0 {
 		vk.VkDestroyDebugUtilsMessengerEXT(i.Handle, i.messenger, nil)
 	}

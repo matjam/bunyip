@@ -7,10 +7,10 @@ summary: how the window is opened, sized and controlled, what is fixed at start 
 
 ## Opening the window
 
-`bunyip.Run` opens the window from the `Config` it is given, and closes
-it when the loop ends. There is no window object in the API and there is
-only one window. A game reaches it through methods on the `Context` it
-gets in `Init`, `Update` and `Draw`.
+`bunyip.Run` opens the main window from its `Config` and closes it when
+the loop ends. A game controls its window through the `Context` supplied
+to `Init`, `Update` and `Draw`. `Context.NewWindow` creates additional
+windows with their own game callbacks.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -42,6 +42,102 @@ There is no `Config` field to start full screen. Call `ctx.SetFullscreen(true)`
 from `Init`. Full-screen state is read back from the operating system
 rather than remembered by the engine, so `ctx.Fullscreen` is still right
 after the player uses the system's own full-screen button.
+
+## Additional windows
+
+Create another output from a game callback. Its optional `Init` runs
+before `NewWindow` returns; its updates and draws start on the next
+scheduler iteration.
+
+```go
+func openPreview(ctx *bunyip.Context) (*bunyip.Window, error) {
+	return ctx.NewWindow(bunyip.Config{Title: "Preview", Width: 480, Height: 320}, bunyip.GameFuncs{
+		DrawFunc: func(preview *bunyip.Context) error {
+			preview.Gfx.FillRect(20, 20, 100, 100, gfx.RGB(100, 180, 255))
+			return nil
+		},
+	})
+}
+```
+
+Each window has its own `Graphics`, `Input`, view, clock, frame counter
+and optional console. Upload GPU resources separately for each output;
+textures, models and other device resources cannot cross between them.
+Drawing and state methods panic on foreign GPU resources before recording
+their handles. Constructors and transfers with error results return errors;
+text drawing reports invalid fonts through frame submission.
+All callbacks run on the same game goroutine. The application polls the
+platform once and routes keyboard, pointer and window events to their
+owning window. Gamepads and the audio mixer are shared. Automatic audio
+pausing takes effect only when every active window is paused.
+
+`Window.Close` requests closure; `Window.Closed` becomes true after
+`Shutdown`, registered cleanup and native/GPU teardown finish. Closing a
+child also closes its descendants. Closing the main window, calling its
+`Quit`, or returning an error from any window ends the application.
+Successful setup gets `Shutdown` before cleanup; failed setup releases
+its acquired resources and descendants before `NewWindow` returns an
+error. Children shut down before their parent. Creation is rejected
+after a parent has requested closure and during cleanup.
+
+Headless/native mode and validation come from the running application.
+An application using `FixedClock` also gives that mode to its children.
+Other window settings use normal `Config` defaults. Child `LogFile` and
+`Pprof` settings are rejected; `NoAudio` cannot disable the shared mixer.
+The headless renderer supports additional outputs and screenshots without
+opening desktop windows.
+
+A device-loss error in any output closes the entire window family before
+the main game's `Recover` receives a replacement context. All previous
+window handles are closed and their contexts and GPU resources are no
+longer usable. Recreate the additional windows in `Recover`.
+
+## Native embedding
+
+Set `Config.Parent` to render into an existing native host, either as the
+primary output of `Run` or through `Context.NewWindow`. Bunyip creates
+its own rendering child inside the borrowed parent; it does not create
+an extra top-level window for an embedded primary output.
+
+```go
+func runInsideHost(parent bunyip.NativeParent, game bunyip.Game) error {
+	return bunyip.Run(bunyip.Config{Parent: &parent}, game)
+}
+```
+
+Use `NativeParent{Backend: bunyip.NativeWin32, Handle: hwnd}` for an HWND
+in the current process and UI thread, `NativeCocoa` for a live NSView
+attached to an NSWindow on the main thread, or `NativeX11` for a window
+XID on the engine's X server and screen. Handles must be valid native
+objects of the declared type. Arbitrary pointers cannot be validated
+safely. The Wayland backend and headless mode return `ErrUnsupported`;
+Bunyip does not switch to XWayland for embedding.
+
+The child initially fills the parent's content bounds and follows its
+size. `ctx.SetBounds(x, y, width, height)` selects manual placement, in
+parent logical points with a top-left origin (X11 uses pixels). Use this
+for split panes or host-controlled layouts. Initial `Width` and `Height`
+do not resize the host. `SetSize` and `SetAlwaysOnTop` return
+`ErrUnsupported` for embedded outputs; check `EmbeddedBounds` in
+`WindowCapabilities`. `Show` and `Hide` affect the child. Fullscreen,
+title, icon and other top-level controls do not configure the host.
+
+The host retains ownership of its parent window/view and must keep it
+alive until `Run` returns, or until the additional `Window.Closed` is
+true. Request closure first and let engine teardown complete before
+destroying the parent. Cleanup releases the child's GPU resources and
+native surface, then removes only the owned HWND, X11 child or NSView.
+The engine preserves the host's AppKit delegate, content view and
+activation policy, and validates compatible Win32 DPI awareness.
+
+`Run` owns scheduling and native event dispatch while it runs on the host
+UI thread. Normal host WndProc/AppKit event handlers still run, but this
+API is not a standalone frame pump and does not promise compatibility
+with toolkits that require their own event-loop machinery. The X11 path
+uses Bunyip's separate XCB connection and selects events only for its own
+child and parent geometry notifications. Native embedding has pure
+ownership/geometry tests and cross-build coverage; it has not yet been
+verified interactively on a desktop.
 
 ## Points, pixels and view units
 
@@ -105,15 +201,15 @@ turn-based delta. The turn-based update that resumes the game has zero
 continues to measure elapsed wall time during a pause.
 
 - `ctx.Focused` reports keyboard focus. `Config.PauseUnfocused` stops
-  updates and silences the mixer while another window has focus; frames
-  still draw.
+  this window's updates while it lacks focus; frames still draw.
 - `ctx.Visible` reports whether the window can be seen. It is false while
   the window is minimised, and while it is wholly covered by other
   windows on the platforms that report that. `Config.PauseHidden` stops
-  updates and silences the mixer while it is false, the same way
+  updates while it is false, the same way
   `PauseUnfocused` does for focus; setting both pauses while either is
-  true. The loop touches the mixer only when that combined state
-  changes, so a game that paused its own mixer keeps it paused. A
+  true. The shared mixer pauses only when all active windows are paused.
+  The loop touches the mixer only when that combined state changes, so
+  a game that paused its own mixer keeps it paused. A
   headless run is always visible.
 - `ctx.CloseRequested` is true for one update after the player asks to
   close, but only with `Config.HandleClose`. Without it the loop quits on
@@ -345,6 +441,8 @@ implements `Recoverer` gets `Recover` with the new context instead of
 and must be created again. The input state, mixer and console are also
 new: restore bus settings, restart desired audio playback, and register
 console commands again. Old voice handles belong to the discarded mixer.
+Device loss in a child also triggers this application-wide teardown;
+recreate additional windows in the main game's `Recover`.
 The loop clock and frame count restart. A game without `Recover` gets the error back
 from `Run` instead.
 

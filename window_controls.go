@@ -16,6 +16,7 @@ var ErrUnsupported = platform.ErrUnsupported
 // Desktop policy can still decline supported requests.
 type WindowCapabilities struct {
 	Resize, Show, Hide, Focus, AlwaysOnTop, CursorImage, PointerPosition bool
+	EmbeddedBounds                                                       bool // SetBounds can place this embedded child
 }
 
 // Display is a snapshot of an attached display and its advertised modes.

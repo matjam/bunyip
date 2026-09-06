@@ -8,18 +8,22 @@ import (
 
 // Window is one NSWindow with a CAMetalLayer-backed content view.
 type Window struct {
-	app      *App
-	nsWindow objc.ID
-	view     objc.ID
-	layer    objc.ID
-	delegate objc.ID
-	width    int
-	height   int
-	pixelW   int
-	pixelH   int
-	scale    float64
-	closed   bool
-	captured bool
+	app           *App
+	nsWindow      objc.ID
+	view          objc.ID
+	layer         objc.ID
+	delegate      objc.ID
+	parent        objc.ID
+	manualBounds  bool
+	embeddedFocus bool
+	hostLost      bool
+	width         int
+	height        int
+	pixelW        int
+	pixelH        int
+	scale         float64
+	closed        bool
+	captured      bool
 
 	miniaturized bool
 	occluded     bool
@@ -35,7 +39,16 @@ type Window struct {
 
 // NewWindow opens a window and shows it.
 func (a *App) NewWindow(cfg Config) (*Window, error) {
+	if cfg.Parent != nil {
+		return a.newEmbedded(cfg)
+	}
 	c := a.c
+	if !a.standalone && !a.hosted {
+		a.nsApp.Send(c.sel.setActivationPolicy, nsApplicationActivationPolicyRegular)
+		a.nsApp.Send(c.sel.finishLaunching)
+		a.nsApp.Send(c.sel.activateIgnoringOtherApps, true)
+		a.standalone = true
+	}
 	style := uint64(nsWindowStyleMaskTitled | nsWindowStyleMaskClosable | nsWindowStyleMaskMiniaturizable)
 	if cfg.Resizable {
 		style |= nsWindowStyleMaskResizable
@@ -64,6 +77,7 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 	w.delegate = objc.ID(a.delegate).Send(c.sel.new)
 	win.Send(c.sel.setDelegate, w.delegate)
 	a.windows[win] = w
+	a.views[w.view] = w
 
 	win.Send(c.sel.center)
 	win.Send(c.sel.makeKeyAndOrderFront, objc.ID(0))
@@ -120,7 +134,7 @@ func (w *Window) updateVisible() {
 func (w *Window) Visible() bool { return w.visible }
 
 // Closed reports whether Close has run.
-func (w *Window) Closed() bool { return w.closed }
+func (w *Window) Closed() bool { return w.closed || w.hostLost }
 
 // Close destroys the window. Events for it stop after this.
 func (w *Window) Close() {
@@ -129,11 +143,24 @@ func (w *Window) Close() {
 	}
 	w.closed = true
 	w.SetCursorCaptured(false)
+	w.SetCursorVisible(true)
+	if w.app.mouseTarget == w {
+		w.app.mouseTarget = nil
+	}
 	if w.cursorImage != 0 {
 		w.cursorImage.Send(w.app.c.sel.release)
 		w.cursorImage = 0
 	}
 	c := w.app.c
+	if w.parent != 0 {
+		delete(w.app.views, w.view)
+		w.view.Send(objc.RegisterName("removeFromSuperview"))
+		w.view.Send(c.sel.release)
+		w.parent.Send(c.sel.release)
+		w.parent = 0
+		return
+	}
+	delete(w.app.views, w.view)
 	delete(w.app.windows, w.nsWindow)
 	w.nsWindow.Send(c.sel.setDelegate, objc.ID(0))
 	w.nsWindow.Send(c.sel.close)
@@ -142,12 +169,18 @@ func (w *Window) Close() {
 
 // Fullscreen reports whether the window occupies a full-screen space.
 func (w *Window) Fullscreen() bool {
+	if w.parent != 0 {
+		return false
+	}
 	return objc.Send[uint64](w.nsWindow, w.app.c.sel.styleMask)&nsWindowStyleMaskFullScreen != 0
 }
 
 // SetFullscreen enters or leaves macOS full-screen mode. The change is
 // animated by the system; a resize event follows when it completes.
 func (w *Window) SetFullscreen(on bool) {
+	if w.parent != 0 {
+		return
+	}
 	if w.Fullscreen() != on {
 		w.nsWindow.Send(w.app.c.sel.toggleFullScreen, objc.ID(0))
 	}

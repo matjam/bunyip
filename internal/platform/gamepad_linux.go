@@ -10,16 +10,19 @@ import (
 )
 
 // Gamepads come from the kernel joystick interface, /dev/input/js0 to
-// js3, read without blocking each poll. The button and axis numbering
-// follows the xpad driver's Xbox layout, which most controllers report.
+// js3, read without blocking each poll. Kernel button/axis maps identify
+// supported controls independently of each driver's index ordering.
 // The devices are read through raw descriptors rather than os.File: an
 // os.File opened non-blocking joins the runtime's poller, and a Read on
 // it parks the goroutine until the device has data, which would stop the
 // game loop whenever an idle controller is plugged in.
 
 type joystick struct {
-	fd    int
-	state GamepadState
+	fd                     int
+	state                  GamepadState
+	axisMap                [64]uint8
+	buttonMap              [512]uint16
+	axisCount, buttonCount uint8
 }
 
 var joysticks [input.MaxGamepads]*joystick
@@ -30,11 +33,6 @@ const (
 	jsEventInit   = 0x80
 	jsiocgname    = 0x80006a13 // JSIOCGNAME(len) with len folded in below
 )
-
-var jsButtons = [...]input.GamepadButton{
-	0: input.ButtonA, 1: input.ButtonB, 2: input.ButtonX, 3: input.ButtonY, 4: input.ButtonLeftShoulder, 5: input.ButtonRightShoulder,
-	6: input.ButtonOptions, 7: input.ButtonMenu, 8: input.ButtonHome, 9: input.ButtonLeftStick, 10: input.ButtonRightStick,
-}
 
 // jsPaths are the device paths, formatted once rather than per poll.
 var jsPaths = [input.MaxGamepads]string{"/dev/input/js0", "/dev/input/js1", "/dev/input/js2", "/dev/input/js3"}
@@ -69,6 +67,7 @@ func (a *App) Gamepads() []GamepadState {
 				continue
 			}
 			js = &joystick{fd: fd, state: GamepadState{Connected: true, Name: jsName(fd)}}
+			js.readInfo(i)
 			joysticks[i] = js
 		}
 		if !js.read() {
@@ -115,34 +114,7 @@ func (js *joystick) read() bool {
 			value := int16(binary.LittleEndian.Uint16(buf[i+4:]))
 			typ := buf[i+6] &^ jsEventInit
 			number := int(buf[i+7])
-			switch typ {
-			case jsEventButton:
-				if number < len(jsButtons) {
-					js.state.Buttons[jsButtons[number]] = value != 0
-				}
-			case jsEventAxis:
-				v := float32(value) / 32767
-				switch number {
-				case 0:
-					js.state.Axes[input.AxisLeftX] = v
-				case 1:
-					js.state.Axes[input.AxisLeftY] = -v
-				case 2:
-					js.state.Axes[input.AxisLeftTrigger] = (v + 1) / 2
-				case 3:
-					js.state.Axes[input.AxisRightX] = v
-				case 4:
-					js.state.Axes[input.AxisRightY] = -v
-				case 5:
-					js.state.Axes[input.AxisRightTrigger] = (v + 1) / 2
-				case 6:
-					js.state.Buttons[input.ButtonDpadLeft] = value < 0
-					js.state.Buttons[input.ButtonDpadRight] = value > 0
-				case 7:
-					js.state.Buttons[input.ButtonDpadUp] = value < 0
-					js.state.Buttons[input.ButtonDpadDown] = value > 0
-				}
-			}
+			js.event(typ, number, value)
 		}
 	}
 }

@@ -48,7 +48,9 @@ func TestGrowthWithoutWaits(t *testing.T) {
 		g.SetCamera(Camera{Position: lin.V3(0, 0, 5)})
 		g.SetShader(sh)
 		for i := range n {
-			sh.SetUniforms(block{Value: lin.V4(float32(i), 0, 0, 0)})
+			if err := sh.SetUniforms(block{Value: lin.V4(float32(i), 0, 0, 0)}); err != nil {
+				t.Fatal(err)
+			}
 			g.FillRect(float32(i%64), float32(i%64), 1, 1, White)
 		}
 		g.SetShader(nil)

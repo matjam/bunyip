@@ -16,7 +16,9 @@
 //
 // Keys are named by physical position, so KeyW is the key in W's place
 // on a US keyboard whatever it prints, which is what movement bindings
-// need. Key.String names them for prompts. Actions maps named actions to
+// need. Key.String names physical positions; the engine's Context.KeyboardLayout
+// supplies native binding labels and physical/logical lookup snapshots.
+// Actions maps named actions to
 // any keys, buttons and axes, with dead zones, rebinding through Listen
 // and JSON bindings for a settings file, so game code asks for "jump"
 // and supports a gamepad without a second set of checks.

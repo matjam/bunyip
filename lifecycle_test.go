@@ -3,6 +3,7 @@ package bunyip
 import (
 	"context"
 	"errors"
+	"image"
 	"image/png"
 	"log/slog"
 	"os"
@@ -114,7 +115,10 @@ func TestRunCleanupOrder(t *testing.T) {
 				}
 				ctx.Cleanup(func() {
 					order = append(order, "first")
-					if _, err := tex.Read(); err != nil || ctx.Audio == nil {
+					// Write works with open and completed frames and proves the
+					// texture/device remain alive. Read rejects the unsubmitted
+					// frame left by a Draw failure, before cleanup tears it down.
+					if err := tex.Write(0, 0, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil || ctx.Audio == nil {
 						t.Error("engine resources closed before cleanup")
 					}
 				})

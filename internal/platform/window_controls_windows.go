@@ -24,12 +24,15 @@ func winControlError(operation string, result uintptr, err error) error {
 }
 
 func (w *Window) Capabilities() WindowCapabilities {
-	return WindowCapabilities{Resize: true, Show: true, Hide: true, Focus: true, AlwaysOnTop: true, CursorImage: true, PointerPosition: true}
+	return WindowCapabilities{Resize: w.parent == 0, Show: true, Hide: true, Focus: true, AlwaysOnTop: w.parent == 0, CursorImage: true, PointerPosition: true, EmbeddedBounds: w.parent != 0}
 }
 
 func (w *Window) RefreshCursor() { procSetCursor.Call(w.hcursor) }
 
 func (w *Window) SetSize(width, height int) error {
+	if w.parent != 0 {
+		return ErrUnsupported
+	} // use SetBounds to preserve parent-relative placement
 	if width <= 0 || height <= 0 || float64(width)*w.scale > math.MaxInt32/2 || float64(height)*w.scale > math.MaxInt32/2 {
 		return errors.New("platform: invalid window dimensions")
 	}
@@ -43,6 +46,13 @@ func (w *Window) SetSize(width, height int) error {
 func (w *Window) Show() error { procShowWindow.Call(w.hwnd, 8 /* SW_SHOWNA */); return nil }
 func (w *Window) Hide() error { procShowWindow.Call(w.hwnd, 0); return nil }
 func (w *Window) RequestFocus() error {
+	if w.parent != 0 {
+		procSetFocus.Call(w.hwnd)
+		if got, _, _ := procGetFocus.Call(); got != w.hwnd {
+			return errors.New("platform: host declined embedded focus")
+		}
+		return nil
+	}
 	ok, _, _ := procSetForegroundWindow.Call(w.hwnd)
 	if ok == 0 {
 		return errors.New("platform: Windows declined the focus request")
@@ -50,6 +60,9 @@ func (w *Window) RequestFocus() error {
 	return nil
 }
 func (w *Window) SetAlwaysOnTop(on bool) error {
+	if w.parent != 0 {
+		return ErrUnsupported
+	}
 	order := ^uintptr(1) // HWND_NOTOPMOST (-2)
 	if on {
 		order = ^uintptr(0)

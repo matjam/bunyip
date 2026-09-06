@@ -8,7 +8,6 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
-
 type App struct{}
 
 type Window struct{}
@@ -37,8 +36,8 @@ func (w *Window) SetCursor(CursorShape)                        {}
 func (w *Window) SetIcon(image.Image)                          {}
 func (w *Window) SetPosition(x, y int)                         {}
 func (w *Window) Position() (int, int)                         { return 0, 0 }
-func (w *Window) SetAlwaysOnTop(bool) error { return ErrUnsupported }
-func (w *Window) SetCursorImage(image.Image, int, int) error { return ErrUnsupported }
+func (w *Window) SetAlwaysOnTop(bool) error                    { return ErrUnsupported }
+func (w *Window) SetCursorImage(image.Image, int, int) error   { return ErrUnsupported }
 func (a *App) Gamepads() []GamepadState                        { return nil }
 func (a *App) Wake()                                           {}
 func (a *App) Clipboard() (string, error)                      { return "", ErrNoClipboard }

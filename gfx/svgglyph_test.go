@@ -111,7 +111,7 @@ func TestSVGGlyphInheritsAncestors(t *testing.T) {
 	if blue < 50 || red > 0 {
 		t.Errorf("%d blue and %d red pixels of %d lit; the group's fill should reach the glyph", blue, red, lit)
 	}
-	glyphs := f.Shape("A", TextOptions{})
+	glyphs := shapeGlyphs(t, f, "A", TextOptions{})
 	if len(glyphs) != 1 || glyphs[0].Empty {
 		t.Fatalf("the SVG glyph did not shape: %+v", glyphs)
 	}
@@ -141,7 +141,7 @@ func TestSVGGlyphWithoutViewBox(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Destroy()
-	glyphs := f.Shape("A", TextOptions{})
+	glyphs := shapeGlyphs(t, f, "A", TextOptions{})
 	if len(glyphs) != 1 || glyphs[0].Empty {
 		t.Fatalf("the SVG glyph did not shape: %+v", glyphs)
 	}

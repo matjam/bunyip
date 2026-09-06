@@ -601,16 +601,18 @@ func (a *App) refreshKeymap() {
 	if a.xkbCtx == nil || a.xkbDevice < 0 {
 		return
 	}
+	keymap := x.xkbKeymapFromDevice(a.xkbCtx, a.conn, a.xkbDevice, 0)
+	var state unsafe.Pointer
+	if keymap != nil {
+		state = x.xkbStateFromDevice(keymap, a.conn, a.xkbDevice)
+	}
 	if a.xkbState != nil {
 		x.xkbStateUnref(a.xkbState)
 	}
 	if a.xkbKeymap != nil {
 		x.xkbKeymapUnref(a.xkbKeymap)
 	}
-	a.xkbKeymap = x.xkbKeymapFromDevice(a.xkbCtx, a.conn, a.xkbDevice, 0)
-	if a.xkbKeymap != nil {
-		a.xkbState = x.xkbStateFromDevice(a.xkbKeymap, a.conn, a.xkbDevice)
-	}
+	a.xkbKeymap, a.xkbState = keymap, state
 }
 
 // newX11Window opens an X11 window and shows it.
@@ -674,6 +676,7 @@ func (a *App) x11Poll(wait bool) []Event {
 		a.dispatch(ev)
 	}
 	a.sweepIncr(time.Now())
+	a.syncEmbedded()
 	return a.pending
 }
 
@@ -823,6 +826,9 @@ func (a *App) handle(ge *xcbGenericEvent) {
 		}
 		kind := EventMouseUp
 		if down {
+			if w.parent != 0 {
+				_ = w.RequestFocus()
+			}
 			kind = EventMouseDown
 		}
 		a.push(Event{Kind: kind, Window: w, Button: b, X: px, Y: py, Mods: a.mods})
@@ -912,9 +918,10 @@ func (a *App) handle(ge *xcbGenericEvent) {
 	case xcbDestroyNotify:
 		ev := (*xcbConfigureEvent)(unsafe.Pointer(ge)) // window field sits at the same offset
 		if w := a.windows[ev.Window]; w != nil {
+			a.unwatchParent(w.parent)
 			w.closed = true
 			delete(a.windows, ev.Window)
-			a.wakeWin.CompareAndSwap(ev.Window, 0)
+			a.refreshWakeWindow(ev.Window)
 		}
 		// A requestor that exits in the middle of a transfer will never
 		// ask for the rest of it.
@@ -1408,12 +1415,14 @@ func (w *Window) closeX11() {
 		return
 	}
 	w.closed = true
+	w.app.unwatchParent(w.parent)
 	for _, cursor := range []uint32{w.shapeCursor, w.blankCursor, w.cursor} {
 		if cursor != 0 {
 			w.app.x.freeCursor(w.app.conn, cursor)
 		}
 	}
 	delete(w.app.windows, w.id)
+	w.app.refreshWakeWindow(w.id)
 	w.app.x.destroyWindow(w.app.conn, w.id)
 	w.app.x.flush(w.app.conn)
 }

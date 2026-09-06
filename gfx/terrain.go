@@ -97,7 +97,13 @@ type TerrainOptions struct {
 // once, so a large terrain costs its whole geometry in device memory:
 // with the default chunk size and four levels that is about a third more
 // than the finest level alone.
+// Layer textures must belong to this Graphics; foreign layers return an error.
 func (g *Graphics) NewTerrain(opts TerrainOptions) (*Terrain, error) {
+	for _, t := range opts.Layers {
+		if err := g.textureOwnerError(t); err != nil {
+			return nil, err
+		}
+	}
 	t := &Terrain{cols: opts.Cols, rows: opts.Rows, cell: opts.Cell, centre: opts.Centre, chunk: opts.ChunkSize, levels: opts.Levels}
 	if t.cell <= 0 {
 		t.cell = 1
@@ -163,7 +169,7 @@ func (t *Terrain) setupMaterial(g *Graphics, opts TerrainOptions) error {
 	if t.shader, err = g.NewMeshShader(shaders.TerrainFrag); err != nil {
 		return err
 	}
-	var params struct{ scale, rough lin.Vec4 }
+	var params struct{ Scale, Rough lin.Vec4 }
 	scale := [4]float32{}
 	rough := [4]float32{}
 	for i := range 4 {
@@ -177,9 +183,11 @@ func (t *Terrain) setupMaterial(g *Graphics, opts TerrainOptions) error {
 			rough[i] = 0.9
 		}
 	}
-	params.scale = lin.V4(scale[0], scale[1], scale[2], scale[3])
-	params.rough = lin.V4(rough[0], rough[1], rough[2], rough[3])
-	t.shader.SetUniforms(&params)
+	params.Scale = lin.V4(scale[0], scale[1], scale[2], scale[3])
+	params.Rough = lin.V4(rough[0], rough[1], rough[2], rough[3])
+	if err := t.shader.SetUniforms(&params); err != nil {
+		return err
+	}
 	t.mat = Material{Shader: t.shader, Texture: t.splat, Roughness: 1}
 	return nil
 }
@@ -552,6 +560,9 @@ func (t *Terrain) levelFor(distance float32) int {
 func (g *Graphics) DrawTerrain(t *Terrain) {
 	if t == nil || len(t.chunks) == 0 {
 		return
+	}
+	if err := g.materialOwnerError(t.mat); err != nil {
+		panic(err)
 	}
 	q := g.cur
 	q.ensureCamera()

@@ -128,6 +128,47 @@ holds, so every material and sprite that names it draws the new picture;
 it is what `asset.Reloader` calls when a texture's file changes on
 disk.
 
+`Read` returns an ordinary Go RGBA image, with colour premultiplied in
+sRGB space, so it can be uploaded again or encoded as PNG. Data textures
+retain their raw channel values. Readback waits for completed GPU work
+and returns an error during an active frame, including `Update` and
+`Draw`; queued uploads and render-target draws have not been submitted
+yet. `Texture.WritePNG(writer)` leaves its writer open, and
+`Texture.SavePNG(path)` creates or truncates and closes its own file.
+Both use the same readback timing. Render textures are written through
+`DrawTo`, rather than through their borrowed texture view's `Write`.
+
+`destination.CopyFrom(source, sourceRect, destinationPoint)` copies
+texture pixels on the GPU and rebuilds destination mipmaps. A zero
+source rectangle selects the full source. Regions must fit exactly and
+formats and `Graphics` owners must match. Copies preserve stored bytes;
+they do not scale, blend or convert colour. Non-overlapping self-copies
+work. Compressed textures, overlapping self-copies and render-texture
+destinations return errors. During a frame, copies run before all
+queued draws, like texture writes. A source already queued through
+`DrawTo` is rejected because its new pixels are not available yet.
+
+For editable CPU pixels, `gfx.NewImage(source)` makes an independent,
+zero-based NRGBA copy. Its straight-alpha pixels work with the standard
+`image` and `image/draw` packages through the embedded `*image.NRGBA`.
+`FlipHorizontal` and `FlipVertical` mutate that copy; `Mask(colour)`
+makes exact straight-RGB matches transparent, ignoring the supplied
+alpha and preserving RGB. `CopyFrom(source, point)` copies full source
+bounds with clipping and `draw.Src` semantics, including overlapping
+subimages. Subimages share storage; use `NewImage` for another independent
+copy. `WritePNG` borrows a writer and `SavePNG` owns its file. The zero
+`gfx.Image` is empty and cannot be exported or used as a copy destination.
+
+```go
+pixels, err := gfx.NewImage(source)
+if err != nil {
+	return err
+}
+pixels.FlipHorizontal()
+pixels.Mask(color.NRGBA{R: 255, B: 255, A: 255})
+return pixels.SavePNG("edited.png")
+```
+
 ```go
 ns := gfx.NineSlice{Tex: g.panel, Left: 8, Top: 8, Right: 8, Bottom: 8}
 gr.DrawNineSlice(ns, lin.R(12, 12, 300, 92), gfx.White)
@@ -325,6 +366,59 @@ gr.ColorMatrixed(gfx.Brightness(0.6).Mul(gfx.Tint(gfx.RGB(255, 90, 90))), func()
 gr.Blended(gfx.BlendAdd, func() { gr.Draw(g.glow, muzzleFlash) })
 ```
 
+## Custom blend equations and masks
+
+`CustomBlended` controls colour and alpha equations separately. Start with
+a preset's `Options()` and edit the factors you need; explicit zero factors
+stay zero. Inputs are premultiplied, as with built-in blend modes:
+
+```go
+func drawColourOnly(gr *gfx.Graphics, tex *gfx.Texture, sprite gfx.Sprite) {
+	blend := gfx.BlendAlpha.Options()
+	blend.SrcAlpha = gfx.FactorZero
+	blend.DstAlpha = gfx.FactorOne // keep the destination alpha
+	gr.CustomBlended(blend, func() { gr.Draw(tex, sprite) })
+}
+```
+
+Use `Masked` for a shape that clips other drawing. The first closure draws
+coverage without changing colour; the second draws through that coverage.
+For example, a circular portrait needs no intermediate texture:
+
+```go
+func drawPortrait(gr *gfx.Graphics, portrait *gfx.Texture) {
+	gr.Masked(func() {
+		gr.FillCircle(48, 48, 40, gfx.White)
+	}, func() {
+		gr.Draw(portrait, gfx.Sprite{Pos: lin.V2(8, 8), Size: lin.V2(80, 80)})
+	})
+}
+```
+
+Masks nest up to eight levels. Their setup, coverage, contents and cleanup
+form ordered phases: layers and sort keys sort within a phase, never across
+one. This also holds for reusable geometry and flat particles, so callbacks
+can use their normal layer choices. Scopes restore stencil, layer and sort
+key even on panic; drawing already queued remains. Each nesting level uses
+and clears one low stencil bit, preserving other bits. An enclosing advanced
+stencil configuration is suspended during `Masked` and restored afterward.
+A drawing helper that uses `Masked` can itself build another mask: its
+clipped drawing contributes coverage without writing visible colour.
+
+Coverage follows rasterized fragments, including transparent ones unless
+the shader discards them. The edge is stencil coverage rather than a soft
+alpha mask. Use a shader or a render texture for feathered alpha masking.
+
+`Stenciled(StencilOptions{...}, draw)` exposes comparison, reference, read
+and write masks, and pass/fail operations for custom effects. Its zero value
+draws normally without changing stencil; zero masks select all eight bits,
+and `DisableWrite` prevents updates. `NoColor` disables colour writes for
+mask-building draws. Advanced scopes retain ordinary layer/key ordering.
+`ClearStencil(value)` clears only the current view and clip and adds an
+ordering boundary, leaving colour and depth unchanged. Stencil contents last
+for that target's frame. These operations require a stencil attachment;
+render textures made with `NoDepth` reject them before running callbacks.
+
 ## The camera, layers and the HUD
 
 `SetCamera2D` makes later drawing world-space. A `Camera2D` has a
@@ -409,6 +503,61 @@ gr.SetLayer(100)
 gr.DrawText(g.font, fmt.Sprintf("HP %d", g.hp), 12, 12, gfx.White)
 gr.SetLayer(0)
 ```
+
+### Views inside a view
+
+`WithView` fits a local coordinate space into a rectangle of the enclosing
+view. A minimap can occupy 200 by 150 view units while drawing a world area
+1000 by 750 units across, without a render texture or a manual scale:
+
+```go
+func drawMinimap(gr *gfx.Graphics, mapGeometry *gfx.Geometry2D, centre lin.Vec2) {
+	view := gfx.View2D{
+		Viewport: lin.R(20, 20, 200, 150),
+		Size:     lin.V2(1000, 750),
+	}
+	gr.WithView(view, func() {
+		gr.WithCamera2D(gfx.Camera2D{Position: centre}, func() {
+			gr.DrawGeometry(nil, mapGeometry)
+		})
+	})
+}
+```
+
+The viewport uses enclosing **view coordinates**. A camera or drawing
+transform does not move the rectangle itself. Drawing inside inherits the
+camera, recalculated for the local virtual size; `WithCamera2D` can replace
+it, or `ScreenSpace` can draw a local HUD. Sprites, paths, text, reusable
+geometry and 2D particles share the view and clip to its rectangle and any
+enclosing clips. Views nest, and `Graphics.View()` reports the current local
+size. A zero component of `Size` uses the corresponding viewport dimension.
+
+Use the same value to map pointer input into the minimap's world:
+
+```go
+func minimapPoint(view gfx.View2D, camera gfx.Camera2D, pointer lin.Vec2) (lin.Vec2, bool) {
+	if !view.Viewport.Contains(pointer) {
+		return lin.Vec2{}, false
+	}
+	return view.ParentToWorld(pointer, camera), true
+}
+```
+
+`WorldToParent` maps world markers back to the enclosing view.
+`ParentToLocal` and `LocalToParent` perform the layout mapping without a
+camera. None clamp points: test `Viewport.Contains` when input outside the
+rectangle should be ignored. For nested views, map through each enclosing
+view in turn. Engine input and context dimensions remain in the main view.
+
+Viewport dimensions must be positive, virtual dimensions nonnegative, and
+all values finite; invalid views panic before changing drawing state.
+`WithView` restores the previous view, camera and clips even on panic, while
+retaining queued drawing. Shader frame size and pixel density follow each
+draw's local view. These scopes affect 2D drawing; use render textures for
+separate 3D camera passes.
+Configure the main output with `SetView` and `SetViewport` outside these
+scopes; calling either inside `WithView` panics. `DrawTo` can still select
+another render texture inside a view and restores the view on return.
 
 ## Tilemaps
 
@@ -552,19 +701,22 @@ a high-DPI display. `FontOptions` adds fallback fonts for scripts the
 main one lacks, OpenType features, variable-font axes and ranges to
 render up front.
 
-`DrawText` draws one line from the top-left. `DrawTextBlock` wraps,
+`DrawText` draws from the top-left. `DrawTextBlock` wraps,
 aligns and rotates a paragraph through `TextOptions`: a `Width` to wrap
 in, an `Align` (`AlignLeft`, `AlignCenter`, `AlignRight`,
 `AlignJustify`), `LineSpacing`, a `Size`, an `Angle`, `LetterSpacing`,
 `Baseline`, a `Hyphenate` hyphenator, an `AutoHyphenate` that picks one
 for the `Language`, a `Direction` and a `Language`. `Font.Measure` sizes text without
-drawing it and `Font.Layout` returns the wrapped lines, without the soft
-hyphens a hyphenator inserted. A font caches what it shapes, wraps,
-measures and lays out, keyed by the text and the options, so drawing or
-measuring the same string every frame costs a map lookup and the entries
-a frame uses stay resident however many one-off strings pass through. A
+drawing it. `Font.Layout` returns an immutable `*TextLayout` for repeated
+drawing and queries. A font caches layouts and measurements by text and
+options, so repeating a plain label reuses its shaping. A
 glyph drawn for the first time is rasterised and uploaded during that
 frame, so new text shows up in the frame that asks for it.
+
+`Layout` can allocate or upload atlas pages and returns an error. Immediate
+draw helpers report those failures through frame submission and `bunyip.Run`.
+Invalid sizes and exhausted atlas capacity are errors, rather than missing
+letters. `Font.Shape` also returns an error for its low-level glyph path.
 
 ```go
 g.font, err = asset.Font(ctx.Gfx, g.fs, "fonts/body.ttf", 18, gfx.FontOptions{
@@ -577,6 +729,56 @@ w, h := g.font.Measure(story, opts)
 gr.FillRect(38, y-4, w+4, h+8, gfx.RGBA(0, 0, 0, 160))
 gr.DrawTextBlock(g.font, story, 40, y, opts, gfx.White)
 ```
+
+Build a layout when the label changes, then retain it as ordinary Go data:
+
+```go
+func label(font *gfx.Font, text string) (*gfx.TextLayout, error) {
+	return font.Layout(text, gfx.TextOptions{
+		Width: 420, Underline: true,
+		OutlineWidth: 1.5, OutlineColor: gfx.RGB(20, 30, 50),
+	})
+}
+
+func drawLabel(gr *gfx.Graphics, layout *gfx.TextLayout, mouse lin.Vec2) gfx.TextCaret {
+	gr.DrawTextLayout(layout, 40, 80, gfx.White)
+	caret := layout.HitTest(mouse.Sub(lin.V2(40, 80)))
+	r := layout.Caret(caret)
+	gr.FillRect(40+r.X, 80+r.Y, r.W, r.H, gfx.RGB(255, 180, 80))
+	return caret
+}
+```
+
+`Bounds` describes advances and line boxes; `InkBounds` includes glyph
+overhangs, outlines and decorations, excluding atlas padding and the sampling
+filter's antialias fringe. Both include alignment and `Angle`. `Lines` returns
+source ranges and baselines. Wrapped trailing whitespace keeps its source
+boundaries with zero advance; unwrapped spaces retain their width. Blank lines
+still have a logical line height.
+
+Caret indices address bytes in the original UTF-8 string, including newlines
+and wrapped paragraphs. Generated hyphens add no source bytes. Combining
+sequences and ligatures are atomic: interior indices snap to the nearest
+boundary, choosing the lower index on a tie. At a wrap or bidi transition,
+`CaretLeading` follows the next cluster and `CaretTrailing` the previous one.
+Hit testing takes layout-local coordinates, including its rotation; subtract
+the draw origin and undo any surrounding drawing transform first. Vertical
+text runs down in columns that progress left. Multiple trimmed whitespace
+boundaries can share one caret position.
+
+Layouts borrow their fonts and need no `Destroy`. The owning `Graphics`
+releases fonts at shutdown; `Font.Destroy` releases them earlier. Queries on a
+layout remain valid afterward, but new draws require live fonts from the same
+`Graphics`. A draw already queued retains its atlas through completion.
+
+`Underline`, `Strikethrough` and `OutlineWidth` are available in `TextOptions`
+and rich runs. Outline width is in view units; a zero `OutlineColor` follows
+the effective text colour. Bitmap and SDF fonts lazily build coverage pages
+with reusable distance ranges, so modest width animation reuses pages.
+`FontOptions.OutlinePages` sets the per-font page budget (zero means 16).
+Oversized outlines or glyphs return descriptive errors; they are never clipped
+to fit an atlas. Choose another text size or reduce the outline width if it
+exceeds the supported distance range.
 
 Hyphenation uses the TeX patterns, by Liang's method. The engine ships
 patterns for American and British English, German, French, Spanish,
@@ -604,20 +806,24 @@ describes them: a bitmap strike (`sbix` or `CBDT`, which is Apple's and
 Google's emoji), COLR layers, or an SVG document per glyph. COLR version
 1 paints are drawn too, with their gradients, transforms and
 compositing, so a font like Noto Color Emoji comes out right. A colour
-glyph ignores the colour the text is drawn in. Give the emoji font as a
+glyph preserves its RGB and uses the effective text alpha. Give the emoji font as a
 `Fallbacks` entry and emoji appear in ordinary strings. What is not
 drawn is listed in `docs/design/gaps.md`: the variable paint tables'
 deltas in COLR, and strokes, clipping and filters in SVG.
 
 `ParseRich` reads a small
-markup (`[b]`, `[i]`, `[u]`, `[#ff8800]`, `[link=name]`) into a
+markup (`[b]`, `[i]`, `[u]`, `[s]`, `[#ff8800]`, `[link=name]`) into a
 `RichText` that `DrawRichText` lays out across regular, bold and italic
 faces, returning each link's rectangle for clicks. Every stretch of rich
 text in one face is shaped as a whole, so kerning and ligatures work
 across a colour or link change inside it; the glyphs are cut apart by
-cluster afterwards, and a glyph that straddles a change takes the colour
-of the run its first byte came from. A change of face starts a new
-shaped run, since its glyphs come from another font.
+cluster afterwards. A cluster crossing a style change takes its colour,
+decorations and link from its first source byte. Font changes start a new
+shaped run at a grapheme boundary. Plain and rich text share Unicode wrapping,
+hyphenation and the same `TextLayout` queries. `RichFonts.Layout` constructs a
+reusable rich layout; its indices address `RichText.Plain`, not markup tags.
+`DrawTextLayout` multiplies explicit run colours by its tint, with zero tint
+meaning white.
 
 ```go
 rich := gfx.ParseRich("You found the [#ffcc44]Brass Key[/#]. [link=map]Open it[/link].")
@@ -632,10 +838,11 @@ for _, l := range links {
 
 `DrawTextOnPath` draws a line of text along a path with each glyph
 rotated to follow it, for labels such as a river name on a strategy map.
-`Font.Shape` returns positioned glyphs for custom drawing and
-hit-testing, each with the byte it came from and the `Advance` the pen
-took after it, so a caret lands between clusters; `DrawGlyphs` draws
-them, and fonts have `Destroy`.
+`Font.Shape` returns `([]Glyph, error)` for custom single-line drawing, each
+glyph carrying its source byte and pen advance. `DrawGlyphs` draws that slice.
+This low-level path, including text on paths and billboards, leaves block
+wrapping and decorations to the caller; use `TextLayout` for reusable block
+drawing and caret queries.
 
 ## Shapes and paths
 

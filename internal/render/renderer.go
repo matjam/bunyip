@@ -81,6 +81,26 @@ func NewRenderer(cfg Config, surfaceExts []string, makeSurface SurfaceFunc, exte
 	if err != nil {
 		return nil, err
 	}
+	return newRenderer(inst, makeSurface, extent, vsync)
+}
+
+// NewOutput creates an independent device, swapchain and frame ring under this
+// renderer's retained instance. Graphics resources belong to their output and
+// cannot be passed between outputs. Destroying either output leaves the other
+// alive. Required surface extensions are checked before makeSurface is called.
+func (r *Renderer) NewOutput(surfaceExts []string, makeSurface SurfaceFunc, extent vk.VkExtent2D, vsync bool) (*Renderer, error) {
+	if r == nil || r.Instance == nil {
+		return nil, fmt.Errorf("render: output owner is closed")
+	}
+	inst, err := r.Instance.retain(surfaceExts)
+	if err != nil {
+		return nil, err
+	}
+	return newRenderer(inst, makeSurface, extent, vsync)
+}
+
+func newRenderer(inst *Instance, makeSurface SurfaceFunc, extent vk.VkExtent2D, vsync bool) (*Renderer, error) {
+	var err error
 	r := &Renderer{Instance: inst, extent: extent}
 	if r.surface, err = makeSurface(inst.Handle); err != nil {
 		inst.Destroy()
@@ -341,6 +361,9 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 
 // Destroy tears everything down in reverse order.
 func (r *Renderer) Destroy() {
+	if r == nil || r.Instance == nil {
+		return
+	}
 	if r.Device != nil {
 		_ = r.Device.WaitIdle()
 		if r.readback != nil {
@@ -366,6 +389,9 @@ func (r *Renderer) Destroy() {
 		vk.VkDestroySurfaceKHR(r.Instance.Handle, r.surface, nil)
 	}
 	r.Instance.Destroy()
+	r.Instance = nil
+	r.Device = nil
+	r.Swapchain = nil
 }
 
 // deviceLostOr maps a VK_ERROR_DEVICE_LOST result onto ErrDeviceLost,

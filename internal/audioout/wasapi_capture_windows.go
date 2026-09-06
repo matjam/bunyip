@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -24,33 +25,53 @@ const (
 
 // CaptureDevice is an open WASAPI capture stream.
 type CaptureDevice struct {
-	Rate     int
-	Channels int
-	client   *comObject
-	capture  *comObject
-	event    uintptr
-	stop     chan struct{}
-	done     chan struct{}
-	cb       CaptureCallback
-	silence  []float32
+	closeOnce sync.Once
+	Rate      int
+	Channels  int
+	client    *comObject
+	capture   *comObject
+	event     uintptr
+	stop      chan struct{}
+	done      chan struct{}
+	cb        CaptureCallback
+	silence   []float32
 }
 
 // OpenCapture starts recording interleaved float32 at rate from the
 // default input, calling cb from its own goroutine.
-func OpenCapture(rate, channels int, cb CaptureCallback) (*CaptureDevice, error) {
-	if procCoCreateInstance.Find() != nil {
-		return nil, errUnsupported
+func openCaptureDevice(id string, rate, channels int, cb CaptureCallback) (*CaptureDevice, error) {
+	type result struct {
+		dev *CaptureDevice
+		err error
 	}
-	procCoInitializeEx.Call(0, coinitMultithreaded)
-	var enum *comObject
-	if hr, _, _ := procCoCreateInstance.Call(uintptr(unsafe.Pointer(&clsidMMDeviceEnumerator)), 0, clsctxAll,
-		uintptr(unsafe.Pointer(&iidIMMDeviceEnumerator)), uintptr(unsafe.Pointer(&enum))); int32(hr) < 0 {
-		return nil, fmt.Errorf("audioout: CoCreateInstance(MMDeviceEnumerator): %#x", hr)
+	ready := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := startCOM(); err != nil {
+			ready <- result{err: err}
+			return
+		}
+		defer procCoUninitialize.Call()
+		d, err := openCaptureWASAPI(id, rate, channels, cb)
+		ready <- result{d, err}
+		if err == nil {
+			d.loop()
+		}
+	}()
+	r := <-ready
+	return r.dev, r.err
+}
+
+func openCaptureWASAPI(id string, rate, channels int, cb CaptureCallback) (*CaptureDevice, error) {
+	enum, err := newEnumerator()
+	if err != nil {
+		return nil, err
 	}
 	defer enum.release()
-	var dev *comObject
-	if hr := enum.call(4, eCapture, eConsole, uintptr(unsafe.Pointer(&dev))); int32(hr) < 0 { // GetDefaultAudioEndpoint
-		return nil, fmt.Errorf("audioout: GetDefaultAudioEndpoint(capture): %#x", hr)
+	dev, err := endpoint(enum, id, eCapture)
+	if err != nil {
+		return nil, err
 	}
 	defer dev.release()
 	var client *comObject
@@ -94,7 +115,6 @@ func OpenCapture(rate, channels int, cb CaptureCallback) (*CaptureDevice, error)
 		procCloseHandle.Call(event)
 		return nil, fmt.Errorf("audioout: IAudioClient.Start(capture): %#x", hr)
 	}
-	go d.loop()
 	return d, nil
 }
 
@@ -133,8 +153,13 @@ func (d *CaptureDevice) drain() {
 }
 
 func (d *CaptureDevice) loop() {
-	runtime.LockOSThread()
 	defer close(d.done)
+	defer func() {
+		d.client.call(11)
+		d.capture.release()
+		d.client.release()
+		procCloseHandle.Call(d.event)
+	}()
 	var taskIndex uint32
 	task, _, _ := procAvSetMmThreadChar.Call(uintptr(unsafe.Pointer(proAudio)), uintptr(unsafe.Pointer(&taskIndex)))
 	if task != 0 {
@@ -153,17 +178,5 @@ func (d *CaptureDevice) loop() {
 
 // Close stops recording and releases the device.
 func (d *CaptureDevice) Close() {
-	if d.client == nil {
-		return
-	}
-	close(d.stop)
-	procSetEvent.Call(d.event)
-	<-d.done
-	d.client.call(11) // Stop
-	if d.capture != nil {
-		d.capture.release()
-	}
-	d.client.release()
-	procCloseHandle.Call(d.event)
-	d.client, d.capture = nil, nil
+	d.closeOnce.Do(func() { close(d.stop); procSetEvent.Call(d.event); <-d.done })
 }

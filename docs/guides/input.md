@@ -31,7 +31,49 @@ waiting for another key press.
 
 Keys are named by physical position. `KeyW` is the key in W's place on a
 US keyboard whatever it prints, which is what movement bindings need.
-`Key.String` names a key for a prompt.
+`Key.String` supplies a stable physical name. For a binding prompt, read
+`ctx.KeyboardLayout()` on the game goroutine when opening or refreshing
+the bindings screen:
+
+```go
+layout, err := ctx.KeyboardLayout()
+label := input.KeyW.String()
+if err == nil {
+	label = layout.Label(input.KeyW) // the current layout's label at W's position
+}
+```
+
+The returned value is an independent snapshot. `Symbol(key)` maps a
+physical key to its unmodified logical symbol; `KeysFor` performs the
+reverse lookup and returns all matches in physical-key order:
+
+```go
+if layout, err := ctx.KeyboardLayout(); err == nil {
+	keys := layout.KeysFor(input.TextSymbol("a"))
+	for _, key := range keys {
+		if ctx.Input.KeyPressed(key) {
+			g.selectAll()
+		}
+	}
+}
+```
+
+Symbols have separate `text:`, `key:` and `dead:` namespaces; for example,
+`input.TextSymbol("a")`, `input.KeySymbol("key:Enter")` and a backend's dead-key
+name. Empty means unknown. Named keys use the engine's names where an
+equivalent exists, otherwise a native name. Labels are display text and
+should not be stored as binding identities. The snapshot uses the native
+layout's level zero with modifiers and locks off. Windows and common XKB
+layouts therefore map keypad digits to navigation symbols, while macOS
+keypads remain numeric. `KeysFor("key:End")` can include both End and keypad 1.
+
+Snapshots do not read or change the user's pending dead-key composition or
+IME text. Windows translation uses an isolated worker thread; refresh binding
+UI when needed instead of querying every frame. X11 and Wayland use the active
+XKB group, and macOS uses the current Unicode keyboard layout. Missing keymaps
+and headless mode return `bunyip.ErrUnsupported`. `Label` falls back to
+`Key.String`; that fallback does not invent a logical symbol. Continue using
+`Chars` and `Composition` for typed text, including modifiers and IME input.
 
 ```go
 func (g *game) Update(ctx *bunyip.Context) error {
@@ -113,6 +155,26 @@ controller reads as nothing held. The returned pointer is a snapshot;
 fetch it again for fresh state. `Axis` zeroes values strictly between
 -0.08 and 0.08 without rescaling the remainder. Action maps use their
 own dead zone, 0.2 by default.
+
+`pad.Info` reports a backend name, a native device name when available,
+vendor/product IDs, and masks of controls mapped into the standard gamepad
+state. `Info.HasButton` and `Info.HasAxis` let binding UI omit unavailable
+controls. Zero IDs and false masks mean unavailable or unknown, and disconnected
+slots have empty metadata. These values describe a device; they are not a
+persistent device identity.
+
+```go
+pad := ctx.Input.Gamepad(0)
+if pad.Connected && pad.Info.HasAxis(input.AxisRightTrigger) {
+	g.trigger = pad.Axis(input.AxisRightTrigger)
+}
+```
+
+Linux reads the kernel joystick axis/button maps and available sysfs IDs,
+so physical device indices do not have to follow one fixed order. Unrecognized
+controls remain unmapped; there is no controller mapping database. Windows
+uses XInput capability masks and leaves USB IDs unknown. macOS reports the
+controls exposed by GameController and also leaves USB IDs unknown.
 
 ```go
 pad := ctx.Input.Gamepad(0)

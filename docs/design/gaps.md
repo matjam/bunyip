@@ -57,14 +57,25 @@ cleanup wait for their workers before releasing dependencies.
   `zxdg_decoration_manager_v1` the window
   has no title bar, because drawing one client-side is not written.
   libwayland 1.20 or later is required, for `wl_proxy_marshal_flags`.
-- Window position, always-on-top and custom cursor images work on macOS
-  (`SetPosition`, `Position`, `SetAlwaysOnTop`, `SetCursorImage`) and
-  are no-ops on Windows, Wayland and X11. Wayland has no protocol for
-  the first two at all. Transparent and click-through windows, choice of
-  monitor, and starting fullscreen or unfocused are not written.
+- Custom image cursors are implemented on macOS, Windows, Wayland and
+  X11; always-on-top requests work on macOS, Windows and X11. Wayland
+  leaves placement and topmost policy to the compositor. Runtime resize,
+  display/mode enumeration and optional native controls report their
+  capabilities; Wayland show/hide/focus and pointer warping return
+  `ErrUnsupported`. The new Windows/Linux cursor and control paths have
+  pure tests and cross-build coverage, but still need desktop exercise.
+  Transparent and click-through windows, monitor selection and initial
+  fullscreen or unfocused configuration are not written.
 - Drag and drop of files onto the window, and native file dialogs.
   `OpenURL` opens the browser on every platform.
-- Multiple windows.
+- Additional windows are managed through `Context.NewWindow`, with
+  independent graphics/input and a shared mixer. Event routing, rollback,
+  independent headless rendering and device recovery are tested; native
+  multi-window behavior still needs desktop exercise. `Config.Parent`
+  embeds primary or additional outputs in a borrowed Win32 HWND, Cocoa
+  NSView or same-server X11 parent, owning only the inserted rendering
+  child. Wayland embedding and a standalone host-driven frame pump are
+  not implemented. Native embedding still needs desktop verification.
 - Windows IME, X input methods and Wayland `zwp_text_input_v3`; only
   macOS composes text natively.
 - App bundling for Windows and Linux (installers, AppImage); code
@@ -73,22 +84,25 @@ cleanup wait for their workers before releasing dependencies.
 ## Game loop
 
 `Config.MaxCatchUp` and `MaxSteps` cap the catch-up after a stall,
-`PauseUnfocused` stops updates and the mixer while another window has
-focus, and `PauseHidden` does the same while the window cannot be seen;
-every platform layer reports visibility and `ctx.Visible` reads it.
+`PauseUnfocused` stops a window's updates while it lacks focus, and
+`PauseHidden` does the same while it cannot be seen. The shared mixer
+pauses when every active window is paused. Every platform layer reports
+visibility and `ctx.Visible` reads it.
 
 ## Input
 
 Action maps with rebinding and JSON bindings, held-key durations, the
 list of keys down, double clicks, and gamepad connect and disconnect
-events are in.
+events are in. Keyboard-layout snapshots provide native binding labels and
+unmodified physical/logical lookup without changing IME or dead-key state.
+Gamepad metadata describes mapped controls and available vendor/product IDs;
+Linux uses the kernel's axis/button maps, Windows XInput capabilities, and
+macOS GameController elements.
 
 - Touch input with multi-touch points and the usual gestures.
 - Gamepad rumble, and a mapping database so unusual controllers land on
   the standard layout; the current mapping is unverified against real
   hardware.
-- Key names in the user's layout (what is printed on the key) beside the
-  positional `Key.String`, for on-screen prompts.
 
 ## 2D drawing
 
@@ -107,11 +121,40 @@ against the 2D camera by the sprite's own corners and under the
 transform stack, a sort key within a layer (`SetSortKey`), camera
 follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
+Shader parameters pack exported Go structs into std140 automatically, including
+scalar arrays, nested structs and matrices. Unsupported representations and
+oversized blocks return errors without replacing the previous parameters;
+callers still match the shader's field order and types.
 So are GPU-instanced particles: `particle.GPUSystem` simulates over
 parallel arrays and draws through `gfx.DrawParticles` in 2D or
 `gfx.DrawParticles3D` in the scene, interleaved with the sprite stream
 by layer, with a soft depth fade in 3D and a stateless mode that keeps
 no per-particle state at all.
+
+Reusable `Geometry2D` keeps indexed or non-indexed triangles in GPU buffers;
+updates and early destruction preserve already queued draws. `CompilePath`
+caches fill and stroke tessellation with an explicit pixel density, and
+borrowed paint textures retain their own lifetime. `Sprite.Corners` and
+`Sprite.Bounds`, `Affine.TransformRect` and curve-aware `Path.Bounds` expose
+geometry for layout and hit testing. `View2D` and `WithView` provide nested,
+clipped 2D viewports with independent virtual sizes, camera-aware input
+mapping and per-draw frame size and density. Separate 3D camera passes still
+use render textures; compiled paths need recompilation when their desired
+tessellation density changes.
+Custom blend equations control colour and alpha separately. Advanced 2D
+stencil options and nested `Masked` closures cover hard clipping; mask
+phases preserve ordering across layer/key changes, reusable geometry and
+flat particles. Stencil masks have eight nesting levels and require a
+stencil attachment. Soft alpha masks still use shaders or render textures.
+
+`gfx.Image` supplies owned straight-alpha CPU pixels, flips, exact RGB masks,
+clipped copies and PNG export while remaining a standard `draw.Image`.
+Textures copy compatible regions on the GPU, regenerate mips and export
+logical Go image colours. Readback is restricted to completed frames.
+Texture copies execute before queued drawing, so a render texture already
+queued this frame cannot be their source. Copying into render targets,
+compressed-region copies, format conversion and overlapping GPU self-copies
+remain unsupported; use `DrawTo` or CPU image operations where appropriate.
 
 - 2D shadows are cast by the occluder outlines a frame adds, not by the
   sprites themselves: nothing derives an occluder from a sprite's alpha,
@@ -159,11 +202,14 @@ hyphenation are in. A glyph first drawn in a
 frame appears in that frame: the atlas upload is recorded into the frame
 before the render pass. Hyphenation patterns for thirteen languages ship
 with the engine and `AutoHyphenate` picks one from the text's
-`Language`. Rich text shapes each stretch of one face as a whole, so
-kerning and ligatures cross the style changes inside it.
+`Language`. Plain and rich text share Unicode wrapping, hyphenation and
+reusable `TextLayout` results with logical and ink bounds, source-byte caret
+affinity, hit testing and link rectangles. Underlines, strikethroughs and
+configurable outlines work with bitmap and SDF fonts. Layouts borrow font
+atlases; font-owned outline pages use reusable spread buckets and a configurable
+page budget. Rich text shapes each stretch of one face as a whole, so kerning
+and ligatures cross style changes; each cluster takes its first source style.
 
-- Rich text breaks lines at spaces and newlines rather than by the
-  Unicode rules, and does not hyphenate.
 - Parts of the colour glyph formats. In COLR, the variation deltas of
   the variable paint tables are not applied, the four non-separable
   blend modes (hue, saturation, colour and luminosity) composite as
@@ -334,7 +380,15 @@ once, on the processor past that), and blend spaces and trees as data
 Reverb zones and per-bus reverb, occlusion, mute and solo on voices and
 buses, Doppler, binaural rendering, click-free pausing and stopping,
 microphone capture, and tracker seek, position and per-channel mute and
-solo are in.
+solo are in. Stream pitch and Doppler retain state across mixer blocks;
+voices expose effective playback state, listener-relative sources,
+directional cones and selectable attenuation models. Music has runtime
+loop controls and source-frame-aligned loop ranges. Output and input
+enumeration and selection use ALSA PCM names, CoreAudio UIDs and WASAPI
+endpoint IDs; output switches retain the previous device on open failure.
+Bounded recording can retain PCM, stream raw PCM16 to a borrowed writer,
+or finalize WAV on a borrowed seekable writer or owned file. PCM and Sound
+export WAV. Native FLAC decodes incrementally with bounded linear seeks.
 
 - Measured head-related transfer functions. The binaural mode is a
   parametric head model, so it cannot tell front from back and is the
@@ -342,9 +396,17 @@ solo are in.
   and convolving per ear would fix both.
 - Hardware or platform mixing (spatialiser plugins); the mixer is a Go
   loop.
-- Choosing which input or output device to use, and being told when the
-  machine's default changes; both directions open the default device and
-  keep it.
+- FLAC sample widths above 24 bits, Ogg-encapsulated FLAC, and whole-stream
+  MD5 verification. Frame CRCs are checked. Playback accepts mono/stereo,
+  while DecodeFLAC can return up to eight channels. FLAC seeks scan frames;
+  there is no seek index for constant-time distant seeking.
+- Streaming WAV needs a seekable output to finalize RIFF sizes and is
+  limited to 32-bit RIFF lengths. A blocked borrowed recording writer must
+  unblock itself before Stop/Close can finish joining the worker.
+- Device-change notifications and automatic recovery after disconnection.
+  The default routing endpoint can change physical destination under the
+  OS; selection state does not report live device health. Linux enumeration
+  exposes configured ALSA endpoints, which can be virtual routing PCMs.
 - The Windows audio layer, and macOS capture, are untested on hardware.
   Linux output and capture run on real hardware.
 
