@@ -124,7 +124,7 @@ cleanup, defaults and scoped operations with examples.
 
 | Package | What |
 |---|---|
-| `bunyip` | `Run`, `Config`, `Game`, `Context`: the loop and the values a game uses |
+| `engine` | `Run`, `Config`, `Game`, `Context`: the loop and the values a game uses |
 | `gfx` | textures, sprites, paths, text, meshes, materials, cameras, lights, fog, culling, LOD, billboards, models, post-processing |
 | `gfx/ktx2` | KTX2 texture files and the BC1, BC3, BC4, BC5 and BC7 block formats they carry: encoding, decoding and offline mip chains |
 | `ui` | immediate-mode widgets, containers, menus and modals with a `Theme` |
@@ -155,29 +155,32 @@ cleanup, defaults and scoped operations with examples.
 
 ## A game
 
+Import the runtime as `github.com/matjam/bunyip/engine`; graphics, input and
+other systems remain separate packages in the same module.
+
 ```go
 type game struct{ tex *gfx.Texture }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	g.tex, err = ctx.Gfx.NewTexture(img, gfx.TextureOptions{})
 	return err
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) {
 		ctx.Quit()
 	}
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	ctx.Gfx.DrawTexture(g.tex, 100, 100)
 	return nil
 }
 
 func main() {
-	bunyip.Run(bunyip.Config{Title: "Hello", Width: 1280, Height: 720}, &game{})
+	engine.Run(engine.Config{Title: "Hello", Width: 1280, Height: 720}, &game{})
 }
 ```
 

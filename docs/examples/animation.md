@@ -65,9 +65,9 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/anim"
 	"github.com/matjam/bunyip/ecs"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
 	"github.com/matjam/bunyip/input"
@@ -137,7 +137,7 @@ The textures and meshes are created first, then a world with two cached
 queries. Everything after this point spawns entities into that world.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -365,7 +365,7 @@ created it. The world and its entities are ordinary memory and need
 nothing.
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.face.Destroy()
 	g.arms.Destroy()
 	g.cube.Destroy()
@@ -391,7 +391,7 @@ The crossfade at frame 30 exists so a timed run has the hero in the
 middle of a jump when the screenshot is taken.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -434,7 +434,7 @@ target plus that arm's own base position, because the target is in the
 arm's model space.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 0.8, 0), g.yaw, 0.45, 9))
@@ -692,7 +692,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	headless := flag.Bool("headless", false, "render without a window, for screenshots")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip animation", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
+	err := engine.Run(engine.Config{Title: "Bunyip animation", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "animation:", err)

@@ -17,7 +17,7 @@ import (
 	"math/rand/v2"
 	"os"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -67,7 +67,7 @@ var crates = [][4]float32{
 	{roomX + 40, roomY + 180, 34, 50},
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	if g.fullscreen {
 		ctx.SetFullscreen(true)
 	}
@@ -99,7 +99,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -138,7 +138,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	// Post settings are replaced every frame, like everything else drawn
 	// here. With Post2D off the frame goes straight to the screen.
 	if g.post {
@@ -178,7 +178,7 @@ func onOff(b bool) string {
 // drawLitRoom draws the lit panel: the lamp circles the room, the crates
 // block it, and the floor picks up the light through its normal map. The
 // lights and the occluders are set every frame, like the drawing itself.
-func (g *game) drawLitRoom(ctx *bunyip.Context) {
+func (g *game) drawLitRoom(ctx *engine.Context) {
 	gr := ctx.Gfx
 	gr.SetLayer(10) // over the bouncing sprites
 	lamp := lin.V2(
@@ -279,7 +279,7 @@ func main() {
 	capture := flag.Bool("capture", false, "start with the cursor captured (C toggles)")
 	post := flag.Bool("post", false, "start with 2D post-processing on (P toggles)")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture, post: *post})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sprites:", err)

@@ -66,7 +66,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -133,7 +133,7 @@ screen-space reflection ray; `Reflections` is the strength, which the
 slider drives each frame.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	var err error
 	if g.font, err = gr.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
@@ -191,7 +191,7 @@ other GPU resource. A grid holds its harmonics in ordinary memory and
 needs nothing.
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.probe.Destroy()
 	g.sphere.Destroy()
 	g.cube.Destroy()
@@ -206,7 +206,7 @@ Dragging turns the camera and the checkbox spins it otherwise.
 The `-seconds` and `-shot` flags every example takes are handled here.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -285,7 +285,7 @@ a specular response. The floor shows the screen-space
 reflections, which the slider turns down to nothing.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	g.post.Reflections = g.reflect
 	gr.SetPost(g.post)
@@ -324,14 +324,14 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 ## main
 
-The flags and `bunyip.Run`, as every example has them.
+The flags and `engine.Run`, as every example has them.
 
 ```go
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip probes", Width: 1024, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip probes", Width: 1024, Height: 640, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "probes:", err)

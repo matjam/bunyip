@@ -5,7 +5,7 @@
 // happened (a click, a changed value). Values live in the game's
 // variables and are passed by pointer; Context retains interaction
 // state such as focus, caret, selection, undo history and scrolling.
-// Games using bunyip.Context.NewUI get a default theme and shared font
+// Games using engine.Context.NewUI get a default theme and shared font
 // plus clipboard and input-method placement wiring. Use New directly
 // when supplying those dependencies yourself.
 //
@@ -41,7 +41,7 @@ import "github.com/matjam/bunyip/gfx"
 // Theme is every colour and measure the widgets use. Measures are in
 // view units. Start with a built-in theme or FromPalette; the zero
 // Theme has no font and is not usable for text widgets through New;
-// bunyip.Context.NewUI expands it into the built-in dark theme.
+// engine.Context.NewUI expands it into the built-in dark theme.
 type Theme struct {
 	Font *gfx.Font // required default font; this Theme does not manage its lifetime
 	// BoldFont, ItalicFont and BoldItalicFont serve RichLabel; nil falls

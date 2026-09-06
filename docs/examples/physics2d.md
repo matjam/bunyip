@@ -60,8 +60,8 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/ecs"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -123,7 +123,7 @@ into rectangles, and a soft-edged disc for circles. The disc asks for
 seeds the shape generator so a screenshot of the pile is reproducible.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -171,7 +171,7 @@ lights up the entity on the other side of each overlap, and fades every
 them by asking the world rather than by subscribing.
 
 ```go
-func (g *game) reset(ctx *bunyip.Context) {
+func (g *game) reset(ctx *engine.Context) {
 	w := ecs.NewWorld()
 	g.world = w
 	g.shapes = w.Query3[gfx.Transform2, phys.Collider2, look]()
@@ -293,7 +293,7 @@ angle grows rolls to the right, not the left.
 // drive turns the wheels, reversing when the car nears a wall. Screen
 // coordinates grow downward, so a wheel turning the way the angle grows
 // rolls to the right.
-func (g *game) drive(ctx *bunyip.Context) {
+func (g *game) drive(ctx *engine.Context) {
 	t, ok := g.world.Get[gfx.Transform2](g.car)
 	if !ok {
 		return
@@ -354,7 +354,7 @@ func (g *game) spawn(p lin.Vec2) {
 ```
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.dot.Destroy()
 	g.white.Destroy()
 	g.font.Destroy()
@@ -393,7 +393,7 @@ hit carries the entity, the point, the surface normal and the distance,
 and the drawing uses the point to stop the line where it struck.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -449,7 +449,7 @@ are doing anything; with it, a stopped car and a car spinning its wheels
 against a wall look different.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	g.shapes.Each(func(e ecs.Entity, t *gfx.Transform2, c *phys.Collider2, l *look) {
 		col := l.Color
@@ -532,7 +532,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics 2D", Width: 960, Height: 640, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip physics 2D", Width: 960, Height: 640, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "physics2d:", err)

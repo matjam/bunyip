@@ -61,7 +61,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -124,7 +124,7 @@ copied into the slider values so the panel starts at the preset's own
 numbers.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -179,7 +179,7 @@ goroutine that created it. The particle systems hold no GPU objects of
 their own; they draw with the texture they were given.
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.soft.Destroy()
 	g.font.Destroy()
 }
@@ -204,7 +204,7 @@ finite, so the loop over `g.bursts` drops the ones that report
 than allocating a new one each frame.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -285,7 +285,7 @@ particles, while their birth size, lifetime and palette tint stay fixed.
 Later births use the new settings.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	ctx.Clear = gfx.RGB(18, 20, 30)
 	// The ground and a couple of logs under the fire.
@@ -335,8 +335,8 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 
 ## main
 
-`bunyip.Run` owns the window, the renderer and the loop. Every field of
-`bunyip.Config` has a usable zero value; this one sets a title, a size, a
+`engine.Run` owns the window, the renderer and the loop. Every field of
+`engine.Config` has a usable zero value; this one sets a title, a size, a
 resizable window, the Vulkan validation layers, and headless mode from
 the flag.
 
@@ -347,7 +347,7 @@ func main() {
 	headless := flag.Bool("headless", false, "render without a window, for screenshots")
 	drops := flag.Int("drops", 3000, "raindrops in the instanced storm; try 200000")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
+	err := engine.Run(engine.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
 		&game{seconds: *seconds, shot: *shot, drops: max(*drops, 1)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "particles:", err)

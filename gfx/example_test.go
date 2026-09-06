@@ -7,7 +7,7 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
-// The Graphics value comes from bunyip.Context.Gfx inside a game's Init
+// The Graphics value comes from engine.Context.Gfx inside a game's Init
 // and Draw; these examples show the calls a game makes with it.
 var (
 	g    *gfx.Graphics

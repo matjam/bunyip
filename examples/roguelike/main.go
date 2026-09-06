@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/image/font/gofont/gomono"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
@@ -33,7 +33,7 @@ type game struct {
 	shotDone bool
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	g.font, err = ctx.Gfx.NewFont(gomono.TTF, 18, gfx.FontOptions{Ranges: [][2]rune{{0x2500, 0x257F}, {0x2580, 0x259F}}})
 	if err != nil {
@@ -44,7 +44,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
+func (g *game) Shutdown(ctx *engine.Context) { g.font.Destroy() }
 
 func (g *game) say(msg string) {
 	g.log = append(g.log, msg)
@@ -61,7 +61,7 @@ var moves = map[input.Key][2]int{
 	input.KeyKeypad7: {-1, -1}, input.KeyKeypad9: {1, -1}, input.KeyKeypad1: {-1, 1}, input.KeyKeypad3: {1, 1},
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -85,7 +85,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) takeTurn(ctx *bunyip.Context, dx, dy int) {
+func (g *game) takeTurn(ctx *engine.Context, dx, dy int) {
 	d := g.dungeon
 	if d.player.hp <= 0 {
 		return
@@ -101,7 +101,7 @@ func (g *game) takeTurn(ctx *bunyip.Context, dx, dy int) {
 	ctx.Log.Info("roguelike: turn", "n", g.turn, "player", fmt.Sprintf("%d,%d", d.player.x, d.player.y), "hp", d.player.hp)
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	d := g.dungeon
 	for y := range mapH {
@@ -145,7 +145,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{
+	err := engine.Run(engine.Config{
 		Title: "Bunyip roguelike", Width: mapW * cellSize, Height: mapH*cellSize + 120,
 		TurnBased: true, Validation: true,
 	}, &game{seconds: *seconds, shot: *shot})

@@ -63,7 +63,7 @@ var groups = []struct {
 	Title string
 	Paths []string
 }{
-	{"Engine", []string{"bunyip", "input", "console"}},
+	{"Engine", []string{"engine", "input", "console"}},
 	{"Graphics", []string{"gfx", "gfx/", "anim", "ui", "particle", "tiled", "gltf", "lin"}},
 	{"Simulation", []string{"ecs", "phys", "phys/soft", "orbit", "orbit/sol"}},
 	{"Audio", []string{"audio", "audio/tracker"}},

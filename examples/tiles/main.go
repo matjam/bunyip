@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -68,7 +68,7 @@ type game struct {
 	shotDone  bool
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -118,13 +118,13 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.font.Destroy()
 	g.sheetTex.Destroy()
 	g.hudTex.Destroy()
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -195,7 +195,7 @@ func (g *game) walkable(p lin.Vec2) bool {
 	return f != frameWall && f != frameWater && f >= 0
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	gr.SetCamera2D(g.cam)
 	gr.SetLayer(0)
@@ -299,7 +299,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip tiles", Width: 960, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip tiles", Width: 960, Height: 640, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tiles:", err)

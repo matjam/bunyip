@@ -487,7 +487,7 @@ near enough to send.
 
 ## Tooling and workflow
 
-`bunyip.FlyCamera` is the debug camera, `Config.LogFile` writes the log
+`engine.FlyCamera` is the debug camera, `Config.LogFile` writes the log
 and a panic's stack trace to a file for crash reports, and hot reload is
 `asset.Reloader`: it watches the loose files a game loaded through it
 and swaps them into the objects the game holds, a texture's image
@@ -505,7 +505,7 @@ post-processing settings and GPU resources, a world's entities,
 components, resources and systems, the physics simulation, the mixer,
 the input devices and a game's own services. Every pass is timed on the
 GPU with timestamp queries read back without waiting, reported by
-`gfx.FrameStats.GPU` and `GPUFrameMS` and by `bunyip.Stats`, graphed and
+`gfx.FrameStats.GPU` and `GPUFrameMS` and by `engine.Stats`, graphed and
 listed by the engine panel and totalled by the F3 overlay.
 
 - Nothing times the parts of a pass, only the pass: a slow shader inside

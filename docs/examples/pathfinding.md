@@ -60,7 +60,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/grid"
 	"github.com/matjam/bunyip/input"
@@ -103,7 +103,7 @@ every run and a screenshot of it is reproducible; a game that wants a
 different world each time seeds from the clock instead.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -121,7 +121,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 ```
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
+func (g *game) Shutdown(ctx *engine.Context) { g.font.Destroy() }
 ```
 
 `roll` scatters single walls with an 18 percent chance each and then
@@ -190,7 +190,7 @@ minimum a save format needs: a file written when the map was a different
 size is ignored rather than trusted.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -254,7 +254,7 @@ it treats out of bounds as blocking sight. The loop over the distance map
 finds the farthest cost, which the colours are scaled against.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	mx, my := ctx.Input.Mouse()
 	goal := grid.Point{X: int(mx) / cell, Y: int(my) / cell}
@@ -348,7 +348,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip pathfinding", Width: cols * cell, Height: rows*cell + 60, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip pathfinding", Width: cols * cell, Height: rows*cell + 60, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pathfinding:", err)

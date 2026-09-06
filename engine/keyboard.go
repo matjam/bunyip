@@ -1,4 +1,4 @@
-package bunyip
+package engine
 
 import "github.com/matjam/bunyip/input"
 

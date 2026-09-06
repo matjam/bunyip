@@ -29,12 +29,12 @@ in callbacks. Every `GameFuncs` callback is optional:
 
 ```go
 var elapsed float64
-err := bunyip.Run(bunyip.Config{Title: "Clock"}, bunyip.GameFuncs{
-	UpdateFunc: func(ctx *bunyip.Context) error {
+err := engine.Run(engine.Config{Title: "Clock"}, engine.GameFuncs{
+	UpdateFunc: func(ctx *engine.Context) error {
 		elapsed += ctx.Delta
 		return nil
 	},
-	DrawFunc: func(ctx *bunyip.Context) error {
+	DrawFunc: func(ctx *engine.Context) error {
 		ctx.Gfx.DebugText(20, 20, fmt.Sprintf("%.1f seconds", elapsed))
 		return nil
 	},
@@ -71,7 +71,7 @@ type game struct {
 	loader *asset.Loader
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	files, err := asset.Open("assets.pak")
 	if err != nil {
 		return err

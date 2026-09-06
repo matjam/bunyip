@@ -93,7 +93,7 @@ is copied into `ctx.Clear`, the colour the frame starts from.
 the camera.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -121,7 +121,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.level.Destroy()
 	g.font.Destroy()
 }
@@ -138,7 +138,7 @@ level. `Level.Advance(dt)` steps the tile animations the map defines,
 which is the only per-frame work a static map needs.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -184,7 +184,7 @@ the editor can attach to a map, layer, tile or object arrives as
 properties.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	gr.SetCamera2D(g.cam)
 	g.level.Draw(gr, 0, 0, gfx.White)
@@ -345,7 +345,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	mapFile := flag.String("map", "", "load this .tmx or .tmj map instead of the embedded one")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip tiled", Width: 960, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip tiled", Width: 960, Height: 640, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, mapFile: *mapFile})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tiled:", err)

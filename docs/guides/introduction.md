@@ -61,7 +61,7 @@ without a window; native window interaction still needs a desktop.
 ```go
 type game struct{ x float32 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) {
 		ctx.Quit()
 	}
@@ -69,18 +69,18 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	ctx.Gfx.FillRect(g.x, 100, 40, 40, gfx.RGB(255, 200, 40))
 	return nil
 }
 
 func main() {
-	bunyip.Run(bunyip.Config{Title: "Hello", Width: 960, Height: 600}, &game{})
+	engine.Run(engine.Config{Title: "Hello", Width: 960, Height: 600}, &game{})
 }
 ```
 
 `Update` advances the simulation and `Draw` queues drawing. The
-[bunyip](../pkg/bunyip.html) package manages the window, the loop and
+[engine](../pkg/engine.html) package manages the window, the loop and
 the frame pacing. The `Context` it passes in holds everything else a
 game uses: graphics, input, audio, timing and the window.
 
@@ -88,7 +88,7 @@ game uses: graphics, input, audio, timing and the window.
 
 | Area | Packages |
 |---|---|
-| Engine | [bunyip](../pkg/bunyip.html) (loop, context, window), [input](../pkg/input.html) (keys, mouse, gamepads, action maps), [console](../pkg/console.html) (debugging commands and panels) |
+| Engine | [engine](../pkg/engine.html) (loop, context, window), [input](../pkg/input.html) (keys, mouse, gamepads, action maps), [console](../pkg/console.html) (debugging commands and panels) |
 | Graphics | [gfx](../pkg/gfx.html) (2D, 3D, text, post-processing), [ui](../pkg/ui.html), [anim](../pkg/anim.html), [particle](../pkg/particle.html), [tiled](../pkg/tiled.html), [gltf](../pkg/gltf.html), [lin](../pkg/lin.html) |
 | Simulation | [ecs](../pkg/ecs.html), [phys](../pkg/phys.html) (2D and 3D rigid bodies), [phys/soft](../pkg/phys/soft.html) (cloth, soft bodies and 2D fluids), [orbit](../pkg/orbit.html) (celestial mechanics), [orbit/sol](../pkg/orbit/sol.html) |
 | Audio | [audio](../pkg/audio.html) (mixer, music, effects), [audio/tracker](../pkg/audio/tracker.html) |

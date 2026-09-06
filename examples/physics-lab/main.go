@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/ecs"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -124,7 +124,7 @@ type game struct {
 	shotDone  bool
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -259,7 +259,7 @@ func (g *game) step(dt float64) {
 	g.world.Update(dt)
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.terrain.Destroy()
 	g.cube.Destroy()
 	g.sphere.Destroy()
@@ -267,7 +267,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if ctx.Console.Open() {
 		// The console has the keyboard and the pointer while it is open;
@@ -312,7 +312,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist))
@@ -455,7 +455,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	ragdoll := flag.Bool("ragdoll", true, "drop a ragdoll with the debris")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true, Console: true},
+	err := engine.Run(engine.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true, Console: true},
 		&game{seconds: *seconds, shot: *shot, ragdoll: *ragdoll})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "physics-lab:", err)

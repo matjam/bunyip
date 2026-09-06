@@ -1,4 +1,4 @@
-package bunyip
+package engine
 
 // GameFuncs adapts callbacks to Game. Every callback is optional; a nil
 // callback does nothing. Use it for small games and tools that do not need

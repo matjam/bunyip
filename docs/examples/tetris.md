@@ -216,7 +216,7 @@ type game struct {
 	shotDone bool
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 16, gfx.FontOptions{}); err != nil {
 		return err
@@ -241,7 +241,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
+func (g *game) Shutdown(ctx *engine.Context) { g.font.Destroy() }
 ```
 
 The effects system is a method returning a closure, because it needs the
@@ -514,7 +514,7 @@ as presses, so held keys repeat at the platform's configured rate. A game
 wanting its own repeat timing can exclude `KeyRepeated` and use a timer.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -559,7 +559,7 @@ its label, its container and the call order, and its result is a return
 value rather than a callback.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	ox, oy := (ctx.Width-cols*cell)/2-80, (ctx.Height-rows*cell)/2
@@ -631,7 +631,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip Tetris", Width: 640, Height: 640, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip Tetris", Width: 640, Height: 640, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tetris:", err)

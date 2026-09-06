@@ -89,7 +89,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/grid/autotile"
 	"github.com/matjam/bunyip/input"
@@ -196,7 +196,7 @@ something to look at, `refresh` fills every tilemap, and `initHexes`
 builds the strip below.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	// The grass sheet: 47 blob tiles composed from a drawn template,
 	// with a 48th flower tile added as a variant of the filled case.
 	img, frames := autotile.ExpandBlob(makeTemplate(), tile)
@@ -304,7 +304,7 @@ const hexLayout = autotile.HexRowsOdd
 // initHexes builds the hexagonal strip: a 64-tile edge set, a patch of
 // terrain walked over the layout's own neighbours, and the frames for
 // it. Nothing here knows the hexagon offsets; the layout does.
-func (g *game) initHexes(ctx *bunyip.Context) error {
+func (g *game) initHexes(ctx *engine.Context) error {
 	var err error
 	if g.hexTex, err = ctx.Gfx.NewTexture(makeHexes(), gfx.TextureOptions{}); err != nil {
 		return err
@@ -362,7 +362,7 @@ the whole map. Calling `refresh` here would work and would do 880 cells
 of work per painted cell.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -408,7 +408,7 @@ walls cover both. `DrawTilemap` takes a position and a tint; a zero
 a translucent rectangle over the cell under the pointer.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	gr.FillRect(0, 0, float32(mapW*tile), float32(mapH*tile), gfx.RGB(38, 30, 26))
 	gr.DrawTilemap(g.waterMap, 0, 0, gfx.Color{})
@@ -457,7 +457,7 @@ func (g *game) drawHexes(gr *gfx.Graphics) {
 	}
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.grassTex.Destroy()
 	g.wallTex.Destroy()
 	g.waterTex.Destroy()
@@ -800,7 +800,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write the frame at -seconds/2 to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip autotile", Width: mapW * tile, Height: windowH},
+	err := engine.Run(engine.Config{Title: "Bunyip autotile", Width: mapW * tile, Height: windowH},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "autotile:", err)

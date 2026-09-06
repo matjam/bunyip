@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -82,7 +82,7 @@ func clothMesh(nx, ny int) ([]gfx.Vertex, []uint32) {
 	return verts, idx
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -121,7 +121,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.cloth.Destroy()
 	g.flag.Destroy()
 	g.cube.Destroy()
@@ -133,7 +133,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -144,7 +144,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
 	// The 3D scene: a lava slab with plain cubes on it.
@@ -252,7 +252,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip shaders", Width: 1024, Height: 720, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip shaders", Width: 1024, Height: 720, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shaders:", err)

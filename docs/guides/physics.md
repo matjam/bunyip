@@ -553,7 +553,7 @@ colour, which `DrawCollidersColors3` chooses. `DrawShape3` and
 or a shape the game is about to cast.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	// ... the scene ...
 	if g.showColliders {
 		phys.DrawColliders3(ctx.Gfx, g.world)

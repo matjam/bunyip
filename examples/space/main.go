@@ -21,8 +21,8 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/ecs"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -103,7 +103,7 @@ type game struct {
 	stars    []lin.Vec3 // unit directions of a background starfield
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 14, gfx.FontOptions{}); err != nil {
 		return err
@@ -182,13 +182,13 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.dot.Destroy()
 	g.sphere.Destroy()
 	g.font.Destroy()
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -252,7 +252,7 @@ func (g *game) camera() gfx.Camera {
 	return gfx.Camera{Position: lin.V3(g.dist*cp*cy, g.dist*cp*sy, g.dist*sp), Up: lin.V3(0, 0, 1), Near: 0.05, Far: 8000}
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	cam := g.camera()
@@ -398,7 +398,7 @@ func main() {
 	dist := flag.Float64("dist", 14, "starting camera distance")
 	warp := flag.Float64("warp", 1, "starting time warp")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip space", Width: 1024, Height: 680, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip space", Width: 1024, Height: 680, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, startFocus: *focus, startDist: float32(*dist), startWarp: float32(*warp)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "space:", err)

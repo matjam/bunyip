@@ -19,7 +19,7 @@ func ExampleState() {
 		}
 		return dx, in.KeyPressed(input.KeySpace)
 	}
-	var in input.State // ctx.Input under bunyip.Run
+	var in input.State // ctx.Input under engine.Run
 	fmt.Println(move(&in))
 	// Output:
 	// 0 false

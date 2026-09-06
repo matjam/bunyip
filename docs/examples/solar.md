@@ -133,7 +133,7 @@ own `Properties`, which is where a scene keeps values that belong to no
 entity.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 16, gfx.FontOptions{}); err != nil {
 		return err
@@ -235,7 +235,7 @@ every frame.
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.minimap.Destroy()
 	g.sphere.Destroy()
 	g.cube.Destroy()
@@ -254,7 +254,7 @@ closes it; the pair is timed and reported in the F3 overlay, which is
 how the cost of the simulation is separated from the cost of drawing.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -294,7 +294,7 @@ looks straight down from 40 units, offset by 0.01 in z so the view
 direction and the up vector are not parallel.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	light := gfx.Light{Direction: lin.V3(0.3, -1, 0.2), Color: gfx.Color{R: 0.6, G: 0.6, B: 0.7, A: 1},
@@ -395,7 +395,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip solar", Width: 1024, Height: 640, Resizable: true, Validation: true, Debug: true},
+	err := engine.Run(engine.Config{Title: "Bunyip solar", Width: 1024, Height: 640, Resizable: true, Validation: true, Debug: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "solar:", err)

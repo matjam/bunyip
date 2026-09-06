@@ -6,7 +6,7 @@ import (
 )
 
 // llmsIntro opens llms.txt and llms-full.txt.
-const llmsIntro = "> A complete game engine in Go: a Vulkan renderer without cgo that draws 2D sprites and physically based 3D models in the same frame, an entity component system, rigid-body physics, skeletal animation, celestial mechanics, an immediate-mode interface, an audio mixer with a tracker player, and asset, save, translation and networking services, for real-time and turn-based games.\n\nThe guides explain each area of the engine; the package pages are the full API reference with doc comments, declarations and examples. Import path: github.com/matjam/bunyip."
+const llmsIntro = "> A complete game engine in Go: a Vulkan renderer without cgo that draws 2D sprites and physically based 3D models in the same frame, an entity component system, rigid-body physics, skeletal animation, celestial mechanics, an immediate-mode interface, an audio mixer with a tracker player, and asset, save, translation and networking services, for real-time and turn-based games.\n\nThe guides explain each area of the engine; the package pages are the full API reference with doc comments, declarations and examples. Runtime import path: github.com/matjam/bunyip/engine."
 
 // llmsIndex writes llms.txt: the site's pages as Markdown links with a
 // line of description each.

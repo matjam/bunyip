@@ -18,7 +18,7 @@
 // holds the log and a command line with history on the up and down
 // arrows, completion on Tab, and paging with PageUp and PageDown.
 //
-//	func (g *game) Update(ctx *bunyip.Context) error {
+//	func (g *game) Update(ctx *engine.Context) error {
 //		if ctx.Console.Open() {
 //			return nil // the console has the keyboard
 //		}
@@ -267,7 +267,7 @@ func (c *Console) Clear() {
 }
 
 // Host is anything that can describe the frame the console draws in. The
-// engine's *bunyip.Context implements it, so a game passes its context
+// engine's *engine.Context implements it, so a game passes its context
 // straight to Draw.
 type Host interface {
 	ConsoleFrame() Frame

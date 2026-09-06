@@ -18,7 +18,7 @@ interface.
 Set `Config.Console`; the engine draws the console last:
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Console.Open() {
 		return nil // the console has the keyboard
 	}
@@ -27,7 +27,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 }
 
 func main() {
-	bunyip.Run(bunyip.Config{Title: "Game", Console: true}, &game{})
+	engine.Run(engine.Config{Title: "Game", Console: true}, &game{})
 }
 ```
 
@@ -148,7 +148,7 @@ and registers with `Var`.
 
 Registering from `Init` is the usual place. Device recovery creates a
 fresh console and calls the game's `Recover` method when it implements
-`bunyip.Recoverer`; it does not call `Init` again. Put registrations in
+`engine.Recoverer`; it does not call `Init` again. Put registrations in
 shared setup called from both methods. A game without `Recoverer`
 returns the device-loss error instead of recovering.
 
@@ -253,7 +253,7 @@ The engine attaches what it owns. A game attaches the rest, once, with
 one call each:
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	ctx.Console.Attach("world", g.world)          // Entities and Physics
 	ctx.Console.AttachActions("player", g.actions) // Input
 	ctx.Console.AttachInfo("locale", func() string { return g.tr.Lang() })

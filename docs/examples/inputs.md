@@ -21,7 +21,7 @@ which this example deliberately leaves out to show the raw state.
 
 The window controls used here, the title, the size floor, the cursor
 shape, cursor capture and fullscreen, are on
-[bunyip.Context](../pkg/bunyip.html#Context) rather than in the input
+[engine.Context](../pkg/engine.html#Context) rather than in the input
 package; [the window guide](../guides/window.html) covers them.
 
 Run it:
@@ -57,7 +57,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
@@ -131,13 +131,13 @@ this window cannot be dragged smaller than 480 by 320 and has no upper
 bound. `SetCursor` picks one of the system cursor shapes.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	g.font, err = ctx.Gfx.NewFont(goregular.TTF, 14, gfx.FontOptions{})
 	// The window controls: a title, a size floor and a crosshair pointer.
 	ctx.SetTitle("Bunyip inputs (paste with Ctrl+V or Cmd+V)")
 	ctx.SetSizeLimits(480, 320, 0, 0)
-	ctx.SetCursor(bunyip.CursorCrosshair)
+	ctx.SetCursor(engine.CursorCrosshair)
 	return err
 }
 ```
@@ -146,7 +146,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 destroyed on the goroutine that created it, which is this one.
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
+func (g *game) Shutdown(ctx *engine.Context) { g.font.Destroy() }
 ```
 
 ## Update: reading the state
@@ -173,7 +173,7 @@ absolute position is frozen. The delta is smoothed with a decay towards
 zero so a still mouse settles rather than flickering.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) {
 		if ctx.CursorCaptured() {
@@ -228,7 +228,7 @@ increasing downwards. `gfx.RGB` takes sRGB bytes and returns the linear
 colour the renderer works in.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	in := ctx.Input
 	// Keyboard.
@@ -333,7 +333,7 @@ running to `input.GamepadButtonCount`, laid out here eight to a row.
 
 ## main
 
-`bunyip.Run` opens the window and runs the loop until the game quits.
+`engine.Run` opens the window and runs the loop until the game quits.
 `Validation: true` turns on the Vulkan validation layers when they are
 installed, which every example does.
 
@@ -342,7 +342,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip inputs", Width: 960, Height: 580, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip inputs", Width: 960, Height: 580, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "inputs:", err)

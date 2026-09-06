@@ -21,7 +21,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
 	"github.com/matjam/bunyip/input"
@@ -206,7 +206,7 @@ func pineDocument() *gltf.Document {
 	return doc
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 28, gfx.FontOptions{}); err != nil {
 		return err
@@ -315,7 +315,7 @@ func (g *game) scatter() {
 	}
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.font.Destroy()
 	g.terrain.Destroy()
 	g.pineFar.Destroy()
@@ -359,7 +359,7 @@ func (g *game) dig(at lin.Vec3, radius, depth float32) error {
 	return g.terrain.Update(minX, minZ, maxX, maxZ)
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -397,7 +397,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
 	cam := gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist)
@@ -457,7 +457,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip terrain", Width: 1024, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip terrain", Width: 1024, Height: 640, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

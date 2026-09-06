@@ -14,7 +14,7 @@ import (
 
 // Graphics is the drawing context for one window. The engine opens a
 // frame, the Draw* calls queue work, and the engine submits it. Obtain
-// Graphics from bunyip.Context; its zero value is not usable. Use it and
+// Graphics from engine.Context; its zero value is not usable. Use it and
 // its GPU resources only on the game goroutine. Graphics owns every GPU
 // resource it creates and releases it when the engine closes, including
 // when game setup or drawing fails. Call a resource's Destroy method to

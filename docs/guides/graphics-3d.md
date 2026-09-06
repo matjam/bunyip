@@ -32,7 +32,7 @@ field, draw the 3D into a `RenderTexture` and draw that texture as a
 sprite between the background and foreground layers.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	ctx.Clear = gfx.RGB(10, 12, 18)
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 1, 0), g.yaw, g.pitch, 12))
@@ -68,7 +68,7 @@ gr.SetCamera(gfx.Camera{Position: focus.Add(lin.V3(30, 30, 30)), Target: focus, 
 
 `OrbitCamera(target, yaw, pitch, distance)` builds an inspector or
 strategy camera from three numbers you can drive with the mouse.
-`bunyip.FlyCamera` is a free-flying camera for looking around a scene
+`engine.FlyCamera` is a free-flying camera for looking around a scene
 while it is being built. W, A, S and D move, Q and E go down and up,
 Shift goes faster, and the view turns while the right mouse button is
 held, or with every movement when `AlwaysLook` is set and the cursor is
@@ -76,9 +76,9 @@ captured. `LookAt` points it at a position, `Forward` gives its
 direction.
 
 ```go
-g.fly = &bunyip.FlyCamera{Position: lin.V3(0, 5, 20), Speed: 25} // in Init
-func (g *game) Update(ctx *bunyip.Context) error { g.fly.Update(ctx); return nil }
-func (g *game) Draw(ctx *bunyip.Context) error   { ctx.Gfx.SetCamera(g.fly.Camera()); return nil }
+g.fly = &engine.FlyCamera{Position: lin.V3(0, 5, 20), Speed: 25} // in Init
+func (g *game) Update(ctx *engine.Context) error { g.fly.Update(ctx); return nil }
+func (g *game) Draw(ctx *engine.Context) error   { ctx.Gfx.SetCamera(g.fly.Camera()); return nil }
 ```
 
 `Project(p)` maps a world point into the 2D view and returns `ok` false

@@ -1,4 +1,4 @@
-package bunyip
+package engine
 
 import (
 	"math"
@@ -14,7 +14,7 @@ import (
 // held (or always, when AlwaysLook is set). Call Update each
 // update and hand Camera to the renderer:
 //
-//	fly := &bunyip.FlyCamera{Position: lin.V3(0, 5, 10)}
+//	fly := &engine.FlyCamera{Position: lin.V3(0, 5, 10)}
 //	// in Update:
 //	fly.Update(ctx)
 //	// in Draw:

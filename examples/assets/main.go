@@ -19,8 +19,8 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/asset"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -65,7 +65,7 @@ type game struct {
 	shotDone bool
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -175,7 +175,7 @@ func abs(v int) int {
 	return v
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.watcher.Close()
 	g.loader.Close()
 	g.fs.Close()
@@ -187,7 +187,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -237,7 +237,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	for i, it := range g.items {
 		x := 40 + float32(i%6)*130
@@ -271,7 +271,7 @@ func main() {
 	dir := flag.String("dir", filepath.Join(os.TempDir(), "bunyip-assets"), "asset directory (created and seeded when empty)")
 	seed := flag.Uint64("seed", 5, "random seed, so a run can be repeated")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip assets", Width: 840, Height: 440, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip assets", Width: 840, Height: 440, Validation: true},
 		&game{seconds: *seconds, shot: *shot, dir: *dir, randSeed: *seed})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "assets:", err)

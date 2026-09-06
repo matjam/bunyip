@@ -10,7 +10,7 @@ import (
 )
 
 // In a game these come from the game's own state; the console itself
-// comes from bunyip.Context.Console once Config.Console is set.
+// comes from engine.Context.Console once Config.Console is set.
 var (
 	con     *console.Console
 	world   *ecs.World

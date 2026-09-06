@@ -101,7 +101,7 @@ from, so a texture repainted in an art tool or a shader recompiled with
 of the package's loaders and call `Reload` once a frame:
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	g.rel = asset.NewReloader(ctx.Gfx, g.fs, 0) // 0 means poll twice a second
 	var err error
 	if g.hero, err = g.rel.Texture("sprites/hero.png", gfx.TextureOptions{}); err != nil {
@@ -111,7 +111,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return err
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	names, err := g.rel.Reload()
 	if err != nil {
 		ctx.Log.Warn("reload failed", "err", err) // the old asset stays
@@ -296,7 +296,7 @@ so a large update may call the same function several times. Callbacks
 may schedule or cancel timers, but must not recursively call `Update`.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if !g.paused {
 		g.timers.Update(ctx.Delta) // g.timers is a timer.Scheduler
 		if g.round.Update(ctx.Delta) {

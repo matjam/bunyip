@@ -11,7 +11,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
 	"github.com/matjam/bunyip/input"
@@ -42,7 +42,7 @@ type viewer struct {
 	shotDone bool
 }
 
-func (v *viewer) Init(ctx *bunyip.Context) error {
+func (v *viewer) Init(ctx *engine.Context) error {
 	var err error
 	if v.checker, err = ctx.Gfx.NewTexture(checkerImage(64, 8), gfx.TextureOptions{}); err != nil {
 		return err
@@ -75,7 +75,7 @@ func (v *viewer) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (v *viewer) Shutdown(ctx *bunyip.Context) {
+func (v *viewer) Shutdown(ctx *engine.Context) {
 	if v.model != nil {
 		v.model.Destroy()
 	}
@@ -85,7 +85,7 @@ func (v *viewer) Shutdown(ctx *bunyip.Context) {
 	v.checker.Destroy()
 }
 
-func (v *viewer) Update(ctx *bunyip.Context) error {
+func (v *viewer) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (v.seconds > 0 && ctx.Time >= v.seconds) {
 		ctx.Quit()
@@ -114,7 +114,7 @@ func (v *viewer) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (v *viewer) Draw(ctx *bunyip.Context) error {
+func (v *viewer) Draw(ctx *engine.Context) error {
 	g := ctx.Gfx
 	p := g.Post()
 	// Translucent surfaces are composited without sorting unless -sorted
@@ -195,7 +195,7 @@ func main() {
 	showAO := flag.Bool("showao", false, "display the ambient occlusion buffer")
 	sorted := flag.Bool("sorted", false, "composite translucent draws by sorting them, not order-independently")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true, Validation: true},
 		&viewer{modelPath: *modelPath, seconds: *seconds, shot: *shot, noAO: *noAO, noShadow: *noShadow, showAO: *showAO, sorted: *sorted})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "viewer:", err)

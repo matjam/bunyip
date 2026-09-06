@@ -32,27 +32,27 @@ Create a module with a `main.go`:
 package main
 
 import (
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
 
 type game struct{}
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) {
 		ctx.Quit()
 	}
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	ctx.Gfx.FillRect(100, 100, 200, 120, gfx.RGB(120, 190, 255))
 	return nil
 }
 
 func main() {
-	if err := bunyip.Run(bunyip.Config{Title: "First window", Width: 960, Height: 600, Resizable: true}, &game{}); err != nil {
+	if err := engine.Run(engine.Config{Title: "First window", Width: 960, Height: 600, Resizable: true}, &game{}); err != nil {
 		panic(err)
 	}
 }
@@ -60,7 +60,7 @@ func main() {
 
 ```
 go mod init example.com/first
-go get github.com/matjam/bunyip
+go get github.com/matjam/bunyip/engine
 go run .
 ```
 
@@ -73,7 +73,7 @@ For other cleanup, register a closure with `ctx.Cleanup` after acquiring
 the resource. The callbacks run in reverse order, after optional
 `Shutdown` and before the engine closes its devices; they also run if
 `Init` or `Recover` fails. To recover from a lost
-graphics device, implement `Recover(ctx *bunyip.Context) error` and
+graphics device, implement `Recover(ctx *engine.Context) error` and
 recreate resources there. The engine calls `Recover` with a fresh
 context instead of `Init`; without that method, `Run` returns the
 device-loss error. The mixer and console are also rebuilt, so restore
@@ -84,8 +84,8 @@ Small programs can provide closures with `GameFuncs` instead of declaring
 a game type. Unset callbacks do nothing:
 
 ```go
-err := bunyip.Run(bunyip.Config{Title: "Hello"}, bunyip.GameFuncs{
-	DrawFunc: func(ctx *bunyip.Context) error {
+err := engine.Run(engine.Config{Title: "Hello"}, engine.GameFuncs{
+	DrawFunc: func(ctx *engine.Context) error {
 		ctx.Gfx.DebugText(20, 20, "Hello, Bunyip")
 		return nil
 	},
@@ -181,7 +181,7 @@ variables. The engine draws it after the game and the debug overlay. The
 into a warning when a frame exceeds it. `Config.Pprof` serves Go's
 profiler on an address. `Config.LogFile` writes the log to a file and
 appends a stack trace if the game panics. That file is the one to ask a
-player for. `bunyip.FlyCamera` is a free-flying camera for looking round
+player for. `engine.FlyCamera` is a free-flying camera for looking round
 a 3D scene while it is being built.
 
 ### Profiling
@@ -189,7 +189,7 @@ a 3D scene while it is being built.
 Enable Go's profiling server when starting the game:
 
 ```go
-err := bunyip.Run(bunyip.Config{
+err := engine.Run(engine.Config{
 	Title: "My Game",
 	Debug: true,
 	Pprof: "127.0.0.1:6060",

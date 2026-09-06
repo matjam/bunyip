@@ -1,4 +1,4 @@
-// Package bunyip runs a game's main loop. To start a game, implement
+// Package engine runs a game's main loop. To start a game, implement
 // Game or provide GameFuncs callbacks, fill in a Config and call Run.
 // Run owns the window, the event
 // loop, the renderer, the audio device and the frame pacing, and passes
@@ -39,7 +39,7 @@
 // in reverse acquisition order. Context.NewUI supplies a default font and
 // connects clipboard and text-input placement to the window. Config.Console
 // enables an engine-drawn console without an extra drawing call.
-package bunyip
+package engine
 
 import (
 	"image"
@@ -228,7 +228,7 @@ type Context struct {
 	// otherwise. The engine draws it last; ask Open whether it has the
 	// keyboard:
 	//
-	//	func (g *game) Update(ctx *bunyip.Context) error {
+	//	func (g *game) Update(ctx *engine.Context) error {
 	//		if ctx.Console.Open() {
 	//			return nil // the console is taking the keys
 	//		}

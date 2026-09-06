@@ -14,8 +14,8 @@ import (
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/audio"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -68,7 +68,7 @@ type gallery struct {
 	soft *gfx.Texture
 }
 
-func (g *gallery) Init(ctx *bunyip.Context) error {
+func (g *gallery) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 16, gfx.FontOptions{}); err != nil {
 		return err
@@ -140,7 +140,7 @@ func (g *gallery) applyTheme() {
 	g.ui.Theme = theme
 }
 
-func (g *gallery) Shutdown(ctx *bunyip.Context) {
+func (g *gallery) Shutdown(ctx *engine.Context) {
 	g.font.Destroy()
 	g.big.Destroy()
 	g.bold.Destroy()
@@ -150,7 +150,7 @@ func (g *gallery) Shutdown(ctx *bunyip.Context) {
 	}
 }
 
-func (g *gallery) Update(ctx *bunyip.Context) error {
+func (g *gallery) Update(ctx *engine.Context) error {
 	if ctx.Console.Open() {
 		return nil // the console has the keyboard
 	}
@@ -165,7 +165,7 @@ func (g *gallery) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *gallery) Draw(ctx *bunyip.Context) error {
+func (g *gallery) Draw(ctx *engine.Context) error {
 	t := float32(ctx.Time)
 	for i := range 12 {
 		x := ctx.Width/2 + 200*float32(math.Cos(float64(t*0.4+float32(i))))
@@ -387,7 +387,7 @@ func main() {
 	theme := flag.String("theme", "dark", "starting theme: "+fmt.Sprint(ui.ThemeNames()))
 	tab := flag.Int("tab", 0, "the tab of the More widgets window to open on (0-3)")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip gallery", Width: 1220, Height: 620, Resizable: true, Validation: true, Debug: *debug, Console: true},
+	err := engine.Run(engine.Config{Title: "Bunyip gallery", Width: 1220, Height: 620, Resizable: true, Validation: true, Debug: *debug, Console: true},
 		&gallery{seconds: *seconds, shot: *shot, beep: *beep, skinned: *skin, theme: *theme, startTab: *tab})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)

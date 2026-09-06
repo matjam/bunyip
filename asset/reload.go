@@ -18,7 +18,7 @@ import (
 //	tex, err := rel.Texture("sprites/hero.png", gfx.TextureOptions{})
 //	// ... hand tex to a material or draw it as a sprite ...
 //
-//	func (g *game) Update(ctx *bunyip.Context) error {
+//	func (g *game) Update(ctx *engine.Context) error {
 //		names, err := g.rel.Reload()
 //		if err != nil {
 //			ctx.Log.Warn("reload failed", "err", err)

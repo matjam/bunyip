@@ -71,12 +71,12 @@ Snapshots do not read or change the user's pending dead-key composition or
 IME text. Windows translation uses an isolated worker thread; refresh binding
 UI when needed instead of querying every frame. X11 and Wayland use the active
 XKB group, and macOS uses the current Unicode keyboard layout. Missing keymaps
-and headless mode return `bunyip.ErrUnsupported`. `Label` falls back to
+and headless mode return `engine.ErrUnsupported`. `Label` falls back to
 `Key.String`; that fallback does not invent a logical symbol. Continue using
 `Chars` and `Composition` for typed text, including modifiers and IME input.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeySpace) {
 		g.jump()
@@ -108,7 +108,7 @@ only, which is what a first-person camera needs.
 view units, accounting for letterboxing and display scale. It returns an
 error; inspect `ctx.WindowCapabilities().PointerPosition` before offering
 this feature. macOS, Windows, and X11 support it. Wayland forbids arbitrary
-pointer warping and returns `bunyip.ErrUnsupported`. Pointer input reflects
+pointer warping and returns `engine.ErrUnsupported`. Pointer input reflects
 the change after native events are polled, rather than being overwritten
 immediately by the request.
 
@@ -231,7 +231,7 @@ type game struct {
 	jump, moveX input.Action
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	g.acts = input.NewActions()
 	g.acts.Bind("jump", input.KeySource(input.KeySpace), input.PadButton(input.ButtonA))
 	g.acts.Bind("move_x",
@@ -242,7 +242,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if g.jump.Pressed(ctx.Input) { ... }
 	vx := g.moveX.Value(ctx.Input)
 	return nil

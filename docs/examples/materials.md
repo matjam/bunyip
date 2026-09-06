@@ -66,7 +66,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -117,7 +117,7 @@ numbers rather than colours, so they are uploaded without the sRGB
 conversion a colour texture gets.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 14, gfx.FontOptions{}); err != nil {
 		return err
@@ -204,7 +204,7 @@ The loops destroy each texture and mesh in turn. The environment is
 optional, so it is checked first.
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	if g.env != nil {
 		g.env.Destroy()
 	}
@@ -225,7 +225,7 @@ the pitch stays away from the poles and the distance inside a range.
 `g.ui.WantsMouse` keeps a drag on the panel from turning the camera.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -273,7 +273,7 @@ on surfaces facing away. It is how a game puts a scorch mark or a
 footprint on geometry it does not own.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	t := float32(ctx.Time)
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 0.8, 0), g.yaw, g.pitch, g.dist))
@@ -546,7 +546,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	env := flag.String("env", "", "panorama for lighting: .exr, .hdr, .png or .jpg")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip materials", Width: 1100, Height: 680, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip materials", Width: 1100, Height: 680, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, envPath: *env})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "materials:", err)

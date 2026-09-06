@@ -42,7 +42,7 @@ type Context struct {
 
 	// OnTextInputRect, when set, is told where the focused text field is
 	// so the platform can place input-method candidate windows. Wire it to
-	// bunyip.Context.SetTextInputRect.
+	// engine.Context.SetTextInputRect.
 	OnTextInputRect func(x, y, w, h float32)
 
 	scroll      map[widgetID]*scrollState

@@ -11,10 +11,10 @@ one frame back and writes it to a PNG, which is how the renderer's output
 is checked on a build machine with nobody watching.
 
 Like [window](window.html), it bypasses the engine loop. There is
-no [bunyip.Run](../pkg/bunyip.html#Run), no `Game`, and no
+no [engine.Run](../pkg/engine.html#Run), no `Game`, and no
 [gfx](../pkg/gfx.html): the program drives the platform layer and the
 Vulkan backend directly, through the module's internal packages. Read it
-to see what [bunyip.Run](../pkg/bunyip.html#Run) does on a game's behalf,
+to see what [engine.Run](../pkg/engine.html#Run) does on a game's behalf,
 and read [the window guide](../guides/window.html) for the loop that
 replaces this one in a real game.
 
@@ -87,7 +87,7 @@ func main() {
 `platform.NewApp` connects to the window system: AppKit on macOS, Wayland
 or X11 on Linux, Win32 on Windows. `app.NewWindow` opens one window from
 a `platform.Config`, whose zero values are sensible defaults in the same
-way [bunyip.Config](../pkg/bunyip.html#Config)'s are.
+way [engine.Config](../pkg/engine.html#Config)'s are.
 
 The renderer wants the window's size in pixels rather than in logical
 units, which is what `win.PixelSize` returns and what a high-density
@@ -143,7 +143,7 @@ given. A run with `-shot` and no `-seconds` captures the first frame.
 `app.Poll(false)` returns the events that have arrived without blocking.
 The `false` is what makes this a real-time loop: passing `true` would
 block until an event arrives, which is what a turn-based game does and
-what [bunyip.Config](../pkg/bunyip.html#Config)'s `TurnBased` field
+what [engine.Config](../pkg/engine.html#Config)'s `TurnBased` field
 selects. The loop closes the window on a close event or on Escape, and
 hands a resize to the renderer, which rebuilds the swapchain.
 

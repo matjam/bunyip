@@ -34,9 +34,9 @@ sampling. `ScaleStretch` fills the window. The
 [window guide](window.html) has the rest.
 
 ```go
-bunyip.Run(bunyip.Config{
+engine.Run(engine.Config{
 	Title: "Shooter", Width: 1280, Height: 720, Resizable: true,
-	ViewWidth: 320, ViewHeight: 180, Scaling: bunyip.ScaleInteger,
+	ViewWidth: 320, ViewHeight: 180, Scaling: engine.ScaleInteger,
 }, &game{})
 ```
 
@@ -714,7 +714,7 @@ glyph drawn for the first time is rasterised and uploaded during that
 frame, so new text shows up in the frame that asks for it.
 
 `Layout` can allocate or upload atlas pages and returns an error. Immediate
-draw helpers report those failures through frame submission and `bunyip.Run`.
+draw helpers report those failures through frame submission and `engine.Run`.
 Invalid sizes and exhausted atlas capacity are errors, rather than missing
 letters. `Font.Shape` also returns an error for its low-level glyph path.
 

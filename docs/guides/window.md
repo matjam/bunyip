@@ -7,13 +7,13 @@ summary: how the window is opened, sized and controlled, what is fixed at start 
 
 ## Opening the window
 
-`bunyip.Run` opens the main window from its `Config` and closes it when
+`engine.Run` opens the main window from its `Config` and closes it when
 the loop ends. A game controls its window through the `Context` supplied
 to `Init`, `Update` and `Draw`. `Context.NewWindow` creates additional
 windows with their own game callbacks.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyF11) {
 		ctx.SetFullscreen(!ctx.Fullscreen())
 	}
@@ -50,9 +50,9 @@ before `NewWindow` returns; its updates and draws start on the next
 scheduler iteration.
 
 ```go
-func openPreview(ctx *bunyip.Context) (*bunyip.Window, error) {
-	return ctx.NewWindow(bunyip.Config{Title: "Preview", Width: 480, Height: 320}, bunyip.GameFuncs{
-		DrawFunc: func(preview *bunyip.Context) error {
+func openPreview(ctx *engine.Context) (*engine.Window, error) {
+	return ctx.NewWindow(engine.Config{Title: "Preview", Width: 480, Height: 320}, engine.GameFuncs{
+		DrawFunc: func(preview *engine.Context) error {
 			preview.Gfx.FillRect(20, 20, 100, 100, gfx.RGB(100, 180, 255))
 			return nil
 		},
@@ -100,12 +100,12 @@ its own rendering child inside the borrowed parent; it does not create
 an extra top-level window for an embedded primary output.
 
 ```go
-func runInsideHost(parent bunyip.NativeParent, game bunyip.Game) error {
-	return bunyip.Run(bunyip.Config{Parent: &parent}, game)
+func runInsideHost(parent engine.NativeParent, game engine.Game) error {
+	return engine.Run(engine.Config{Parent: &parent}, game)
 }
 ```
 
-Use `NativeParent{Backend: bunyip.NativeWin32, Handle: hwnd}` for an HWND
+Use `NativeParent{Backend: engine.NativeWin32, Handle: hwnd}` for an HWND
 in the current process and UI thread, `NativeCocoa` for a live NSView
 attached to an NSWindow on the main thread, or `NativeX11` for a window
 XID on the engine's X server and screen. Handles must be valid native
@@ -171,9 +171,9 @@ bars around it. `ctx.Width` and `ctx.Height` never change, so layout
 written once is still right; only `ctx.Scale` changes.
 
 ```go
-bunyip.Run(bunyip.Config{
+engine.Run(engine.Config{
 	Title: "Pixels", Width: 1280, Height: 720, Resizable: true,
-	ViewWidth: 320, ViewHeight: 180, Scaling: bunyip.ScaleInteger,
+	ViewWidth: 320, ViewHeight: 180, Scaling: engine.ScaleInteger,
 }, &game{})
 ```
 
@@ -221,7 +221,7 @@ continues to measure elapsed wall time during a pause.
   or a finished asset load.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.CloseRequested() {
 		g.save()
 		ctx.Quit()
@@ -327,7 +327,7 @@ Where a control is a no-op, the call returns and nothing happens.
 `Position` returns (0, 0) where it is not implemented.
 
 The new optional controls, `SetAlwaysOnTop`, and `SetCursorImage` return
-errors, including `bunyip.ErrUnsupported` for an unavailable backend feature.
+errors, including `engine.ErrUnsupported` for an unavailable backend feature.
 Their capabilities describe requests the engine can issue, not permission
 to override desktop policy. Linux placement remains under compositor/window
 manager control. Wayland has no arbitrary pointer-warp or always-on-top
@@ -447,4 +447,4 @@ The loop clock and frame count restart. A game without `Recover` gets the error 
 from `Run` instead.
 
 Full detail on every field and method named here is in the
-[package documentation](../pkg/bunyip.html).
+[package documentation](../pkg/engine.html).

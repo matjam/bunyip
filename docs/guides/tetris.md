@@ -151,7 +151,7 @@ systems. The input system is then a function of the world alone, which
 makes it testable and, later, replayable:
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	*g.world.Resource[Controls]() = Controls{
 		Left: in.KeyPressed(input.KeyLeft), Right: in.KeyPressed(input.KeyRight),

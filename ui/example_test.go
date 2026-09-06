@@ -6,7 +6,7 @@ import (
 	"github.com/matjam/bunyip/ui"
 )
 
-// In a game these come from bunyip.Context: ctx.Gfx and ctx.Input. The
+// In a game these come from engine.Context: ctx.Gfx and ctx.Input. The
 // font is created once in Init.
 var (
 	g    *gfx.Graphics

@@ -66,8 +66,8 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
 	"github.com/matjam/bunyip/ecs"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/lin"
@@ -153,7 +153,7 @@ simulation starts. The post in the tank is an ordinary
 reaches the fluid.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -238,7 +238,7 @@ other, so the old pair is destroyed before the new one is made.
 
 ```go
 // reset builds the flag and the jelly cube again, and drops the crate.
-func (g *game) reset(ctx *bunyip.Context) error {
+func (g *game) reset(ctx *engine.Context) error {
 	w := g.world
 	for _, e := range []ecs.Entity{g.cloth, g.body} {
 		if e != ecs.None {
@@ -290,7 +290,7 @@ func (g *game) reset(ctx *bunyip.Context) error {
 ```
 
 ```go
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.cube.Destroy()
 	g.ball.Destroy()
 	g.flag.Destroy()
@@ -319,7 +319,7 @@ in a profile scope named `soft` whose time the panel prints and the F3
 overlay reports.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -403,7 +403,7 @@ changed. The crate is drawn from the query, so the transform the
 simulation wrote is the one drawn.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0.6, 1.6, 0), g.yaw, g.pitch, g.dist))
@@ -507,7 +507,7 @@ the fluid's own coordinates are in.
 ```go
 // drawTank draws the two-dimensional fluid over the scene: the tank, the
 // post in it, and one soft circle per particle.
-func (g *game) drawTank(ctx *bunyip.Context) {
+func (g *game) drawTank(ctx *engine.Context) {
 	gr := ctx.Gfx
 	f, ok := g.world.Get[soft.Fluid2](g.fluid)
 	if !ok {
@@ -538,7 +538,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip soft bodies", Width: 1100, Height: 700, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip soft bodies", Width: 1100, Height: 700, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "softbody:", err)

@@ -46,7 +46,7 @@ type Frame struct {
 }
 
 // Stats are the frame timings and counts the engine panel shows. They
-// mirror bunyip.Stats, which the engine copies in, so the console does
+// mirror engine.Stats, which the engine copies in, so the console does
 // not depend on the root package.
 type Stats struct {
 	FPS       float64 // frames per second over the last second

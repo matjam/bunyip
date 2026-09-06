@@ -117,6 +117,7 @@ func TestDocLinkURL(t *testing.T) {
 	}{
 		{"local", comment.DocLink{Name: "Thing"}, "child.html#Thing"},
 		{"root", comment.DocLink{ImportPath: module, Name: "Thing"}, "../bunyip.html#Thing"},
+		{"engine", comment.DocLink{ImportPath: module + "/engine", Recv: "Context", Name: "Quit"}, "../engine.html#Context.Quit"},
 		{"external", comment.DocLink{ImportPath: "fmt", Name: "Sprint"}, "https://pkg.go.dev/fmt#Sprint"},
 		{"external method", comment.DocLink{ImportPath: "strings", Recv: "Builder", Name: "Write"}, "https://pkg.go.dev/strings#Builder.Write"},
 		{"prefix boundary", comment.DocLink{ImportPath: module + "x", Name: "Thing"}, "https://pkg.go.dev/" + module + "x#Thing"},
@@ -175,9 +176,9 @@ func TestMarkdownLinkDestinations(t *testing.T) {
 }
 
 func TestPackageGrouping(t *testing.T) {
-	s := &Site{Packages: []*Package{{Rel: "gfx/ktx2"}, {Rel: "gfx/shaders"}, {Rel: "grid/autotile"}}}
+	s := &Site{Packages: []*Package{{Rel: "engine"}, {Rel: "gfx/ktx2"}, {Rel: "gfx/shaders"}, {Rel: "grid/autotile"}}}
 	s.group()
-	want := map[string]string{"gfx/ktx2": "Graphics", "gfx/shaders": "Graphics", "grid/autotile": "Services"}
+	want := map[string]string{"engine": "Engine", "gfx/ktx2": "Graphics", "gfx/shaders": "Graphics", "grid/autotile": "Services"}
 	for _, group := range s.Groups {
 		for _, p := range group.Packages {
 			if group.Title != want[p.Rel] {
@@ -188,5 +189,60 @@ func TestPackageGrouping(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("ungrouped: %v", want)
+	}
+}
+
+func TestEngineSubpackageWithoutRootPackage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "examples"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"engine/api.go":        "// Package engine runs games. See [Context].\npackage engine\n// Context is the running game.\ntype Context struct{}\n// Quit stops the game.\nfunc (*Context) Quit() {}\n",
+		"nested/child/api.go":  "// Package child links [github.com/matjam/bunyip/engine.Context.Quit].\npackage child\n",
+		"docs/guides/start.md": "---\ntitle: Start\n---\n[Context](../pkg/engine.html#Context)\n",
+	} {
+		file := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := build(root, filepath.Join(root, "docs/guides"), filepath.Join(root, "docs/examples"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Base = "https://example.test/docs/"
+	if err := s.write(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := s.pages["pkg/bunyip.html"]; exists {
+		t.Fatal("invented a root runtime package")
+	}
+	for page, needle := range map[string]string{
+		"index.html":            `href="pkg/engine.html"`,
+		"pkg/engine.html":       repo + "/blob/main/engine/api.go#L",
+		"pkg/engine.md":         `import "github.com/matjam/bunyip/engine"`,
+		"pkg/nested/child.html": `href="../engine.html#Context.Quit"`,
+		"llms.txt":              "Runtime import path: github.com/matjam/bunyip/engine.",
+		"llms-full.txt":         "https://example.test/docs/pkg/engine.md#Context",
+	} {
+		if !strings.Contains(string(s.pages[page]), needle) {
+			t.Errorf("%s missing %q", page, needle)
+		}
+	}
+	found := false
+	for _, sym := range s.symbols {
+		if sym.Pkg == "engine" && sym.Name == "Context.Quit" {
+			found = true
+			if sym.URL != "pkg/engine.html#Context.Quit" {
+				t.Errorf("engine symbol URL %q", sym.URL)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("engine method missing from search index")
 	}
 }

@@ -64,7 +64,7 @@ const indexTmpl = `{{define "index"}}{{template "layout" .}}{{end}}
 <div class="hero">
 <h1>Bunyip</h1>
 <p class="lead">A game engine in Go for real-time and turn-based games: roguelikes, 4X, arcade, and anything that wants 2D sprites and 3D models on the same screen. Vulkan underneath, no cgo, native window and audio layers, and every subsystem a game needs from the first frame to the shipped build.</p>
-<p class="actions"><a class="button" href="guides/getting-started.html">Get started</a> <a class="button secondary" href="guides/tetris.html">Build Tetris</a> <a class="button secondary" href="pkg/bunyip.html">API reference</a></p>
+<p class="actions"><a class="button" href="guides/getting-started.html">Get started</a> <a class="button secondary" href="guides/tetris.html">Build Tetris</a> <a class="button secondary" href="pkg/engine.html">API reference</a></p>
 </div>
 <div class="cards">
 <a class="card" href="pkg/gfx.html"><h3>Rendering</h3><p>Sprites, tilemaps and scalable text on top of a physically based 3D renderer with cascaded shadows, ambient occlusion, bloom and skeletal animation. No Vulkan knowledge required.</p></a>

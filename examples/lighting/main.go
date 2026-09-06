@@ -20,7 +20,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/gltf"
 	"github.com/matjam/bunyip/input"
@@ -64,7 +64,7 @@ type game struct {
 	shotDone bool
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -121,7 +121,7 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	if g.env != nil {
 		g.env.Destroy()
 	}
@@ -134,7 +134,7 @@ func (g *game) Shutdown(ctx *bunyip.Context) {
 	g.font.Destroy()
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -159,7 +159,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	gr.SetPost(g.post)
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 1.5, 0), g.yaw, 0.35, 11))
@@ -338,7 +338,7 @@ func main() {
 	env := flag.String("env", "", "equirectangular panorama (PNG or JPEG) to light the scene with")
 	vacuum := flag.Float64("vacuum", 0, "how thin the air starts: 0 on the ground, 1 in orbit")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip lighting", Width: 1024, Height: 720, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip lighting", Width: 1024, Height: 720, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, modelPath: *model, envPath: *env, vacuum: float32(*vacuum)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lighting:", err)

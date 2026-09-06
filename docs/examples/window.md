@@ -19,7 +19,7 @@ clear to one dark colour, so the moment the window appears on screen the
 instance, device, surface, swapchain, command buffers and present queue
 have all worked.
 
-The rest of the engine is absent. There is no `bunyip.Run`, no
+The rest of the engine is absent. There is no `engine.Run`, no
 `Graphics` and no game type; the loop is written by hand. Key codes come
 from [input](../pkg/input.html), because the platform layer reports keys
 by physical position using the same codes a game sees. The window guide,

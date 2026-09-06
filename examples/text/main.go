@@ -15,7 +15,7 @@ import (
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
@@ -34,7 +34,7 @@ type game struct {
 	shotDone bool
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	if g.fontPath == "" {
 		g.fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf"
 	}
@@ -77,14 +77,14 @@ func (g *game) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.sdf.Destroy()
 	g.heading.Destroy()
 	g.bold.Destroy()
 	g.body.Destroy()
 }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -95,7 +95,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	white, dim := gfx.RGB(235, 235, 240), gfx.RGB(150, 155, 170)
 	y := float32(24)
@@ -164,7 +164,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	font := flag.String("font", "", "a TTF with Arabic and Hebrew glyphs, used as a fallback")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip text", Width: 900, Height: 640, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip text", Width: 900, Height: 640, Validation: true},
 		&game{seconds: *seconds, shot: *shot, fontPath: *font})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "text:", err)

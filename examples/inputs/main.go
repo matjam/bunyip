@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 )
@@ -62,19 +62,19 @@ func keyName(k input.Key) string {
 	return "?"
 }
 
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	g.font, err = ctx.Gfx.NewFont(goregular.TTF, 14, gfx.FontOptions{})
 	// The window controls: a title, a size floor and a crosshair pointer.
 	ctx.SetTitle("Bunyip inputs (paste with Ctrl+V or Cmd+V)")
 	ctx.SetSizeLimits(480, 320, 0, 0)
-	ctx.SetCursor(bunyip.CursorCrosshair)
+	ctx.SetCursor(engine.CursorCrosshair)
 	return err
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) { g.font.Destroy() }
+func (g *game) Shutdown(ctx *engine.Context) { g.font.Destroy() }
 
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) {
 		if ctx.CursorCaptured() {
@@ -115,7 +115,7 @@ func (g *game) Update(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	in := ctx.Input
 	// Keyboard.
@@ -193,7 +193,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip inputs", Width: 960, Height: 580, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip inputs", Width: 960, Height: 580, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "inputs:", err)

@@ -205,7 +205,7 @@ console method is safe on a nil console, so none of this needs guarding
 when `Config.Console` is off.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -373,7 +373,7 @@ func (g *game) step(dt float64) {
 	g.world.Update(dt)
 }
 
-func (g *game) Shutdown(ctx *bunyip.Context) {
+func (g *game) Shutdown(ctx *engine.Context) {
 	g.terrain.Destroy()
 	g.cube.Destroy()
 	g.sphere.Destroy()
@@ -400,7 +400,7 @@ events. They are copied into `g.contacts` with `append(g.contacts[:0],
 available after an update and are cleared at the start of the next one.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if ctx.Console.Open() {
 		// The console has the keyboard and the pointer while it is open;
@@ -482,7 +482,7 @@ drawn as a cylinder between two spheres, which is what a capsule looks
 like.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 2, 0), g.yaw, g.pitch, g.dist))
@@ -662,7 +662,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	ragdoll := flag.Bool("ragdoll", true, "drop a ragdoll with the debris")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true, Console: true},
+	err := engine.Run(engine.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true, Console: true},
 		&game{seconds: *seconds, shot: *shot, ragdoll: *ragdoll})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "physics-lab:", err)

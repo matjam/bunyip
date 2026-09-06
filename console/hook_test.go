@@ -64,7 +64,7 @@ type rig struct {
 	scale  float64
 }
 
-// ConsoleFrame makes the rig a Host, as bunyip.Context is in a game.
+// ConsoleFrame makes the rig a Host, as engine.Context is in a game.
 func (r *rig) ConsoleFrame() Frame {
 	f := r.frame
 	f.Gfx, f.Input, f.FrameCount = r.g, r.in.state, r.frames

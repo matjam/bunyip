@@ -12,7 +12,7 @@ place. With `-reliable` the chat goes over UDP too, through
 they arrived in order, with the link's round trip and loss.
 
 Like [roguelike](roguelike.html), it runs turn-based.
-`bunyip.Config{TurnBased: true}` lets the engine loop block in the operating
+`engine.Config{TurnBased: true}` lets the engine loop block in the operating
 system until events or a wake request arrive. Network goroutines still run,
 including the UDP peer's retries and keepalives.
 Network traffic has to wake it, which is what `SetOnActivity(ctx.Wake)`
@@ -67,7 +67,7 @@ import (
 
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/matjam/bunyip"
+	"github.com/matjam/bunyip/engine"
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
 	"github.com/matjam/bunyip/network"
@@ -167,7 +167,7 @@ the text field is, so an input method's candidate window appears in the
 right place.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
 		return err
@@ -294,7 +294,7 @@ is the only unreliable traffic here. A dropped pointer does not matter,
 because the next one replaces it.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) && !g.ui.WantsKeyboard() || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
@@ -431,7 +431,7 @@ frame's input first. Input edges are latched for the whole frame, so a
 press is visible here whether or not an update ran.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	for name, p := range g.points {
 		gr.FillRect(p.X-5, p.Y-5, 10, 10, gfx.RGB(255, 200, 80))
@@ -489,7 +489,7 @@ func main() {
 	bot := flag.Bool("bot", false, "send a greeting once connected (20 numbered lines with -reliable)")
 	reliable := flag.Bool("reliable", false, "send chat over UDP with SendReliable and count lines delivered in order")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip network", Width: 720, Height: 480, TurnBased: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip network", Width: 720, Height: 480, TurnBased: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, listen: *listen, joinTo: *joinTo, name: *name, bot: *bot, reliable: *reliable})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "network:", err)

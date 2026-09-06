@@ -19,7 +19,7 @@ It exercises 2D drawing from [gfx](../pkg/gfx.html): `NewTexture`,
 `Draw` with a `Sprite`, `FillRect` for the checkered background, and
 `SetLights2D`, `AddOccluder2D` and `DrawLit` for the lit panel. It also
 shows the parts of [input](../pkg/input.html) and
-[bunyip](../pkg/bunyip.html) a game needs early: keyboard edges, the
+[engine](../pkg/engine.html) a game needs early: keyboard edges, the
 mouse position, the mouse delta while the cursor is captured, a gamepad,
 fullscreen, and `Screenshot`. The guides for this material are
 [2D graphics](../guides/graphics-2d.html) and
@@ -141,12 +141,12 @@ sprites are positioned in. `gfx.RGB` converts sRGB bytes to a linear
 `gfx.Color`, which is what makes the tints look like the numbers
 suggest.
 
-Device loss does not rerun `Init`. A game must implement `bunyip.Recoverer`
+Device loss does not rerun `Init`. A game must implement `engine.Recoverer`
 and rebuild its GPU resources in `Recover` to opt into recovery; this
 example does not, so device loss ends the run with an error.
 
 ```go
-func (g *game) Init(ctx *bunyip.Context) error {
+func (g *game) Init(ctx *engine.Context) error {
 	if g.fullscreen {
 		ctx.SetFullscreen(true)
 	}
@@ -208,7 +208,7 @@ edge has its velocity component negated and is clamped back inside, so
 it cannot be knocked outside the view by a large step.
 
 ```go
-func (g *game) Update(ctx *bunyip.Context) error {
+func (g *game) Update(ctx *engine.Context) error {
 	if ctx.Input.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
 		ctx.Quit()
 	}
@@ -272,7 +272,7 @@ replacement rather than an adjustment, so the P toggle is one branch: the
 posted value or a plain one.
 
 ```go
-func (g *game) Draw(ctx *bunyip.Context) error {
+func (g *game) Draw(ctx *engine.Context) error {
 	// Post settings are replaced every frame, like everything else drawn
 	// here. With Post2D off the frame goes straight to the screen.
 	if g.post {
@@ -370,7 +370,7 @@ over five bricks across and four down.
 // drawLitRoom draws the lit panel: the lamp circles the room, the crates
 // block it, and the floor picks up the light through its normal map. The
 // lights and the occluders are set every frame, like the drawing itself.
-func (g *game) drawLitRoom(ctx *bunyip.Context) {
+func (g *game) drawLitRoom(ctx *engine.Context) {
 	gr := ctx.Gfx
 	gr.SetLayer(10) // over the bouncing sprites
 	lamp := lin.V2(
@@ -509,7 +509,7 @@ func smoothstep(a, b, x float64) float64 {
 
 ## main
 
-`main` parses the flags and calls `bunyip.Run` with a `Config` and the
+`main` parses the flags and calls `engine.Run` with a `Config` and the
 game value. `Config`'s zero values are defaults, so only the title,
 size, resizability and validation are given here. `Validation: true`
 turns on the Vulkan validation layers, which every example does because
@@ -523,7 +523,7 @@ func main() {
 	capture := flag.Bool("capture", false, "start with the cursor captured (C toggles)")
 	post := flag.Bool("post", false, "start with 2D post-processing on (P toggles)")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
 		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture, post: *post})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sprites:", err)

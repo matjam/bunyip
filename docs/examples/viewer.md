@@ -83,7 +83,7 @@ the distance is the diagonal times 1.2, so any model fills the view
 whatever units it was authored in.
 
 ```go
-func (v *viewer) Init(ctx *bunyip.Context) error {
+func (v *viewer) Init(ctx *engine.Context) error {
 	var err error
 	if v.checker, err = ctx.Gfx.NewTexture(checkerImage(64, 8), gfx.TextureOptions{}); err != nil {
 		return err
@@ -116,7 +116,7 @@ func (v *viewer) Init(ctx *bunyip.Context) error {
 	return nil
 }
 
-func (v *viewer) Shutdown(ctx *bunyip.Context) {
+func (v *viewer) Shutdown(ctx *engine.Context) {
 	if v.model != nil {
 		v.model.Destroy()
 	}
@@ -148,7 +148,7 @@ loaded, so a screenshot taken partway through a headless run shows the
 scene from an angle rather than head on.
 
 ```go
-func (v *viewer) Update(ctx *bunyip.Context) error {
+func (v *viewer) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (v.seconds > 0 && ctx.Time >= v.seconds) {
 		ctx.Quit()
@@ -207,7 +207,7 @@ The 2D calls at the end draw over the 3D scene without any state change,
 because both go into the same frame and the 2D stream composites last.
 
 ```go
-func (v *viewer) Draw(ctx *bunyip.Context) error {
+func (v *viewer) Draw(ctx *engine.Context) error {
 	g := ctx.Gfx
 	p := g.Post()
 	// Translucent surfaces are composited without sorting unless -sorted
@@ -326,7 +326,7 @@ func main() {
 	showAO := flag.Bool("showao", false, "display the ambient occlusion buffer")
 	sorted := flag.Bool("sorted", false, "composite translucent draws by sorting them, not order-independently")
 	flag.Parse()
-	err := bunyip.Run(bunyip.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true, Validation: true},
 		&viewer{modelPath: *modelPath, seconds: *seconds, shot: *shot, noAO: *noAO, noShadow: *noShadow, showAO: *showAO, sorted: *sorted})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "viewer:", err)
