@@ -1,56 +1,68 @@
 ---
 title: Physics 3D
 example: physics3d
-summary: five hundred cubes of seven different materials dropped into a pile, with an orbit camera and a raycast under the pointer
+summary: five hundred textured cubes of wood, plastic, metal, gold, car paint, velvet, glass and glowing material falling into a concrete pen
 ---
 
 Five hundred cubes fall into a walled pen and settle into a pile. Each
 one is an entity with a `gfx.Transform`, a `phys.Body3` and a
-`phys.Collider3`, and one system steps them all. The cubes are shaded
-with seven kinds of surface, so the pile is also a look at what
-[gfx.Material](../pkg/gfx.html#Material) can do: matte plastic, brushed
-metal, gold, car paint with a clearcoat, velvet with sheen, refracting
-glass and a glowing one.
-
-The program is the 3D counterpart of the
-[physics2d](physics2d.html) example. Names carry the dimension:
-`Body3`, `Collider3` and `Box3` are the 3D forms, and 3D space is right
-handed with positive Y upwards, which is why gravity is negative here and
-positive in the 2D example. Read
-[the physics guide](../guides/physics.html) for the simulation and
-[the 3D graphics guide](../guides/graphics-3d.html) for the camera,
-lights and materials.
+`phys.Collider3`, and one system steps them all. Wood grain, brushed
+metal and molded plastic give the cubes visible surface detail; gold,
+clearcoat paint, velvet, glass and glowing cubes retain the material
+showcase. The ground and walls use tiled concrete.
 
 Run it:
 
 ```bash
-go run ./examples/physics3d -seconds 3 -shot out.png
+CGO_ENABLED=0 go run ./examples/physics3d -seconds 3 -shot out.png
 ```
 
 The flags are `-seconds N` and `-shot file.png`. Dragging orbits the
 camera, the wheel zooms, hovering highlights the cube under the pointer,
 R drops the cubes again and Escape quits.
 
-## Materials
+## Textures and material response
 
-`cube` is the game's own component, holding the material to draw an
-entity with. A material is a plain value stored with the component, which
-the draw call takes directly; it is not a separately allocated GPU resource.
+The texture images are generated in Go once during initialization. No
+download or external asset is needed. Cubes share textures by material
+family, so resetting the pile creates entities without allocating another
+set of GPU textures.
 
-`cubeMaterial` builds seven surfaces from a colour. The fields are the
-usual physically based ones: `Metallic` at one makes the base colour the
-reflection tint rather than a diffuse colour, `Roughness` spreads the
-reflection, `Clearcoat` adds a second smooth layer over the first,
-`Sheen` adds the soft edge light of cloth, and `Transmission` with an
-`IOR` and a `Thickness` refracts what is behind the surface, tinted by
-`AttenuationColor` over `AttenuationDistance`. `Emissive` scales the
-colour the surface gives off, which is what makes the last kind glow and
-what the hover highlight raises.
+Each textured family has three maps:
 
-Every field defaults through its zero value, so an empty `gfx.Material`
-is a usable matte white and a material only sets what it changes. Note
-that a zero `Roughness` is not zero; it is the default 0.6, which is why
-the glass case sets 0.05 explicitly.
+- Albedo supplies the surface colour.
+- A tangent-space normal map gives grain and small scratches a lighting response.
+- A packed map stores roughness in green and metallic weight in blue.
+
+Colour textures use the normal sRGB path. Normal and metallic/roughness
+maps use `TextureOptions.Data` because their channels contain numeric
+data. Linear filtering, mipmaps and repeating coordinates keep detail
+stable as the camera moves; the pen tiles its textures across the larger
+surfaces.
+
+These are visual materials. The rigid bodies retain the same mass,
+friction and restitution, so a wooden cube does not simulate a different
+density from a metal one. `Metallic`, `Roughness`, `Clearcoat`,
+`Sheen` and `Transmission` affect rendering. Hovering raises a copy of
+the cube's emissive value without changing its stored material.
+
+See [Materials](../pkg/gfx.html#Material) for the renderer's fields and
+[3D graphics](../guides/graphics-3d.html) for lights and cameras.
+
+## Simulation and controls
+
+The ground and four walls have static box colliders. Each cube has a
+dynamic body and a unit box collider. The physics system advances on the
+engine's fixed timestep; a ray from the pointer highlights the first
+collider hit. All movement and collision behaviour is handled by
+[the physics package](../guides/physics.html).
+
+The seeded spawn sequence is independent of texture generation. Reset
+continues that sequence and reuses the same meshes and texture resources.
+Textures are created through the graphics owner and released with the
+example's other resources.
+
+## Main program
 
 ```go
 // Command physics3d drops five hundred cubes into a pile. Each is an
@@ -88,69 +100,27 @@ var palette = []gfx.Color{
 	gfx.RGB(240, 240, 240),
 }
 
-// cubeMaterial picks one of seven kinds of surface in a colour: matte
-// plastic, brushed metal, gold, car paint, velvet, glass and a glowing one.
-func cubeMaterial(kind int, c gfx.Color) gfx.Material {
-	switch kind {
-	case 0:
-		return gfx.Material{BaseColor: c, Metallic: 1, Roughness: 0.25}
-	case 1:
-		return gfx.Material{BaseColor: gfx.RGB(255, 200, 90), Metallic: 1, Roughness: 0.1}
-	case 2:
-		return gfx.Material{BaseColor: c, Roughness: 0.5, Clearcoat: 1, ClearcoatRoughness: 0.05}
-	case 3:
-		return gfx.Material{BaseColor: c, Roughness: 0.95, Sheen: gfx.RGB(255, 255, 255), SheenRoughness: 0.5}
-	case 4:
-		return gfx.Material{Roughness: 0.05, Transmission: 1, IOR: 1.5, Thickness: 1, AttenuationColor: c, AttenuationDistance: 2}
-	case 5:
-		return gfx.Material{BaseColor: c, Roughness: 0.6, Emissive: 1.2}
-	}
-	return gfx.Material{BaseColor: c, Roughness: 0.7}
-}
-```
-
-## The game type
-
-The camera is three numbers, a yaw, a pitch and a distance, rather than a
-matrix; `gfx.OrbitCamera` turns them into a camera in `Draw`. `hover` is
-the entity the ray last struck, or `ecs.None`.
-
-```go
 type game struct {
 	seconds float64
 	shot    string
 
-	font     *gfx.Font
-	ui       *ui.Context
-	world    *ecs.World
-	cubes    *ecs.Query2[gfx.Transform, cube]
-	mesh     *gfx.Mesh
-	random   *rng.Rand
-	hover    ecs.Entity
-	yaw      float32
-	pitch    float32
-	dist     float32
-	lastX    float32
-	lastY    float32
-	dragging bool
-	shotDone bool
+	font      *gfx.Font
+	ui        *ui.Context
+	world     *ecs.World
+	cubes     *ecs.Query2[gfx.Transform, cube]
+	mesh      *gfx.Mesh
+	materials materialLibrary
+	random    *rng.Rand
+	hover     ecs.Entity
+	yaw       float32
+	pitch     float32
+	dist      float32
+	lastX     float32
+	lastY     float32
+	dragging  bool
+	shotDone  bool
 }
-```
 
-## Init: one mesh, many cubes
-
-`gfx.CubeMesh` returns vertices and indices for a unit cube, which
-`NewMesh` uploads once. All five hundred cubes are drawn from that one
-mesh with different transforms and materials, which is what lets the
-renderer batch them into an instance stream.
-
-The pen is five static colliders: a wide flat box for the ground and four
-walls. A collider with no body never moves and is not integrated.
-`phys.Settings3` is a resource on the world: gravity of 9.8 downwards,
-four substeps and eight solver iterations, which is enough to keep a pile
-this deep from sinking into itself.
-
-```go
 func (g *game) Init(ctx *engine.Context) error {
 	var err error
 	if g.font, err = ctx.Gfx.NewFont(goregular.TTF, 15, gfx.FontOptions{}); err != nil {
@@ -159,6 +129,9 @@ func (g *game) Init(ctx *engine.Context) error {
 	g.ui = ui.New(ctx.Gfx, ui.DarkTheme(g.font))
 	cv, ci := gfx.CubeMesh()
 	if g.mesh, err = ctx.Gfx.NewMesh(cv, ci); err != nil {
+		return err
+	}
+	if err := g.materials.init(ctx.Gfx); err != nil {
 		return err
 	}
 	g.random = rng.New(3)
@@ -179,18 +152,7 @@ func (g *game) Init(ctx *engine.Context) error {
 	g.drop()
 	return nil
 }
-```
 
-`drop` clears the cubes and spawns them again. Despawning from inside a
-query walk is allowed, because a query walks its tables last to first, so
-the entity the callback removes is one the walk has already passed.
-
-Each cube gets a position in a loose column, a random orientation from
-`lin.AxisAngle` around a normalised axis, a dynamic body of mass one with
-friction and a little restitution, a half-unit box collider, and a
-material. Rotations are quaternions and angles are radians.
-
-```go
 // drop respawns the cubes in a loose column above the ground.
 func (g *game) drop() {
 	w := g.world
@@ -206,32 +168,19 @@ func (g *game) drop() {
 			gfx.Transform{Position: lin.V3(x, y, z), Rotation: lin.AxisAngle(lin.V3(g.random.Float(), g.random.Float(), g.random.Float()).Norm(), g.random.Float()*3)},
 			body,
 			phys.Collider3{Shape: phys.Box3{Half: lin.V3(0.5, 0.5, 0.5)}},
-			cube{Material: cubeMaterial(g.random.Intn(9), c)},
+			cube{Material: g.materials.cubeMaterial(cubeKinds[g.random.Intn(len(cubeKinds))], c)},
 		)
 	}
 }
-```
 
-```go
 func (g *game) Shutdown(ctx *engine.Context) {
+	for _, texture := range g.materials.textures {
+		texture.Destroy()
+	}
 	g.mesh.Destroy()
 	g.font.Destroy()
 }
-```
 
-## Update: the camera and the step
-
-The orbit camera is driven from the pointer's motion between updates.
-`g.ui.WantsMouse` keeps a drag that started on the panel from turning
-into a camera drag. `lin.Clamp` holds the pitch away from the poles and
-the distance inside a sensible range.
-
-`ctx.Profile` opens a named scope that ends with `step.End()`; the time
-it measures turns up in `ctx.Stats.Scopes` and in the F3 overlay, and the
-panel prints it. `g.world.Update(ctx.Delta)` runs the systems, which here
-means the whole simulation, at the fixed step.
-
-```go
 func (g *game) Update(ctx *engine.Context) error {
 	in := ctx.Input
 	if in.KeyPressed(input.KeyEscape) || (g.seconds > 0 && ctx.Time >= g.seconds) {
@@ -263,49 +212,22 @@ func (g *game) Update(ctx *engine.Context) error {
 	step.End()
 	return nil
 }
-```
 
-## Draw: the scene
-
-`SetCamera` and `SetLight` are frame state rather than per-draw
-arguments. `gfx.OrbitCamera` takes a target, a yaw, a pitch and a
-distance and returns a camera looking at the target. The light is a
-directional one with a colour brighter than white, because the values are
-linear and the renderer tone maps the result; `gfx.Sky` gives the ambient
-term two colours, one from above and one from below, and `Shadows: true`
-with a `ShadowDistance` puts the pen inside the shadow cascades.
-
-The ground and walls are drawn as scaled cubes with
-`lin.Translate(...).Mul(lin.Scale(...))`, which is the matrix form of
-`DrawMesh`. These are drawing only; the colliders that stop the cubes
-were spawned in `Init` and are separate values that happen to line up.
-
-```go
 func (g *game) Draw(ctx *engine.Context) error {
 	gr := ctx.Gfx
 	w := g.world
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 3, 0), g.yaw, g.pitch, g.dist))
 	gr.SetLight(gfx.Light{Direction: lin.V3(-0.5, -1, -0.3), Color: gfx.Color{R: 2.4, G: 2.3, B: 2.1, A: 1},
 		Sky: gfx.Sky{Zenith: gfx.Color{R: 0.3, G: 0.35, B: 0.5, A: 1}, Ground: gfx.Color{R: 0.15, G: 0.12, B: 0.1, A: 1}}, Shadows: true, ShadowDistance: 60})
-	gr.DrawMesh(g.mesh, gfx.Material{BaseColor: gfx.RGB(140, 140, 150), Roughness: 0.9}, lin.Translate(lin.V3(0, 0, 0)).Mul(lin.Scale(lin.V3(60, 1, 60))))
+	ground := g.materials.concrete
+	ground.UVTransform = lin.Scale2(20, 20)
+	gr.DrawMesh(g.mesh, ground, lin.Translate(lin.V3(0, 0, 0)).Mul(lin.Scale(lin.V3(60, 1, 60))))
+	wallMaterial := g.materials.concrete
+	wallMaterial.BaseColor = gfx.RGB(190, 190, 200)
+	wallMaterial.UVTransform = lin.Scale2(8, 1)
 	for _, wall := range []struct{ pos, half lin.Vec3 }{{lin.V3(12, 1.5, 0), lin.V3(0.5, 1.5, 12)}, {lin.V3(-12, 1.5, 0), lin.V3(0.5, 1.5, 12)}, {lin.V3(0, 1.5, 12), lin.V3(12, 1.5, 0.5)}, {lin.V3(0, 1.5, -12), lin.V3(12, 1.5, 0.5)}} {
-		gr.DrawMesh(g.mesh, gfx.Material{BaseColor: gfx.RGB(100, 100, 110), Roughness: 0.9}, lin.Translate(wall.pos).Mul(lin.Scale(wall.half.Mul(2))))
+		gr.DrawMesh(g.mesh, wallMaterial, lin.Translate(wall.pos).Mul(lin.Scale(wall.half.Mul(2))))
 	}
-```
-
-## Draw: picking and the cubes
-
-`gr.ScreenRay` turns a point on the screen into a ray in the world using
-the camera set this frame, which is why the picking happens in `Draw`.
-The ray's direction is scaled to 200 units, because a `phys.Ray3`'s
-direction carries the distance to search.
-
-The query walk draws every cube with `DrawMeshAt`, which takes a
-transform rather than a matrix. The hovered cube is drawn with a raised
-`Emissive`, a copy of its material rather than a change to the component,
-so the highlight lasts exactly one frame.
-
-```go
 	// The cube under the pointer, found by a raycast into the physics world.
 	mx, my := ctx.Input.Mouse()
 	ray := gr.ScreenRay(float32(mx), float32(my))
@@ -320,16 +242,6 @@ so the highlight lasts exactly one frame.
 		}
 		gr.DrawMeshAt(g.mesh, mat, *t)
 	})
-```
-
-## Draw: the panel
-
-The panel reports the physics scope's time from `ctx.Stats.Scopes`, and
-its button calls the same `drop` the R key does. `u.Button` returns true
-on the frame it is clicked, which is the immediate-mode form: there is no
-callback to register and nothing to unregister.
-
-```go
 	u := g.ui
 	u.Begin(ctx.Input, func() {
 		u.Panel("500 cubes", ui.Rect{X: 12, Y: ctx.Height - 140, W: 340, H: 128}, func() {
@@ -337,7 +249,7 @@ callback to register and nothing to unregister.
 			if len(ctx.Stats.Scopes) > 0 {
 				ms = ctx.Stats.Scopes[0].MS
 			}
-			u.Label(fmt.Sprintf("physics %.2f ms/frame; drag orbits, scroll zooms; plastic, metal, gold, car paint, velvet, glass and glowing cubes", ms))
+			u.Label(fmt.Sprintf("physics %.2f ms/frame; drag orbits, scroll zooms; wood, brushed metal, plastic, gold, paint, velvet, glass and glow", ms))
 			if u.Button("Drop again (R)") {
 				g.drop()
 			}
@@ -345,11 +257,7 @@ callback to register and nothing to unregister.
 	})
 	return nil
 }
-```
 
-## main
-
-```go
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
@@ -363,13 +271,196 @@ func main() {
 }
 ```
 
-## What to try
+## Shared procedural materials
 
-- Change `count` to 2000 and read the physics milliseconds in the panel.
-- Drop `Substeps` to 1 in `Init` and watch the pile sink into itself.
-- Give the cubes a `phys.Sphere` collider in `drop` while still drawing
-  boxes, and see the drawing and the simulation disagree.
-- Add a material kind to `cubeMaterial` with `Subsurface` set, or with
-  `Unlit`, and extend the `Intn` range in `drop` to include it.
-- Raycast from the camera in `Draw` and apply an impulse to the body it
-  hits, turning the pointer into a stick.
+The periodic height fields also generate normals using wrapped neighbouring
+samples. A local integer hash supplies repeatable noise without consuming
+the simulation's random stream. The nine spawn slots retain the original
+weights, with two former plastic slots now producing wood.
+
+<!-- file: materials.go -->
+```go
+package main
+
+import (
+	"fmt"
+	"image"
+	"image/color"
+	"math"
+
+	"github.com/matjam/bunyip/gfx"
+	"github.com/matjam/bunyip/lin"
+)
+
+type cubeKind uint8
+
+const (
+	brushedMetal cubeKind = iota
+	gold
+	carPaint
+	velvet
+	glass
+	glowing
+	wood
+	plastic
+)
+
+// Nine weighted slots preserve the simulation's seeded random sequence.
+// Wood takes two of the former plastic slots so grain is easy to find.
+var cubeKinds = [...]cubeKind{brushedMetal, gold, carPaint, velvet, glass, glowing, wood, wood, plastic}
+
+// materialLibrary shares twelve GPU images across all cubes and the pen.
+// Images are generated once during Init; dropping cubes only copies materials.
+type materialLibrary struct {
+	wood, metal, plastic, concrete gfx.Material
+	textures                       []*gfx.Texture
+}
+
+func (m *materialLibrary) init(gr *gfx.Graphics) error {
+	for _, surface := range []struct {
+		name     string
+		material *gfx.Material
+		pixel    func(float64, float64) (color.RGBA, float64, float64)
+		metallic uint8
+	}{
+		{"wood", &m.wood, woodPixel, 0},
+		{"brushed metal", &m.metal, metalPixel, 255},
+		{"molded plastic", &m.plastic, plasticPixel, 0},
+		{"concrete", &m.concrete, concretePixel, 0},
+	} {
+		albedo, normal, roughness := surfaceImages(surface.pixel, surface.metallic)
+		for _, channel := range []struct {
+			name string
+			src  *image.RGBA
+			dst  **gfx.Texture
+			data bool
+		}{
+			{"albedo", albedo, &surface.material.Texture, false},
+			{"normal", normal, &surface.material.NormalTexture, true},
+			{"metal/roughness", roughness, &surface.material.MetalRoughTexture, true},
+		} {
+			texture, err := gr.NewTexture(channel.src, gfx.TextureOptions{Linear: true, Repeat: true, Data: channel.data})
+			if err != nil {
+				// Graphics owns prior uploads and also releases them if Init fails.
+				return fmt.Errorf("physics3d: %s %s texture: %w", surface.name, channel.name, err)
+			}
+			*channel.dst = texture
+			m.textures = append(m.textures, texture)
+		}
+		// The map carries the absolute roughness, so its factor must be one.
+		surface.material.Roughness = 1
+	}
+	m.wood.Clearcoat, m.wood.ClearcoatRoughness = 0.15, 0.35
+	return nil
+}
+
+// cubeMaterial retains the optical showcase alongside the textured surfaces.
+func (m *materialLibrary) cubeMaterial(kind cubeKind, c gfx.Color) gfx.Material {
+	switch kind {
+	case brushedMetal:
+		mat := m.metal
+		mat.BaseColor = c
+		return mat
+	case gold:
+		return gfx.Material{BaseColor: gfx.RGB(255, 200, 90), Metallic: 1, Roughness: 0.1}
+	case carPaint:
+		return gfx.Material{BaseColor: c, Roughness: 0.5, Clearcoat: 1, ClearcoatRoughness: 0.05}
+	case velvet:
+		return gfx.Material{BaseColor: c, Roughness: 0.95, Sheen: gfx.RGB(255, 255, 255), SheenRoughness: 0.5}
+	case glass:
+		return gfx.Material{Roughness: 0.05, Transmission: 1, IOR: 1.5, Thickness: 1, AttenuationColor: c, AttenuationDistance: 2}
+	case glowing:
+		return gfx.Material{BaseColor: c, Roughness: 0.6, Emissive: 1.2}
+	case wood:
+		return m.wood
+	default:
+		mat := m.plastic
+		mat.BaseColor = c
+		mat.UVTransform = lin.Scale2(2, 2)
+		return mat
+	}
+}
+
+// surfaceImages samples a periodic surface into albedo, tangent-space normals
+// and glTF G-roughness/B-metallic maps. Wrapped height differences keep the
+// normal map continuous at tile boundaries; linear filtering supplies mipmaps.
+func surfaceImages(pixel func(float64, float64) (color.RGBA, float64, float64), metallic uint8) (*image.RGBA, *image.RGBA, *image.RGBA) {
+	const size = 256
+	bounds := image.Rect(0, 0, size, size)
+	albedo, normal, roughness := image.NewRGBA(bounds), image.NewRGBA(bounds), image.NewRGBA(bounds)
+	heights := make([]float64, size*size)
+	for y := range size {
+		for x := range size {
+			c, h, r := pixel(float64(x)/size, float64(y)/size)
+			albedo.SetRGBA(x, y, c)
+			heights[y*size+x] = h
+			roughness.SetRGBA(x, y, color.RGBA{R: 255, G: channelByte(r), B: metallic, A: 255})
+		}
+	}
+	for y := range size {
+		for x := range size {
+			dx := (heights[y*size+(x+1)%size] - heights[y*size+(x+size-1)%size]) * 2
+			dy := (heights[((y+1)%size)*size+x] - heights[((y+size-1)%size)*size+x]) * 2
+			length := math.Sqrt(dx*dx + dy*dy + 1)
+			normal.SetRGBA(x, y, color.RGBA{R: channelByte(0.5 - dx/length*0.5), G: channelByte(0.5 - dy/length*0.5), B: channelByte(0.5 + 0.5/length), A: 255})
+		}
+	}
+	return albedo, normal, roughness
+}
+
+func woodPixel(u, v float64) (color.RGBA, float64, float64) {
+	warp := 0.10*math.Sin(2*math.Pi*v) + 0.025*math.Sin(4*math.Pi*v)
+	grain := 0.5 + 0.5*math.Sin(2*math.Pi*(u*7+warp))
+	fiber := 0.5 + 0.5*math.Sin(2*math.Pi*(u*43+warp*5))
+	pore := tileNoise(u, v, 96, 8)
+	tone := 0.25 + 0.55*grain + 0.12*fiber + 0.08*pore
+	return color.RGBA{R: uint8(92 + 108*tone), G: uint8(43 + 96*tone), B: uint8(18 + 56*tone), A: 255},
+		0.25*grain + 0.05*fiber + 0.04*pore, 0.48 + 0.22*(1-grain)
+}
+
+func metalPixel(u, v float64) (color.RGBA, float64, float64) {
+	brush := tileNoise(u, v, 128, 4)
+	streak := tileNoise(u, v, 32, 2)
+	scratch := math.Pow(0.5+0.5*math.Sin(2*math.Pi*(u*59+0.02*math.Sin(2*math.Pi*v))), 16)
+	tone := 0.73 + 0.16*brush + 0.08*streak - 0.10*scratch
+	b := channelByte(tone)
+	return color.RGBA{R: b, G: b, B: b, A: 255}, 0.14*brush - 0.08*scratch, 0.23 + 0.26*brush + 0.10*scratch
+}
+
+func plasticPixel(u, v float64) (color.RGBA, float64, float64) {
+	grain := tileNoise(u, v, 64, 64)
+	b := channelByte(0.94 + 0.06*grain)
+	return color.RGBA{R: b, G: b, B: b, A: 255}, 0.10 * grain, 0.57 + 0.17*grain
+}
+
+func concretePixel(u, v float64) (color.RGBA, float64, float64) {
+	mottle := tileNoise(u, v, 5, 5)
+	aggregate := tileNoise(u, v, 32, 32)
+	pores := math.Max(0, tileNoise(u, v, 96, 96)-0.65) * 2
+	b := channelByte(0.53 + 0.08*mottle + 0.05*aggregate - 0.06*pores)
+	return color.RGBA{R: b, G: b, B: b + 5, A: 255}, 0.14*aggregate - 0.22*pores, 0.80 + 0.16*aggregate
+}
+
+// tileNoise interpolates a wrapping integer lattice. Its local hash leaves
+// the physics RNG untouched, and smooth interpolation avoids pixel speckle.
+func tileNoise(u, v float64, nx, ny int) float64 {
+	x, y := u*float64(nx), v*float64(ny)
+	ix, iy := int(math.Floor(x)), int(math.Floor(y))
+	x, y = x-math.Floor(x), y-math.Floor(y)
+	x, y = x*x*(3-2*x), y*y*(3-2*y)
+	hash := func(a, b int) float64 {
+		h := uint32((a%nx+nx)%nx)*0x8da6b343 ^ uint32((b%ny+ny)%ny)*0xd8163841 ^ 0xcb1ab31f
+		h ^= h >> 13
+		h *= 0x85ebca6b
+		h ^= h >> 16
+		return float64(h&0xffff) / 65535
+	}
+	a, b := hash(ix, iy), hash(ix+1, iy)
+	c, d := hash(ix, iy+1), hash(ix+1, iy+1)
+	return (a+(b-a)*x)*(1-y) + (c+(d-c)*x)*y
+}
+
+func channelByte(v float64) uint8 {
+	return uint8(math.Max(0, math.Min(1, v))*255 + 0.5)
+}
+```

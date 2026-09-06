@@ -33,44 +33,25 @@ var palette = []gfx.Color{
 	gfx.RGB(240, 240, 240),
 }
 
-// cubeMaterial picks one of seven kinds of surface in a colour: matte
-// plastic, brushed metal, gold, car paint, velvet, glass and a glowing one.
-func cubeMaterial(kind int, c gfx.Color) gfx.Material {
-	switch kind {
-	case 0:
-		return gfx.Material{BaseColor: c, Metallic: 1, Roughness: 0.25}
-	case 1:
-		return gfx.Material{BaseColor: gfx.RGB(255, 200, 90), Metallic: 1, Roughness: 0.1}
-	case 2:
-		return gfx.Material{BaseColor: c, Roughness: 0.5, Clearcoat: 1, ClearcoatRoughness: 0.05}
-	case 3:
-		return gfx.Material{BaseColor: c, Roughness: 0.95, Sheen: gfx.RGB(255, 255, 255), SheenRoughness: 0.5}
-	case 4:
-		return gfx.Material{Roughness: 0.05, Transmission: 1, IOR: 1.5, Thickness: 1, AttenuationColor: c, AttenuationDistance: 2}
-	case 5:
-		return gfx.Material{BaseColor: c, Roughness: 0.6, Emissive: 1.2}
-	}
-	return gfx.Material{BaseColor: c, Roughness: 0.7}
-}
-
 type game struct {
 	seconds float64
 	shot    string
 
-	font     *gfx.Font
-	ui       *ui.Context
-	world    *ecs.World
-	cubes    *ecs.Query2[gfx.Transform, cube]
-	mesh     *gfx.Mesh
-	random   *rng.Rand
-	hover    ecs.Entity
-	yaw      float32
-	pitch    float32
-	dist     float32
-	lastX    float32
-	lastY    float32
-	dragging bool
-	shotDone bool
+	font      *gfx.Font
+	ui        *ui.Context
+	world     *ecs.World
+	cubes     *ecs.Query2[gfx.Transform, cube]
+	mesh      *gfx.Mesh
+	materials materialLibrary
+	random    *rng.Rand
+	hover     ecs.Entity
+	yaw       float32
+	pitch     float32
+	dist      float32
+	lastX     float32
+	lastY     float32
+	dragging  bool
+	shotDone  bool
 }
 
 func (g *game) Init(ctx *engine.Context) error {
@@ -81,6 +62,9 @@ func (g *game) Init(ctx *engine.Context) error {
 	g.ui = ui.New(ctx.Gfx, ui.DarkTheme(g.font))
 	cv, ci := gfx.CubeMesh()
 	if g.mesh, err = ctx.Gfx.NewMesh(cv, ci); err != nil {
+		return err
+	}
+	if err := g.materials.init(ctx.Gfx); err != nil {
 		return err
 	}
 	g.random = rng.New(3)
@@ -117,12 +101,15 @@ func (g *game) drop() {
 			gfx.Transform{Position: lin.V3(x, y, z), Rotation: lin.AxisAngle(lin.V3(g.random.Float(), g.random.Float(), g.random.Float()).Norm(), g.random.Float()*3)},
 			body,
 			phys.Collider3{Shape: phys.Box3{Half: lin.V3(0.5, 0.5, 0.5)}},
-			cube{Material: cubeMaterial(g.random.Intn(9), c)},
+			cube{Material: g.materials.cubeMaterial(cubeKinds[g.random.Intn(len(cubeKinds))], c)},
 		)
 	}
 }
 
 func (g *game) Shutdown(ctx *engine.Context) {
+	for _, texture := range g.materials.textures {
+		texture.Destroy()
+	}
 	g.mesh.Destroy()
 	g.font.Destroy()
 }
@@ -165,9 +152,14 @@ func (g *game) Draw(ctx *engine.Context) error {
 	gr.SetCamera(gfx.OrbitCamera(lin.V3(0, 3, 0), g.yaw, g.pitch, g.dist))
 	gr.SetLight(gfx.Light{Direction: lin.V3(-0.5, -1, -0.3), Color: gfx.Color{R: 2.4, G: 2.3, B: 2.1, A: 1},
 		Sky: gfx.Sky{Zenith: gfx.Color{R: 0.3, G: 0.35, B: 0.5, A: 1}, Ground: gfx.Color{R: 0.15, G: 0.12, B: 0.1, A: 1}}, Shadows: true, ShadowDistance: 60})
-	gr.DrawMesh(g.mesh, gfx.Material{BaseColor: gfx.RGB(140, 140, 150), Roughness: 0.9}, lin.Translate(lin.V3(0, 0, 0)).Mul(lin.Scale(lin.V3(60, 1, 60))))
+	ground := g.materials.concrete
+	ground.UVTransform = lin.Scale2(20, 20)
+	gr.DrawMesh(g.mesh, ground, lin.Translate(lin.V3(0, 0, 0)).Mul(lin.Scale(lin.V3(60, 1, 60))))
+	wallMaterial := g.materials.concrete
+	wallMaterial.BaseColor = gfx.RGB(190, 190, 200)
+	wallMaterial.UVTransform = lin.Scale2(8, 1)
 	for _, wall := range []struct{ pos, half lin.Vec3 }{{lin.V3(12, 1.5, 0), lin.V3(0.5, 1.5, 12)}, {lin.V3(-12, 1.5, 0), lin.V3(0.5, 1.5, 12)}, {lin.V3(0, 1.5, 12), lin.V3(12, 1.5, 0.5)}, {lin.V3(0, 1.5, -12), lin.V3(12, 1.5, 0.5)}} {
-		gr.DrawMesh(g.mesh, gfx.Material{BaseColor: gfx.RGB(100, 100, 110), Roughness: 0.9}, lin.Translate(wall.pos).Mul(lin.Scale(wall.half.Mul(2))))
+		gr.DrawMesh(g.mesh, wallMaterial, lin.Translate(wall.pos).Mul(lin.Scale(wall.half.Mul(2))))
 	}
 	// The cube under the pointer, found by a raycast into the physics world.
 	mx, my := ctx.Input.Mouse()
@@ -190,7 +182,7 @@ func (g *game) Draw(ctx *engine.Context) error {
 			if len(ctx.Stats.Scopes) > 0 {
 				ms = ctx.Stats.Scopes[0].MS
 			}
-			u.Label(fmt.Sprintf("physics %.2f ms/frame; drag orbits, scroll zooms; plastic, metal, gold, car paint, velvet, glass and glowing cubes", ms))
+			u.Label(fmt.Sprintf("physics %.2f ms/frame; drag orbits, scroll zooms; wood, brushed metal, plastic, gold, paint, velvet, glass and glow", ms))
 			if u.Button("Drop again (R)") {
 				g.drop()
 			}
