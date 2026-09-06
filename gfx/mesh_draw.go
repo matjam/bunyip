@@ -118,7 +118,8 @@ type meshPass struct {
 	flatNormal  *Texture
 	flatTangent *Texture // the anisotropy map's default: along the tangent, full strength
 	black       *Texture
-	blackCube   *render.Image // stands in for the environment when none is set
+	blackCube   *render.Image      // stands in for the environment when none is set
+	skyEmpty    vk.VkDescriptorSet // valid cube binding for a procedural-only background
 	// These five draw into the scene's HDR pass, so each is built once
 	// per sample count the post settings ask for.
 	skyPipe      *pipeCache // an image environment as the background
@@ -326,6 +327,9 @@ func (g *Graphics) initMeshPass() error {
 	if mp.blackCube, err = dev.NewCubemapImage(1, vk.VK_FORMAT_R16G16B16A16_SFLOAT, 8, [][6][]byte{blackFace}); err != nil {
 		return err
 	}
+	if mp.skyEmpty, err = g.descriptors.AllocateMany(g.cubeBindings(mp.blackCube)); err != nil {
+		return err
+	}
 	if mp.skyPipe, err = newPipeCache(dev, render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.SkyFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
@@ -338,7 +342,7 @@ func (g *Graphics) initMeshPass() error {
 		Vert: shaders.PostVert, Frag: shaders.SkyParamFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push2DSize,
-		SetLayouts:       []vk.VkDescriptorSetLayout{mp.uniformLayout.Layout},
+		SetLayouts:       []vk.VkDescriptorSetLayout{mp.uniformLayout.Layout, g.descriptors.Layout},
 	}); err != nil {
 		return err
 	}
@@ -557,6 +561,7 @@ func jitterProjection(p lin.Mat4, j lin.Vec2) lin.Mat4 {
 // SetLight sets the directional light, ambient term and shadow settings.
 func (g *Graphics) SetLight(l Light) {
 	g.requireEnvironmentOwner(l.Environment)
+	g.requireEnvironmentOwner(l.Sky.Space)
 	g.cur.light = l
 }
 
@@ -1090,6 +1095,10 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 		}
 		u.sh = q.skySH
 		u.env = lin.V4(1, 0, 2, 0)
+		if env := sky.Space; env != nil && env.cube != nil {
+			u.env.Y = float32(env.mips)
+			u.env.W = env.scale
+		}
 	}
 	u.invViewProj = q.invViewProjJ
 	if err := q.writeGrid(slot); err != nil {
@@ -1155,6 +1164,9 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	viewProj := q.camera.ViewProj(aspect)
 	frustum := FrustumOf(viewProj)
 	env := q.light.Environment
+	if env == nil || env.cube == nil {
+		env = q.light.Sky.Space
+	}
 	if env != nil && env.cube == nil {
 		env = nil
 	}
@@ -1548,6 +1560,13 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		}
 		vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &rec.set, 0, nil)
+		if cache == mp.skyParamPipe {
+			spaceSet := mp.skyEmpty
+			if env := q.light.Sky.Space; env != nil && env.cube != nil {
+				spaceSet = env.set
+			}
+			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &spaceSet, 0, nil)
+		}
 		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
 		vk.CmdDraw(cb, 3, 1, 0, 0)
 	}
@@ -1743,6 +1762,10 @@ func (mp *meshPass) destroy(g *Graphics) {
 		mp.shadowAtlas.Destroy()
 	}
 	if mp.blackCube != nil {
+		if mp.skyEmpty != 0 {
+			g.descriptors.Free(mp.skyEmpty)
+			mp.skyEmpty = 0
+		}
 		mp.blackCube.Destroy()
 	}
 	if mp.flatTangent != nil {

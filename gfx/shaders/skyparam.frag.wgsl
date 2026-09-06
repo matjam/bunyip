@@ -40,6 +40,8 @@ struct Frame {
     betaM: vec4f, // x mie scattering, y forward lobe, z camera altitude, w = 1 with an atmosphere
 }
 @group(0) @binding(0) var<uniform> frame: Frame;
+@group(1) @binding(0) var spaceMap: texture_cube<f32>;
+@group(1) @binding(1) var spaceSampler: sampler;
 
 struct PC {
     invViewProj: mat4x4f,
@@ -168,6 +170,30 @@ fn skyColor(d: vec3f) -> vec3f {
     var below: vec3f = mix(frame.horizon.rgb * air, frame.ground.rgb, pow(clamp(-up, 0.0, 1.0), 0.5));
     return select(below, above, up >= 0.0);
 }
+// spaceTransmittance attenuates distant radiance with the atmosphere and
+// hides it behind the solid planet. It matches Sky.spaceTransmittance in Go.
+fn spaceTransmittance(d: vec3f) -> vec3f {
+    if (frame.betaM.w < 0.5) {
+        return vec3f(select(1.0 - frame.horizon.w, 1.0, dot(d, frame.skyUp.xyz) >= 0.0));
+    }
+    let origin = frame.skyUp.xyz * (frame.atmos.x + frame.betaM.z);
+    let ground = raySphere(origin, d, frame.atmos.x);
+    if (ground.y > 0.0 && ground.x >= 0.0) { return vec3f(0.0); }
+    let shell = raySphere(origin, d, frame.atmos.x + frame.atmos.y);
+    let start = max(shell.x, 0.0);
+    if (shell.y <= start) { return vec3f(1.0); }
+    let ds = (shell.y - start) / f32(ATMOS_VIEW_STEPS);
+    var odR = 0.0;
+    var odM = 0.0;
+    for (var i: i32 = 0; i < ATMOS_VIEW_STEPS; i++) {
+        let p = origin + d * (start + (f32(i) + 0.5) * ds);
+        let h = max(length(p) - frame.atmos.x, 0.0);
+        odR += exp(-h / frame.atmos.z) * ds;
+        odM += exp(-h / frame.atmos.w) * ds;
+    }
+    let transmission = exp(-(frame.betaR.rgb * odR + frame.betaM.x * 1.1 * odM));
+    return mix(vec3f(1.0), transmission, vec3f(frame.horizon.w));
+}
 // END ATMOSPHERE.
 
 fn hash(point: vec3f) -> f32 {
@@ -200,6 +226,9 @@ fn effect() {
     var up: f32 = dot(dir, frame.skyUp.xyz);
     var air: f32 = frame.horizon.w;
     var color: vec3f = skyColor(dir);
+	if (frame.env.w != 0.0) {
+		color += textureSampleLevel(spaceMap, spaceSampler, dir, 0.0).rgb * frame.env.w * spaceTransmittance(dir);
+	}
 
     // The sun: a soft-edged disc, hidden by the ground, with a glow that
     // only the air can scatter. An atmosphere reddens and dims the disc

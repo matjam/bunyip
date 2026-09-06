@@ -641,6 +641,18 @@ three on checkboxes.
 
 ## Sky, fog and atmosphere
 
+`Sky.Space` adds a distant image environment behind the procedural sky. Create
+it with `NewEnvironmentHDR` and keep `Light.Background` enabled. The same
+environment intensity controls its background radiance, diffuse contribution
+and reflections. Atmospheric optical depth attenuates distant light while the
+foreground atmosphere and sun disc remain visible; the solid planet occludes
+the distant sky. It works for stars, distant nebulae and other image backgrounds
+without replacing the local atmosphere. A cube size of 512 or 1024 preserves
+small background details better than the default 128, at greater preparation
+time and GPU memory cost. `Light.Environment` still replaces the entire sky
+when set and takes precedence over `Sky.Space`. The environment is borrowed
+by the sky and can be released with `Destroy` when no longer needed.
+
 `Light.Sky` is a procedural environment. It takes an `Up` axis,
 `Zenith`, `Horizon` and `Ground` colours, and how much air there is. It
 needs no image, costs nothing to change every frame, and lights the

@@ -115,6 +115,7 @@ func TestForeignResourcesRejectBeforeMutationAndOutputsSurvive(t *testing.T) {
 		{"path fill", func() { g.FillPath(path, White, FillOptions{Texture: tex}) }},
 		{"path stroke", func() { g.StrokePath(path, White, StrokeOptions{Gradient: &Gradient{tex: tex}}) }},
 		{"environment", func() { g.SetLight(Light{Environment: env}) }},
+		{"space environment", func() { g.SetLight(Light{Sky: Sky{Space: env}}) }},
 		{"probe", func() { g.AddProbe(&ReflectionProbe{env: env, Radius: 1}) }},
 		{"post LUT", func() { g.SetPost(PostSettings{LUT: tex}) }},
 		{"post scope", func() { g.ConfigurePost(func(p *PostSettings) { p.LUT = tex }) }},

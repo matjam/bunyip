@@ -15,6 +15,10 @@ import (
 // with Light.Background the sun's disc and the stars are drawn behind
 // the scene. An image Environment on the light replaces it.
 type Sky struct {
+	// Space is a distant image environment behind the procedural sky. Its
+	// radiance is attenuated by the atmosphere and adds to diffuse lighting
+	// and reflections. Light.Environment, when set, takes precedence.
+	Space   *Environment
 	Up      lin.Vec3 // away from the ground, or from the planet below a ship; zero means +Y
 	Zenith  Color    // the sky straight up, in full atmosphere; zero means Horizon
 	Horizon Color    // the sky at the horizon; zero means Zenith, or the light's Ambient
@@ -127,6 +131,7 @@ func (a Atmosphere) resolved() Atmosphere {
 // skyKey is the part of a Sky its irradiance harmonics depend on: the
 // sun disc and the stars are drawn, not projected.
 type skyKey struct {
+	space                   *Environment
 	up                      lin.Vec3
 	zenith, horizon, ground Color
 	vacuum                  float32
@@ -136,6 +141,9 @@ type skyKey struct {
 
 func (s Sky) key() skyKey {
 	k := skyKey{up: s.Up, zenith: s.Zenith, horizon: s.Horizon, ground: s.Ground, vacuum: s.Vacuum}
+	if s.Space != nil && s.Space.cube != nil {
+		k.space = s.Space
+	}
 	if s.Atmosphere.Height > 0 {
 		// Projecting an atmosphere runs the scattering integral for every
 		// direction, so the key steps the two things that otherwise change
@@ -193,7 +201,7 @@ func (s Sky) resolved(l Light) Sky {
 // atmosphere's scattering or gradient above the horizon and the ground
 // below. It matches skyColor in the mesh shader and the sky background
 // shader.
-func (s Sky) radiance(d lin.Vec3) (float32, float32, float32) {
+func (s Sky) proceduralRadiance(d lin.Vec3) (float32, float32, float32) {
 	up := d.Dot(s.Up)
 	air := 1 - s.Vacuum
 	if s.Atmosphere.Height > 0 {

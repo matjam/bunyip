@@ -17,12 +17,13 @@ import (
 // Light; without one the light's procedural Sky does the same job from
 // parameters alone.
 type Environment struct {
-	cube  *render.Image
-	set   vk.VkDescriptorSet // for the sky pass
-	sh    [9]lin.Vec4        // irradiance as spherical harmonics, scaled for direct use
-	mips  int
-	scale float32
-	g     *Graphics
+	cube    *render.Image
+	set     vk.VkDescriptorSet // for the sky pass
+	sh      [9]lin.Vec4        // irradiance as spherical harmonics, scaled for direct use
+	mips    int
+	scale   float32
+	ambient *radianceMap // low-resolution source for atmosphere-filtered irradiance
+	g       *Graphics
 }
 
 // EnvironmentOptions tunes an environment.
@@ -183,6 +184,16 @@ func (g *Graphics) newEnvironmentFrom(sample radianceSampler, opts EnvironmentOp
 		return nil, err
 	}
 	env.sh = shProject(sample, 128, 64)
+	env.ambient = newRadianceMap(128, 64)
+	for y := range env.ambient.h {
+		for x := range env.ambient.w {
+			theta := math.Pi * (float64(y) + .5) / float64(env.ambient.h)
+			phi := 2 * math.Pi * ((float64(x)+.5)/float64(env.ambient.w) - .5)
+			d := lin.V3(float32(math.Sin(theta)*math.Sin(phi)), float32(math.Cos(theta)), -float32(math.Sin(theta)*math.Cos(phi)))
+			r, gg, b := sample(d)
+			env.ambient.set(x, y, r, gg, b)
+		}
+	}
 	if env.set, err = g.descriptors.AllocateMany(g.cubeBindings(env.cube)); err != nil {
 		env.cube.Destroy()
 		return nil, err
@@ -372,6 +383,7 @@ func (env *Environment) Destroy() {
 	}
 	g, cube, set := env.g, env.cube, env.set
 	env.cube, env.set = nil, 0
+	env.ambient = nil
 	g.forget(env)
 	g.owned.remove(env)
 	g.forgetEnvironment(env)

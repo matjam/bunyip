@@ -689,6 +689,30 @@ fn skyColor(d: vec3f) -> vec3f {
     var below: vec3f = mix(frame.horizon.rgb * air, frame.ground.rgb, pow(clamp(-up, 0.0, 1.0), 0.5));
     return select(below, above, up >= 0.0);
 }
+// spaceTransmittance attenuates distant radiance with the atmosphere and
+// hides it behind the solid planet. It matches Sky.spaceTransmittance in Go.
+fn spaceTransmittance(d: vec3f) -> vec3f {
+    if (frame.betaM.w < 0.5) {
+        return vec3f(select(1.0 - frame.horizon.w, 1.0, dot(d, frame.skyUp.xyz) >= 0.0));
+    }
+    let origin = frame.skyUp.xyz * (frame.atmos.x + frame.betaM.z);
+    let ground = raySphere(origin, d, frame.atmos.x);
+    if (ground.y > 0.0 && ground.x >= 0.0) { return vec3f(0.0); }
+    let shell = raySphere(origin, d, frame.atmos.x + frame.atmos.y);
+    let start = max(shell.x, 0.0);
+    if (shell.y <= start) { return vec3f(1.0); }
+    let ds = (shell.y - start) / f32(ATMOS_VIEW_STEPS);
+    var odR = 0.0;
+    var odM = 0.0;
+    for (var i: i32 = 0; i < ATMOS_VIEW_STEPS; i++) {
+        let p = origin + d * (start + (f32(i) + 0.5) * ds);
+        let h = max(length(p) - frame.atmos.x, 0.0);
+        odR += exp(-h / frame.atmos.z) * ds;
+        odM += exp(-h / frame.atmos.w) * ds;
+    }
+    let transmission = exp(-(frame.betaR.rgb * odR + frame.betaM.x * 1.1 * odM));
+    return mix(vec3f(1.0), transmission, vec3f(frame.horizon.w));
+}
 // END ATMOSPHERE.
 
 fn aerialPerspective(_c: vec3f, _worldPos: vec3f) -> vec3f {
@@ -744,7 +768,11 @@ return ((f0 * ab.x) + vec3f(ab.y));
 fn skyRadiance(_d: vec3f, _roughness: f32) -> vec3f {
 var d = _d;
 var roughness = _roughness;
-return mix(skyColor(d), (frame.sh[0].rgb * 0.282095), vec3f((roughness * 0.8)));
+var radiance = skyColor(d);
+if (frame.env.w != 0.0) {
+    radiance += textureSampleLevel(tEnv, materialSampler1, d, roughness * (frame.env.y - 1.0)).rgb * frame.env.w * spaceTransmittance(d);
+}
+return mix(radiance, (frame.sh[0].rgb * 0.282095), vec3f((roughness * 0.8)));
 }
 
 fn probeIndex() -> i32 {
