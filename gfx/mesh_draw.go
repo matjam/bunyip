@@ -45,10 +45,10 @@ const (
 	// thirty-one leaves the mesh pipelines inside the texture limit
 	// MoltenVK reports on Intel Macs; Apple silicon allows 128.
 	matImages = 17
-	// matSamplerBinding is where the material set's shared sampler array
-	// sits, after the images.
+	// matSamplerBinding is where the material set's shared samplers
+	// start, after the images.
 	matSamplerBinding = matImages
-	// matSamplers is how many samplers that array holds: linear repeat,
+	// matSamplers is how many singleton sampler bindings follow: linear repeat,
 	// linear clamp, nearest repeat, nearest clamp, in that order. They
 	// are immutable in the layout, so no set ever writes them, and Metal
 	// sees five samplers a stage counting the shadow atlas's, well under
@@ -57,7 +57,7 @@ const (
 )
 
 // samplerIndex is where a texture's filtering and edge handling sit in
-// the material set's sampler array: bit 1 is nearest, bit 0 is clamp.
+// the material set's four sampler choices: bit 1 is nearest, bit 0 is clamp.
 func samplerIndex(linear, repeat bool) uint32 {
 	i := uint32(0)
 	if !linear {
@@ -109,7 +109,7 @@ type meshPass struct {
 	// textures, a shader's image0..3, the environment cube, the
 	// thickness map, the scene copy, the transmission map, and the
 	// iridescence, anisotropy, specular and fur maps) and the shared
-	// sampler array, which is immutable in the layout.
+	// four samplers, which are immutable in the layout.
 	materials   *render.DescriptorSets
 	matSets     map[materialKey]vk.VkDescriptorSet
 	lastMatKey  materialKey // the key materialSet last resolved, to skip hashing matSets
@@ -298,15 +298,10 @@ func (g *Graphics) initMeshPass() error {
 	if mp.morphNone, err = mp.morphDesc.AllocateBuffer(mp.morphZero, 16); err != nil {
 		return err
 	}
-	// Set 0 keeps its images and its samplers apart: thirteen sampled
-	// images, then one array of four samplers baked into the layout that
-	// a shader indexes per texture slot. Sampling an array of samplers by
-	// a dynamically uniform index needs this feature, which every desktop
-	// driver and MoltenVK report.
-	if !dev.ArrayIndexing() {
-		return fmt.Errorf("gfx: this GPU does not support shaderSampledImageArrayDynamicIndexing, which mesh materials need")
-	}
-	matBindings := make([]render.DescriptorBinding, matSamplerBinding+1)
+	// Set 0 holds seventeen sampled images followed by four separate
+	// immutable samplers. Shader branches select a statically bound sampler;
+	// no sampler array or dynamic descriptor indexing feature is needed.
+	matBindings := make([]render.DescriptorBinding, matSamplerBinding+matSamplers)
 	for i := range matImages {
 		matBindings[i] = render.DescriptorBinding{
 			Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -315,9 +310,11 @@ func (g *Graphics) initMeshPass() error {
 			Stages: meshStages,
 		}
 	}
-	matBindings[matSamplerBinding] = render.DescriptorBinding{
-		Type: vk.VK_DESCRIPTOR_TYPE_SAMPLER, Count: matSamplers, Stages: meshStages,
-		Immutable: []vk.VkSampler{g.linearRep, g.linear, g.nearestRep, g.nearest},
+	for i, sampler := range []vk.VkSampler{g.linearRep, g.linear, g.nearestRep, g.nearest} {
+		matBindings[matSamplerBinding+i] = render.DescriptorBinding{
+			Type: vk.VK_DESCRIPTOR_TYPE_SAMPLER, Stages: meshStages,
+			Immutable: []vk.VkSampler{sampler},
+		}
 	}
 	if mp.materials, err = dev.NewDescriptors(matBindings, 1024); err != nil {
 		return err

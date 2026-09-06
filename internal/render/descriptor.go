@@ -14,6 +14,7 @@ import (
 type DescriptorSets struct {
 	Layout   vk.VkDescriptorSetLayout
 	binds    []DescriptorBinding
+	paired   bool // callers supply one logical entry per image/sampler pair
 	pools    []vk.VkDescriptorPool
 	capacity uint32
 	owner    map[vk.VkDescriptorSet]vk.VkDescriptorPool // which pool each live set came from
@@ -30,7 +31,7 @@ type DescriptorBinding struct {
 	Stages vk.VkShaderStageFlags
 	// Immutable bakes samplers into the layout, so no set ever writes
 	// them. MoltenVK requires it for comparison samplers, and the mesh
-	// material set uses it for its shared sampler array.
+	// material set uses it for its shared samplers.
 	Immutable []vk.VkSampler
 }
 
@@ -45,14 +46,14 @@ func (b DescriptorBinding) stages() vk.VkShaderStageFlags {
 	return b.Stages
 }
 
-// NewTextureDescriptors creates a one-binding sampler layout, the 2D path's.
+// NewTextureDescriptors creates one image/sampler pair for the 2D path.
 func (d *Device) NewTextureDescriptors(capacity uint32) (*DescriptorSets, error) {
 	return d.NewSamplerDescriptors(1, capacity)
 }
 
-// NewSamplerDescriptors creates a layout with bindings combined image
-// samplers and a first pool for capacity sets; more pools follow as
-// needed.
+// NewSamplerDescriptors creates a layout with bindings image/sampler pairs
+// and a first pool for capacity sets; more pools follow as needed. Logical
+// texture N occupies sampled-image binding 2N and sampler binding 2N+1.
 func (d *Device) NewSamplerDescriptors(bindings int, capacity uint32) (*DescriptorSets, error) {
 	return d.newSamplerDescriptors(bindings, capacity, 0)
 }
@@ -64,14 +65,20 @@ func (d *Device) NewImmutableSamplerDescriptors(bindings int, capacity uint32, s
 }
 
 func (d *Device) newSamplerDescriptors(bindings int, capacity uint32, immutable vk.VkSampler) (*DescriptorSets, error) {
-	binds := make([]DescriptorBinding, bindings)
-	for i := range binds {
-		binds[i] = DescriptorBinding{Type: vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}
+	binds := make([]DescriptorBinding, bindings*2)
+	for i := range bindings {
+		binds[2*i] = DescriptorBinding{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE}
+		binds[2*i+1] = DescriptorBinding{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLER}
 		if immutable != 0 {
-			binds[i].Immutable = []vk.VkSampler{immutable}
+			binds[2*i+1].Immutable = []vk.VkSampler{immutable}
 		}
 	}
-	return d.NewDescriptors(binds, capacity)
+	ds, err := d.NewDescriptors(binds, capacity)
+	if err != nil {
+		return nil, err
+	}
+	ds.paired = true
+	return ds, nil
 }
 
 // NewDescriptors creates a layout from explicit bindings, numbered from
@@ -129,23 +136,24 @@ func (ds *DescriptorSets) addPool() error {
 	return nil
 }
 
-// SamplerBinding is one entry of a set: an image view, and the sampler
-// to read it through when the binding is a combined image sampler. A
-// sampled-image binding takes the view alone and ignores the sampler,
-// since its shader pairs the image with one of a set's shared samplers.
+// SamplerBinding supplies an image and sampler for one logical texture in
+// a NewSamplerDescriptors layout. In an explicit NewDescriptors layout it
+// supplies one actual binding: sampled images use View, samplers use Sampler,
+// and combined image samplers use both. Layout applies only to the image.
 type SamplerBinding struct {
 	View    vk.VkImageView
 	Sampler vk.VkSampler
 	Layout  vk.VkImageLayout // zero means shader-read-only
 }
 
-// Allocate makes a set pointing at view through sampler (one binding).
+// Allocate makes a set pointing at view through sampler (one logical texture).
 func (ds *DescriptorSets) Allocate(view vk.VkImageView, sampler vk.VkSampler) (vk.VkDescriptorSet, error) {
 	return ds.AllocateMany([]SamplerBinding{{View: view, Sampler: sampler}})
 }
 
-// AllocateMany makes a set with one entry per binding, adding a pool
-// when the current one is full.
+// AllocateMany makes a set, adding a pool when the current one is full.
+// Entries name logical texture pairs for NewSamplerDescriptors layouts,
+// or actual bindings for NewDescriptors layouts.
 func (ds *DescriptorSets) AllocateMany(bindings []SamplerBinding) (vk.VkDescriptorSet, error) {
 	set, err := ds.allocate(ds.pools[len(ds.pools)-1])
 	if poolFull(err) {
@@ -206,20 +214,28 @@ func poolFull(err error) bool {
 	return errors.As(err, &ve) && (ve.Result == vk.VK_ERROR_OUT_OF_POOL_MEMORY || ve.Result == vk.VK_ERROR_FRAGMENTED_POOL)
 }
 
-// Update rewrites a set's bindings, one entry per binding from zero.
+// Update rewrites a set's bindings, starting at zero. Entries name logical
+// texture pairs for NewSamplerDescriptors layouts, or actual bindings for
+// NewDescriptors layouts.
 // Bindings past the entries given, and bindings of immutable samplers,
 // are left alone. A sampled-image binding takes the entry's view and
 // ignores its sampler.
 func (ds *DescriptorSets) Update(set vk.VkDescriptorSet, bindings []SamplerBinding) {
-	infos := make([]vk.VkDescriptorImageInfo, len(bindings))
-	writes := make([]vk.VkWriteDescriptorSet, 0, len(bindings))
-	for i, b := range bindings {
-		kind := vk.VkDescriptorType(vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-		if i < len(ds.binds) {
-			kind = ds.binds[i].Type
-			if len(ds.binds[i].Immutable) > 0 && kind == vk.VK_DESCRIPTOR_TYPE_SAMPLER {
-				continue
-			}
+	count := len(bindings)
+	if ds.paired {
+		count *= 2
+	}
+	infos := make([]vk.VkDescriptorImageInfo, count)
+	writes := make([]vk.VkWriteDescriptorSet, 0, count)
+	for i := range count {
+		entry := i
+		if ds.paired {
+			entry /= 2
+		}
+		b := bindings[entry]
+		kind := ds.binds[i].Type
+		if len(ds.binds[i].Immutable) > 0 && kind == vk.VK_DESCRIPTOR_TYPE_SAMPLER {
+			continue
 		}
 		layout := b.Layout
 		if layout == 0 {
@@ -229,7 +245,11 @@ func (ds *DescriptorSets) Update(set vk.VkDescriptorSet, bindings []SamplerBindi
 		if kind == vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE {
 			sampler = 0
 		}
-		infos[i] = vk.VkDescriptorImageInfo{Sampler: sampler, ImageView: b.View, ImageLayout: layout}
+		view := b.View
+		if kind == vk.VK_DESCRIPTOR_TYPE_SAMPLER {
+			view, layout = 0, 0
+		}
+		infos[i] = vk.VkDescriptorImageInfo{Sampler: sampler, ImageView: view, ImageLayout: layout}
 		writes = append(writes, vk.VkWriteDescriptorSet{
 			SType:           vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			DstSet:          set,

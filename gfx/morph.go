@@ -28,7 +28,7 @@ import (
 const MaxGPUMorphTargets = 8
 
 // morphFloats is the floats one vertex of one target takes in the
-// buffer, matching MORPH_STRIDE in vert_common.glsl.
+// buffer, matching MORPH_STRIDE in vert_common.wgsl.
 const morphFloats = 6
 
 // morphStore is a model's morph target deltas: one device buffer holding

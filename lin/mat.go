@@ -3,7 +3,7 @@ package lin
 import "math"
 
 // Mat4 is a 4x4 matrix stored column-major: element (row r, column c) is
-// at index c*4+r, which is the layout GLSL expects in a uniform buffer.
+// at index c*4+r, which is the layout WGSL expects in a uniform buffer.
 type Mat4 [16]float32
 
 // Identity returns the identity matrix.

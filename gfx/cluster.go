@@ -31,7 +31,7 @@ const (
 )
 
 // lightRecord is one light in the frame's light buffer, matching
-// LightData in prelude_mesh.glsl (std430).
+// LightData in prelude_mesh.wgsl's storage buffer.
 type lightRecord struct {
 	posRange lin.Vec4 // xyz position, w range
 	color    lin.Vec4 // rgb colour, w = cos of a spot's inner cone, 2 for a point light

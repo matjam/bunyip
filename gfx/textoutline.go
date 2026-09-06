@@ -169,6 +169,6 @@ func (p *outlinePage) flush() error {
 	return nil
 }
 
-// Explicit vec4 slots match text_outline.glsl's std140 block without relying
+// Explicit vec4 slots match text_outline.wgsl's uniform block without relying
 // on implicit Go padding. Keep this shape when public shader packing evolves.
 type outlineUniforms struct{ Color, Parameters lin.Vec4 }

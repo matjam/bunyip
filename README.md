@@ -36,7 +36,8 @@ examples.
   glyphs (COLR, SVG and bitmap emoji), rich markup and hyphenation in
   thirteen languages, colour matrices, lit sprites with shadows cast
   from occluders, blend modes and
-  game-written fragment shaders.
+  game-written WGSL shaders, compiled offline or at runtime in Go with
+  hot reload. See the [shader guide](https://matjam.github.io/bunyip/guides/shaders.html).
 - 3D: physically based materials with clearcoat, sheen, subsurface,
   glass, iridescence, anisotropy, specular tinting and fur as shells;
   glTF models with skeletal animation, blend spaces, IK and morph
@@ -229,7 +230,7 @@ whole program and explains it section by section:
 | `go run ./cmd/bunyip-play song.xm` | plays a WAV, Ogg, MP3, MOD, S3M, XM or IT file; `-dump out.wav` records what the device received |
 | `go run ./cmd/bunyip-pack -o assets.pak assets/` | bundles an asset directory into a pack file |
 | `go run ./cmd/bunyip-tex -format bc7 art/*.png` | compresses images to BC1, BC3, BC4, BC5 or BC7 with their mip chains, as KTX2 files the GPU takes as they are |
-| `go run ./cmd/bunyip-shader [-kind mesh] -o out.spv in.glsl` | compiles a game's sprite or mesh shader against the engine's prelude |
+| `go run ./cmd/bunyip-shader [-kind mesh] -o out.spv in.wgsl` | compiles a game's sprite or mesh shader against the engine's prelude |
 | `go run ./cmd/bunyip-bundle -name "Game" -exe ./game -assets assets/` | makes a macOS .app with MoltenVK inside, or a folder elsewhere |
 
 ## Requirements
@@ -255,7 +256,7 @@ Vulkan driver (`vulkan-1.dll` ships with GPU drivers).
 
 ```
 go generate ./internal/vk        # after updating third_party/vulkan/vk.xml
-go generate ./gfx/shaders ./internal/render/shaders   # needs glslangValidator
+go generate ./gfx/shaders ./internal/render/shaders   # uses the native Go shader compiler
 go test ./...                    # headless GPU tests skip without a driver
 go vet ./...
 ```

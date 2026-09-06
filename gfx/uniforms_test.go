@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/binary"
 	"errors"
@@ -10,16 +11,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matjam/bunyip/gfx/shaders"
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
 )
 
-// Regenerate the independent GLSL layout oracle with the project shader tools.
-//go:generate glslangValidator -V -S frag -o testdata/uniforms.frag.spv testdata/uniforms.frag
+//go:embed testdata/uniforms.frag.wgsl
+var uniformFixtureSource string
 
-//go:embed testdata/uniforms.frag.spv
-var uniformFixture []byte
+func uniformFixture(t *testing.T) []byte {
+	t.Helper()
+	data, err := (shaders.Compiler{}).CompileRaw(context.Background(), uniformFixtureSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
 
 type uniformPair struct {
 	XY lin.Vec2
@@ -56,15 +64,19 @@ func uniformFixtureValues() uniformFixtureBlock {
 	return v
 }
 
-// TestUniformsCompiledLayout reads offsets and strides from glslang's SPIR-V,
+// TestUniformsCompiledLayout reads offsets and strides from compiled SPIR-V,
 // rather than deriving an expected block with the packer's alignment rules.
 func TestUniformsCompiledLayout(t *testing.T) {
-	words := make([]uint32, len(uniformFixture)/4)
+	fixture := uniformFixture(t)
+	words := make([]uint32, len(fixture)/4)
 	for i := range words {
-		words[i] = binary.LittleEndian.Uint32(uniformFixture[i*4:])
+		words[i] = binary.LittleEndian.Uint32(fixture[i*4:])
 	}
-	names := map[string]uint32{}
 	members := map[uint32][]uint32{}
+	elements := map[uint32]uint32{}
+	pointees := map[uint32]uint32{}
+	variables := map[uint32]uint32{}
+	sets, bindings := map[uint32]uint32{}, map[uint32]uint32{}
 	offsets := map[[2]uint32]int{}
 	matrixStrides := map[[2]uint32]int{}
 	arrayStrides := map[uint32]int{}
@@ -75,17 +87,21 @@ func TestUniformsCompiledLayout(t *testing.T) {
 		}
 		a := words[i+1 : i+n]
 		switch op {
-		case 5: // OpName
-			b := make([]byte, (len(a)-1)*4)
-			for j, word := range a[1:] {
-				binary.LittleEndian.PutUint32(b[j*4:], word)
-			}
-			names[strings.TrimRight(string(b), "\x00")] = a[0]
+		case 28: // OpTypeArray
+			elements[a[0]] = a[1]
 		case 30: // OpTypeStruct
 			members[a[0]] = a[1:]
+		case 32: // OpTypePointer
+			pointees[a[0]] = a[2]
+		case 59: // OpVariable
+			variables[a[1]] = a[0]
 		case 71: // OpDecorate, ArrayStride
 			if a[1] == 6 {
 				arrayStrides[a[0]] = int(a[2])
+			} else if a[1] == 33 { // Binding
+				bindings[a[0]] = a[2]
+			} else if a[1] == 34 { // DescriptorSet
+				sets[a[0]] = a[2]
 			}
 		case 72: // OpMemberDecorate
 			key := [2]uint32{a[0], a[1]}
@@ -97,9 +113,23 @@ func TestUniformsCompiledLayout(t *testing.T) {
 		}
 		i += n
 	}
-	block, pair := names["Parameters"], names["Pair"]
-	if block == 0 || pair == 0 || len(members[block]) != 10 {
-		t.Fatal("fixture lost named uniform structures")
+	// Follow the actual descriptor type; optimized modules need not carry
+	// debug names. Naga wraps the WGSL uniform struct in a SPIR-V Block.
+	var block uint32
+	for variable, set := range sets {
+		if binding, ok := bindings[variable]; set == 1 && ok && binding == 0 {
+			block = pointees[variables[variable]]
+		}
+	}
+	if len(members[block]) == 1 {
+		block = members[block][0]
+	}
+	if block == 0 || len(members[block]) != 10 {
+		t.Fatal("fixture lost uniform structure at set 1 binding 0")
+	}
+	pair := elements[members[block][3]]
+	if len(members[pair]) != 2 {
+		t.Fatal("fixture lost nested Pair structure")
 	}
 	offset := func(member uint32) int { return offsets[[2]uint32{block, member}] }
 	if offset(1) != 12 || arrayStrides[members[block][2]] != 16 || arrayStrides[members[block][4]] != 48 || matrixStrides[[2]uint32{block, 4}] != 16 {
@@ -140,7 +170,7 @@ func TestUniformsCompiledLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(s.block, want) {
-		t.Fatalf("packed block differs from independently compiled GLSL layout:\ngot %x\nwant%x", s.block, want)
+		t.Fatalf("packed block differs from compiled WGSL layout:\ngot %x\nwant%x", s.block, want)
 	}
 	v.Scalar = 999
 	if !bytes.Equal(s.block, want) {
@@ -189,7 +219,7 @@ func TestUniformsValidationPreservesBlock(t *testing.T) {
 
 func TestUniformsRendered(t *testing.T) {
 	g := newHeadless(t, 64, 32)
-	s, err := g.NewShader(uniformFixture)
+	s, err := g.NewShader(uniformFixture(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +244,7 @@ func TestUniformsFrameFailures(t *testing.T) {
 	for _, failure := range []string{"arena", "upload"} {
 		t.Run(failure, func(t *testing.T) {
 			g := newHeadless(t, 32, 32)
-			s, err := g.NewShader(uniformFixture)
+			s, err := g.NewShader(uniformFixture(t))
 			if err != nil {
 				t.Fatal(err)
 			}

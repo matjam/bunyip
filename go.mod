@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/ebitengine/purego v0.11.0
 	github.com/go-text/typesetting v0.3.4
+	github.com/gogpu/naga v0.19.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/klauspost/compress v1.20.0

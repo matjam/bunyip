@@ -86,7 +86,7 @@ type Atmosphere struct {
 
 // The air's density falls to 1/e at Height divided by these, and the
 // integral takes this many samples. atmosphereScatter in
-// prelude_mesh.glsl and skyparam.frag uses the same numbers, so the
+// prelude_mesh.wgsl and skyparam.frag.wgsl uses the same numbers, so the
 // three implementations agree.
 const (
 	rayleighFalloff     = 7.5
@@ -244,7 +244,7 @@ func raySphere(o, d lin.Vec3, r float32) (float32, float32) {
 // height, each sample lit by what is left of the sunlight that reached
 // it and dimmed by the air back to the camera. Samples the planet
 // shadows are dark, which is what makes dusk fall.
-// atmosphereScatter in prelude_mesh.glsl and skyparam.frag is the same
+// atmosphereScatter in prelude_mesh.wgsl and skyparam.frag.wgsl is the same
 // function, and the shaders draw what this projects into the harmonics,
 // so the three must stay in step.
 func (s Sky) scatter(d lin.Vec3, dist float32) (float32, float32, float32) {

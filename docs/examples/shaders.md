@@ -1,7 +1,7 @@
 ---
 title: Shaders
 example: shaders
-summary: game-written GLSL compiled to SPIR-V offline, as 2D sprite shaders and mesh surface and vertex hooks, with uniforms driven by sliders
+summary: game-written WGSL compiled to SPIR-V in Go, as 2D sprite shaders and mesh surface and vertex hooks, with uniforms driven by sliders
 ---
 
 This example is four shaders written by the game rather than the engine.
@@ -13,10 +13,12 @@ before the light is applied, and a flag whose vertex hook displaces the
 cloth in the lit pass and the shadow pass alike. Sliders drive their
 uniforms while the program runs.
 
-Shaders are compiled offline. `bunyip-shader` composes each `.glsl` with
-a prelude and a postlude and runs `glslangValidator` over the result, and
-the `.spv` output is embedded in the binary, so a shipped game carries
-no compiler. The engine side is `NewShader` and `NewMeshShader` in
+This example precompiles its shaders. `bunyip-shader` composes each `.wgsl`
+with Bunyip's bindings and entry points, then compiles it to SPIR-V using
+`gogpu/naga`, a compiler written in Go. No external compiler executable or
+native compiler library is required. The `.spv` output is embedded in the
+binary. Games can also compile source at runtime with `Graphics.CompileShader`
+and `Graphics.CompileMeshShader`; this example uses `NewShader` and `NewMeshShader` in
 [gfx](../pkg/gfx.html), `Shader.SetUniforms` and `Shader.SetImage`,
 `Graphics.Shaded` for the 2D case and `Material.Shader` for the mesh
 case. The guide is [Shaders](../guides/shaders.html).
@@ -24,12 +26,12 @@ case. The guide is [Shaders](../guides/shaders.html).
 Run it with:
 
 ```bash
-go run ./examples/shaders -seconds 3 -shot out.png
+CGO_ENABLED=0 go run ./examples/shaders -seconds 3 -shot out.png
 ```
 
 The flags are `-seconds N` and `-shot file.png`. The three sliders set
 the wave amplitude, the lava heat and the wind strength; Escape quits.
-After editing a `.glsl`, run `go generate ./examples/shaders/` to
+After editing a `.wgsl`, run `CGO_ENABLED=0 go generate ./examples/shaders/` to
 rebuild the SPIR-V.
 
 ## Generate directives and embedded SPIR-V
@@ -39,16 +41,16 @@ the mesh prelude, which is what decides whether the file supplies
 `fragment` or `surface`, `vertex` and `finish`. The default kind is the
 2D one.
 
-Each `.spv` is embedded with `go:embed`. A new shader needs its `.spv`
-file to exist before `bunyip-shader` can be built at all, because the
-tool imports the package that embeds them, so create an empty
-placeholder first.
+Each `.spv` is embedded with `go:embed`. Generate a game's SPIR-V before
+building the example that embeds it. The compiler command imports the
+engine's existing shaders, but does not import this example, so a new game
+shader can be compiled before adding its `go:embed` declaration.
 
 ```go
-//go:generate go run ../../cmd/bunyip-shader -o wave.spv wave.glsl
-//go:generate go run ../../cmd/bunyip-shader -o dissolve.spv dissolve.glsl
-//go:generate go run ../../cmd/bunyip-shader -kind mesh -o lava.spv lava.glsl
-//go:generate go run ../../cmd/bunyip-shader -kind mesh -o flag.spv flag.glsl
+//go:generate go run ../../cmd/bunyip-shader -o wave.spv wave.wgsl
+//go:generate go run ../../cmd/bunyip-shader -o dissolve.spv dissolve.wgsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -o lava.spv lava.wgsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -o flag.spv flag.wgsl
 
 var (
 	//go:embed wave.spv
@@ -115,7 +117,7 @@ func clothMesh(nx, ny int) ([]gfx.Vertex, []uint32) {
 }
 ```
 
-## Init: compiling nothing, loading everything
+## Init: loading precompiled shaders
 
 `NewShader` takes 2D SPIR-V and `NewMeshShader` takes mesh SPIR-V; the
 two pipelines differ, so the constructor picks which one the module is
@@ -200,11 +202,13 @@ func (g *game) Update(ctx *bunyip.Context) error {
 
 ## Draw: the mesh shaders
 
-`SetUniforms` packs exported struct fields into a std140 uniform block and
-returns an error for unsupported types or oversized blocks. Padding and array
-strides are automatic. The Go struct matches the GLSL `Params` block's field
-order and types, which is why each call passes an anonymous struct written
-next to the shader that consumes it.
+`SetUniforms` packs exported struct fields into the engine's std140-compatible
+uniform layout and returns an error for unsupported types or oversized blocks.
+The Go struct must match the shader's `Params` field order and types. The
+examples use adjacent `f32` fields, so their layouts match directly. Arrays and
+nested structs need the explicit WGSL layout described in the
+[shader guide](../guides/shaders.html#uniform-values); packing does not reflect the
+shader declaration. Each call passes an anonymous Go struct beside its draw.
 
 A mesh shader is attached through `Material.Shader`. The lava slab is a
 cube scaled flat with no base colour or texture, because the shader
@@ -291,7 +295,7 @@ it burns away and back without any state on the game.
 			u.Slider("Wave amplitude", &g.amplitude, 0, 0.1)
 			u.Slider("Lava heat", &g.heat, 0, 3)
 			u.Slider("Wind", &g.wind, 0, 2)
-			u.Label("wave.glsl and dissolve.glsl colour sprites; lava.glsl shapes a surface before lighting; flag.glsl moves vertices. Additive glows, a multiplied shadow, and a sheared sprite below.")
+			u.Label("wave.wgsl and dissolve.wgsl colour sprites; lava.wgsl shapes a surface before lighting; flag.wgsl moves vertices. Additive glows, a multiplied shadow, and a sheared sprite below.")
 		})
 	})
 	return nil
@@ -302,36 +306,34 @@ The sliders write straight into the game's fields through pointers, and
 the next frame's `SetUniforms` picks the values up, which is the whole
 loop between the interface and the shaders.
 
-## wave.glsl
+## wave.wgsl
 
-A 2D shader supplies `fragment(vec2 uv, vec4 color)`, returning the
-colour to write. `UNIFORMS` marks the uniform block that `SetUniforms`
-fills; `tex` is the sprite's own texture, `image0` is the first extra
-image, and `time()` is the elapsed time supplied by the prelude.
+A 2D shader supplies `fn fragment(uv: vec2f, color: vec4f) -> vec4f`,
+returning a premultiplied colour. `@group(1) @binding(0) var<uniform>`
+declares the block that `SetUniforms` fills. `tex` and `texSampler` read
+the sprite's texture; `image0` and `image0Sampler` read the first extra
+image. `time()` is the elapsed time supplied by the prelude.
 
 This one samples the noise, scrolls it, uses it to modulate a sine
 offset applied to the horizontal texture coordinate, and tints the
 result. Rippling the coordinate rather than the colour is what makes the
 image itself wobble.
 
-<!-- file: wave.glsl -->
-```glsl
-// A 2D shader: ripples the texture coordinates over time and tints by
-// the extra image, a noise texture.
-UNIFORMS uniform Params {
-    float amplitude;
-    float frequency;
-} u;
+<!-- file: wave.wgsl -->
+```wgsl
+struct Params { amplitude: f32, frequency: f32, };
+@group(1) @binding(0) var<uniform> u: Params;
 
-vec4 fragment(vec2 uv, vec4 color) {
-    float n = texture(image0, uv * 2.0 + vec2(time() * 0.1, 0.0)).r;
+fn fragment(inputUV: vec2f, color: vec4f) -> vec4f {
+    var uv = inputUV;
+    let n = textureSample(image0, image0Sampler, uv * 2.0 + vec2f(time() * 0.1, 0.0)).r;
     uv.x += sin(uv.y * u.frequency + time() * 3.0) * u.amplitude * n;
-    vec4 c = texture(tex, uv) * color;
-    return c * vec4(1.0, 0.85 + 0.15 * n, 0.7 + 0.3 * n, 1.0);
+    let c = textureSample(tex, texSampler, uv) * color;
+    return c * vec4f(1.0, 0.85 + 0.15 * n, 0.7 + 0.3 * n, 1.0);
 }
 ```
 
-## dissolve.glsl
+## dissolve.wgsl
 
 The dissolve compares the noise value at each texel with a threshold
 that rises with `progress`. Below the threshold the fragment is
@@ -339,71 +341,67 @@ discarded by returning a fully transparent colour; just above it, a
 glowing edge is added, whose width is the `edge` uniform. Multiplying
 the glow by `c.a` keeps it inside the sprite's own shape.
 
-<!-- file: dissolve.glsl -->
-```glsl
-// A 2D shader: burns the sprite away along a noise image, with a glowing
-// edge, as progress goes from 0 to 1.
-UNIFORMS uniform Params {
-    float progress;
-    float edge;
-} u;
+<!-- file: dissolve.wgsl -->
+```wgsl
+struct Params { progress: f32, edge: f32, };
+@group(1) @binding(0) var<uniform> u: Params;
 
-vec4 fragment(vec2 uv, vec4 color) {
-    vec4 c = texture(tex, uv) * color;
-    float n = texture(image0, uv).r;
-    float cut = u.progress * (1.0 + u.edge);
-    if (n < cut - u.edge) return vec4(0.0);
-    float glow = 1.0 - clamp((n - (cut - u.edge)) / u.edge, 0.0, 1.0);
-    vec3 fire = vec3(1.0, 0.5, 0.1) * glow * 2.0 * c.a;
-    return vec4(c.rgb + fire, c.a);
+fn fragment(uv: vec2f, color: vec4f) -> vec4f {
+    let c = textureSample(tex, texSampler, uv) * color;
+    let n = textureSample(image0, image0Sampler, uv).r;
+    let cut = u.progress * (1.0 + u.edge);
+    if n < cut - u.edge { return vec4f(0.0); }
+    let glow = 1.0 - clamp((n - (cut - u.edge)) / u.edge, 0.0, 1.0);
+    let fire = vec3f(1.0, 0.5, 0.1) * glow * 2.0 * c.a;
+    return vec4f(c.rgb + fire, c.a);
 }
 ```
 
-## lava.glsl
+## lava.wgsl
 
-A mesh shader supplies `surface(inout Surface s)`, which runs before the
-lighting and writes the material properties the lighting then uses:
-albedo, roughness, metallic, normal and emissive. Writing `s.albedo`
-rather than returning a colour is what keeps the shader inside the
-engine's shading model, so shadows, point lights and fog still apply.
+A mesh shader supplies `fn surface(input: Surface) -> Surface`, which
+runs before lighting. Copy the input to a mutable `var`, adjust material
+properties such as albedo, roughness, metallic, normal and emissive, then
+return the modified surface. Shadows, point lights and fog still apply.
+Mesh uniform blocks use `@group(4) @binding(0)`. The `sampleImage0`
+helper samples the first extra image using its filtering and repeat settings.
 
 `s.worldPos` positions the pattern in the world rather than on the
 surface, so the cracks do not stretch with the cube's scale.
 `s.emissive +=` adds to whatever the material set instead of replacing
 it.
 
-The optional `finish(vec4 lit, Surface s)` hook runs after the lighting
+The optional `fn finish(lit: vec4f, s: Surface) -> vec4f` hook runs after the lighting
 and can adjust the lit colour, which is used here to fade the slab's
 edges towards black.
 
-<!-- file: lava.glsl -->
-```glsl
-// A mesh shader: a cooled crust with glowing cracks that pulse, on top
-// of the standard lighting.
-UNIFORMS uniform Params {
-    float heat;
-} u;
+<!-- file: lava.wgsl -->
+```wgsl
+struct Params { heat: f32, };
+@group(4) @binding(0) var<uniform> u: Params;
 
-void surface(inout Surface s) {
-    vec2 p = s.worldPos.xz * 1.5 + vec2(time() * 0.05, 0.0);
-    float n = texture(image0, p * 0.25).r;
-    float crack = smoothstep(0.45, 0.55, n);
-    float pulse = 0.6 + 0.4 * sin(time() * 2.0 + n * 12.0);
-    s.albedo = mix(vec3(0.05, 0.04, 0.04), vec3(0.2, 0.1, 0.08), n);
+fn surface(input: Surface) -> Surface {
+    var s = input;
+    let p = s.worldPos.xz * 1.5 + vec2f(time() * 0.05, 0.0);
+    let n = sampleImage0(p * 0.25).r;
+    let crack = smoothstep(0.45, 0.55, n);
+    let pulse = 0.6 + 0.4 * sin(time() * 2.0 + n * 12.0);
+    s.albedo = mix(vec3f(0.05, 0.04, 0.04), vec3f(0.2, 0.1, 0.08), n);
     s.roughness = mix(0.95, 0.4, crack);
-    s.emissive += vec3(1.0, 0.35, 0.05) * crack * pulse * u.heat;
+    s.emissive += vec3f(1.0, 0.35, 0.05) * crack * pulse * u.heat;
+    return s;
 }
 
-vec4 finish(vec4 lit, Surface s) {
-    // Fade the far edges to black so the slab reads as a pool.
-    float rim = smoothstep(0.0, 0.5, 1.0 - abs(s.uv.x - 0.5) * 2.0) * smoothstep(0.0, 0.5, 1.0 - abs(s.uv.y - 0.5) * 2.0);
-    return vec4(lit.rgb * mix(0.3, 1.0, rim), lit.a);
+fn finish(lit: vec4f, s: Surface) -> vec4f {
+    let rim = smoothstep(0.0, 0.5, 1.0 - abs(s.uv.x - 0.5) * 2.0) * smoothstep(0.0, 0.5, 1.0 - abs(s.uv.y - 0.5) * 2.0);
+    return vec4f(lit.rgb * mix(0.3, 1.0, rim), lit.a);
 }
 ```
 
-## flag.glsl
+## flag.wgsl
 
-`vertex(inout VertexData v)` runs before the model matrix, in object
+`fn vertex(input: VertexData) -> VertexData` returns the modified vertex
+before the model matrix is applied, in object
 space, and in both the lit pass and the shadow pass, which is what makes
 the flag's shadow match the flag. The displacement is scaled by `v.uv.x`
 so the edge at `u = 0` stays pinned to the pole.
@@ -412,29 +410,27 @@ The normal is recomputed from the slope of the same wave, because moving
 a vertex without moving its normal leaves the lighting flat. `surface`
 then stripes the cloth from the vertical texture coordinate.
 
-<!-- file: flag.glsl -->
-```glsl
-// A mesh shader with a vertex hook: a flag rippling in the wind. The
-// vertex() hook displaces the cloth before the model matrix, in the lit
-// and shadow passes alike; surface() stripes it.
-UNIFORMS uniform Params {
-    float strength;
-} u;
+<!-- file: flag.wgsl -->
+```wgsl
+struct Params { strength: f32, };
+@group(4) @binding(0) var<uniform> u: Params;
 
-void vertex(inout VertexData v) {
-    // Fixed at the pole (u = 0), waving more towards the free edge.
-    float free = v.uv.x;
-    float wave = sin(v.uv.x * 6.0 - time() * 4.0) + 0.5 * sin(v.uv.y * 4.0 - time() * 6.0);
+fn vertex(input: VertexData) -> VertexData {
+    var v = input;
+    let free = v.uv.x;
+    let wave = sin(v.uv.x * 6.0 - time() * 4.0) + 0.5 * sin(v.uv.y * 4.0 - time() * 6.0);
     v.position.z += wave * 0.15 * free * u.strength;
-    // Tilt the normal with the slope of the wave so the lighting ripples.
-    float slope = cos(v.uv.x * 6.0 - time() * 4.0) * 6.0 * 0.15 * free * u.strength;
-    v.normal = normalize(vec3(-slope * 0.5, 0.0, 1.0));
+    let slope = cos(v.uv.x * 6.0 - time() * 4.0) * 6.0 * 0.15 * free * u.strength;
+    v.normal = normalize(vec3f(-slope * 0.5, 0.0, 1.0));
+    return v;
 }
 
-void surface(inout Surface s) {
-    float band = step(0.5, fract(s.uv.y * 3.0));
-    s.albedo = mix(vec3(0.9, 0.2, 0.15), vec3(0.95, 0.95, 0.9), band);
+fn surface(input: Surface) -> Surface {
+    var s = input;
+    let band = step(0.5, fract(s.uv.y * 3.0));
+    s.albedo = mix(vec3f(0.9, 0.2, 0.15), vec3f(0.95, 0.95, 0.9), band);
     s.roughness = 0.8;
+    return s;
 }
 ```
 
@@ -500,14 +496,15 @@ func main() {
 
 ## What to try
 
-- Change a constant in `lava.glsl`, run `go generate
+- Change a constant in `lava.wgsl`, run `CGO_ENABLED=0 go generate
   ./examples/shaders/`, and run the program again; that is the whole
   edit cycle.
-- Add a `float speed` to the `Params` block in `wave.glsl` and to the
+- Add `speed: f32` to the `Params` struct in `wave.wgsl` and to the
   struct passed to `SetUniforms` in `Draw`, and give it a slider.
-- Write a `finish` hook in `flag.glsl` that darkens the cloth towards
+- Write a `finish` hook in `flag.wgsl` that darkens the cloth towards
   its free edge, and see it apply after the lighting.
 - Bind a second image with `SetImage(1, ...)` in `Init` and sample
-  `image1` from `dissolve.glsl` for a different burn pattern.
+  it with `textureSample(image1, image1Sampler, uv)` in `dissolve.wgsl`
+  for a different burn pattern.
 - Reduce `clothMesh(40, 24)` in `Init` to `clothMesh(4, 3)` to see how
   much the vertex hook depends on the subdivision.

@@ -106,74 +106,32 @@ current transform and view scale are.
 
 ## 3. Shaders
 
-Bunyip compiles GLSL to SPIR-V offline and embeds it; the game does
-the same. A shader file holds only the part that varies:
+Bunyip compiles WGSL to SPIR-V using the native Go gogpu/naga dependency.
+The same compiler serves runtime source methods and the offline
+`bunyip-shader` tool. No external executable or cgo is required.
 
-```glsl
-// wave.glsl, a 2D shader
-layout(set = 1, binding = 0) uniform Params { float amplitude; float time; } u;
+Sprite source defines `fn fragment(uv: vec2f, color: vec4f) -> vec4f`.
+Mesh source defines `fn surface(s: Surface) -> Surface`, with optional
+`finish` and `vertex` functions. The engine adds bindings and entry points.
+The [shader guide](../guides/shaders.html) documents source syntax,
+resource ownership, sampling helpers, uniform layout and complete examples.
 
-vec4 fragment(vec2 uv, vec4 color) {
-	uv.x += sin(uv.y * 20.0 + u.time) * u.amplitude;
-	return texture(tex, uv) * color;
-}
-```
+`Graphics.CompileShader` and `CompileMeshShader` create GPU resources
+from source. `Shader.ReloadSource` preserves the previous shader when
+compilation fails. Worker compilation uses `shaders.Compiler`, followed
+by `NewShader`, `NewMeshShader` or `Reload` on the game goroutine.
 
-`bunyip-shader` wraps it with the engine's prelude (the texture
-`tex`, `image0`..`image3`, the interpolants, `frame.time`,
-`frame.view`) and runs glslangValidator:
+Uniforms use exported Go fields with explicit scalar, vector and matrix types.
+`SetUniforms` packs std140-compatible offsets and array strides; WGSL
+declarations must match them, including padded scalar arrays and integer
+representations of booleans. Each draw retains its uniform and image snapshot.
 
-```
-//go:generate go run github.com/matjam/bunyip/cmd/bunyip-shader -o wave.spv wave.glsl
-//go:embed wave.spv
-var waveSPV []byte
-```
+WGSL uses separate texture and sampler bindings. The sprite/effect descriptor
+helper expands each logical texture to a pair. Mesh materials keep 17 images
+and four separate immutable sampler bindings; sampling helpers select among
+them without requiring nonuniform descriptor indexing. Vulkan push constants
+use the compiler's `push_constant` address-space extension.
 
-```go
-wave, err := ctx.Gfx.NewShader(waveSPV)
-if err := wave.SetUniforms(struct{ Amplitude, Time float32 }{0.02, t}); err != nil {
-	return err
-}
-wave.SetImage(0, noise)
-g.Shaded(wave, func() { g.Draw(tex, s) })
-g.SetShader(wave) // or as state; nil restores the default
-```
-
-Uniforms use exported fields with explicit scalar, vector and matrix types.
-`SetUniforms` automatically packs std140 offsets and array strides, returning
-errors for unsupported fields or oversized blocks. A per-frame arena holds
-the packed bytes, so changing uniforms between draws is cheap and each draw keeps
-the values it was queued with. Images 0..3 are extra textures.
-
-Mesh shaders are surface shaders: the game adjusts the inputs to the
-engine's lighting rather than replacing it, and can post-process the
-lit result:
-
-```glsl
-// lava.glsl, a mesh shader
-layout(set = 3, binding = 1) uniform Params { float time; } u;
-
-void surface(inout Surface s) {
-	float glow = sin(s.worldPos.x * 3.0 + u.time) * 0.5 + 0.5;
-	s.emissive = vec3(1.0, 0.3, 0.05) * glow;
-	s.roughness = 0.9;
-}
-vec4 finish(vec4 lit, Surface s) { return lit; } // optional
-```
-
-`Surface` carries `albedo`, `alpha`, `normal`, `metallic`, `roughness`,
-`emissive`, `uv`, `worldPos`, `viewDir`. `Material.Shader` selects the
-shader; `SetUniforms` and `SetImage` work the same way; opaque, blended
-and skinned pipeline variants are created on first use.
-
-Descriptor layout (fixed, so pipelines are interchangeable):
-
-- 2D: set 0 = `tex` plus `image0..3` (five samplers), set 1 = uniforms
-  (dynamic offset into the arena). Push constants: projection, then
-  `frame` = (time, view width, view height, pixel scale).
-- Mesh: set 0 = the four material textures plus `image0..3`, set 1 =
-  frame block, set 2 = shadow cascades, set 3 = joints (binding 0) and
-  uniforms (binding 1). Four sets, the Vulkan minimum guarantee.
 
 ## 4. Shaped text
 

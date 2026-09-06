@@ -35,7 +35,7 @@ X11 and `platform.Backend()` says which was chosen.
 | Path | What lives there |
 |---|---|
 | `bunyip.go`, `run.go`, `headless.go`, `debug.go`, `flycam.go`, `url.go` | The root package: `Run`, `Config`, `Game`, `Context`, the loop (fixed step or turn-based), the fixed view and letterboxing, the F3 overlay, headless mode, the fly camera. |
-| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials (including iridescence, anisotropy, specular tint and fur shells), models, skinning and animation players, lights, shadows, sky and environments (`hdr.go` for Radiance, `exr.go` for OpenEXR), fog, frustum and occlusion culling (`cull.go`, `occlude.go`), static batches with a bounding volume hierarchy (`batch.go`), LOD, impostors baked from a model (`impostor.go`), chunked terrain with per-chunk levels of detail and a splat map (`terrain.go`), billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the GLSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
+| `gfx/` | Everything drawn. 2D: textures, sprites, sheets, tilemaps, atlases (`atlas.go` for the JSON forms, `aseprite.go` for Aseprite's binary one), paths, gradients, text (HarfBuzz shaping, atlases, SDF, colour glyphs from COLR, SVG and bitmap strikes, hyphenation, rich text), colour matrices, lit sprites with polar shadow maps built on the CPU (`shadow2d.go`). 3D: meshes, materials (including iridescence, anisotropy, specular tint and fur shells), models, skinning and animation players, lights, shadows, sky and environments (`hdr.go` for Radiance, `exr.go` for OpenEXR), fog, frustum and occlusion culling (`cull.go`, `occlude.go`), static batches with a bounding volume hierarchy (`batch.go`), LOD, impostors baked from a model (`impostor.go`), chunked terrain with per-chunk levels of detail and a splat map (`terrain.go`), billboards, decals, post-processing, render textures, picking, debug lines. Global illumination: reflection probes baked from the scene (`probe.go`), an irradiance grid (`lightprobe.go`) and screen-space reflections (`ssr.go`). `gfx/shaders/` holds the WGSL sources, the preludes game shaders are composed with, and the compiled SPIR-V. `gfx/ktx2/` reads and writes KTX2 files and encodes and decodes the BC block formats they carry. |
 | `ui/` | Immediate-mode widgets, containers, navigation, drag and drop, themes, skins, the accessibility tree. |
 | `console/` | The in-game debug console drawn with `ui`: the drop-down command line, commands, variables, key bindings, the `slog` tee, and the debug panels (engine, graphics, entities, physics, audio, input, services). `Config.Console` builds one; the engine draws it last. |
 | `ecs/` | The entity component system: archetype tables, queries, systems, resources, events, hierarchy, saves, prefabs, cloning, the scene document format (`scene.go`). |
@@ -112,7 +112,7 @@ next frame's rendering, in `Graphics.end`, where no pass is open.
 **Instanced particles** (`gfx/particles.go`) are their own path, not the
 sprite stream. `ParticleQuad` is exactly the GPU instance layout, so a
 slice of them uploads as a memcpy and the fragment program does the
-premultiply; the quad's six vertices come from `gl_VertexIndex`, so
+premultiply; the quad's six vertices come from the `vertex_index` builtin, so
 there is no vertex buffer. `DrawParticles` records a batch into the
 queue and `flush2D` interleaves the batches with the 2D stream by layer
 and then by call order, which is why `draw2D` carries the layer and the
@@ -130,8 +130,8 @@ through `pipeCache` like the sky and the decals.
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
 the environment cube, the thickness map, the scene copy for
 transmission, the transmission map, then the iridescence, anisotropy,
-specular and fur maps) at bindings 0 to 16, then one array
-of four `SAMPLER` bindings at binding 17, immutable in the layout:
+specular and fur maps) at bindings 0 to 16, then four
+separate `SAMPLER` bindings at 17 to 20, immutable in the layout:
 linear repeat, linear clamp, nearest repeat, nearest clamp, in that
 order (`samplerIndex` in `gfx/mesh_draw.go`). A texture's own filtering
 and edge handling pick its sampler, and `materialSet` packs one index
@@ -139,13 +139,11 @@ per texture slot, two bits each, into the instance stream's `atten.w`,
 for the first eleven slots only (`packedSamplerSlots`); the four maps
 after them are always read linear and repeating, because a float's
 mantissa has no room for more index bits.
-The shader reads the index back with `texSampler(slot)` and the GLSL preludes
-`#define` the old names (`albedoTex`, `image0`) as
-`sampler2D(image, samplers[...])` pairs, so game shaders are unchanged.
-Every instance of a draw shares set 0, so the index is the same across
-the draw, which is what `shaderSampledImageArrayDynamicIndexing` needs;
-`Device.ArrayIndexing` reports it and `initMeshPass` refuses a device
-without it. A draw inside a reflection probe's volume binds that probe's
+The shader reads the packed index with `texSampler(slot)`. WGSL sampling
+helpers switch between the four separately bound samplers, preserving each
+texture's filter and repeat settings without dynamically indexing a sampler
+resource array. Game mesh hooks use `sampleImage0(uv)` through
+`sampleImage3(uv)` for extra images. A draw inside a reflection probe's volume binds that probe's
 cube map at binding 9 instead of the light's environment, so probes cost
 no image: `materialSet` is keyed on the environment already. Set 1 is the
 per-frame block: the `Frame` uniform block at binding 0, the light probe
@@ -155,7 +153,8 @@ storage buffers at bindings 2 to 4 (`Device.NewFrameSets`, sized by
 `frameStorage`; the fixed ones never grow, so a frame writes them
 without a wait). The queue's own sets are bound and the mesh pass's
 layout is what the pipelines are built against, so both are made the
-same way. Set 2 is the shadow atlas, the one comparison sampler.
+same way. Set 2 is the shadow atlas depth texture at binding 0 and its
+comparison sampler at binding 1.
 Set 3 is joint matrices. Set 4 is a game shader's uniform block. Set 5 is
 one model's morph target deltas, bound by every mesh draw because the
 vertex prelude names the buffer whether or not the draw reads it; six
@@ -165,27 +164,27 @@ which the four plus the shadow atlas's stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
 which is the budget the seventeen images and the atlas spend from: a new
 material texture costs an image and no sampler. The shadow maps still
-share one atlas image so the shadow pass costs one binding.
+share one atlas image and one comparison sampler.
 
 **The instance stream** (`meshInstance` in `gfx/mesh.go`) is fifteen
-material `vec4`s at vertex attribute locations 5 to 16 and 19 to 21,
+material `vec4f`s at vertex attribute locations 5 to 16 and 19 to 21,
 then the previous frame's three model rows, which only the velocity
-programs declare, then the morph block at 22 to 24 and a `uvec2` of
+programs declare, then the morph block at 22 to 24 and a `vec2u` of
 packed morph target numbers at 25; 17 and 18 are a skinned mesh's joints
 and weights (`meshVertexLayout`, `skinVertexLayout` and
 `velocityVertexLayout`, which all read the one stride). Adding a field
 means adding it at the end of the struct, at the next free location, and
-to the declarations in `vert_common.glsl` and the varyings the postludes
-in `gfx/shaders/shaders.go` write and `prelude_mesh.glsl` reads.
+to the declarations in `vert_common.wgsl` and the varyings the postludes
+in `gfx/shaders/mesh_compose.go` write and `prelude_mesh.wgsl` reads.
 
 **The Frame block** (`frameUniforms` in `gfx/mesh_draw.go`) is declared
-in seven GLSL files: `prelude_mesh.glsl`, `vert_common.glsl`,
-`skyparam.frag`, `outline.vert`, `decal.vert`, `decal.frag`, `ssr.frag`.
+in seven WGSL files: `prelude_mesh.wgsl`, `vert_common.wgsl`,
+`skyparam.frag.wgsl`, `outline.vert.wgsl`, `decal.vert.wgsl`, `decal.frag.wgsl`, `ssr.frag.wgsl`.
 Changing a field before the end means changing all of them and
 regenerating every shader; appending at the end only needs the files that
 read the new field. The global illumination fields (the probe volumes,
 the grid's shape, the reflection settings) are the tail, read by
-`prelude_mesh.glsl` and `ssr.frag`. The lights themselves are not in the
+`prelude_mesh.wgsl` and `ssr.frag.wgsl`. The lights themselves are not in the
 block: they live in set 1's storage buffers, and the block carries the
 shadow projections and the cluster grid's mapping.
 
@@ -193,7 +192,7 @@ shadow projections and the cluster grid's mapping.
 tiles and 24 exponential depth slices each frame, sorts the frame's
 lights into the clusters they reach on the CPU, and writes the records,
 the per-cluster table and the index list into set 1. The fragment
-prelude finds its cluster from `gl_FragCoord` and the view depth and
+prelude finds its cluster from the fragment-position builtin and the view depth and
 loops over that cluster's lights. A cluster keeps 64 lights and a frame
 1024 (`MaxLights`).
 
@@ -206,13 +205,37 @@ pass draws one map per viewport, and the vertex program picks the
 projection from the push constant: cascades, then spot maps, then cube
 faces.
 
-**Shaders are compiled offline.** `glslangValidator` must be on the
-path. `go generate ./gfx/shaders/` rebuilds the engine's SPIR-V and
-`go generate ./examples/shaders/` the examples'. Game shaders are
-composed from a prelude, the game's `fragment` or `surface` function and
-a postlude by `shaders.Compose`; `cmd/bunyip-shader` drives it. A new
-`//go:embed` of a `.spv` needs a placeholder file to exist before
-`bunyip-shader` can even build, because the tool imports `gfx/shaders`.
+**Shaders use WGSL and a compiler written in Go.** `gogpu/naga` compiles
+source to SPIR-V 1.3 without an external executable, native compiler library,
+or cgo. `shaders.Compiler` works concurrently with sensible zero settings;
+`Graphics.CompileShader`, `Graphics.CompileMeshShader` and `Shader.ReloadSource`
+compile and install on the game goroutine. Worker code can compile to bytes
+first and install those later on the game goroutine. Cancellation is checked
+between compiler phases and cannot interrupt a phase already executing.
+The pinned compiler drops module-private initializers, so Bunyip rejects
+those declarations with an actionable error. Use constants or assign in the
+entry point or hook; function-local initializers work normally.
+The backend supplies `OpConstantNull` initializers for otherwise uninitialized
+private variables to preserve WGSL's default-zero semantics; instruction and
+GPU tests cover this workaround.
+
+`CGO_ENABLED=0 go generate ./gfx/shaders/ ./examples/shaders/` rebuilds the
+committed SPIR-V with the same compiler. Game shaders are composed with bindings
+and entry points by `shaders.Compose`; `cmd/bunyip-shader` drives it, or uses
+`-raw` for a complete WGSL module. Sprite hooks return a premultiplied `vec4f`;
+mesh `surface` and `vertex` hooks return modified `Surface` and `VertexData`
+values. Sprite uniforms are at group 1/binding 0 and mesh uniforms at
+group 4/binding 0. `SetUniforms` retains its std140-compatible Go packing:
+WGSL scalar arrays and nested structs need matching explicit layout, described
+in `docs/guides/shaders.md`.
+
+The native WGSL dialect supports `var<push_constant>` for the existing Vulkan
+push layouts. Sprite/effect image slot N is sampled-image binding 2N plus
+sampler binding 2N+1; mesh material bindings follow the separate contract above.
+`NewShader` and `NewMeshShader` still load precompiled bytes. Generate new game
+shader files before building the game that embeds them. Adding an engine
+`.spv` embed requires that file to exist before the compiler command builds,
+because it imports `gfx/shaders`.
 
 **The ECS** stores components in dense typed columns per archetype.
 Entities are generational handles. Queries cache the tables they match
@@ -375,7 +398,7 @@ render pass, so text tests draw one frame.
   `Shader.VertexBounds`, whose zero means the draw is never culled.
   `Mesh.SetBounds` overrides the box and survives `Update`.
 - Morph targets blend in the vertex shader (`gfx/morph.go`,
-  `morph()` in `vert_common.glsl`, called before the game's `vertex`
+  `morph()` in `vert_common.wgsl`, called before the game's `vertex`
   hook and before skinning). A model uploads every one of its meshes'
   deltas into one storage buffer at load, six floats a vertex a target,
   and binds it as set 5; a draw names up to `MaxGPUMorphTargets` open
@@ -408,26 +431,26 @@ render pass, so text tests draw one frame.
 - A mesh shader has two fragment programs: the usual one and the one the
   order-independent transparency pass needs, which writes a second
   attachment (the accumulated colour and the revealage). `shaders.Compose`
-  builds both from one source by substituting the `OUTPUT` line of
-  `meshPostlude`, `bunyip-shader` always bundles both for `-kind mesh`,
+  builds both from one source with the normal or OIT entry point in
+  `gfx/shaders/mesh_compose.go`, `bunyip-shader` always bundles both for `-kind mesh`,
   and a bundle without the second one (compiled before it existed) keeps
   its draws on the sorted path. The pass needs the device's
   `independentBlend`, because its two attachments blend differently; a
   device without it also keeps sorting.
 - The atmospheric sky is written three times: `Sky.scatter` and
   `Sky.radiance` in `gfx/sky.go`, and the block between `// ATMOSPHERE.`
-  and `// END ATMOSPHERE.` in `gfx/shaders/prelude_mesh.glsl` and in
-  `gfx/shaders/skyparam.frag`, which are the same text. The ambient
+  and `// END ATMOSPHERE.` in `gfx/shaders/prelude_mesh.wgsl` and in
+  `gfx/shaders/skyparam.frag.wgsl`, which are the same text. The ambient
   harmonics are projected from the Go side and the pixels come from the
   shaders, so a change to one is a change to all three.
   `TestAtmosphereBlocksMatch` compares the two shaders and
   `TestAtmosphereMatchesGo` renders the sky and checks it against
   `Sky.radiance`.
-- The instance stream is fifteen `vec4`s at locations 5 to 16 and 19 to
+- The instance stream is fifteen `vec4f`s at locations 5 to 16 and 19 to
   21, so a skinned mesh's joints and weights sit at 17 and 18
-  (`vert_skin.glsl` and `skinVertexLayout`). The twelfth carries the
+  (`vert_skin.wgsl` and `skinVertexLayout`). The twelfth carries the
   draw's reflection probe index plus one and whether the draw is opaque.
-  Three more `vec4`s follow them in the stride, the previous frame's
+  Three more `vec4f`s follow them in the stride, the previous frame's
   model matrix, which only the velocity programs declare, and the morph
   block picks up after those at 22 to 24 plus a pair of packed words at
   25 (`morphInstanceOffset`).
@@ -466,7 +489,7 @@ render pass, so text tests draw one frame.
   `q.prevViewProj` is the previous frame's unjittered view-projection,
   set at the end of `renderQueue` and used by everything that reprojects.
   The clustered light lookup is deliberately left alone: `clusterAt` in
-  `prelude_mesh.glsl` reads `gl_FragCoord` and `vViewDepth`, and
+  `prelude_mesh.wgsl` reads the fragment-position builtin and `vViewDepth`, and
   `vViewDepth` comes from the unjittered view matrix, so the only effect
   of the jitter there is that a fragment within half a pixel of a tile
   edge can land in the neighbouring tile. Tiles are tens of pixels
@@ -641,7 +664,7 @@ callbacks, `Update`, `Draw` or `Shutdown` on the main goroutine.
 | Autotiling: terrain that picks its own tiles | `grid/autotile`, `tiled.WangSet` for sets from the Tiled editor |
 | Meshes, materials, lights, shadows, sky, fog, post-processing | `gfx` (3D half), `gltf` for loading models |
 | Reflection probes, baked light probe grids, screen-space reflections | `gfx.ReflectionProbe`, `gfx.LightProbeGrid`, `gfx.PostSettings.Reflections` |
-| Game-written shaders | `cmd/bunyip-shader`, the shaders guide |
+| Game-written shaders | `gfx/shaders.Compiler`, `Graphics.CompileShader`, `Graphics.CompileMeshShader`, `cmd/bunyip-shader`, the shaders guide |
 | Widgets, menus, text fields, themes | `ui` |
 | A debug console and panels over a running game | `console`, `bunyip.Config.Console` |
 | Entities, queries, systems, saves, prefabs, scene files | `ecs`, `asset.Scene` |

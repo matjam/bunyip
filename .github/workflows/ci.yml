@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install Vulkan loader, MoltenVK, validation layers and glslang
-        run: brew install vulkan-loader molten-vk vulkan-validationlayers glslang
+      - name: Install Vulkan loader, MoltenVK, validation layers and SPIR-V tools
+        run: brew install vulkan-loader molten-vk vulkan-validationlayers spirv-tools
       - name: Vet
         run: go vet ./...
       - name: Test

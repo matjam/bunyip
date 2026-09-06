@@ -191,8 +191,9 @@ remain unsupported; use `DrawTo` or CPU image operations where appropriate.
 - The gallery's particle editor edits one emitter at a time and previews
   it in 2D. It does not show the instanced or the 3D path, chain several
   emitters into one effect, or preview against a game's own background.
-- Compiling GLSL at runtime would need a pure-Go compiler and is out of
-  scope; the offline tool plus `Shader.Reload` is the design.
+- WGSL compiles at runtime through the native Go gogpu/naga dependency.
+  Compiler support for advanced optional language features requires validation
+  against the engine's Vulkan capabilities; it is not a WebGPU backend.
 
 ## Text
 

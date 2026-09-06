@@ -108,7 +108,7 @@ func (g *Graphics) PopTransform() {
 func (g *Graphics) Transform() lin.Affine { return g.cur.xform }
 
 // Shader is a fragment program the game wrote, compiled to SPIR-V with
-// bunyip-shader. A sprite shader colours 2D drawing; a mesh shader
+// bunyip-shader or Compiler. A sprite shader colours 2D drawing; a mesh shader
 // adjusts a surface before the engine lights it. Uniforms and up to four
 // extra images ride along with every draw made while it is set.
 type Shader struct {
@@ -178,14 +178,14 @@ func meshKey(mat *Material, skinned, shell bool, out outKey) pipeKey {
 	return key
 }
 
-// NewShader compiles a sprite (2D) shader from SPIR-V produced by
-// bunyip-shader from a source that defines vec4 fragment(vec2 uv, vec4 color).
+// NewShader creates a sprite (2D) shader from SPIR-V produced by
+// bunyip-shader from a source that defines fn fragment(uv: vec2f, color: vec4f) -> vec4f.
 func (g *Graphics) NewShader(spirv []byte) (*Shader, error) {
 	return g.newShader(spirv, false)
 }
 
-// NewMeshShader compiles a mesh (surface) shader from SPIR-V produced by
-// bunyip-shader -kind mesh from a source that defines void surface(inout Surface s).
+// NewMeshShader creates a mesh (surface) shader from SPIR-V produced by
+// bunyip-shader -kind mesh from a source that defines fn surface(s: Surface) -> Surface.
 func (g *Graphics) NewMeshShader(spirv []byte) (*Shader, error) {
 	return g.newShader(spirv, true)
 }
@@ -337,8 +337,9 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 // Supported values are float32, int32, uint32, bool (including named scalar
 // types), lin.Vec2/Vec3/Vec4, Color, lin.Mat3/Mat4, fixed arrays and nested
 // structs. Matrices are column-major. A plain [N]float32 is a scalar array,
-// with 16-byte strides; use lin vector/matrix types for GLSL vectors/matrices.
-// Padding is automatic and zeroed. No Go memory is retained. Unsupported
+// with 16-byte strides; use lin vector/matrix types for WGSL vectors/matrices.
+// Booleans map to WGSL u32 fields (0 or 1). WGSL scalar arrays need padded
+// element wrappers to match the 16-byte std140 stride. Padding is automatic and zeroed. No Go memory is retained. Unsupported
 // fields or blocks exceeding 1024 packed bytes return errors and preserve
 // the previous block. The caller must match the shader's declarations;
 // this does not inspect SPIR-V or perform numeric precision conversions.

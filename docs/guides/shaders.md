@@ -2,259 +2,243 @@
 title: Shaders
 group: Graphics
 order: 3
-summary: fragment shaders written by the game, for sprites and for mesh surfaces
+summary: WGSL authoring, native Go compilation, engine hooks, uniforms and texture bindings
 ---
 
-Bunyip compiles its GLSL to SPIR-V offline and embeds it, and a game does
-the same. You write only the part that varies. The engine's prelude
-provides the textures, the uniforms and the lighting. `bunyip-shader`
-puts the two together and runs glslangValidator, which comes from the
-Vulkan SDK or the glslang package and must be on your PATH.
+Bunyip shaders are written in **WGSL** and compiled to **SPIR-V** by
+[gogpu/naga](https://github.com/gogpu/naga), a native Go dependency. Both runtime
+compilation and the offline tool work with `CGO_ENABLED=0`; neither needs a
+compiler executable, shared compiler library or Vulkan SDK to compile source.
+Rendering still requires Bunyip's Vulkan runtime.
 
-## A sprite shader
+## Language and execution model
 
-A sprite shader colours 2D drawing: sprites, text, tilemaps, paths. It
-defines one function and can declare one uniform block:
+WGSL provides vectors, matrices, functions, loops, structures and GPU texture
+operations. See the [WGSL specification](https://www.w3.org/TR/WGSL/) for syntax.
+Bunyip adds ordinary declarations, helper functions and generated entry points.
+These helpers do not create a separate language.
 
-```glsl
-// wave.glsl
-UNIFORMS uniform Params {
-	float amplitude;
-	float frequency;
-} u;
+Game sources define a sprite `fragment` function or a mesh `surface` function.
+The engine supplies the stage entry point; do not declare your own `@vertex`
+or `@fragment` entry point in a composed game source. Complete modules with
+explicit entry points can be compiled through `Compiler.CompileRaw` or
+`bunyip-shader -raw`, but must match their pipeline's resource interface.
 
-vec4 fragment(vec2 uv, vec4 color) {
-	uv.x += sin(uv.y * u.frequency + time() * 3.0) * u.amplitude;
-	return texture(tex, uv) * color;
+There is no GLSL preprocessor, `#version`, `UNIFORMS` macro or implicit numeric
+conversion contract. Write WGSL declarations directly. The renderer exposes
+vertex and fragment pipelines; compiling compute or other unsupported pipeline
+interfaces does not provide an engine dispatch API.
+
+Bunyip targets Vulkan through SPIR-V 1.3. Built-in shaders use the compiler's
+`var<push_constant>` extension to preserve Vulkan push-data layouts. This is
+an implementation choice, not a promise that the source runs unchanged in
+WebGPU. Optional language/compiler features must also be supported by the
+renderer and GPU. The engine does not enable arbitrary shader capabilities.
+
+The pinned Naga compiler does not yet implement every WGSL feature. In
+particular, Bunyip rejects module-level private variables with initializers
+because this compiler version can silently drop their initialization. Use
+`const` for fixed values, or assign a private variable in your hook or entry
+point before reading it. Private variables without an explicit initializer
+remain supported. Compiler errors leave an existing shader unchanged.
+
+## Runtime compilation
+
+```go
+shader, err := ctx.Gfx.CompileShader(context.Background(), source)
+if err != nil {
+    return err
+}
+ctx.Gfx.Shaded(shader, func() {
+    ctx.Gfx.Draw(texture, sprite)
+})
+```
+
+`CompileMeshShader` creates a mesh shader from source. `Shader.ReloadSource`
+recompiles the existing shader kind while keeping its uniforms and images.
+Compile or pipeline-creation failures leave the previous shader intact.
+
+These methods run synchronously on the game goroutine, where GPU resources
+belong. Compile during loading or in a worker, rather than on every draw.
+For background work, compile only the CPU representation:
+
+```go
+compiler := shaders.Compiler{}
+data, err := compiler.Compile(context.Background(), shaders.Sprite, source)
+if err != nil {
+    return err
+}
+// Transfer data to the game goroutine before creating the GPU resource.
+shader, err := ctx.Gfx.NewShader(data)
+```
+
+`Compiler` has useful zero defaults and can compile concurrently. Context
+cancellation is checked between phases; it cannot interrupt a phase already
+executing or Vulkan pipeline creation. No background workers are retained
+after a call. Keep compiled bytes if you want a game-specific cache.
+
+The creating `Graphics` owns the resulting shader. Optional early
+`Destroy` retires GPU resources safely. Shaders and textures belong to one
+`Graphics`; load separate resources for another window.
+
+## Sprite shaders
+
+```wgsl
+struct Params {
+    amplitude: f32,
+    frequency: f32,
+};
+@group(1) @binding(0) var<uniform> u: Params;
+
+fn fragment(inputUV: vec2f, color: vec4f) -> vec4f {
+    var uv = inputUV;
+    uv.x += sin(uv.y * u.frequency + time() * 3.0) * u.amplitude;
+    return textureSample(tex, texSampler, uv) * color;
 }
 ```
 
-`tex` is the texture being drawn (white for plain rectangles), `color`
-is the premultiplied tint, and the result is a premultiplied colour.
-`image0` to `image3` are the shader's own images, `time()` is the game
-clock, `viewSize()` and `pixelScale()` describe the view, and
-`position()` is the fragment's position in view units.
+The input UV selects the sprite's texture region. The color is premultiplied
+tint; return premultiplied color. Sampling a color texture supplies the
+engine's linear, premultiplied texels. Preserve alpha conventions when
+replacing or mixing colors.
 
-Compile it beside the source and embed the result:
+| Declaration/helper | Meaning |
+|---|---|
+| `tex`, `texSampler` | Current drawable texture and sampler; white for untextured shapes |
+| `image0` through `image3` | Extra textures assigned with `Shader.SetImage` |
+| `image0Sampler` through `image3Sampler` | Their filtering/addressing samplers |
+| `time()` | Game time in seconds |
+| `viewSize()` | Current view dimensions in view units |
+| `pixelScale()` | Framebuffer pixels per view unit |
+| `position()` | Fragment position in view units |
+
+Sprite texture/sampler pairs occupy group 0 bindings 0/1, 2/3, 4/5,
+6/7 and 8/9. User uniforms occupy group 1 binding 0. Engine entry-point
+inputs, outputs and push data are reserved; do not redeclare them.
+
+## Uniform values
 
 ```go
-//go:generate go run github.com/matjam/bunyip/cmd/bunyip-shader -o wave.spv wave.glsl
+if err := shader.SetUniforms(struct {
+    Amplitude float32
+    Frequency float32
+}{0.03, 24}); err != nil {
+    return err
+}
+```
 
+`SetUniforms` copies an exported Go struct or pointer to one into a
+std140-compatible block. It matches fields by declaration order, not names.
+There is no shader reflection or automatic type conversion.
+
+| Go value | WGSL representation |
+|---|---|
+| `float32`, `int32`, `uint32` | `f32`, `i32`, `u32` |
+| `bool` | `u32`, containing 0 or 1; test with `!= 0u` |
+| `lin.Vec2/Vec3/Vec4`, `gfx.Color` | `vec2f/vec3f/vec4f`; Color is vec4f |
+| `lin.Mat3/Mat4` | Column-major `mat3x3f/mat4x4f` |
+| Fixed arrays/nested structs | Matching declarations with std140-compatible padding |
+
+Scalar arrays have a 16-byte stride in the Go packer. Use padded WGSL
+elements rather than assuming `array<f32,N>` has that stride:
+
+```wgsl
+struct Weight { @size(16) value: f32, };
+struct Params { weights: array<Weight, 2>, };
+@group(1) @binding(0) var<uniform> u: Params;
+// Corresponds to Go: struct { Weights [2]float32 }
+// Read the first weight as u.weights[0].value.
+```
+
+Nested records need matching 16-byte structure alignment and tail padding
+where std140 requires it. A Go `[4]float32` is a padded scalar array, not a
+`vec4f`; use `lin.Vec4` for a vector. Most game parameters are simplest as
+scalars and vectors, with explicit vector arrays for repeated records.
+
+Blocks must fit 1024 packed bytes. Unsupported types, unexported fields,
+empty structures and oversized blocks return errors without changing the
+previous values. Each queued draw retains its uniform and image snapshot.
+
+## Mesh surface and vertex hooks
+
+```wgsl
+fn surface(input: Surface) -> Surface {
+    var s = input;
+    s.roughness = 0.4;
+    s.emissive += vec3f(1.0, 0.2, 0.0);
+    return s;
+}
+```
+
+Create with `CompileMeshShader` and assign `Material.Shader`. The engine
+fills a `Surface` from material factors and maps before calling your hook,
+then performs lighting, fog and the normal render passes.
+
+Surface fields include:
+
+- Base appearance: `albedo: vec3f`, `alpha: f32`, `normal: vec3f`,
+  `metallic`, `roughness`, `emissive: vec3f`, `occlusion`, `unlit: bool`.
+- Geometry: `uv/uv2: vec2f`, `color: vec4f`, `worldPos/viewDir: vec3f`.
+- Layered materials: `clearcoat`, `clearcoatRoughness`, `sheen: vec3f`,
+  `sheenRoughness`, `subsurface`, `thickness`, `transmission`,
+  `ior`, `volume`, `attenuation: vec3f`, `attenuationDistance`.
+- Specular detail: `specular`, `specularColor: vec3f`, `iridescence`,
+  `iridescenceIOR`, `iridescenceThickness`, `anisotropy`,
+  `tangent: vec3f`, `shell`. Unannotated fields here are f32.
+
+Normals, positions and tangent directions are world-space in the surface.
+Iridescence thickness is in nanometres. `shell` ranges from the underlying
+surface to the outer fur shell. Local `Surface.unlit` is a boolean; this
+does not imply booleans can be stored directly in a uniform buffer.
+
+An optional `fn finish(lit: vec4f, s: Surface) -> vec4f` adjusts the lit
+result. An optional vertex hook transforms object-space geometry after
+morph blending and before skinning:
+
+```wgsl
+fn vertex(input: VertexData) -> VertexData {
+    var v = input;
+    v.position.z += sin(v.uv.x * 6.0 - time() * 4.0) * 0.15 * v.uv.x;
+    return v;
+}
+```
+
+`VertexData` contains position, normal, UV, second UV and color.
+The engine compiles static/skinned vertex variants for lit and shadow passes,
+so displacement also changes shadows. Set `Shader.VertexBounds` to a
+conservative displacement as a multiple of the mesh bounding radius;
+zero disables culling for a shader with a vertex hook.
+
+Mesh image helpers `sampleImage0(uv)` through `sampleImage3(uv)` sample
+the textures set with `SetImage`. Mesh material bindings are engine-owned.
+Material sampling helpers return `vec4f`: `albedoTex`, `metalRoughTex`,
+`normalTex`, `emissiveTex`, `occlusionTex`, `thicknessTex`,
+`transmissionTex`, `iridescenceTex`, `anisotropyTex`, `specularTex` and
+`furTex`. Each accepts a `vec2f` UV. The engine normally samples these maps
+while constructing `Surface`; call them directly for custom material logic.
+The mesh user block is group 4 binding 0 and is shared across stages (sprite
+user blocks use group 1 binding 0). Source hooks must
+remain valid in each generated stage, including vertex stages when present.
+
+## Offline compilation and loading
+
+```go
+//go:generate go run github.com/matjam/bunyip/cmd/bunyip-shader -o wave.spv wave.wgsl
 //go:embed wave.spv
 var waveSPV []byte
 ```
 
-Then in the game:
+`Graphics.NewShader` loads sprite SPIR-V; `NewMeshShader` loads the mesh
+bundle produced with `-kind mesh`. Mesh bundles contain regular and
+order-independent transparency fragments plus vertex variants when needed.
+Runtime-created bytes have the same format. `Shader.Reload` accepts newly
+compiled bytes, useful with `asset.Watcher`.
 
-```go
-wave, err := ctx.Gfx.NewShader(waveSPV)
-if err != nil {
-	return err
-}
-wave.SetImage(0, noise)
-...
-if err := wave.SetUniforms(struct{ Amplitude, Frequency float32 }{0.03, 24}); err != nil {
-	return err
-}
-ctx.Gfx.Shaded(wave, func() {
-	ctx.Gfx.Draw(tex, sprite)
-})
-```
+The command accepts `-stage frag|oitfrag|vert|skinvert|shadowvert|shadowskinvert`
+for individual generated programs. `-print` prints composed WGSL for reading
+compiler diagnostics; `-raw` compiles a complete module without composition.
+Errors include the stage and prefix line count. Keep the composed program
+when diagnosing errors inside engine-provided code.
 
-`Shaded` sets the shader for the draws inside the closure. `SetShader`
-sets it as state, and nil restores the default. Each draw keeps the
-uniform values and images that were set when it was queued, so changing
-them between draws is cheap.
-
-`SetUniforms` takes a struct or non-nil pointer to one and packs std140
-offsets, array strides and zero padding automatically. Exported fields follow
-declaration order. Use `float32`, `int32`, `uint32` and `bool` for GLSL scalars;
-`lin.Vec2`, `lin.Vec3`, `lin.Vec4` and `gfx.Color` for float vectors; and
-`lin.Mat3` or `lin.Mat4` for column-major matrices. Fixed arrays and nested
-structs work recursively. Named scalar types keep their scalar representation.
-
-For example, these declarations match without padding fields:
-
-```glsl
-UNIFORMS uniform Params {
-    vec3 direction;
-    float strength;
-    float weights[2];
-    mat3 basis;
-} u;
-```
-
-```go
-func setEffect(shader *gfx.Shader) error {
-	return shader.SetUniforms(struct {
-		Direction lin.Vec3
-		Strength  float32
-		Weights   [2]float32
-		Basis     lin.Mat3
-	}{lin.V3(0, 1, 0), 0.5, [2]float32{0.25, 0.75}, lin.Mat3{1, 0, 0, 0, 1, 0, 0, 0, 1}})
-}
-```
-
-An array such as `[4]float32` means a GLSL scalar array with 16-byte element
-strides, not a `vec4`; use `lin.Vec4` for that. The caller matches GLSL field
-order and types. The engine validates the Go representation and packed size,
-but does not inspect the shader's declarations. Strings, slices, pointers
-inside a block, unexported fields, `int` and `float64` return errors. Blocks
-must contain 1..1024 packed bytes. Errors leave the previous uniforms intact;
-successful calls copy the values, so callers can reuse their input struct.
-GPU arena allocation or upload failures are reported through frame submission.
-
-## A mesh shader
-
-A mesh shader adjusts the surface the engine lights, and can post-process
-the lit result:
-
-```glsl
-// lava.glsl
-UNIFORMS uniform Params { float heat; } u;
-
-void surface(inout Surface s) {
-	float n = texture(image0, s.worldPos.xz * 0.4).r;
-	s.roughness = mix(0.95, 0.4, n);
-	s.emissive += vec3(1.0, 0.35, 0.05) * smoothstep(0.45, 0.55, n) * u.heat;
-}
-
-vec4 finish(vec4 lit, Surface s) { return lit; } // optional
-```
-
-`Surface` has `albedo`, `alpha`, `normal` (world space), `metallic`,
-`roughness`, `emissive`, `occlusion`, `unlit`, `uv`, `uv2`, `color`
-(the vertex colour), `worldPos` and `viewDir`, then the layered
-material's `clearcoat`, `clearcoatRoughness`, `sheen`,
-`sheenRoughness`, `subsurface`, `thickness`, `transmission`, `ior`,
-`volume` (thickness in world units), `attenuation`,
-`attenuationDistance`, `specular` and `specularColor`, `iridescence`
-with `iridescenceIOR` and `iridescenceThickness` in nanometres,
-`anisotropy` with the world-space `tangent` its highlight stretches
-along, and `shell`, which is 0 on the surface itself and rises to 1 on
-the outermost fur shell. All of them are filled in from the material's
-textures and factors before `surface` runs. Changing any of them changes
-the lighting. Everything else is the standard pipeline: the shadowed
-directional light, point and spot lights, the sky or environment map,
-fog, alpha cutout, bloom and anti-aliasing. Compile with `-kind mesh`,
-create it with `NewMeshShader`, and set it on a material:
-
-```go
-lava, err := ctx.Gfx.NewMeshShader(lavaSPV)
-if err != nil {
-	return err
-}
-lava.SetImage(0, noise)
-if err := lava.SetUniforms(struct{ Heat float32 }{1}); err != nil {
-	return err
-}
-ctx.Gfx.DrawMesh(slab, gfx.Material{Shader: lava}, model)
-```
-
-The material's own maps are there to be read as well, each a
-`sampler2D`: `albedoTex`, `metalRoughTex`, `normalTex`, `emissiveTex`,
-`occlusionTex`, `thicknessTex`, `transmissionTex`, and the four added
-for the layered features, `iridescenceTex` (red the strength, green the
-film's thickness), `anisotropyTex` (red and green the direction around a
-half, blue the strength), `specularTex` (RGB the tint, alpha the
-strength) and `furTex` (red the strand mask). `uvTransform(uv)` maps a
-coordinate through the material's transform the way the engine does, and
-`surfaceTangent(n, uv, dir)` builds the tangent an anisotropic highlight
-stretches along, from the surface's derivatives:
-
-```glsl
-void surface(inout Surface s) {
-	// Brushed metal whose grain follows a flow map.
-	vec2 flow = texture(image0, s.uv).rg * 2.0 - 1.0;
-	s.anisotropy = 0.8;
-	s.tangent = surfaceTangent(s.normal, s.uv, flow);
-	s.iridescence = 0.4;            // a thin oily film over it
-	s.iridescenceThickness = 320.0; // nanometres
-}
-```
-
-A mesh shader can sample the material's own maps as well as its images:
-`albedoTex`, `metalRoughTex`, `normalTex`, `emissiveTex`,
-`occlusionTex`, `thicknessTex`, `transmissionTex`, the environment
-`envMap` and the opaque scene copy `sceneTex`, alongside `image0` to
-`image3`. Each name is a texture paired with the sampler its
-`TextureOptions` asked for, so `texture(image0, uv)` filters and tiles
-the way the texture was made, and the engine's shared samplers cost no
-room in the material set. Pass a name to `texture`, `textureLod` or
-`textureQueryLevels` as it stands; it is not a variable, so do not
-assign one to a `sampler2D` of your own.
-
-## Moving vertices
-
-A mesh shader may also define a vertex hook, which runs before the
-model matrix in object space, after morph blending and before skinning:
-
-```glsl
-void vertex(inout VertexData v) {
-	v.position.z += sin(v.uv.x * 6.0 - time() * 4.0) * 0.15 * v.uv.x;
-}
-```
-
-`VertexData` has `position`, `normal`, `uv`, `uv2` and `color`; `model()` is the
-instance's matrix and the material's textures and the shader's images
-can be sampled for displacement maps. The hook runs in the shadow pass
-too, so displaced geometry casts the right shadow. When a source has a
-vertex hook, `bunyip-shader` includes the four static and skinned vertex
-programs for the lit and shadow passes. Mesh bundles also carry regular
-and order-independent transparency fragment programs. `NewMeshShader`
-reads that bundle or plain fragment SPIR-V; a shader without the second
-fragment program uses sorted transparency.
-The rippling flag in the `shaders` example uses a vertex hook.
-
-Culling cannot see where the hook put a vertex, so draws made with such
-a shader are never culled until the shader says how far it moves one.
-Set `Shader.VertexBounds` to that distance as a multiple of the mesh's
-bounding radius, and culling grows the radius by 1 + `VertexBounds`:
-
-```go
-lava.VertexBounds = 0.2 // the hook lifts a vertex a fifth of the mesh
-```
-
-The renderer reads this bound when it prepares the frame. Keep it large
-enough for every draw using the shader in that frame.
-
-## Blend modes and transforms
-
-Blending is separate from shaders and works with any of them:
-
-```go
-ctx.Gfx.Blended(gfx.BlendAdd, func() { ... })   // glows and fire
-ctx.Gfx.SetBlend(gfx.BlendMultiply)             // as state
-```
-
-`BlendAlpha` is the default; `BlendAdd`, `BlendMultiply`, `BlendScreen`,
-`BlendLighten`, `BlendDarken`, `BlendReplace` and `BlendErase` are the
-others, all on premultiplied colour.
-
-A 2D transform stack maps everything drawn through it:
-
-```go
-ctx.Gfx.Transformed(lin.Translate2(x, y).Mul(lin.Rotate2(a)).Mul(lin.Shear2(0.3, 0)), func() {
-	ctx.Gfx.Draw(tex, sprite)
-	ctx.Gfx.FillPath(&p, c, gfx.FillOptions{})
-})
-```
-
-`lin.Affine` composes with `Mul` (the right-hand transform applies
-first) and inverts with `Inverse`.
-
-## Reading compiler errors
-
-glslangValidator reports line numbers in the composed file, which begins
-with the prelude. `bunyip-shader` prints the offset to subtract, and
-`-print` writes the composed GLSL to standard output so the whole
-program can be read. The `shaders` example has four working shaders to
-start from: a wave and a dissolve on sprites, and a lava surface and a
-rippling flag on meshes.
-
-## Reloading while the game runs
-
-`Shader.Reload` swaps in newly compiled SPIR-V without recreating the
-shader, so an `asset.Watcher` on the `.spv` files gives hot reload. Edit
-the GLSL, run `go generate`, and the next frame draws with the new
-shader.
+See the [shader example](../examples/shaders.html) for wave, dissolve,
+lava and flag shaders, with uniform values controlled by the UI.

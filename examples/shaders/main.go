@@ -1,6 +1,6 @@
 // Command shaders shows fragment shaders written by the game: a 2D wave
 // shader and a dissolve on sprites, and a lava surface shader on a mesh
-// under the engine's lighting. The GLSL sources sit beside this file;
+// under the engine's lighting. The WGSL sources sit beside this file;
 // bunyip-shader compiles them to SPIR-V (go generate) and they are
 // embedded. Blend modes and the transform stack are shown too. Escape
 // quits.
@@ -25,10 +25,10 @@ import (
 	"github.com/matjam/bunyip/ui"
 )
 
-//go:generate go run ../../cmd/bunyip-shader -o wave.spv wave.glsl
-//go:generate go run ../../cmd/bunyip-shader -o dissolve.spv dissolve.glsl
-//go:generate go run ../../cmd/bunyip-shader -kind mesh -o lava.spv lava.glsl
-//go:generate go run ../../cmd/bunyip-shader -kind mesh -o flag.spv flag.glsl
+//go:generate go run ../../cmd/bunyip-shader -o wave.spv wave.wgsl
+//go:generate go run ../../cmd/bunyip-shader -o dissolve.spv dissolve.wgsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -o lava.spv lava.wgsl
+//go:generate go run ../../cmd/bunyip-shader -kind mesh -o flag.spv flag.wgsl
 
 var (
 	//go:embed wave.spv
@@ -203,7 +203,7 @@ func (g *game) Draw(ctx *bunyip.Context) error {
 			u.Slider("Wave amplitude", &g.amplitude, 0, 0.1)
 			u.Slider("Lava heat", &g.heat, 0, 3)
 			u.Slider("Wind", &g.wind, 0, 2)
-			u.Label("wave.glsl and dissolve.glsl colour sprites; lava.glsl shapes a surface before lighting; flag.glsl moves vertices. Additive glows, a multiplied shadow, and a sheared sprite below.")
+			u.Label("wave.wgsl and dissolve.wgsl colour sprites; lava.wgsl shapes a surface before lighting; flag.wgsl moves vertices. Additive glows, a multiplied shadow, and a sheared sprite below.")
 		})
 	})
 	return nil

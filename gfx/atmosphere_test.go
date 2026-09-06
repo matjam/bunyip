@@ -21,7 +21,7 @@ func skyShot(t *testing.T, g *Graphics, cam Camera, l Light) *image.RGBA {
 }
 
 // skyDir is the direction the background shader looks along for a pixel,
-// the same unprojection skyparam.frag does.
+// the same unprojection skyparam.frag.wgsl does.
 func skyDir(cam Camera, w, h, x, y int) lin.Vec3 {
 	inv := cam.ViewProj(float32(w) / float32(h)).Inverse()
 	nx := 2*(float32(x)+0.5)/float32(w) - 1
@@ -32,7 +32,7 @@ func skyDir(cam Camera, w, h, x, y int) lin.Vec3 {
 }
 
 // unpost turns a composited pixel back into the radiance the scene pass
-// wrote: sRGB decoding, then the inverse of the ACES curve in post.frag,
+// wrote: sRGB decoding, then the inverse of the ACES curve in post.frag.wgsl,
 // with an exposure of 1. It is well conditioned up to about 0.6 and
 // loses precision as the curve flattens above that.
 func unpost(v uint8) float64 {
@@ -63,8 +63,8 @@ func TestAtmosphereBlocksMatch(t *testing.T) {
 		}
 		return s[i:j]
 	}
-	a := block("shaders/prelude_mesh.glsl")
-	b := block("shaders/skyparam.frag")
+	a := block("shaders/prelude_mesh.wgsl")
+	b := block("shaders/skyparam.frag.wgsl")
 	if a == b {
 		return
 	}
@@ -78,7 +78,7 @@ func TestAtmosphereBlocksMatch(t *testing.T) {
 			y = bl[i]
 		}
 		if x != y {
-			t.Fatalf("the atmosphere block differs at line %d of the block:\nprelude_mesh.glsl: %q\nskyparam.frag:     %q", i+1, x, y)
+			t.Fatalf("the atmosphere block differs at line %d of the block:\nprelude_mesh.wgsl: %q\nskyparam.frag.wgsl: %q", i+1, x, y)
 		}
 	}
 }

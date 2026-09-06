@@ -22,7 +22,6 @@ type Device struct {
 	portability bool
 	alloc       allocator
 	anisotropy  float32 // max anisotropy the device allows, 1 when unsupported
-	arrayIndex  bool    // sampler and sampled-image arrays may be indexed dynamically
 	depthClamp  bool    // the device clamps depth instead of clipping, when asked
 	// independentBlend is whether colour attachments may blend
 	// differently from one another, which one pipeline needs and the rest
@@ -76,14 +75,6 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	if g.features.SamplerAnisotropy != 0 {
 		features.Features.SamplerAnisotropy = vk.VK_TRUE
 		d.anisotropy = min(g.props.Limits.MaxSamplerAnisotropy, 8)
-	}
-	// The mesh material set holds one array of samplers that a shader
-	// indexes per texture slot, which needs this feature. Every desktop
-	// driver and MoltenVK report it; a device without it cannot run the
-	// mesh pipelines, and initMeshPass says so.
-	if g.features.ShaderSampledImageArrayDynamicIndexing != 0 {
-		features.Features.ShaderSampledImageArrayDynamicIndexing = vk.VK_TRUE
-		d.arrayIndex = true
 	}
 	// Depth clamping lets the shadow pipelines keep casters in front of a
 	// cascade's near plane. It is optional, so pipelines ask for it and
@@ -144,11 +135,6 @@ func (d *Device) WaitIdle() error {
 // staging arena and the retire ring adds nothing to it, so the count
 // stands still once a game is running.
 func (d *Device) Waits() uint64 { return d.waits }
-
-// ArrayIndexing reports whether sampler and sampled-image arrays may be
-// indexed by a dynamically uniform expression, which the mesh material
-// set's sampler array needs.
-func (d *Device) ArrayIndexing() bool { return d.arrayIndex }
 
 // Destroy releases the device after waiting for it to go idle.
 func (d *Device) Destroy() {
