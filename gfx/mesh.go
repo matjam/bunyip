@@ -245,7 +245,13 @@ type Material struct {
 	// lit and shadow passes: leaves, fences, decals with hard edges. Zero
 	// means no cutout.
 	AlphaCutoff float32
-	Blend       bool // alpha-blended, drawn after opaque geometry back to front
+	// Blend draws after opaque geometry, back to front or through the
+	// order-independent transparency pass. BaseColor alpha, multiplied by
+	// texture and vertex alpha, fades the entire shaded surface, including
+	// lighting, emissive and fog. Pass straight colors; the engine
+	// premultiplies the result before blending. Without Blend or
+	// Transmission, alpha only controls AlphaCutoff.
+	Blend       bool
 	DoubleSided bool // no back-face culling; back faces are lit with a flipped normal
 	Unlit       bool // the base colour and emissive as they are, ignoring lights
 

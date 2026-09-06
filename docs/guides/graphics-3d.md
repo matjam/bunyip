@@ -356,8 +356,14 @@ Transparency has three modes, and they do different things.
 the shadow pass, giving hard edges and real shadows, which is what
 leaves, fences and grass need. `Blend` draws the material after the
 opaque scene, sorted back to front, for smoke and water, or without
-sorting at all under `PostSettings.OrderIndependent`. `Transmission`
-is refractive glass, below. Alongside them, `DoubleSided` turns off
+sorting at all under `PostSettings.OrderIndependent`. The alpha of
+`BaseColor`, multiplied by the texture and vertex alpha, fades the whole
+shaded surface, including lighting, emissive and fog. Pass straight
+colors: `BaseColor: gfx.RGB(120, 180, 255).WithAlpha(0.25)` contributes
+a quarter of its shaded color before tone mapping. The engine handles
+premultiplication for both transparency paths. Without `Blend` or
+`Transmission`, alpha only controls `AlphaCutoff`. `Transmission` is
+refractive glass, below. Alongside them, `DoubleSided` turns off
 back-face culling and lights back faces with a flipped normal, which a
 single-quad leaf needs; `Unlit` shows the base colour and emissive as
 they are, for holograms and map markers; `NoDepthTest` draws over

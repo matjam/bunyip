@@ -42,6 +42,9 @@ dir: vec4f,
 info: vec4f,
 }
 
+// Surface.albedo and finish() use straight color. The engine removes the
+// albedo texel's premultiplication before surface(), then premultiplies
+// blended output after finish() and fog for sorted and OIT draws alike.
 struct Surface {
 albedo: vec3f,
 alpha: f32,

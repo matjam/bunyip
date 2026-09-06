@@ -63,7 +63,10 @@ const meshFragmentWGSL = `fn meshShade() -> vec4f {
 
 var s: Surface;
 var uv: vec2f = uvTransform(vUV);
-var albedoSample: vec4f = ((albedoTex(uv) * vBaseColor) * vColor);
+// Color textures store premultiplied texels; mesh hooks use straight color.
+let texel = albedoTex(uv);
+let straightTexel = vec4f(texel.rgb / max(texel.a, 1e-4), texel.a);
+var albedoSample: vec4f = ((straightTexel * vBaseColor) * vColor);
 s.albedo = albedoSample.rgb;
 s.alpha = albedoSample.a;
 var mr: vec3f = metalRoughTex(uv).rgb;
@@ -124,6 +127,9 @@ var color = s.albedo;
 if !s.unlit { color = light(s); }
 var lit: vec4f = finish(vec4f((color + s.emissive), s.alpha), s);
 lit = vec4f(applyFog(lit.rgb, vWorldPos, vViewDepth), lit.a);
+// vGI.y marks opaque draws. Both sorted source-over and OIT accumulation
+// need premultiplied color, after lighting, finish and fog have run.
+if vGI.y < 0.5 { lit = vec4f(lit.rgb * lit.a, lit.a); }
 return lit;
 }
 `
@@ -174,6 +180,8 @@ vIrid = input.vIrid;
 vFur = input.vFur;
 gl_FragCoord = coord; gl_FrontFacing = facing;
 let lit = meshShade();
+// meshShade already premultiplies RGB; alpha below is also part of the
+// depth weight. The resolve divides by accumulated alpha times weight.
 let weight = lit.a * clamp(3e3 * pow(1.0 - coord.z, 3.0), 1e-2, 1e3);
 return OITOutput(lit * weight, lit.a);
 }

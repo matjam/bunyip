@@ -75,7 +75,11 @@ groups: opaque, order-independent translucent, and sorted translucent.
 order-independent transparency pass and its resolve, sorted blended,
 debug lines), decals and the velocity pass, then the post chain and the
 composite. Colours are linear and non-premultiplied in the API,
-premultiplied in the 2D stream.
+premultiplied in the 2D stream. Mesh hooks also use straight color:
+the shader removes the albedo texel's premultiplication before `surface`
+and premultiplies blended output after `finish` and fog. The existing
+opaque flag in `vGI.y` distinguishes those draws. Both sorted blending
+and order-independent accumulation consume the premultiplied result.
 
 **The post chain.** `postChain` in `gfx/posteffects.go` runs the effects
 that read the scene and its depth, each through `chainPass`: a

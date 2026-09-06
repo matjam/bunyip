@@ -174,6 +174,13 @@ Create with `CompileMeshShader` and assign `Material.Shader`. The engine
 fills a `Surface` from material factors and maps before calling your hook,
 then performs lighting, fog and the normal render passes.
 
+Mesh hooks use straight color. The engine divides the albedo texel by
+its own alpha before filling `Surface.albedo`; `finish` receives and
+returns straight RGB with alpha beside it. For blended materials, the
+engine premultiplies the result after `finish` and fog, for both sorted
+and order-independent transparency. Setting `s.alpha` to 0.25 fades the
+whole shaded surface to a quarter of its color before tone mapping.
+
 Surface fields include:
 
 - Base appearance: `albedo: vec3f`, `alpha: f32`, `normal: vec3f`,
