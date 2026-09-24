@@ -170,13 +170,20 @@ compound parts, including changes that preserve their outer bounds.
 Geometry changes refresh the cached snapshot; unchanged geometry reuses
 its placed parts without allocating.
 
-Shape sweeps reject distant bounds and order remaining candidates along
-the sweep, so later candidates can be skipped once a nearer hit is
-known. World queries still visit collider components to check current
-bounds. The 3D placed-shape cache rebuilds for motion, rotation or
-geometry changes and distinguishes recycled entity handles. Hull points
-and compound parts can be edited in place; immutable triangle meshes
-remain a separate case.
+Each collider's placement is kept between steps and queries, and the
+queries search a tree of the colliders' bounds, so a short ray or a
+character's sweep tests the few colliders near it rather than every
+collider in the level. The results and their order are the same as a
+walk over every collider would give. Because the game may move any
+collider by writing its transform, each query still walks the collider
+components once to notice what changed since the last step and places
+only those again; a character controller's move walks once for all of
+its sweeps and probes. Shape sweeps order their candidates along the
+sweep, so later candidates are skipped once a nearer hit is known. The
+3D placed-shape cache rebuilds for motion, rotation or geometry changes
+and distinguishes recycled entity handles. Hull points and compound
+parts can be edited in place; immutable triangle meshes remain a
+separate case.
 
 ```go
 // The body under the pointer.
@@ -380,7 +387,11 @@ if ctrl.Grounded && jump {
 
 Each update is split into substeps. In each substep, velocities
 integrate gravity and forces. A sweep over bounding boxes finds
-candidate pairs. The shapes generate contact points. A sequential
+candidate pairs: the moving colliders are swept against each other and
+against a sorted list of the colliders that cannot move, which is kept
+between updates and rebuilt only when one of them changes, so a level
+of ten thousand static boxes costs little more than the bodies moving
+through it. The shapes generate contact points. A sequential
 impulse solver iterates over the contacts and joints, applying normal
 impulses with restitution, friction impulses clamped by the normal
 impulse, and a small positional correction. Positions then integrate,

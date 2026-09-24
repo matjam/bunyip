@@ -6,7 +6,6 @@ import (
 	"slices"
 
 	"github.com/matjam/bunyip/ecs"
-	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -19,21 +18,30 @@ type placed2 struct {
 	lo, hi lin.Vec2
 }
 
+// queryState2 is the world's 2D physics state with its collider index
+// brought up to date, which every query starts from.
+func queryState2(w *ecs.World) *state2 {
+	st := stateOf2(w)
+	st.cols.update(st.colliders)
+	return st
+}
+
 // eachCollider2 calls fn for every collider whose bounds overlap the
-// box, skipping triggers unless asked and colliders the mask excludes.
-func eachCollider2(w *ecs.World, lo, hi lin.Vec2, mask uint32, triggers bool, fn func(p placed2)) {
-	stateOf2(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
-		if c.Shape == nil || (c.Trigger && !triggers) || !(Layers{Mask: mask}).collides(c.Layers) {
-			return
+// box, skipping triggers unless asked and colliders the mask excludes,
+// in walk order. The index must be up to date.
+func (st *state2) eachCollider2(lo, hi lin.Vec2, mask uint32, triggers bool, fn func(p placed2)) {
+	x := &st.cols
+	for _, k := range x.candidates(lo, hi) {
+		r := &x.rows[k]
+		c := r.c
+		if (c.Trigger && !triggers) || !(Layers{Mask: mask}).collides(c.Layers) {
+			continue
 		}
-		cs, sn := cosSin(t.Rotation)
-		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
-		clo, chi := c.Shape.bounds(pos, t.Rotation)
-		if clo.X > hi.X || lo.X > chi.X || clo.Y > hi.Y || lo.Y > chi.Y {
-			return
+		if r.lo.X > hi.X || lo.X > r.hi.X || r.lo.Y > hi.Y || lo.Y > r.hi.Y {
+			continue
 		}
-		fn(placed2{e: e, c: c, pos: pos, rot: t.Rotation, lo: clo, hi: chi})
-	})
+		fn(placed2{e: r.e, c: c, pos: r.pos, rot: r.t.Rotation, lo: r.lo, hi: r.hi})
+	}
 }
 
 // OverlapShape2 returns every collider the shape overlaps when placed at
@@ -50,13 +58,12 @@ func OverlapShape2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint3
 // storage; pass nil for a fresh slice. Result and scratch buffers may
 // allocate on initial use or growth. OverlapShape2's contracts apply.
 func OverlapShape2Into(out []Hit2, w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32) []Hit2 {
-	return overlapShape2(out, w, s, pos, rot, mask, true, ecs.None)
+	return queryState2(w).overlapShape2(out, s, pos, rot, mask, true, ecs.None)
 }
 
-func overlapShape2(out []Hit2, w *ecs.World, s Shape2, pos lin.Vec2, rot float32, mask uint32, triggers bool, exclude ecs.Entity) []Hit2 {
+func (st *state2) overlapShape2(out []Hit2, s Shape2, pos lin.Vec2, rot float32, mask uint32, triggers bool, exclude ecs.Entity) []Hit2 {
 	lo, hi := s.bounds(pos, rot)
-	st := stateOf2(w)
-	eachCollider2(w, lo, hi, mask, triggers, func(p placed2) {
+	st.eachCollider2(lo, hi, mask, triggers, func(p placed2) {
 		if p.e == exclude {
 			return
 		}
@@ -92,10 +99,10 @@ func OverlapBox2(w *ecs.World, center lin.Vec2, halfW, halfH, rot float32, mask 
 // normal there. Colliders already overlapping the shape at the start
 // and triggers are ignored.
 func ShapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec2, mask uint32) (Hit2, bool) {
-	return shapeCast2(w, s, pos, rot, delta, mask, ecs.None)
+	return queryState2(w).shapeCast2(s, pos, rot, delta, mask, ecs.None)
 }
 
-func shapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec2, mask uint32, exclude ecs.Entity) (Hit2, bool) {
+func (st *state2) shapeCast2(s Shape2, pos lin.Vec2, rot float32, delta lin.Vec2, mask uint32, exclude ecs.Entity) (Hit2, bool) {
 	length := delta.Len()
 	if length == 0 {
 		return Hit2{}, false
@@ -104,12 +111,11 @@ func shapeCast2(w *ecs.World, s Shape2, pos lin.Vec2, rot float32, delta lin.Vec
 	slo, shi := lo.Min(lo.Add(delta)), hi.Max(hi.Add(delta))
 	ext := hi.Sub(lo)
 	minHalfA := min(ext.X, ext.Y) / 2
-	st := stateOf2(w)
 	// Order the candidates along the sweep. Marching a shape along its
 	// path is the expensive part, so finding the nearest collider first
 	// and cutting every later march short at that distance is what makes
 	// a long cast affordable.
-	cands := gatherColliders2(st.qcands[:0], w, slo, shi, mask, false, exclude)
+	cands := st.gatherColliders2(st.qcands[:0], slo, shi, mask, false, exclude)
 	for i := range cands {
 		cands[i].enter = sweepEnter2(lo, hi, delta, cands[i].p.lo, cands[i].p.hi)
 	}
@@ -150,8 +156,8 @@ type candidate2 struct {
 // to dst, skipping triggers unless asked, the excluded entity and
 // colliders the mask leaves out. Passing back a slice a previous call
 // filled reuses its storage.
-func gatherColliders2(dst []candidate2, w *ecs.World, lo, hi lin.Vec2, mask uint32, triggers bool, exclude ecs.Entity) []candidate2 {
-	eachCollider2(w, lo, hi, mask, triggers, func(p placed2) {
+func (st *state2) gatherColliders2(dst []candidate2, lo, hi lin.Vec2, mask uint32, triggers bool, exclude ecs.Entity) []candidate2 {
+	st.eachCollider2(lo, hi, mask, triggers, func(p placed2) {
 		if p.e != exclude {
 			dst = append(dst, candidate2{p: p})
 		}
@@ -229,8 +235,8 @@ func Nearest2(w *ecs.World, point lin.Vec2, radius float32, mask uint32) (Hit2, 
 	r := lin.V2(radius, radius)
 	best := Hit2{Distance: float32(math.Inf(1))}
 	found := false
-	st := stateOf2(w)
-	eachCollider2(w, point.Sub(r), point.Add(r), mask, false, func(p placed2) {
+	st := queryState2(w)
+	st.eachCollider2(point.Sub(r), point.Add(r), mask, false, func(p placed2) {
 		q, d := closestPoint2(&st.qs, p.c.Shape, p.pos, p.rot, point)
 		if d <= radius && d < best.Distance {
 			best, found = Hit2{Entity: p.e, Point: q, Normal: point.Sub(q).Norm(), Distance: d}, true
@@ -252,21 +258,20 @@ func RaycastAll2(w *ecs.World, r Ray2, mask uint32) []Hit2 {
 // are sorted among themselves, not against what out already held.
 func RaycastAll2Into(out []Hit2, w *ecs.World, r Ray2, mask uint32) []Hit2 {
 	start := len(out)
-	st := stateOf2(w)
-	st.colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
-		if c.Shape == nil || c.Trigger || !(Layers{Mask: mask}).collides(c.Layers) {
-			return
+	st := queryState2(w)
+	x := &st.cols
+	for _, k := range x.rayCandidates(r) {
+		p := &x.rows[k]
+		if p.c.Trigger || !(Layers{Mask: mask}).collides(p.c.Layers) {
+			continue
 		}
-		cs, sn := cosSin(t.Rotation)
-		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
-		lo, hi := c.Shape.bounds(pos, t.Rotation)
-		if !raySlab2(r, lo, hi, 1) {
-			return
+		if !raySlab2(r, p.lo, p.hi, 1) {
+			continue
 		}
-		if tt, n, ok := rayShape2(&st.qs, r, c.Shape, pos, t.Rotation); ok {
-			out = append(out, Hit2{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
+		if tt, n, ok := rayShape2(&st.qs, r, p.c.Shape, p.pos, p.t.Rotation); ok {
+			out = append(out, Hit2{Entity: p.e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
 		}
-	})
+	}
 	slices.SortStableFunc(out[start:], func(a, b Hit2) int { return cmp.Compare(a.Distance, b.Distance) })
 	return out
 }

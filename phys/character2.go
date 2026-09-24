@@ -66,8 +66,10 @@ func (c *CharacterController2) params() (skin, cosSlope float32) {
 // sweep casts the controller's capsule from pos along delta, ignoring
 // the controller's own entity. It is a method rather than a closure
 // because a closure handed to stepUp would go on the heap once per move.
-func (c *CharacterController2) sweep(w *ecs.World, e ecs.Entity, pos, delta lin.Vec2) (Hit2, bool) {
-	return shapeCast2(w, c.shapeOf(), pos, 0, delta, c.Mask, e)
+// A move brings the collider index up to date once and every sweep and
+// probe in it searches that.
+func (c *CharacterController2) sweep(st *state2, e ecs.Entity, pos, delta lin.Vec2) (Hit2, bool) {
+	return st.shapeCast2(c.shapeOf(), pos, 0, delta, c.Mask, e)
 }
 
 // Move advances the character by velocity·dt: horizontally with sliding
@@ -81,13 +83,14 @@ func (c *CharacterController2) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 	if !ok {
 		return
 	}
+	st := queryState2(w)
 	skin, cosSlope := c.params()
 	pos := t.Position
 	c.Grounded = false
 	horiz := lin.V2(velocity.X, 0).Mul(dt)
 	remaining := horiz
 	for i := 0; i < 4 && remaining.Len() > 1e-5; i++ {
-		hit, ok := c.sweep(w, e, pos, remaining)
+		hit, ok := c.sweep(st, e, pos, remaining)
 		if !ok {
 			pos = pos.Add(remaining)
 			break
@@ -100,7 +103,7 @@ func (c *CharacterController2) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 			continue
 		}
 		if c.StepHeight > 0 {
-			if np, ok := c.stepUp(w, e, pos, rest, skin, cosSlope); ok {
+			if np, ok := c.stepUp(st, e, pos, rest, skin, cosSlope); ok {
 				pos = np
 				break
 			}
@@ -119,19 +122,19 @@ func (c *CharacterController2) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 	vert := velocity.Y * dt
 	if vert <= 0 {
 		down := -vert + 2*skin
-		if hit, ok := c.sweep(w, e, pos, lin.V2(0, -down)); ok {
+		if hit, ok := c.sweep(st, e, pos, lin.V2(0, -down)); ok {
 			dist := hit.Distance * down
 			move := lin.Clamp(dist-skin, 0, -vert)
 			pos.Y -= move
 			if hit.Normal.Y >= cosSlope {
 				c.Grounded, c.GroundNormal = true, hit.Normal
-			} else if gn, ok := c.groundBelow(w, e, pos, skin, cosSlope); ok {
+			} else if gn, ok := c.groundBelow(st, e, pos, skin, cosSlope); ok {
 				c.Grounded, c.GroundNormal = true, gn
 			} else if left := -vert - move; left > 1e-5 {
 				n := hit.Normal
 				rem := lin.V2(0, -left)
 				rem = rem.Sub(n.Mul(rem.Dot(n)))
-				if h2, ok := c.sweep(w, e, pos, rem); ok {
+				if h2, ok := c.sweep(st, e, pos, rem); ok {
 					pos = pos.Add(rem.Mul(backoff(h2.Distance, rem.Len(), skin)))
 				} else {
 					pos = pos.Add(rem)
@@ -142,15 +145,14 @@ func (c *CharacterController2) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 		}
 	} else {
 		up := lin.V2(0, vert)
-		if hit, ok := c.sweep(w, e, pos, up); ok {
+		if hit, ok := c.sweep(st, e, pos, up); ok {
 			pos = pos.Add(up.Mul(backoff(hit.Distance, vert, skin)))
 		} else {
 			pos = pos.Add(up)
 		}
 	}
-	st := stateOf2(w)
 	for range 2 {
-		st.hits = overlapShape2(st.hits[:0], w, c.shapeOf(), pos, 0, c.Mask, false, e)
+		st.hits = st.overlapShape2(st.hits[:0], c.shapeOf(), pos, 0, c.Mask, false, e)
 		for _, h := range st.hits {
 			if h.Distance > 0 {
 				pos = pos.Add(h.Normal.Mul(h.Distance))
@@ -162,11 +164,11 @@ func (c *CharacterController2) Move(w *ecs.World, e ecs.Entity, velocity lin.Vec
 
 // groundBelow looks straight down from the centre for walkable ground
 // within reach of the capsule's foot.
-func (c *CharacterController2) groundBelow(w *ecs.World, e ecs.Entity, pos lin.Vec2, skin, cosSlope float32) (lin.Vec2, bool) {
+func (c *CharacterController2) groundBelow(st *state2, e ecs.Entity, pos lin.Vec2, skin, cosSlope float32) (lin.Vec2, bool) {
 	cap := c.capsule()
 	reach := cap.HalfHeight + cap.Radius
 	length := reach + max(c.StepHeight, 0) + skin
-	hit, ok := raycast2(w, Ray2{Origin: pos, Dir: lin.V2(0, -length)}, c.Mask, e)
+	hit, ok := st.raycast(Ray2{Origin: pos, Dir: lin.V2(0, -length)}, c.Mask, e)
 	if !ok || hit.Normal.Y < cosSlope {
 		return lin.Vec2{}, false
 	}
@@ -176,7 +178,7 @@ func (c *CharacterController2) groundBelow(w *ecs.World, e ecs.Entity, pos lin.V
 // stepUp tries to climb an obstacle: when a ray just ahead finds
 // walkable ground no higher than a step, move up by StepHeight, forward,
 // then back down, keeping the result if it ended up higher.
-func (c *CharacterController2) stepUp(w *ecs.World, e ecs.Entity, pos, forward lin.Vec2, skin, cosSlope float32) (lin.Vec2, bool) {
+func (c *CharacterController2) stepUp(st *state2, e ecs.Entity, pos, forward lin.Vec2, skin, cosSlope float32) (lin.Vec2, bool) {
 	length := forward.Len()
 	if length < 1e-6 {
 		return pos, false
@@ -185,7 +187,7 @@ func (c *CharacterController2) stepUp(w *ecs.World, e ecs.Entity, pos, forward l
 	foot := pos.Y - cap.HalfHeight - cap.Radius
 	origin := pos.Add(forward.Mul((cap.Radius + 2*skin) / length))
 	origin.Y = foot + c.StepHeight + skin
-	probe, ok := raycast2(w, Ray2{Origin: origin, Dir: lin.V2(0, -(c.StepHeight + skin))}, c.Mask, e)
+	probe, ok := st.raycast(Ray2{Origin: origin, Dir: lin.V2(0, -(c.StepHeight + skin))}, c.Mask, e)
 	if !ok || probe.Normal.Y < cosSlope || probe.Point.Y <= foot+1e-3 {
 		return pos, false
 	}
@@ -195,7 +197,7 @@ func (c *CharacterController2) stepUp(w *ecs.World, e ecs.Entity, pos, forward l
 	}
 	p := pos
 	up := lin.V2(0, c.StepHeight)
-	if hit, ok := c.sweep(w, e, p, up); ok {
+	if hit, ok := c.sweep(st, e, p, up); ok {
 		p = p.Add(up.Mul(backoff(hit.Distance, c.StepHeight, skin)))
 	} else {
 		p = p.Add(up)
@@ -204,7 +206,7 @@ func (c *CharacterController2) stepUp(w *ecs.World, e ecs.Entity, pos, forward l
 	if climbed <= 1e-4 {
 		return pos, false
 	}
-	if hit, ok := c.sweep(w, e, p, forward); ok {
+	if hit, ok := c.sweep(st, e, p, forward); ok {
 		if hit.Distance*length < min(2*skin, length/2) {
 			return pos, false
 		}
@@ -213,7 +215,7 @@ func (c *CharacterController2) stepUp(w *ecs.World, e ecs.Entity, pos, forward l
 		p = p.Add(forward)
 	}
 	down := lin.V2(0, -climbed)
-	hit, ok := c.sweep(w, e, p, down)
+	hit, ok := c.sweep(st, e, p, down)
 	if !ok {
 		return pos, false
 	}

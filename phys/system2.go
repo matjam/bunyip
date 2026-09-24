@@ -116,15 +116,17 @@ type Trigger2 struct {
 	Trigger, Other ecs.Entity
 }
 
-// entry2 is one collider prepared for a step.
+// entry2 is one collider placed in the world: a row of the collider
+// index, which the step and the queries share.
 type entry2 struct {
 	e      ecs.Entity
 	t      *gfx.Transform2
-	b      *Body2 // nil for static
+	b      *Body2 // the body during a step; nil for a collider without one
 	c      *Collider2
 	pos    lin.Vec2
 	lo, hi lin.Vec2
-	bi     int
+	bi     int  // index into the step's dynamic bodies, -1 otherwise
+	shaped bool // the collider has a shape; rows without one are skipped
 }
 
 type bodyRec2 struct {
@@ -142,15 +144,23 @@ type state2 struct {
 	wheel     *ecs.Query1[WheelJoint2]
 	spring    *ecs.Query1[SpringJoint2]
 	fixed     *ecs.Query1[FixedJoint2]
-	entries   []entry2
-	dynamic   []bodyRec2
-	index     slotMap
-	parent    []int
+	// cols is every collider placed in the world, kept between steps.
+	cols index2
+	// dynamic is the step's dynamic bodies and index maps each to its
+	// place there; all is every body and bodyAt maps each to its place.
+	dynamic []bodyRec2
+	index   slotMap
+	all     []bodyRec2
+	bodyAt  slotMap
+	// bodyRows are the collider rows of this step's bodies and moveSet
+	// those with the triggers that have no body.
+	bodyRows []int32
+	moveSet  []int32
+	parent   []int
 	// Scratch kept between steps so a step allocates nothing: ss serves
 	// the step and qs the queries, which the game may call while the
 	// step's buffers still hold contacts.
 	ss, qs scratch2
-	sweep  sweepState
 	// The buffers the sweeps and the queries gather their candidates
 	// into, and the hits a character controller reads back.
 	cands  []int32
@@ -221,6 +231,9 @@ func System2(w *ecs.World, dt float64) {
 	s := stateOf2(w)
 	h := float32(dt) / float32(substeps)
 	s.reported.reset()
+	// As in 3D, only the step moves colliders between its substeps, so
+	// the walk over every collider happens once an update.
+	s.cols.refresh(s.colliders)
 	for range substeps {
 		s.step(w, settings, h, iterations)
 	}
@@ -242,14 +255,32 @@ func active2(b *Body2) bool {
 }
 
 func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations int) {
-	// Integrate velocities.
+	// Integrate velocities, and link each body's collider row to it.
+	x := &s.cols
 	s.dynamic = s.dynamic[:0]
+	s.all = s.all[:0]
+	s.bodyRows = s.bodyRows[:0]
 	s.index.reset()
+	s.bodyAt.reset()
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform2, b *Body2) {
 		b.fraction = 1
+		s.bodyAt.set(e, len(s.all))
+		s.all = append(s.all, bodyRec2{e: e, t: t, b: b})
+		row, hasRow := x.row(e)
+		var r *entry2
+		if hasRow {
+			r = &x.rows[row]
+			r.b, r.bi = b, -1
+			if r.shaped {
+				s.bodyRows = append(s.bodyRows, int32(row))
+			}
+		}
 		if b.Sleeping || b.Kinematic || b.Mass <= 0 {
 			b.invMass, b.invInertia = 0, 0
 			return
+		}
+		if r != nil {
+			r.bi = len(s.dynamic)
 		}
 		s.index.set(e, len(s.dynamic))
 		s.dynamic = append(s.dynamic, bodyRec2{e: e, t: t, b: b})
@@ -264,8 +295,8 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		b.invMass = 1 / b.Mass
 		b.invInertia = 0
 		if !b.LockRotation {
-			if c, ok := w.Get[Collider2](e); ok && c.Shape != nil {
-				if i := c.Shape.inertia(b.Mass); i > 0 {
+			if r != nil && r.c.Shape != nil {
+				if i := r.c.Shape.inertia(b.Mass); i > 0 {
 					b.invInertia = 1 / i
 				}
 			}
@@ -284,29 +315,19 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 			b.AngVel *= max(0, 1-b.AngularDamping*h)
 		}
 	})
-	// Gather colliders with bounds. The furthest a moving body travels
-	// and whether any of them sweeps are noted here, where each body is
-	// already in hand, rather than in a pass of their own.
-	s.entries = s.entries[:0]
+	// Place the bodies' colliders where the bodies now are; the still
+	// colliders keep the placement the update's walk gave them.
 	s.motion, s.anyCCD = 0, false
-	s.colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
-		if c.Shape == nil {
-			return
-		}
-		b, _ := w.Get[Body2](e)
-		if b != nil && b.invMass > 0 {
+	for _, k := range s.bodyRows {
+		x.replace(int(k))
+		if b := x.rows[k].b; b.invMass > 0 {
 			s.motion = max(s.motion, abs32(b.Vel.X)*h)
 			s.anyCCD = s.anyCCD || b.CCD
 		}
-		cs, sn := cosSin(t.Rotation)
-		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
-		lo, hi := c.Shape.bounds(pos, t.Rotation)
-		bi := -1
-		if i, ok := s.index.get(e); ok {
-			bi = i
-		}
-		s.entries = append(s.entries, entry2{e: e, t: t, b: b, c: c, pos: pos, lo: lo, hi: hi, bi: bi})
-	})
+	}
+	x.gather()
+	s.moveSet = append(append(s.moveSet[:0], s.bodyRows...), x.triggers...)
+	x.sortMoving(s.moveSet)
 	s.parent = s.parent[:0]
 	for i := range s.dynamic {
 		s.parent = append(s.parent, i)
@@ -314,12 +335,8 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 	// Broadphase and contact generation.
 	s.arbiters = s.arbiters[:0]
 	s.events = s.events[:0]
-	en := s.entries
-	slo, shi := s.sweep.begin(len(en))
-	for i := range en {
-		slo[i], shi[i] = en[i].lo.X, en[i].hi.X
-	}
-	s.sweep.pairs(func(i, j int) {
+	en := x.rows
+	sweepPairs(x.keyX, x.endX, x.moving.order, x.statics.order, func(i, j int) {
 		a, b := &en[i], &en[j]
 		if a.lo.Y > b.hi.Y || b.lo.Y > a.hi.Y {
 			return
@@ -394,12 +411,14 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 		w.Emit(p.ev)
 	}
 	// Continuous collision: clamp fast bodies to their first static hit.
-	for i := range en {
+	// Each clamp only lowers a fraction, so the order the bodies are
+	// swept in does not change the result.
+	for _, k := range s.bodyRows {
 		if !s.anyCCD {
 			break
 		}
-		e := &en[i]
-		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
+		e := &en[k]
+		if !e.b.CCD || e.b.invMass == 0 {
 			continue
 		}
 		s.sweepDynamic(e, h)
@@ -500,9 +519,11 @@ func (s *state2) sweepStatic(e *entry2, delta lin.Vec2) (float32, bool) {
 	ext := e.hi.Sub(e.lo)
 	minHalf := min(ext.X, ext.Y) / 2
 	best, found := float32(1), false
-	s.cands = s.sweep.overlapping(s.cands[:0], slo.X, shi.X)
+	x := &s.cols
+	s.cands = x.statics.overlapping(s.cands[:0], x.keyX, x.endX, slo.X, shi.X)
+	s.cands = x.moving.overlapping(s.cands, x.keyX, x.endX, slo.X, shi.X)
 	for _, ci := range s.cands {
-		o := &s.entries[ci]
+		o := &x.rows[ci]
 		if o == e || o.c.Trigger || active2(o.b) || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
@@ -530,9 +551,10 @@ func (s *state2) sweepDynamic(e *entry2, h float32) {
 	minHalf := min(ext.X, ext.Y) / 2
 	slo := min(e.lo.X, e.lo.X+e.b.Vel.X*h) - s.motion
 	shi := max(e.hi.X, e.hi.X+e.b.Vel.X*h) + s.motion
-	s.cands = s.sweep.overlapping(s.cands[:0], slo, shi)
+	x := &s.cols
+	s.cands = x.moving.overlapping(s.cands[:0], x.keyX, x.endX, slo, shi)
 	for _, ci := range s.cands {
-		o := &s.entries[ci]
+		o := &x.rows[ci]
 		if o == e || o.b == nil || o.b.invMass == 0 || o.c.Trigger || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
@@ -715,23 +737,27 @@ func Raycast2(w *ecs.World, r Ray2, mask uint32) (Hit2, bool) {
 }
 
 func raycast2(w *ecs.World, r Ray2, mask uint32, exclude ecs.Entity) (Hit2, bool) {
+	return queryState2(w).raycast(r, mask, exclude)
+}
+
+// raycast is raycast2 on an index already brought up to date, trying
+// the colliders the tree finds in walk order.
+func (st *state2) raycast(r Ray2, mask uint32, exclude ecs.Entity) (Hit2, bool) {
 	best := Hit2{Distance: float32(math.Inf(1))}
 	found := false
-	st := stateOf2(w)
-	st.colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
-		if c.Shape == nil || c.Trigger || e == exclude || !(Layers{Mask: mask}).collides(c.Layers) {
-			return
+	x := &st.cols
+	for _, k := range x.rayCandidates(r) {
+		p := &x.rows[k]
+		if p.c.Trigger || p.e == exclude || !(Layers{Mask: mask}).collides(p.c.Layers) {
+			continue
 		}
-		cs, sn := cosSin(t.Rotation)
-		pos := t.Position.Add(rotate2(c.Offset, cs, sn))
-		lo, hi := c.Shape.bounds(pos, t.Rotation)
-		if !raySlab2(r, lo, hi, min(best.Distance, 1)) {
-			return
+		if !raySlab2(r, p.lo, p.hi, min(best.Distance, 1)) {
+			continue
 		}
-		if tt, n, ok := rayShape2(&st.qs, r, c.Shape, pos, t.Rotation); ok && tt < best.Distance {
-			best = Hit2{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
+		if tt, n, ok := rayShape2(&st.qs, r, p.c.Shape, p.pos, p.t.Rotation); ok && tt < best.Distance {
+			best = Hit2{Entity: p.e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
 			found = true
 		}
-	})
+	}
 	return best, found
 }

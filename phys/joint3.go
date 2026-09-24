@@ -238,25 +238,52 @@ type jointSide3 struct {
 }
 
 func sideOf3(w *ecs.World, e ecs.Entity) (jointSide3, bool) {
-	s := jointSide3{e: e, rot: mat3FromQuat(lin.QuatIdentity())}
 	if e == ecs.None {
-		return s, true
+		return makeSide3(e, nil, nil), true
 	}
 	t, ok := w.Get[gfx.Transform](e)
 	if !ok {
-		return s, false
+		return makeSide3(e, nil, nil), false
+	}
+	b, _ := w.Get[Body3](e)
+	return makeSide3(e, t, b), true
+}
+
+// side is sideOf3 for the step, which finds the entity's transform and
+// body among the bodies and colliders it has already gathered instead
+// of looking each up in the world. Only an entity with neither is looked
+// up.
+func (st *state3) side(w *ecs.World, e ecs.Entity) (jointSide3, bool) {
+	if e == ecs.None {
+		return makeSide3(e, nil, nil), true
+	}
+	if i, ok := st.bodyAt.get(e); ok && st.all[i].e == e {
+		return makeSide3(e, st.all[i].t, st.all[i].b), true
+	}
+	if k, ok := st.cols.row(e); ok {
+		return makeSide3(e, st.cols.rows[k].t, nil), true
+	}
+	return sideOf3(w, e)
+}
+
+// makeSide3 fills a joint side from an entity's transform and body; a
+// nil transform is the world.
+func makeSide3(e ecs.Entity, t *gfx.Transform, b *Body3) jointSide3 {
+	s := jointSide3{e: e, rot: mat3FromQuat(lin.QuatIdentity())}
+	if t == nil {
+		return s
 	}
 	s.t = t
 	s.pos = t.Position
 	s.rot = mat3FromQuat(t.Rotation)
-	if b, ok := w.Get[Body3](e); ok {
+	if b != nil {
 		s.body = b
 		if !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
 			s.b = b
 			s.invMass, s.invI = b.invMass, b.invInertia
 		}
 	}
-	return s, true
+	return s
 }
 
 // wakeAcross3 wakes a sleeping body joined to one that is awake, so a
@@ -348,8 +375,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.springSolvers = s.springSolvers[:0]
 	s.fixedSolvers = s.fixedSolvers[:0]
 	s.distance.Each(func(e ecs.Entity, j *DistanceJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointDistance3, int32(len(s.distanceSolvers))})
@@ -357,8 +384,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.hinge.Each(func(e ecs.Entity, j *HingeJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointHinge3, int32(len(s.hingeSolvers))})
@@ -366,8 +393,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.ball.Each(func(e ecs.Entity, j *BallJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointBall3, int32(len(s.ballSolvers))})
@@ -375,8 +402,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.prismatic.Each(func(e ecs.Entity, j *PrismaticJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointPrismatic3, int32(len(s.prismaticSolvers))})
@@ -384,8 +411,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointSpring3, int32(len(s.springSolvers))})
@@ -393,8 +420,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.fixed.Each(func(e ecs.Entity, j *FixedJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointFixed3, int32(len(s.fixedSolvers))})

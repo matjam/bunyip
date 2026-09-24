@@ -577,6 +577,26 @@ test's output.
   bounds and an owned geometry snapshot. Exact comparisons detect hull
   and compound edits even when their outer bounds stay unchanged;
   unchanged queries reuse the placed parts without allocating.
+- `phys/index3.go` and `index2.go` keep every collider placed (through
+  `placement3` and `placement2`, the one place that computes it) in the
+  order the collider query walks, between steps and queries. A walk
+  compares each collider with the key it was placed from and places
+  again only what changed; the step walks once an update and each query
+  once, since the ECS reports no writes. Queries take candidates from an
+  AABB tree (`phys/tree.go`) and test them sorted by row, which is walk
+  order, so results match a walk over every collider bit for bit. The
+  step sweeps the moving rows against each other and against a sorted
+  list of still rows (`sweepPairs` in `phys/axis.go`) in the order one
+  sweep over all of them gives. `index_test.go` checks both against the
+  old brute-force walk.
+- Go on arm64 fuses a multiply and an add into one instruction where
+  the compiler chooses, and the choice depends on the surrounding code,
+  so moving float arithmetic into another function can change the last
+  bits of a physics result on arm64 even when the arithmetic is the
+  same. On amd64 without `GOAMD64=v3`, and on arm64 built with
+  `-gcflags=all=-d=fmahash=n`, results are exact functions of the
+  arithmetic; compare physics dumps there to prove a refactor keeps
+  results bit for bit.
 - Each physics substep ends with a relax pass over the contacts that
   solves them again with the position-correction bias dropped. The bias
   leaves the bodies separating at about the sleep threshold, so without

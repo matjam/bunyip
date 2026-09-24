@@ -6,7 +6,6 @@ import (
 	"slices"
 
 	"github.com/matjam/bunyip/ecs"
-	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/lin"
 )
 
@@ -19,21 +18,32 @@ type placed3 struct {
 	lo, hi lin.Vec3
 }
 
+// queryState3 is the world's physics state with its collider index
+// brought up to date, which every query starts from. A query that runs
+// several searches in a row, such as a character controller's move,
+// calls it once and then searches the index directly.
+func queryState3(w *ecs.World) *state3 {
+	st := stateOf3(w)
+	st.cols.update(st.colliders)
+	return st
+}
+
 // eachCollider3 calls fn for every collider whose bounds overlap the
-// box, skipping triggers unless asked and colliders the mask excludes.
-func eachCollider3(w *ecs.World, lo, hi lin.Vec3, mask uint32, triggers bool, fn func(p placed3)) {
-	stateOf3(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
-		if c.Shape == nil || (c.Trigger && !triggers) || !(Layers{Mask: mask}).collides(c.Layers) {
-			return
+// box, skipping triggers unless asked and colliders the mask excludes,
+// in walk order. The index must be up to date.
+func (st *state3) eachCollider3(lo, hi lin.Vec3, mask uint32, triggers bool, fn func(p placed3)) {
+	x := &st.cols
+	for _, k := range x.candidates(lo, hi) {
+		r := &x.rows[k]
+		c := r.c
+		if (c.Trigger && !triggers) || !(Layers{Mask: mask}).collides(c.Layers) {
+			continue
 		}
-		rot := mat3FromQuat(t.Rotation)
-		pos := t.Position.Add(rot.mulVec(c.Offset))
-		clo, chi := c.Shape.bounds(pos, rot)
-		if clo.X > hi.X || lo.X > chi.X || clo.Y > hi.Y || lo.Y > chi.Y || clo.Z > hi.Z || lo.Z > chi.Z {
-			return
+		if r.lo.X > hi.X || lo.X > r.hi.X || r.lo.Y > hi.Y || lo.Y > r.hi.Y || r.lo.Z > hi.Z || lo.Z > r.hi.Z {
+			continue
 		}
-		fn(placed3{e: e, c: c, pos: pos, rot: rot, lo: clo, hi: chi})
-	})
+		fn(placed3{e: r.e, c: c, pos: r.pos, rot: r.rot, lo: r.lo, hi: r.hi})
+	}
 }
 
 // candidate3 is one collider a query still has to test, with how far
@@ -48,8 +58,8 @@ type candidate3 struct {
 // to dst, skipping triggers unless asked, the excluded entity and
 // colliders the mask leaves out. Passing back a slice a previous call
 // filled reuses its storage.
-func gatherColliders3(dst []candidate3, w *ecs.World, lo, hi lin.Vec3, mask uint32, triggers bool, exclude ecs.Entity) []candidate3 {
-	eachCollider3(w, lo, hi, mask, triggers, func(p placed3) {
+func (st *state3) gatherColliders3(dst []candidate3, lo, hi lin.Vec3, mask uint32, triggers bool, exclude ecs.Entity) []candidate3 {
+	st.eachCollider3(lo, hi, mask, triggers, func(p placed3) {
 		if p.e != exclude {
 			dst = append(dst, candidate3{p: p})
 		}
@@ -136,13 +146,12 @@ func OverlapShape3(w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, mask uint
 // storage; pass nil for a fresh slice. Result and scratch buffers may
 // allocate on initial use or growth. OverlapShape3's contracts apply.
 func OverlapShape3Into(out []Hit3, w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, mask uint32) []Hit3 {
-	return overlapShape3(out, w, s, pos, mat3FromQuat(rot), mask, true, ecs.None)
+	return queryState3(w).overlapShape3(out, s, pos, mat3FromQuat(rot), mask, true, ecs.None)
 }
 
-func overlapShape3(out []Hit3, w *ecs.World, s Shape3, pos lin.Vec3, r mat3, mask uint32, triggers bool, exclude ecs.Entity) []Hit3 {
+func (st *state3) overlapShape3(out []Hit3, s Shape3, pos lin.Vec3, r mat3, mask uint32, triggers bool, exclude ecs.Entity) []Hit3 {
 	lo, hi := s.bounds(pos, r)
-	st := stateOf3(w)
-	eachCollider3(w, lo, hi, mask, triggers, func(p placed3) {
+	st.eachCollider3(lo, hi, mask, triggers, func(p placed3) {
 		if p.e == exclude {
 			return
 		}
@@ -178,11 +187,10 @@ func OverlapBox3(w *ecs.World, center, half lin.Vec3, rot lin.Quat, mask uint32)
 // normal there. Colliders already overlapping the shape at the start
 // and triggers are ignored.
 func ShapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot lin.Quat, delta lin.Vec3, mask uint32) (Hit3, bool) {
-	return shapeCast3(w, s, pos, mat3FromQuat(rot), delta, mask, ecs.None)
+	return queryState3(w).shapeCast3(s, pos, mat3FromQuat(rot), delta, mask, ecs.None)
 }
 
-func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, mask uint32, exclude ecs.Entity) (Hit3, bool) {
-	st := stateOf3(w)
+func (st *state3) shapeCast3(s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, mask uint32, exclude ecs.Entity) (Hit3, bool) {
 	st.castParts = appendConvexParts(st.castParts[:0], s, pos, rot)
 	parts := st.castParts
 	if len(parts) == 0 {
@@ -196,7 +204,7 @@ func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, 
 	// Order the candidates along the sweep, so the first collider hit
 	// shortens the cast and everything behind it is dropped on its
 	// bounds alone.
-	cands := gatherColliders3(st.qcands[:0], w, slo, shi, mask, false, exclude)
+	cands := st.gatherColliders3(st.qcands[:0], slo, shi, mask, false, exclude)
 	for i := range cands {
 		cands[i].enter = sweepEnter3(lo, hi, delta, cands[i].p.lo, cands[i].p.hi)
 	}
@@ -233,10 +241,10 @@ func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, 
 // query point (zero when the point is inside) and Distance is how far.
 func Nearest3(w *ecs.World, point lin.Vec3, radius float32, mask uint32) (Hit3, bool) {
 	r := lin.V3(radius, radius, radius)
-	st := stateOf3(w)
+	st := queryState3(w)
 	best := Hit3{Distance: float32(math.Inf(1))}
 	found := false
-	eachCollider3(w, point.Sub(r), point.Add(r), mask, false, func(p placed3) {
+	st.eachCollider3(point.Sub(r), point.Add(r), mask, false, func(p placed3) {
 		if m, ok := p.c.Shape.(MeshShape); ok {
 			if q, d, hit := closestPointMesh(m, p.pos, p.rot, point, radius); hit && d < best.Distance {
 				best, found = Hit3{Entity: p.e, Point: q, Normal: point.Sub(q).Norm(), Distance: d}, true
@@ -267,21 +275,20 @@ func RaycastAll3(w *ecs.World, r Ray3, mask uint32) []Hit3 {
 // are sorted among themselves, not against what out already held.
 func RaycastAll3Into(out []Hit3, w *ecs.World, r Ray3, mask uint32) []Hit3 {
 	start := len(out)
-	st := stateOf3(w)
-	st.colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
-		if c.Shape == nil || c.Trigger || !(Layers{Mask: mask}).collides(c.Layers) {
-			return
+	st := queryState3(w)
+	x := &st.cols
+	for _, k := range x.rayCandidates(r) {
+		p := &x.rows[k]
+		if p.c.Trigger || !(Layers{Mask: mask}).collides(p.c.Layers) {
+			continue
 		}
-		rot := mat3FromQuat(t.Rotation)
-		pos := t.Position.Add(rot.mulVec(c.Offset))
-		lo, hi := c.Shape.bounds(pos, rot)
-		if !raySlab3(r, lo, hi, 1) {
-			return
+		if !raySlab3(r, p.lo, p.hi, 1) {
+			continue
 		}
-		if tt, n, ok := rayShape3(&st.qs, r, c.Shape, pos, rot); ok {
-			out = append(out, Hit3{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
+		if tt, n, ok := rayShape3(&st.qs, r, p.c.Shape, p.pos, p.rot); ok {
+			out = append(out, Hit3{Entity: p.e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
 		}
-	})
+	}
 	slices.SortStableFunc(out[start:], func(a, b Hit3) int { return cmp.Compare(a.Distance, b.Distance) })
 	return out
 }
