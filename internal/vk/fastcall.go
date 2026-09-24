@@ -41,6 +41,7 @@ var (
 	pfnCmdBlitImage          uintptr
 	pfnCmdWriteTimestamp2    uintptr
 	pfnCmdResetQueryPool     uintptr
+	pfnGetQueryPoolResults   uintptr
 )
 
 // fastAddrs maps a generated command variable to the raw address slot that
@@ -69,6 +70,7 @@ var fastAddrs = map[any]*uintptr{
 	&VkCmdBlitImage:          &pfnCmdBlitImage,
 	&VkCmdWriteTimestamp2:    &pfnCmdWriteTimestamp2,
 	&VkCmdResetQueryPool:     &pfnCmdResetQueryPool,
+	&VkGetQueryPoolResults:   &pfnGetQueryPoolResults,
 }
 
 // callArgs is the argument slice for the calls below. Spreading a slice
@@ -370,6 +372,23 @@ func CmdResetQueryPool(cb VkCommandBuffer, pool VkQueryPool, first, count uint32
 	a := callArgs[:4]
 	a[0], a[1], a[2], a[3] = uintptr(cb), uintptr(pool), uintptr(first), uintptr(count)
 	purego.SyscallN(pfnCmdResetQueryPool, a...)
+}
+
+// GetQueryPoolResults reads query results. It is VkGetQueryPoolResults
+// without the allocating call wrapper. pData must point into memory that
+// outlives the call.
+func GetQueryPoolResults(device VkDevice, pool VkQueryPool, first, count uint32, dataSize uintptr,
+	pData unsafe.Pointer, stride VkDeviceSize, flags VkQueryResultFlags) VkResult {
+	if pfnGetQueryPoolResults == 0 {
+		return VkGetQueryPoolResults(device, pool, first, count, dataSize, pData, stride, flags)
+	}
+	a := callArgs[:8]
+	a[0], a[1], a[2] = uintptr(device), uintptr(pool), uintptr(first)
+	a[3], a[4], a[5] = uintptr(count), dataSize, uintptr(pData)
+	a[6], a[7] = uintptr(stride), uintptr(flags)
+	r1, _, _ := purego.SyscallN(pfnGetQueryPoolResults, a...)
+	runtime.KeepAlive(pData)
+	return VkResult(int32(uint32(r1)))
 }
 
 // CmdSetScissor sets scissor rectangles. It is VkCmdSetScissor without the

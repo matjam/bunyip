@@ -10,8 +10,8 @@ import (
 
 // These tests replace a Vulkan entry point and must not run in parallel.
 func TestTimestampReadback(t *testing.T) {
-	original := vk.VkGetQueryPoolResults
-	t.Cleanup(func() { vk.VkGetQueryPoolResults = original })
+	original := queryPoolResults
+	t.Cleanup(func() { queryPoolResults = original })
 	for _, tt := range []struct {
 		name    string
 		mask    uint64
@@ -72,7 +72,7 @@ func TestTimestampReadback(t *testing.T) {
 				{name: "unclosed", a: base, b: base + 1},
 			}}
 			called := false
-			vk.VkGetQueryPoolResults = func(_ vk.VkDevice, _ vk.VkQueryPool, first, count uint32, size uintptr, data unsafe.Pointer, stride vk.VkDeviceSize, flags vk.VkQueryResultFlags) vk.VkResult {
+			queryPoolResults = func(_ vk.VkDevice, _ vk.VkQueryPool, first, count uint32, size uintptr, data unsafe.Pointer, stride vk.VkDeviceSize, flags vk.VkQueryResultFlags) vk.VkResult {
 				called = true
 				if first != base || count != 4 || size != 64 || stride != 16 || flags != vk.VK_QUERY_RESULT_64_BIT|vk.VK_QUERY_RESULT_WITH_AVAILABILITY_BIT {
 					t.Fatalf("incorrect readback: first=%d count=%d size=%d stride=%d flags=%#x", first, count, size, stride, flags)

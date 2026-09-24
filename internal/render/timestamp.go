@@ -189,6 +189,10 @@ func (t *Timestamps) FrameMS() float64 {
 	return t.frameMS
 }
 
+// queryPoolResults reads query results without the allocating call
+// wrapper. It is a variable so a test can stand in for the device.
+var queryPoolResults = vk.GetQueryPoolResults
+
 // publish reads a slot's counters and turns them into spans. Results
 // that have not landed are skipped rather than waited for, so the
 // figures stand still rather than stalling the frame.
@@ -205,7 +209,7 @@ func (t *Timestamps) publish(slot int) {
 		t.results = make([]uint64, need)
 	}
 	t.results = t.results[:need]
-	res := vk.VkGetQueryPoolResults(t.dev.Handle, t.pool, base, n,
+	res := queryPoolResults(t.dev.Handle, t.pool, base, n,
 		uintptr(need*8), unsafe.Pointer(&t.results[0]), 16,
 		vk.VK_QUERY_RESULT_64_BIT|vk.VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
 	if res != vk.VK_SUCCESS && res != vk.VK_NOT_READY {
