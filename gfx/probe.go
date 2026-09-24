@@ -171,10 +171,12 @@ func (q *drawQueue) probeEnv(index int, env *Environment) *Environment {
 
 // BakeProbe renders the scene from the probe's position into a cube map
 // and prefilters it for every roughness. Call it from Init or Update, not
-// from Draw: it submits its own command buffers and waits for them. The
-// scene function queues the draws and lights the bake sees, exactly as
-// Draw would, and the engine sets the camera for each of the six faces.
-// A second call rebakes the probe and frees what the first one made.
+// from Draw: it submits its own command buffer and waits for it, once for
+// all six faces. The scene function queues the draws and lights the bake
+// sees, exactly as Draw would, and the engine sets the camera for each of
+// the six faces. It is called once for each face, so it must queue the
+// same scene every time. A second call rebakes the probe and frees what
+// the first one made.
 func (g *Graphics) BakeProbe(p *ReflectionProbe, scene func()) error {
 	if p == nil {
 		return fmt.Errorf("gfx: BakeProbe needs a probe")
@@ -186,7 +188,7 @@ func (g *Graphics) BakeProbe(p *ReflectionProbe, scene func()) error {
 	if size <= 0 {
 		size = 64
 	}
-	b, err := g.newBaker(size, scene)
+	b, err := g.newBaker(size, 1, scene)
 	if err != nil {
 		return err
 	}
@@ -195,7 +197,7 @@ func (g *Graphics) BakeProbe(p *ReflectionProbe, scene func()) error {
 	if err != nil {
 		return err
 	}
-	env, err := g.newEnvironmentFrom(faces.sample, EnvironmentOptions{Size: size, Intensity: p.Intensity})
+	env, err := g.newEnvironmentFrom(faces[0].sample, EnvironmentOptions{Size: size, Intensity: p.Intensity})
 	if err != nil {
 		return err
 	}
@@ -204,20 +206,27 @@ func (g *Graphics) BakeProbe(p *ReflectionProbe, scene func()) error {
 	return nil
 }
 
-// baker renders a scene into cube faces from any number of positions. The
-// draws are queued once and re-rendered per face, so a grid of probes
-// costs one queue and one set of targets.
+// baker renders a scene into cube faces from any number of positions.
+// Every face rendered in one submission needs frame data of its own on
+// the host (the camera block, the light clusters, the instance stream),
+// so the baker holds a queue for each face of the probes it renders
+// together, fills each by running the scene once, and records all those
+// faces, and the copies that read them back, into one command buffer:
+// one wait for them all. The faces share one set of targets, rendered
+// into and copied out one after another.
 type baker struct {
-	g     *Graphics
-	size  int
-	t     *sceneTargets
-	q     *drawQueue
-	stats FrameStats
+	g        *Graphics
+	size     int
+	t        *sceneTargets
+	queues   []*drawQueue // six a probe rendered together
+	readback *render.Buffer
+	stats    FrameStats
 }
 
-// newBaker builds the offscreen targets and queue for size by size faces
-// and runs scene once to fill the queue.
-func (g *Graphics) newBaker(size int, scene func()) (*baker, error) {
+// newBaker builds the offscreen targets for size by size faces and the
+// queues for probes cube maps rendered together, running scene once to
+// fill each queue.
+func (g *Graphics) newBaker(size, probes int, scene func()) (*baker, error) {
 	size = min(max(size, 8), 512)
 	extent := vk.VkExtent2D{Width: uint32(size), Height: uint32(size)}
 	b := &baker{g: g, size: size, stats: g.stats}
@@ -227,30 +236,52 @@ func (g *Graphics) newBaker(size int, scene func()) (*baker, error) {
 	if b.t, err = g.newSceneTargets(extent, vk.VK_SAMPLE_COUNT_1_BIT); err != nil {
 		return nil, err
 	}
-	if b.q, err = g.newQueue(float32(size), float32(size)); err != nil {
-		b.destroy()
-		return nil, err
-	}
 	prev := g.cur
-	g.cur = b.q
-	b.q.reset()
-	if scene != nil {
-		scene()
+	defer func() { g.cur = prev }()
+	for range max(probes, 1) * 6 {
+		q, err := g.newQueue(float32(size), float32(size))
+		if err != nil {
+			b.destroy()
+			return nil, err
+		}
+		b.queues = append(b.queues, q)
+		g.cur = q
+		q.reset()
+		if scene != nil {
+			scene()
+		}
 	}
 	g.cur = prev
 	// A shader's uniform blocks live in the arena the frame writes at its
 	// end; the bake writes slot 0 itself, since it renders outside a frame.
+	// A frame still running may be reading slot 0, so wait for it first.
+	if err := g.r.Device.WaitIdle(); err != nil {
+		b.destroy()
+		return nil, err
+	}
 	if err := g.uniforms.Write(0, g.arena.Bytes()); err != nil {
+		b.destroy()
+		return nil, err
+	}
+	if b.readback, err = g.r.Device.NewBuffer(vk.VkDeviceSize(len(b.queues)*b.faceBytes()), vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT); err != nil {
 		b.destroy()
 		return nil, err
 	}
 	return b, nil
 }
 
+// faceBytes is one face of half-float RGBA radiance.
+func (b *baker) faceBytes() int { return b.size * b.size * 8 }
+
 func (b *baker) destroy() {
-	if b.q != nil {
-		b.q.destroy()
-		b.q = nil
+	for _, q := range b.queues {
+		q.destroy()
+	}
+	b.queues = nil
+	if b.readback != nil {
+		b.readback.Destroy()
+		b.readback = nil
 	}
 	if b.t != nil {
 		b.t.destroy(b.g)
@@ -259,16 +290,31 @@ func (b *baker) destroy() {
 	b.g.stats = b.stats // a bake is not part of the frame's counts
 }
 
-// capture renders the six faces from pos and reads them back.
-func (b *baker) capture(pos lin.Vec3) (*cubeFaces, error) {
-	faces := &cubeFaces{side: b.size}
-	for face := range 6 {
-		b.q.camera = faceCamera(pos, face)
-		b.q.hasCam = true
+// capture renders the six faces from each position and reads them back.
+// The positions go in groups of as many probes as the baker has queues
+// for, each group in one submission that is waited for once.
+func (b *baker) capture(positions ...lin.Vec3) ([]*cubeFaces, error) {
+	out := make([]*cubeFaces, 0, len(positions))
+	per := len(b.queues) / 6
+	faceBytes := b.faceBytes()
+	for len(positions) > 0 {
+		group := positions[:min(per, len(positions))]
+		positions = positions[len(group):]
 		var inner error
 		err := b.g.r.Device.OneShot(func(cb vk.VkCommandBuffer) {
 			fr := &render.Frame{CB: cb, Slot: 0, Extent: b.t.extent}
-			inner = b.g.renderScene(fr, b.q, b.t)
+			for p, pos := range group {
+				for face := range 6 {
+					k := p*6 + face
+					q := b.queues[k]
+					q.camera = faceCamera(pos, face)
+					q.hasCam = true
+					if inner = b.g.renderScene(fr, q, b.t); inner != nil {
+						return
+					}
+					render.RecordImageReadback(cb, b.t.hdr.Color, b.readback, vk.VkDeviceSize(k*faceBytes))
+				}
+			}
 		})
 		if err != nil {
 			return nil, err
@@ -276,13 +322,18 @@ func (b *baker) capture(pos lin.Vec3) (*cubeFaces, error) {
 		if inner != nil {
 			return nil, inner
 		}
-		pix, err := b.g.r.Device.ReadImageRaw(b.t.hdr.Color, 8)
-		if err != nil {
-			return nil, err
+		data := b.readback.Bytes()
+		for p := range group {
+			faces := &cubeFaces{side: b.size}
+			for face := range 6 {
+				k := p*6 + face
+				faces.pix[face] = append([]byte(nil), data[k*faceBytes:(k+1)*faceBytes]...)
+			}
+			faces.decode()
+			out = append(out, faces)
 		}
-		faces.pix[face] = pix
 	}
-	return faces, nil
+	return out, nil
 }
 
 // faceCamera looks along one cube face from pos, with the field of view
@@ -304,19 +355,42 @@ func faceCamera(pos lin.Vec3, face int) Camera {
 type cubeFaces struct {
 	side int
 	pix  [6][]byte
+	// rgb is pix converted to float RGB by decode, which the prefilter
+	// reads many times a texel; nil until then.
+	rgb [6][]float32
+}
+
+// decode converts every face to float RGB once, through getF16, so the
+// samples read the same values as from pix without converting each time.
+func (c *cubeFaces) decode() {
+	n := c.side * c.side
+	for face, p := range c.pix {
+		if len(p) < n*8 {
+			continue
+		}
+		f := make([]float32, n*3)
+		for i := range n {
+			f[i*3], f[i*3+1], f[i*3+2] = getF16(p[i*8:]), getF16(p[i*8+2:]), getF16(p[i*8+4:])
+		}
+		c.rgb[face] = f
+	}
 }
 
 // texel reads one face's texel, clamped to the face's edge. The rendered
 // image runs the other way along u than the cube face convention does, so
 // x is mirrored here rather than in the camera.
 func (c *cubeFaces) texel(face, x, y int) (r, g, b float32) {
+	x = min(max(x, 0), c.side-1)
+	y = min(max(y, 0), c.side-1)
+	i := (y * c.side) + (c.side - 1 - x)
+	if f := c.rgb[face]; f != nil {
+		return f[i*3], f[i*3+1], f[i*3+2]
+	}
 	p := c.pix[face]
 	if len(p) < c.side*c.side*8 {
 		return 0, 0, 0
 	}
-	x = min(max(x, 0), c.side-1)
-	y = min(max(y, 0), c.side-1)
-	i := ((y * c.side) + (c.side - 1 - x)) * 8
+	i *= 8
 	return getF16(p[i:]), getF16(p[i+2:]), getF16(p[i+4:])
 }
 

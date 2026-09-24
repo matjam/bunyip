@@ -246,22 +246,7 @@ func (d *Device) ReadImage(img *Image) (*image.RGBA, error) {
 		return nil, err
 	}
 	defer buf.Destroy()
-	err = d.OneShot(func(cb vk.VkCommandBuffer) {
-		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-			vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT|vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT)
-		region := vk.VkBufferImageCopy{
-			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
-			ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
-		}
-		vk.VkCmdCopyImageToBuffer(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf.Handle, 1, &region)
-		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,
-			vk.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
-	})
+	err = d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageReadback(cb, img, buf, 0) })
 	if err != nil {
 		return nil, err
 	}
@@ -293,28 +278,38 @@ func (d *Device) ReadImageRaw(img *Image, texelBytes int) ([]byte, error) {
 		return nil, err
 	}
 	defer buf.Destroy()
-	err = d.OneShot(func(cb vk.VkCommandBuffer) {
-		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-			vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT|vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT)
-		region := vk.VkBufferImageCopy{
-			ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
-			ImageExtent:      vk.VkExtent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
-		}
-		vk.VkCmdCopyImageToBuffer(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf.Handle, 1, &region)
-		imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
-			vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,
-			vk.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
-	})
+	err = d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageReadback(cb, img, buf, 0) })
 	if err != nil {
 		return nil, err
 	}
 	out := make([]byte, size)
 	copy(out, buf.Bytes()[:size])
 	return out, nil
+}
+
+// RecordImageReadback records a copy of level 0 of a colour image that is
+// in shader-read-only layout into buf at offset, texels packed row after
+// row with no padding, and leaves the image in shader-read-only layout.
+// The barriers order the copy after the passes and reads recorded before
+// it and before any later read of the image, so one command buffer can
+// render an image, copy it out, and render into it again. The bytes are
+// in buf once the command buffer has finished.
+func RecordImageReadback(cb vk.VkCommandBuffer, img *Image, buf *Buffer, offset vk.VkDeviceSize) {
+	imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+		vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT|vk.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT)
+	region := vk.VkBufferImageCopy{
+		BufferOffset:     offset,
+		ImageSubresource: vk.VkImageSubresourceLayers{AspectMask: vk.VK_IMAGE_ASPECT_COLOR_BIT, LayerCount: 1},
+		ImageExtent:      vk.VkExtent3D{Width: img.Extent.Width, Height: img.Extent.Height, Depth: 1},
+	}
+	vk.VkCmdCopyImageToBuffer(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf.Handle, 1, &region)
+	imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
+		vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		vk.VK_PIPELINE_STAGE_2_COPY_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,
+		vk.VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 }
 
 // ReadDepth copies the depth aspect of an image that a finished pass

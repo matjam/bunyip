@@ -91,8 +91,10 @@ func (grid *LightProbeGrid) Probe(x, y, z int) [9]lin.Vec4 {
 // BakeLightProbes renders the scene from every cell of the grid and
 // projects what it sees onto spherical harmonics. Call it from Init or
 // Update, not from Draw: it submits its own command buffers and waits for
-// them, once per cell. The scene function queues the draws and lights the
-// bake sees, exactly as Draw would. Baking again replaces the harmonics.
+// them, once for every four cells. The scene function queues the draws
+// and lights the bake sees, exactly as Draw would; it is called once for
+// each face rendered together, up to 24 times, so it must queue the same
+// scene every time. Baking again replaces the harmonics.
 func (g *Graphics) BakeLightProbes(grid *LightProbeGrid, scene func()) error {
 	if grid == nil {
 		return fmt.Errorf("gfx: BakeLightProbes needs a grid")
@@ -108,27 +110,39 @@ func (g *Graphics) BakeLightProbes(grid *LightProbeGrid, scene func()) error {
 	if size <= 0 {
 		size = 16
 	}
-	b, err := g.newBaker(size, scene)
+	cells := nx * ny * nz
+	b, err := g.newBaker(size, min(cells, bakeCellsTogether), scene)
 	if err != nil {
 		return err
 	}
 	defer b.destroy()
-	sh := make([]lin.Vec4, nx*ny*nz*9)
+	positions := make([]lin.Vec3, 0, cells)
 	for z := range nz {
 		for y := range ny {
 			for x := range nx {
-				faces, err := b.capture(grid.Position(x, y, z))
-				if err != nil {
-					return err
-				}
-				cell := shProject(faces.sample, 32, 16)
-				copy(sh[((z*ny+y)*nx+x)*9:], cell[:])
+				positions = append(positions, grid.Position(x, y, z))
 			}
 		}
 	}
+	faces, err := b.capture(positions...)
+	if err != nil {
+		return err
+	}
+	// The cells project independently, so they share the cores.
+	sh := make([]lin.Vec4, cells*9)
+	parallelRows(cells, func(i int) {
+		cell := shProject(faces[i].sample, 32, 16)
+		copy(sh[i*9:], cell[:])
+	})
 	grid.sh = sh
 	return nil
 }
+
+// bakeCellsTogether is how many cells of a light probe grid one
+// submission renders. Each face in a submission holds about 2 MB of
+// frame data on the host, so four cells hold about 48 MB while the grid
+// bakes, and a grid waits for the GPU once every four cells.
+const bakeCellsTogether = 4
 
 // SetLightProbes uses a baked grid for this frame's ambient light, or
 // nil for none. An unbaked grid is ignored.

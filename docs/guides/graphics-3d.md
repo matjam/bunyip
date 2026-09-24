@@ -572,8 +572,10 @@ covers (or `Radius` for a sphere probe), `Resolution` the cube face size
 in texels (default 64) and `Intensity` a multiplier. `BakeProbe(probe,
 scene)` renders six faces from that point and prefilters them for every
 roughness; the `scene` function queues the draws and the light the bake
-sees, exactly as `Draw` would. Baking submits its own command buffers and
-waits for them, so call it from `Init` or `Update`, never from `Draw`,
+sees, exactly as `Draw` would. It runs once for each face, so it must
+queue the same scene every time. Baking submits its own command buffer
+and waits for it once for all six faces, so call it from `Init` or
+`Update`, never from `Draw`,
 and call it again when the room it holds has changed. `AddProbe` adds a
 baked probe to a frame the way `AddPointLight` adds a light.
 
@@ -594,7 +596,8 @@ it early. Graphics releases its remaining GPU resources at shutdown.
 `Origin` every `Spacing` units, each holding the light arriving at it as
 nine spherical harmonics. `BakeLightProbes(grid, scene)` renders a small
 cube at every cell (`Resolution`, default 16, is enough because harmonics
-keep only the low frequencies) and projects what it saw. `SetLightProbes`
+keep only the low frequencies) and projects what it saw, four cells to a
+submission and one wait. `SetLightProbes`
 gives a frame a baked grid, which replaces the single ambient term where
 it reaches, interpolated between the eight cells around each fragment and
 faded back to the environment over the outer half cell. A grid holds its
