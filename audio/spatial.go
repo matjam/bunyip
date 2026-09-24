@@ -67,6 +67,12 @@ type SpatialSettings struct {
 func (m *Mixer) SetSpatial(s SpatialSettings) {
 	m.mu.Lock()
 	m.spatial = s
+	m.binaural.Store(s.Binaural)
+	// Positional voices already playing get their head-model state here,
+	// on the caller's goroutine, rather than on the mixer's thread.
+	for _, v := range m.voices {
+		v.needBinaural()
+	}
 	m.mu.Unlock()
 }
 

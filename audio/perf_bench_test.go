@@ -456,6 +456,7 @@ func perfWorst(t *testing.T, hammer string, mode perfMode) {
 		l0 := time.Now()
 		send := m.snapshot(out)
 		held := time.Since(l0)
+		m.placeHeads()
 		scratch := m.scratch[:len(out)]
 		for j := range m.snap {
 			m.snap[j].render(scratch, out, frames)
@@ -477,7 +478,7 @@ func perfWorst(t *testing.T, hammer string, mode perfMode) {
 		fns := m.apply()
 		held2 := time.Since(l1)
 		m.mixMu.Unlock()
-		run(fns)
+		m.run(fns)
 		times[i] = time.Since(t0)
 		lockMax = max(lockMax, held, held2)
 	}

@@ -77,13 +77,19 @@ type Mixer struct {
 	sendBuf        []float32
 	listener       Listener
 	finished       []func() // OnDone callbacks to run once the lock is released
+	// spareFinished is the other slice of callbacks: whoever takes
+	// finished hands its slice back here once the callbacks have run, so
+	// queueing a callback does not allocate.
+	spareFinished []func()
 
 	// The block being mixed. Only the mixer's thread touches these, under
 	// mixMu, and they are reused from block to block so mixing allocates
 	// nothing.
-	snap      []voiceMix
-	revBuses  []busReverb
-	blkReverb *reverb
+	snap        []voiceMix
+	revBuses    []busReverb
+	blkReverb   *reverb
+	blkListener Listener // the listener the block's head models are worked out for
+	blkRadius   float32  // the head radius, likewise
 
 	reverb     *reverb        // the shared reverb, nil when off
 	baseReverb ReverbSettings // what SetReverb was given
@@ -94,6 +100,9 @@ type Mixer struct {
 	doppler      float32 // Doppler factor, 0 off
 	speedOfSound float32
 	spatial      SpatialSettings // how positional voices reach the ears
+	// binaural mirrors spatial.Binaural so Play can make a new voice's
+	// head-model state before it takes the lock.
+	binaural atomic.Bool
 
 	buses                    map[string]*Bus
 	busList                  []*Bus // the same buses in creation order, to walk without the map
@@ -107,6 +116,10 @@ func NewMixer(rate int) *Mixer {
 	m := &Mixer{rate: rate, master: 1, maxVoices: 64, stopFrames: max(rate/1000, 1),
 		buses: map[string]*Bus{}, speedOfSound: 343,
 		listener: Listener{Forward: lin.Vec3{Z: -1}, Up: lin.Vec3{Y: 1}}}
+	// Room for a full mixer plus as many stolen voices ramping out, so
+	// the block's copy of the voices does not grow on the mixer's thread
+	// unless SetMaxVoices raises the limit.
+	m.snap = make([]voiceMix, 0, 2*m.maxVoices)
 	m.music = m.NewBus("music")
 	m.effects = m.NewBus("effects")
 	m.dialogue = m.NewBus("dialogue")
@@ -214,6 +227,12 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 	if opts.LowPass > 0 {
 		v.lp, v.lpc = &lowPass{}, newBiquad(opts.LowPass, m.rate)
 	}
+	if positional && m.binaural.Load() {
+		// Made here, on the caller's goroutine, so the mixer's thread
+		// never allocates it. add covers binaural being turned on between
+		// this and the voice joining the mix.
+		v.bin = newBinaural(m.rate)
+	}
 	v.setOcclusion(opts.Occlusion)
 	if opts.FadeIn > 0 {
 		total := int(opts.FadeIn * float32(m.rate))
@@ -229,6 +248,7 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 // same block and the old one does not click.
 func (m *Mixer) add(v *Voice) *Voice {
 	m.mu.Lock()
+	v.needBinaural()
 	active, ramping, victim := 0, 0, -1
 	for i, o := range m.voices {
 		if o.stop || o.done {
@@ -260,8 +280,25 @@ func (m *Mixer) add(v *Voice) *Voice {
 	}
 	done := m.takeFinished()
 	m.mu.Unlock()
-	run(done)
+	m.run(done)
 	return v
+}
+
+// needBinaural gives a positional voice its head-model state when the
+// mixer renders binaurally and the voice has none yet, so the state is
+// made on the goroutine that made the voice positional and never on the
+// mixer's thread. Callers hold the lock.
+func (v *Voice) needBinaural() {
+	if v.positional && v.bin == nil && v.m.spatial.Binaural {
+		v.bin = newBinaural(v.m.rate)
+	}
+}
+
+// makePositional turns positional audio on for the voice. Callers hold
+// the lock.
+func (v *Voice) makePositional() {
+	v.positional = true
+	v.needBinaural()
 }
 
 // StopAll silences every voice. Each one frees its slot at once and
@@ -273,7 +310,7 @@ func (m *Mixer) StopAll() {
 	}
 	done := m.takeFinished()
 	m.mu.Unlock()
-	run(done)
+	m.run(done)
 }
 
 // finish ends a voice under the lock, queueing its OnDone callback.
@@ -298,16 +335,34 @@ func (m *Mixer) beginStop(v *Voice) {
 }
 
 // takeFinished hands over the queued callbacks, to run once unlocked.
+// The caller owns the returned slice until it passes it to run, which
+// gives it back, and the spare slice takes its place meanwhile, so the
+// mixer's thread can queue callbacks without allocating. Callers hold the
+// lock.
 func (m *Mixer) takeFinished() []func() {
+	if len(m.finished) == 0 {
+		return nil
+	}
 	done := m.finished
-	m.finished = nil
+	m.finished, m.spareFinished = m.spareFinished, nil
 	return done
 }
 
-func run(fns []func()) {
+// run calls the callbacks takeFinished handed over, with the lock
+// released, and then returns the slice for reuse.
+func (m *Mixer) run(fns []func()) {
+	if len(fns) == 0 {
+		return
+	}
 	for _, fn := range fns {
 		fn()
 	}
+	clear(fns) // drop the callbacks so the slice keeps nothing alive
+	m.mu.Lock()
+	if m.spareFinished == nil {
+		m.spareFinished = fns[:0]
+	}
+	m.mu.Unlock()
 }
 
 // Playing counts active voices. A voice that has been stopped is not
@@ -355,6 +410,13 @@ type voiceMix struct {
 	bin *binaural // head-model state, nil unless the voice is spatialised
 	ear earParams // the head model this block ramps to
 
+	// A binaural voice's head model is worked out by placeHeads after the
+	// lock is released, from these.
+	place   bool     // placeHeads sets ear, tl and tr
+	headPos lin.Vec3 // the source, in the listener's world
+	gain    float32  // the gain before the ears' level difference
+	fresh   bool     // the voice's first block: start at the target gains
+
 	curL, curR float32 // gains at the start of the block
 	tl, tr     float32 // gains to ramp to by the end of it
 
@@ -379,6 +441,7 @@ func (m *Mixer) mixLocked(out []float32) {
 	clear(out)
 	frames := len(out) / 2
 	send := m.snapshot(out)
+	m.placeHeads()
 	scratch := m.scratch[:len(out)]
 	for i := range m.snap {
 		m.snap[i].render(scratch, out, frames)
@@ -404,7 +467,26 @@ func (m *Mixer) mixLocked(out []float32) {
 	// The callbacks run with the lock released, as promised, so one that
 	// seeks a voice does not deadlock the audio thread.
 	m.mixMu.Unlock()
-	run(fns)
+	m.run(fns)
+}
+
+// placeHeads works out the head model of every binaural voice in the
+// block and the ear gains it ramps to. The snapshot copies the positions
+// under the settings lock and this runs after the lock is released,
+// because the model's trigonometry would otherwise triple how long a
+// setter can wait. Callers hold mixMu.
+func (m *Mixer) placeHeads() {
+	for i := range m.snap {
+		sn := &m.snap[i]
+		if !sn.place {
+			continue
+		}
+		sn.ear = m.blkListener.headModel(sn.headPos, m.blkRadius, m.rate)
+		sn.tl, sn.tr = sn.gain*sn.ear.gainL, sn.gain*sn.ear.gainR
+		if sn.fresh {
+			sn.curL, sn.curR = sn.tl, sn.tr
+		}
+	}
 }
 
 // snapshot copies the block's voices and their settled gains out from
@@ -425,6 +507,7 @@ func (m *Mixer) snapshot(out []float32) []float32 {
 		m.pending = false
 	}
 	m.blkReverb = m.reverb
+	m.blkListener, m.blkRadius = m.listener, m.spatial.headRadius()
 	soloVoices, soloBuses := false, false
 	for _, v := range m.voices {
 		soloVoices = soloVoices || v.solo
@@ -527,15 +610,15 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 		pan = p
 	}
 	switch {
-	case v.positional && m.spatial.Binaural:
+	case v.positional && m.spatial.Binaural && v.bin != nil:
 		// The head model replaces the pan law: it decides each ear's
-		// gain, and the mixer ramps to those the same way.
-		if v.bin == nil {
-			v.bin = newBinaural(m.rate)
-		}
+		// gain, and the mixer ramps to those the same way. placeHeads
+		// works it out once the lock is released. The state was made when
+		// the voice became positional or binaural was turned on; a voice
+		// without it pans for a block rather than allocate here.
 		sn.bin = v.bin
-		sn.ear = m.listener.headModel(position, m.spatial.headRadius(), m.rate)
-		sn.tl, sn.tr = gain*sn.ear.gainL, gain*sn.ear.gainR
+		sn.place, sn.headPos, sn.gain, sn.fresh = true, position, gain, !v.started
+		return sn, true
 	default:
 		if v.bin != nil {
 			v.bin.started = false // back to panning; the model starts fresh
@@ -724,7 +807,7 @@ func (v *Voice) Soloed() bool {
 }
 
 // SetPosition moves a positional voice.
-func (v *Voice) SetPosition(p lin.Vec3) { v.set(func() { v.position = p; v.positional = true }) }
+func (v *Voice) SetPosition(p lin.Vec3) { v.set(func() { v.position = p; v.makePositional() }) }
 
 // SetVelocity sets a positional voice's velocity in world units per
 // second, for Doppler. It only changes the pitch; the game moves the
