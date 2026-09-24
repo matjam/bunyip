@@ -92,10 +92,26 @@ func (g *Graphics) renderVelocity(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 	if q.hasMoved && q.inst.buffers[q.inst.slot] != nil {
 		vk.CmdBindVertexBuffers(cb, 1, 1, &q.inst.buffers[q.inst.slot].Handle, &rec.offset)
 		var bound *render.Pipeline
-		for i := range draws.len() {
+		var boundMesh *Mesh
+		n := draws.len()
+		for i := 0; i < n; {
 			d := draws.at(i)
 			if !d.moved() {
+				i++
 				continue
+			}
+			// Moved draws of one mesh that sit together in the stream are
+			// one instanced draw. A skinned draw reads its own joints and
+			// is drawn alone.
+			run := 1
+			if !d.skinned {
+				for i+run < n {
+					e := draws.at(i + run)
+					if !e.moved() || e.skinned || e.mesh != d.mesh {
+						break
+					}
+					run++
+				}
 			}
 			pipe := p.velocity
 			if d.skinned {
@@ -111,10 +127,14 @@ func (g *Graphics) renderVelocity(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 					vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &q.jointBuf.Sets[fr.Slot], 0, nil)
 				}
 			}
-			vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
-			vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
-			vk.CmdDrawIndexed(cb, d.mesh.IndexCount, 1, 0, 0, uint32(i))
+			if d.mesh != boundMesh {
+				boundMesh = d.mesh
+				vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
+				vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+			}
+			vk.CmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, uint32(i))
 			g.stats.Draws3D++
+			i += run
 		}
 	}
 	render.EndTargetPassDesc(cb, pass)
