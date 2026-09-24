@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -93,6 +94,7 @@ var (
 	procShowWindow               = user32.NewProc("ShowWindow")
 	procPeekMessageW             = user32.NewProc("PeekMessageW")
 	procGetMessageW              = user32.NewProc("GetMessageW")
+	procMsgWaitForObjects        = user32.NewProc("MsgWaitForMultipleObjectsEx")
 	procTranslateMessage         = user32.NewProc("TranslateMessage")
 	procDispatchMessageW         = user32.NewProc("DispatchMessageW")
 	procPostMessageW             = user32.NewProc("PostMessageW")
@@ -211,6 +213,8 @@ var theApp *App // the window procedure has no user pointer
 
 // NewApp registers the window class.
 func NewApp() (*App, error) {
+	// The window procedure runs from CreateWindowEx on, before any Poll.
+	resolveMessageProcs()
 	inst, _, _ := procGetModuleHandleW.Call(0)
 	a := &App{instance: inst, windows: map[uintptr]*Window{}}
 	a.wndProc = syscall.NewCallback(a.windowProc)
@@ -320,18 +324,23 @@ func (w *Window) updateGeometry() {
 	w.app.push(Event{Kind: EventResize, Window: w, Width: w.width, Height: w.height, PixelW: pw, PixelH: ph, Scale: w.scale})
 }
 
-// The message loop runs on every frame and once per message, so it calls
-// through addresses resolved on first use rather than through
-// LazyProc.Call, which allocates a slice for its variadic arguments and
-// takes a lock to check the procedure has been found.
+// The message loop runs on every frame and the window procedure once per
+// message, so both call through addresses resolved once rather than
+// through LazyProc.Call, which allocates a slice for its variadic
+// arguments and takes a lock to check the procedure has been found.
 var (
 	addrPeekMessageW     uintptr
 	addrGetMessageW      uintptr
 	addrTranslateMessage uintptr
 	addrDispatchMessageW uintptr
+	addrDefWindowProcW   uintptr
+	addrGetKeyState      uintptr
+	addrGetRawInputData  uintptr
+	addrMsgWait          uintptr
 )
 
-// resolveMessageProcs looks the message-loop entry points up once.
+// resolveMessageProcs looks the message-loop and window-procedure entry
+// points up once. NewApp calls it, before any window exists.
 func resolveMessageProcs() {
 	if addrPeekMessageW != 0 {
 		return
@@ -340,6 +349,10 @@ func resolveMessageProcs() {
 	addrGetMessageW = procGetMessageW.Addr()
 	addrTranslateMessage = procTranslateMessage.Addr()
 	addrDispatchMessageW = procDispatchMessageW.Addr()
+	addrDefWindowProcW = procDefWindowProcW.Addr()
+	addrGetKeyState = procGetKeyState.Addr()
+	addrGetRawInputData = procGetRawInputData.Addr()
+	addrMsgWait = procMsgWaitForObjects.Addr()
 }
 
 // Poll drains the message queue into the returned slice, reused by the
@@ -374,6 +387,21 @@ func (a *App) Poll(wait bool) []Event {
 	return a.pending
 }
 
+// PollTimeout is Poll that waits at most timeout for the first message.
+// A timeout of zero or less waits for nothing, as Poll(false) does.
+// MsgWaitForMultipleObjectsEx with no handles returns when any message
+// is queued, including the one Wake posts, or when the time runs out;
+// the peek loop in Poll then drains what arrived.
+func (a *App) PollTimeout(timeout time.Duration) []Event {
+	if timeout > 0 {
+		resolveMessageProcs()
+		const qsAllInput, mwmoInputAvailable = 0x04FF, 0x0004
+		ms := uintptr((timeout + time.Millisecond - 1) / time.Millisecond)
+		syscall.SyscallN(addrMsgWait, 0, 0, ms, qsAllInput, mwmoInputAvailable)
+	}
+	return a.Poll(false)
+}
+
 func (a *App) push(e Event) { a.pending = append(a.pending, e) }
 
 // Wake posts a message so a blocked Poll returns with EventWake. Safe
@@ -388,14 +416,16 @@ func (a *App) Wake() {
 func lowWord(v uintptr) int32  { return int32(int16(v & 0xFFFF)) }
 func highWord(v uintptr) int32 { return int32(int16((v >> 16) & 0xFFFF)) }
 
+// readMods reads the modifier state for a key message: seven GetKeyState
+// calls per key, through the resolved address.
 func (a *App) readMods() Mods {
 	var m Mods
 	down := func(vk uintptr) bool {
-		s, _, _ := procGetKeyState.Call(vk)
+		s, _, _ := syscall.SyscallN(addrGetKeyState, vk)
 		return int16(s) < 0
 	}
 	toggled := func(vk uintptr) bool {
-		s, _, _ := procGetKeyState.Call(vk)
+		s, _, _ := syscall.SyscallN(addrGetKeyState, vk)
 		return s&1 != 0
 	}
 	if down(vkShift) {
@@ -423,7 +453,7 @@ func (a *App) readMods() Mods {
 func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) uintptr {
 	w := a.windows[hwnd]
 	if w == nil {
-		r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wparam, lparam)
+		r, _, _ := syscall.SyscallN(addrDefWindowProcW, hwnd, uintptr(message), wparam, lparam)
 		return r
 	}
 	switch message {
@@ -526,14 +556,20 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 		a.push(Event{Kind: EventMouseLeave, Window: w})
 		return 0
 	case wmInput:
-		var hdr rawInputHeader
-		size := uint32(unsafe.Sizeof(hdr) + unsafe.Sizeof(rawMouse{}) + 16)
-		buf := make([]byte, size)
-		n, _, _ := procGetRawInputData.Call(lparam, ridInput, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), unsafe.Sizeof(hdr))
+		// RAWINPUT for a mouse: the header, then RAWMOUSE at its offset,
+		// with room to spare. It lives on the stack, and the call goes
+		// through the resolved address, so a high-rate mouse costs no
+		// allocation per message.
+		var raw struct {
+			hdr   rawInputHeader
+			mouse rawMouse
+			_     [16]byte
+		}
+		size := uint32(unsafe.Sizeof(raw))
+		n, _, _ := syscall.SyscallN(addrGetRawInputData, lparam, ridInput, uintptr(unsafe.Pointer(&raw)), uintptr(unsafe.Pointer(&size)), unsafe.Sizeof(raw.hdr))
 		if uint32(n) != 0xFFFFFFFF && n > 0 { // (UINT)-1 means the buffer was too small
-			h := (*rawInputHeader)(unsafe.Pointer(&buf[0]))
-			if h.Type == rimTypeMouse {
-				m := (*rawMouse)(unsafe.Pointer(&buf[unsafe.Sizeof(hdr)]))
+			if raw.hdr.Type == rimTypeMouse {
+				m := &raw.mouse
 				if m.Flags&1 == 0 && (m.LastX != 0 || m.LastY != 0) { // MOUSE_MOVE_RELATIVE
 					// Raw counts are device pixels; the other backends
 					// report points.
@@ -564,7 +600,7 @@ func (a *App) windowProc(hwnd uintptr, message uint32, wparam, lparam uintptr) u
 		a.push(Event{Kind: EventWake})
 		return 0
 	}
-	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(message), wparam, lparam)
+	r, _, _ := syscall.SyscallN(addrDefWindowProcW, hwnd, uintptr(message), wparam, lparam)
 	return r
 }
 
