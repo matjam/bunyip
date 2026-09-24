@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // OpenEXR compression schemes, by the number stored in the header.
@@ -58,8 +61,28 @@ func (c exrChannel) size() int {
 // ZIP. The R, G and B channels become the result's radiance; a file with
 // a single Y channel becomes grey. Tiled, deep and multi-part files, and
 // the PIZ, PXR24, B44, B44A, DWAA and DWAB schemes, are refused with an
-// error saying so. Pass the result to NewEnvironmentHDR.
+// error saying so. Pass the result to NewEnvironmentHDR. The chunks are
+// decoded on up to GOMAXPROCS goroutines.
 func DecodeEXR(data []byte) (*HDRImage, error) {
+	return decodeEXR(data, exrChunks)
+}
+
+// exrLayout is what the header says about where the chunks are and how
+// their rows are laid out.
+type exrLayout struct {
+	data        []byte
+	offsets     []uint64
+	channels    []exrChannel
+	compression int
+	w, h        int
+	yMin        int
+	perBlock    int
+	rowBytes    int
+}
+
+// decodeEXR parses the header and hands the chunks to decode, which the
+// tests swap for a reference decoder.
+func decodeEXR(data []byte, decode func(l *exrLayout, img *HDRImage) error) (*HDRImage, error) {
 	r := &exrReader{buf: data}
 	magic, err := r.u32()
 	if err != nil || magic != 20000630 {
@@ -163,72 +186,180 @@ func DecodeEXR(data []byte) (*HDRImage, error) {
 		offsets[i] = v
 	}
 	img := &HDRImage{Width: w, Height: h, Pix: make([]float32, w*h*3)}
-	raw := make([]byte, perBlock*rowBytes)
-	for _, off := range offsets {
-		if off > uint64(len(data)) {
-			return nil, fmt.Errorf("gfx: exr chunk offset %d is past the end of the file", off)
-		}
-		c := &exrReader{buf: data, pos: int(off)}
-		y, err := c.i32()
-		if err != nil {
-			return nil, fmt.Errorf("gfx: exr chunk: %w", err)
-		}
-		size, err := c.i32()
-		if err != nil {
-			return nil, fmt.Errorf("gfx: exr chunk: %w", err)
-		}
-		if size < 0 {
-			return nil, fmt.Errorf("gfx: exr chunk of %d bytes", size)
-		}
-		payload, err := c.bytes(int(size))
-		if err != nil {
-			return nil, fmt.Errorf("gfx: exr chunk at %d: %w", off, err)
-		}
-		row := int(y) - int(yMin)
-		if row < 0 || row >= h {
-			return nil, fmt.Errorf("gfx: exr chunk starts at row %d, outside the data window", y)
-		}
-		rows := min(perBlock, h-row)
-		want := rows * rowBytes
-		block, err := exrBlock(payload, raw[:want], compression)
-		if err != nil {
-			return nil, fmt.Errorf("gfx: exr chunk at row %d: %w", y, err)
-		}
-		exrRows(img, block, channels, w, row, rows)
+	l := &exrLayout{data: data, offsets: offsets, channels: channels, compression: compression,
+		w: w, h: h, yMin: int(yMin), perBlock: perBlock, rowBytes: rowBytes}
+	if err := decode(l, img); err != nil {
+		return nil, err
 	}
 	return img, nil
 }
 
-// exrBlock returns one chunk's uncompressed bytes in dst. A chunk stored
-// at its full size was left uncompressed by the writer.
-func exrBlock(payload, dst []byte, compression int) ([]byte, error) {
-	if len(payload) >= len(dst) {
-		if len(payload) != len(dst) {
-			return nil, fmt.Errorf("chunk is %d bytes, want %d", len(payload), len(dst))
+// exrChunk is one chunk's place in the file and in the image, or the
+// error reading its header met.
+type exrChunk struct {
+	payload   []byte
+	y         int32 // the first row as the file numbers it
+	row, rows int   // the first row in the image, and how many
+	err       error
+}
+
+// exrChunks decodes every chunk into the image. The chunk headers are
+// read in order first, which is cheap; the chunks are then decompressed
+// and converted on up to GOMAXPROCS goroutines, each with scratch of its
+// own. The error returned is the one an in-order decode would have met
+// first. A file whose chunks overlap is decoded in order, so the later
+// chunk wins as it always has.
+func exrChunks(l *exrLayout, img *HDRImage) error {
+	chunks := make([]exrChunk, len(l.offsets))
+	covered := make([]bool, l.h)
+	overlap := false
+	for i, off := range l.offsets {
+		c := &chunks[i]
+		c.err = l.chunkHeader(off, c)
+		if c.err != nil {
+			continue
+		}
+		for r := c.row; r < c.row+c.rows; r++ {
+			overlap = overlap || covered[r]
+			covered[r] = true
+		}
+	}
+	workers := min(runtime.GOMAXPROCS(0), len(chunks))
+	if overlap {
+		workers = 1
+	}
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range max(workers, 1) {
+		wg.Go(func() {
+			s := &exrScratch{raw: make([]byte, l.perBlock*l.rowBytes)}
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(chunks) {
+					return
+				}
+				c := &chunks[i]
+				if c.err != nil {
+					continue
+				}
+				block, err := s.block(c.payload, c.rows*l.rowBytes, l.compression)
+				if err != nil {
+					c.err = fmt.Errorf("gfx: exr chunk at row %d: %w", c.y, err)
+					continue
+				}
+				exrRowsFast(img, block, l.channels, l.w, c.row, c.rows)
+			}
+		})
+	}
+	wg.Wait()
+	for _, c := range chunks {
+		if c.err != nil {
+			return c.err
+		}
+	}
+	return nil
+}
+
+// chunkHeader reads the header of the chunk at off: its first row and
+// its payload.
+func (l *exrLayout) chunkHeader(off uint64, c *exrChunk) error {
+	if off > uint64(len(l.data)) {
+		return fmt.Errorf("gfx: exr chunk offset %d is past the end of the file", off)
+	}
+	r := &exrReader{buf: l.data, pos: int(off)}
+	y, err := r.i32()
+	if err != nil {
+		return fmt.Errorf("gfx: exr chunk: %w", err)
+	}
+	size, err := r.i32()
+	if err != nil {
+		return fmt.Errorf("gfx: exr chunk: %w", err)
+	}
+	if size < 0 {
+		return fmt.Errorf("gfx: exr chunk of %d bytes", size)
+	}
+	if c.payload, err = r.bytes(int(size)); err != nil {
+		return fmt.Errorf("gfx: exr chunk at %d: %w", off, err)
+	}
+	c.y = y
+	c.row = int(y) - l.yMin
+	if c.row < 0 || c.row >= l.h {
+		return fmt.Errorf("gfx: exr chunk starts at row %d, outside the data window", y)
+	}
+	c.rows = min(l.perBlock, l.h-c.row)
+	return nil
+}
+
+// exrScratch is one decoding goroutine's reusable buffers and inflater.
+type exrScratch struct {
+	raw, out []byte
+	src      bytes.Reader
+	zr       io.ReadCloser
+}
+
+// block returns one chunk's uncompressed bytes, want of them. A chunk
+// stored at its full size was left uncompressed by the writer and is
+// returned as it is. The result is only valid until the next call.
+func (s *exrScratch) block(payload []byte, want, compression int) ([]byte, error) {
+	if len(payload) >= want {
+		if len(payload) != want {
+			return nil, fmt.Errorf("chunk is %d bytes, want %d", len(payload), want)
 		}
 		return payload, nil
 	}
+	dst := s.raw[:want]
 	switch compression {
 	case exrNone:
-		return nil, fmt.Errorf("chunk is %d bytes, want %d", len(payload), len(dst))
+		return nil, fmt.Errorf("chunk is %d bytes, want %d", len(payload), want)
 	case exrRLE:
 		if err := exrUnRLE(payload, dst); err != nil {
 			return nil, err
 		}
 	case exrZIP, exrZIPS:
-		zr, err := zlib.NewReader(bytes.NewReader(payload))
+		s.src.Reset(payload)
+		var err error
+		if s.zr == nil {
+			s.zr, err = zlib.NewReader(&s.src)
+		} else {
+			err = s.zr.(zlib.Resetter).Reset(&s.src, nil)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("zlib: %w", err)
 		}
-		if _, err := io.ReadFull(zr, dst); err != nil {
+		if _, err := io.ReadFull(s.zr, dst); err != nil {
 			return nil, fmt.Errorf("zlib: %w", err)
 		}
-		if err := zr.Close(); err != nil {
+		if err := s.zr.Close(); err != nil {
 			return nil, fmt.Errorf("zlib: %w", err)
 		}
 	}
-	exrUnpredict(dst)
-	return exrDeinterleave(dst), nil
+	if cap(s.out) < want {
+		s.out = make([]byte, len(s.raw))
+	}
+	out := s.out[:want]
+	exrUnpredictDeinterleave(dst, out)
+	return out, nil
+}
+
+// exrUnpredictDeinterleave undoes, in one pass from src into dst, the
+// delta and then the split into even and odd bytes that the ZIP and RLE
+// compressors apply: exrUnpredict followed by exrDeinterleave.
+func exrUnpredictDeinterleave(src, dst []byte) {
+	n := len(src)
+	if n == 0 {
+		return
+	}
+	half := (n + 1) / 2
+	prev := src[0]
+	dst[0] = prev
+	for i := 1; i < half; i++ {
+		prev = prev + src[i] - 128
+		dst[2*i] = prev
+	}
+	for i := half; i < n; i++ {
+		prev = prev + src[i] - 128
+		dst[2*(i-half)+1] = prev
+	}
 }
 
 // exrUnRLE expands OpenEXR's byte run-length encoding: a negative count
@@ -266,41 +397,16 @@ func exrUnRLE(src, dst []byte) error {
 	return nil
 }
 
-// exrUnpredict undoes the delta the ZIP and RLE compressors apply before
-// they pack the bytes.
-func exrUnpredict(b []byte) {
-	for i := 1; i < len(b); i++ {
-		b[i] = byte(int(b[i-1]) + int(b[i]) - 128)
-	}
-}
-
-// exrDeinterleave undoes the split into even and odd bytes the ZIP and
-// RLE compressors apply, in place, returning the same slice.
-func exrDeinterleave(b []byte) []byte {
-	tmp := make([]byte, len(b))
-	copy(tmp, b)
-	half := (len(b) + 1) / 2
-	t1, t2 := 0, half
-	for s := 0; s < len(b); {
-		b[s] = tmp[t1]
-		t1++
-		s++
-		if s < len(b) {
-			b[s] = tmp[t2]
-			t2++
-			s++
-		}
-	}
-	return b
-}
-
-// exrRows scatters one uncompressed chunk into the image: each row holds
-// every channel's samples in the header's channel order, and only R, G
-// and B (or a lone Y) are kept.
-func exrRows(img *HDRImage, block []byte, channels []exrChannel, w, row, rows int) {
+// exrRowsFast scatters one uncompressed chunk into the image: each row
+// holds every channel's samples in the header's channel order, and only
+// R, G and B (or a lone Y) are kept. Each sample type has its own loop,
+// and half floats convert through a table built from f16ToF32.
+func exrRowsFast(img *HDRImage, block []byte, channels []exrChannel, w, row, rows int) {
 	grey := len(channels) == 1 && channels[0].name == "Y"
+	halves := halfTable()
 	pos := 0
 	for r := range rows {
+		line := img.Pix[(row+r)*w*3 : (row+r+1)*w*3]
 		for _, c := range channels {
 			n := w * c.size()
 			plane := block[pos : pos+n]
@@ -316,25 +422,48 @@ func exrRows(img *HDRImage, block []byte, channels []exrChannel, w, row, rows in
 			default:
 				continue
 			}
-			base := ((row+r)*w + 0) * 3
-			for x := range w {
-				v := exrSample(plane, x, c)
-				if grey {
-					img.Pix[base+x*3], img.Pix[base+x*3+1], img.Pix[base+x*3+2] = v, v, v
-					continue
+			switch {
+			case grey && c.pixelType == 1:
+				for x := range w {
+					v := halves[uint16(plane[2*x])|uint16(plane[2*x+1])<<8]
+					line[x*3], line[x*3+1], line[x*3+2] = v, v, v
 				}
-				img.Pix[base+x*3+out] = v
+			case grey:
+				for x := range w {
+					v := math.Float32frombits(binary.LittleEndian.Uint32(plane[4*x:]))
+					line[x*3], line[x*3+1], line[x*3+2] = v, v, v
+				}
+			case c.pixelType == 1:
+				dst := line[out:]
+				for x := range w {
+					dst[x*3] = halves[uint16(plane[2*x])|uint16(plane[2*x+1])<<8]
+				}
+			default:
+				dst := line[out:]
+				for x := range w {
+					dst[x*3] = math.Float32frombits(binary.LittleEndian.Uint32(plane[4*x:]))
+				}
 			}
 		}
 	}
 }
 
-// exrSample reads one sample of a channel's row.
-func exrSample(plane []byte, x int, c exrChannel) float32 {
-	if c.pixelType == 1 {
-		return f16ToF32(binary.LittleEndian.Uint16(plane[x*2:]))
-	}
-	return math.Float32frombits(binary.LittleEndian.Uint32(plane[x*4:]))
+var (
+	halfOnce  sync.Once
+	halfFloat *[1 << 16]float32
+)
+
+// halfTable is every half float's value as a float32, built on first use
+// from f16ToF32.
+func halfTable() *[1 << 16]float32 {
+	halfOnce.Do(func() {
+		t := new([1 << 16]float32)
+		for i := range t {
+			t[i] = f16ToF32(uint16(i))
+		}
+		halfFloat = t
+	})
+	return halfFloat
 }
 
 // exrChannels parses the chlist attribute: a run of entries ending in a
