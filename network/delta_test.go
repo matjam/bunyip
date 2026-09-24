@@ -30,8 +30,9 @@ func TestDelta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// mask + X (4) + nested mask + HP (2) + Ammo (3)
-	if len(data) != 1+4+1+2+3 {
+	// mask + X (4) + nested mask + HP (2) + Ammo's element mask and its
+	// one changed element
+	if len(data) != 1+4+1+2+1+1 {
 		t.Errorf("delta is %d bytes: %x", len(data), data)
 	}
 	var out snap
