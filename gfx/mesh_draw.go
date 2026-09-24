@@ -655,9 +655,36 @@ func (g *Graphics) AddSpot(s SpotLight) {
 	g.stats.Lights++
 }
 
-// spotShadows lists the lights that get shadow maps this frame, in map
+// shadowLights is a frame's shadowed spot and point lights, in map order,
+// and their projections. prepareDraws finds them once a frame, and the
+// frame block, the light records and the shadow pass all read them.
+type shadowLights struct {
+	spots  []int32 // the spot lights with maps, as indices into the queue's lights
+	points []int32 // the point lights with cube maps
+	// spotMats is each spot map's projection and pointMats each cube
+	// face's, six a light, slot by slot.
+	spotMats  []lin.Mat4
+	pointMats []lin.Mat4
+
+	spotIdx  [maxSpotShadows]int32
+	pointIdx [maxPointShadows]int32
+	spotVP   [maxSpotShadows]lin.Mat4
+	pointVP  [maxPointShadows * 6]lin.Mat4
+}
+
+// any reports whether a spot or point light casts shadows this frame.
+func (s *shadowLights) any() bool { return len(s.spots) > 0 || len(s.points) > 0 }
+
+// findShadowLights fills q.shadow from the frame's lights.
+func (q *drawQueue) findShadowLights() {
+	s := &q.shadow
+	s.spots, s.spotMats = q.spotShadows(s.spotIdx[:0], s.spotVP[:0])
+	s.points, s.pointMats = q.pointShadows(s.pointIdx[:0], s.pointVP[:0])
+}
+
+// spotShadows appends the lights that get shadow maps this frame, in map
 // order, and each one's projection.
-func (q *drawQueue) spotShadows() (lights []int, mats []lin.Mat4) {
+func (q *drawQueue) spotShadows(lights []int32, mats []lin.Mat4) ([]int32, []lin.Mat4) {
 	for i, p := range q.points {
 		if !p.spot || !p.shadow || len(lights) >= maxSpotShadows {
 			continue
@@ -669,7 +696,7 @@ func (q *drawQueue) spotShadows() (lights []int, mats []lin.Mat4) {
 		rng := max(p.rng, 0.5)
 		// A little wider than the cone, so the soft edge has depth to read.
 		proj := lin.Perspective(min(p.outer*1.1, lin.Radians(170)), 1, 0.05, rng)
-		lights = append(lights, i)
+		lights = append(lights, int32(i))
 		mats = append(mats, proj.Mul(lin.LookAt(p.pos, p.pos.Add(p.dir), up)))
 	}
 	return lights, mats
@@ -687,12 +714,12 @@ var pointFaces = [6]struct{ dir, up lin.Vec3 }{
 	{lin.V3(0, 0, -1), lin.V3(0, -1, 0)},
 }
 
-// pointShadows lists the point lights that get cube maps this frame, in
+// pointShadows appends the point lights that get cube maps this frame, in
 // slot order, and the six face projections of each, slot by slot. Each
 // face looks along its axis with a field of view a little over ninety
 // degrees, so the fragment prelude can clamp its filter kernel inside
 // the face and still cover the whole ninety-degree cone.
-func (q *drawQueue) pointShadows() (lights []int, mats []lin.Mat4) {
+func (q *drawQueue) pointShadows(lights []int32, mats []lin.Mat4) ([]int32, []lin.Mat4) {
 	for i, p := range q.points {
 		if p.spot || !p.shadow || len(lights) >= maxPointShadows {
 			continue
@@ -700,7 +727,7 @@ func (q *drawQueue) pointShadows() (lights []int, mats []lin.Mat4) {
 		rng := max(p.rng, 0.5)
 		fov := 2 * float32(math.Atan(float64(1+4.0/pointFaceSize)))
 		proj := lin.Perspective(fov, 1, 0.05, rng)
-		lights = append(lights, i)
+		lights = append(lights, int32(i))
 		for _, f := range pointFaces {
 			mats = append(mats, proj.Mul(lin.LookAt(p.pos, p.pos.Add(f.dir), f.up)))
 		}
@@ -1077,10 +1104,8 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 		u.probeParams[i] = lin.V4(intensity, float32(p.env.mips), boolFloat(p.BoxProjection), 0)
 	}
 	u.gridOrigin, u.gridSpacing, u.gridCounts = q.grid.gridUniforms()
-	lights, spotMats := q.spotShadows()
-	copy(u.spotViewProj[:], spotMats)
-	points, pointMats := q.pointShadows()
-	copy(u.pointViewProj[:], pointMats)
+	copy(u.spotViewProj[:], q.shadow.spotMats)
+	copy(u.pointViewProj[:], q.shadow.pointMats)
 	u.cluster = q.clusters.clusterParams(float32(extent.Width), float32(extent.Height))
 	if f := l.Fog; f.End > f.Start || f.Density > 0 {
 		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
@@ -1114,7 +1139,7 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 	if err := q.uniforms.Write(slot, unsafe.Slice((*byte)(unsafe.Pointer(&u)), unsafe.Sizeof(u))); err != nil {
 		return err
 	}
-	return q.writeLights(slot, aspect, lights, points)
+	return q.writeLights(slot, aspect, q.shadow.spots, q.shadow.points)
 }
 
 // writeLights builds the frame's light records and cluster grid and
@@ -1122,7 +1147,7 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 // per-frame set as the frame block. spots and cubes name the lights that
 // got a spot map and a cube map, so a shadowed light's map travels with
 // its record.
-func (q *drawQueue) writeLights(slot int, aspect float32, spots, cubes []int) error {
+func (q *drawQueue) writeLights(slot int, aspect float32, spots, cubes []int32) error {
 	n := len(q.points)
 	q.spotSlots = slices.Grow(q.spotSlots[:0], n)[:n]
 	q.pointSlots = slices.Grow(q.pointSlots[:0], n)[:n]
@@ -1178,6 +1203,15 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		env = nil
 	}
 	occluding := g.rasteriseOccluders(q, viewProj)
+	q.findShadowLights()
+	shadowing := q.light.Shadows || q.shadow.any()
+	q.hasCasters, q.casterAlong = false, 0
+	if q.light.Shadows {
+		// The cascades' sides and far planes do not depend on the casters,
+		// only their near planes do, which the culling ignores; writeUniforms
+		// fits the near planes once the casters are known.
+		q.cascadeMats, _, _ = q.cascades(aspect)
+	}
 	// A queue prepared again, once for each face of a probe bake, drops
 	// the batch items the last preparation added before walking the
 	// batches for this view.
@@ -1251,17 +1285,44 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	if independent {
 		oitAt = q.partitionOIT(all, blendedAt)
 	}
-	q.inst.reset()
+	// Each shadow map's casters get records of their own after the lit
+	// ones, so the stream holds the lit draws in the order they are
+	// recorded and then each map's draws in the shadow order.
+	total := all.len()
+	if shadowing {
+		q.casters.setSpheres(q.draws, q.shadowOrder(all, blendedAt))
+		q.cullShadowMaps(q.light.Shadows)
+		for _, index := range q.casters.maps {
+			q.casters.base[index] = uint32(total)
+			total += len(q.casters.lists[index])
+		}
+	}
+	// The records go straight into the slot's mapped buffer. A culled draw
+	// is drawn only into the shadow maps, which have records of their
+	// own, so its lit record is skipped; its place in the stream is kept,
+	// since a draw's position in the order is its record's.
+	ins, err := q.inst.reserve(g, slot, total)
+	if err != nil {
+		return drawList{}, drawList{}, drawList{}, err
+	}
 	for k := range all.len() {
 		d := all.at(k)
 		if d.prev >= 0 {
 			q.hasMoved = true
 		}
-		q.inst.items = append(q.inst.items, meshInstance{})
-		q.writeInstance(&q.inst.items[len(q.inst.items)-1], d, &q.mats[d.mat])
+		if d.culled {
+			continue
+		}
+		q.writeInstance(&ins[k], d, &q.mats[d.mat])
 	}
-	if err := q.inst.upload(g, slot); err != nil {
-		return drawList{}, drawList{}, drawList{}, err
+	if shadowing {
+		for _, index := range q.casters.maps {
+			rec := ins[q.casters.base[index]:]
+			for j, id := range q.casters.lists[index] {
+				d := &q.draws[id]
+				q.writeInstance(&rec[j], d, &q.mats[d.mat])
+			}
+		}
 	}
 	if len(q.joints) > 0 {
 		data := unsafe.Slice((*byte)(unsafe.Pointer(&q.joints[0])), len(q.joints)*64)
@@ -1330,9 +1391,11 @@ func orOne(metallic float32, hasTexture bool) float32 {
 // drawRuns records draws as instanced runs of identical mesh, material
 // and shader state. first is the index of draws[0] in the instance
 // stream. In the shadow pass (cascade set) the depth-only pipelines are
-// used; otherwise each draw's shader picks its lit pipeline. Skinned
-// draws are never merged, since each has its own joint matrices.
-func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32, mask []bool, oit bool) error {
+// used, and a run ignores what they do not read; otherwise each draw's
+// shader picks its lit pipeline. Skinned draws are never merged, since
+// each has its own joint matrices. A set, vertex buffer or index buffer
+// already bound by the run before is not bound again.
+func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, draws drawList, first uint32, cascade *int32, oit bool) error {
 	n := draws.len()
 	if n == 0 {
 		return nil // a sky-only frame has no instance buffer to bind
@@ -1343,41 +1406,54 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 	var bound *render.Pipeline
 	boundUniform := int32(-2)
 	boundMorph := vk.VkDescriptorSet(0)
+	boundSet := vk.VkDescriptorSet(0)
+	var boundMesh *Mesh
+	// The lit pass draws into the scene target, at its sample count. The
+	// shadow atlas and the order-independent transparency images are
+	// always single-sample.
+	out := g.sceneOut
+	if cascade != nil || oit {
+		out = outKey{}
+	}
 	for i := 0; i < n; {
-		if mask != nil && !mask[i] { // this draw misses the shadow map
-			i++
-			continue
-		}
 		d := draws.at(i)
-		// The lit pass draws into the scene target, at its sample count.
-		// The shadow atlas and the order-independent transparency images
-		// are always single-sample.
-		out := g.sceneOut
-		if cascade != nil || oit {
-			out = outKey{}
-		}
 		run := 1
-		key := q.litKey(d)
-		if !d.skinned {
-			for i+run < n {
-				e := draws.at(i + run)
-				if mask != nil && !mask[i+run] {
-					break
-				}
-				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || (e.mat != d.mat && q.litKey(e) != key) {
-					break
-				}
-				if e.morphSet != d.morphSet { // a different model's deltas
-					break
-				}
-				run++
-			}
-		}
-		key.skinned = d.skinned
-		key.out = out
-		key.oit = oit
+		var key pipeKey
 		if cascade != nil {
 			key = pipeKey{shadow: true, skinned: d.skinned}
+			if !d.skinned {
+				// The depth-only pipeline reads the material set only for an
+				// alpha cutout, or in a shader's vertex hook, so other draws
+				// of a mesh share a run whatever their material.
+				sets := q.mats[d.mat].cutout || len(d.shader.stages) > 0
+				for i+run < n {
+					e := draws.at(i + run)
+					if e.skinned || e.mesh != d.mesh || e.shader != d.shader || e.uniform != d.uniform || e.morphSet != d.morphSet {
+						break
+					}
+					if e.set != d.set && (sets || q.mats[e.mat].cutout) {
+						break
+					}
+					run++
+				}
+			}
+		} else {
+			key = q.litKey(d)
+			if !d.skinned {
+				for i+run < n {
+					e := draws.at(i + run)
+					if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || (e.mat != d.mat && q.litKey(e) != key) {
+						break
+					}
+					if e.morphSet != d.morphSet { // a different model's deltas
+						break
+					}
+					run++
+				}
+			}
+			key.skinned = d.skinned
+			key.out = out
+			key.oit = oit
 		}
 		p, err := d.shader.pipeline(key)
 		if err != nil {
@@ -1385,7 +1461,7 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		}
 		if p != bound {
 			bound = p
-			boundUniform, boundMorph = -2, 0
+			boundUniform, boundMorph, boundSet = -2, 0, 0
 			vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Handle)
 			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
 			if cascade != nil {
@@ -1398,7 +1474,10 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 				vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 3, 1, &q.jointBuf.Sets[fr.Slot], 0, nil)
 			}
 		}
-		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &d.set, 0, nil)
+		if d.set != boundSet {
+			boundSet = d.set
+			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 0, 1, &d.set, 0, nil)
+		}
 		// The vertex prelude names the morph deltas whether or not the
 		// draw reads them, so set 5 is always bound: the draw's model's
 		// buffer, or the one element that means nothing.
@@ -1413,8 +1492,13 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			rec.dyn = uint32(d.uniform)
 			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.Layout, 4, 1, &g.uniforms.Sets[fr.Slot], 1, &rec.dyn)
 		}
-		vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
-		vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+		// Vertex and index buffers are not part of a pipeline, so they stay
+		// bound across pipeline changes.
+		if d.mesh != boundMesh {
+			boundMesh = d.mesh
+			vk.CmdBindVertexBuffers(cb, 0, 1, &d.mesh.vbuf.Handle, &rec.offset)
+			vk.CmdBindIndexBuffer(cb, d.mesh.ibuf.Handle, 0, vk.VK_INDEX_TYPE_UINT32)
+		}
 		vk.CmdDrawIndexed(cb, d.mesh.IndexCount, uint32(run), 0, 0, first+uint32(i))
 		g.stats.Draws3D++
 		if cascade == nil {
@@ -1472,27 +1556,17 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	// drawn with its own viewport. The vertex program picks the
 	// projection by index, spot maps past the cascades and cube faces
 	// past those.
-	spotLights, spotMats := q.spotShadows()
-	pointLights, pointMats := q.pointShadows()
-	if q.light.Shadows || len(spotLights) > 0 || len(pointLights) > 0 {
+	if q.light.Shadows || q.shadow.any() {
 		g.timestamps.Begin(cb, "shadow")
 		render.BeginTargetPass(cb, render.PassDesc{Target: mp.shadowAtlas, ClearDepth: 1})
-		var maps []int
-		if q.light.Shadows {
-			maps = append(maps, 0, 1, 2)
-		}
-		for k := range spotLights {
-			maps = append(maps, shadowCascades+k)
-		}
-		for k := range len(pointLights) * 6 {
-			maps = append(maps, pointFaceBase+k)
-		}
-		for _, index := range maps {
+		// prepareDraws culled each map's casters and wrote their records.
+		for _, index := range q.casters.maps {
 			region := shadowRegion(index)
 			render.SetViewportRect(cb, region)
 			render.SetScissorRect(cb, region)
 			pc := int32(index)
-			if err := g.drawRuns(cb, fr, q, opaque, 0, &pc, q.shadowMask(opaque, index, spotMats, pointMats), false); err != nil {
+			casters := drawList{draws: q.draws, order: q.casters.lists[index]}
+			if err := g.drawRuns(cb, fr, q, casters, q.casters.base[index], &pc, false); err != nil {
 				return err
 			}
 		}
@@ -1531,7 +1605,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
 		vk.CmdDraw(cb, 3, 1, 0, 0)
 	}
-	if err := g.drawRuns(cb, fr, q, seen, 0, nil, nil, false); err != nil {
+	if err := g.drawRuns(cb, fr, q, seen, 0, nil, false); err != nil {
 		return err
 	}
 	err = g.drawSolid(cb, fr, q, seen, 0, t.extent)
@@ -1569,7 +1643,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 			Extra: []*render.Image{t.reveal.Color}, ExtraClear: [][4]float32{{1, 1, 1, 1}},
 		}
 		render.BeginTargetPass(cb, pass)
-		if err := g.drawRuns(cb, fr, q, seenOIT, uint32(opaque.len()), nil, nil, true); err != nil {
+		if err := g.drawRuns(cb, fr, q, seenOIT, uint32(opaque.len()), nil, true); err != nil {
 			return err
 		}
 		render.EndTargetPassDesc(cb, pass)
@@ -1585,7 +1659,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		g.timestamps.End(cb)
 	}
 	g.timestamps.Begin(cb, "blended")
-	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()+oit.len()), nil, nil, false); err != nil {
+	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()+oit.len()), nil, false); err != nil {
 		return err
 	}
 	if err := g.drawDebugLines(cb, fr, q); err != nil {

@@ -244,24 +244,16 @@ func Benchmark3DShadowMasks_10k(b *testing.B) {
 	s.lights(true, 0)
 	s.queue(10000)
 	q := g.cur
-	opaque, _, _, err := g.prepareDraws(q, g.frame.Slot, g.post.main.scene, 16.0/9)
-	if err != nil {
+	if _, _, _, err := g.prepareDraws(q, g.frame.Slot, g.post.main.scene, 16.0/9); err != nil {
 		b.Fatal(err)
 	}
 	q.cascadeMats, _, _ = q.cascades(16.0 / 9)
-	_, spotMats := q.spotShadows()
-	_, pointMats := q.pointShadows()
-	vis := 0
 	for b.Loop() {
-		vis = 0
-		for index := range pointFaceBase + 24 {
-			m := q.shadowMask(opaque, index, spotMats, pointMats)
-			for _, v := range m {
-				if v {
-					vis++
-				}
-			}
-		}
+		q.cullShadowMaps(true)
+	}
+	vis := 0
+	for _, l := range q.casters.lists {
+		vis += len(l)
 	}
 	b.ReportMetric(float64(vis), "maskedIn")
 	b.StopTimer()

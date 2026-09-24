@@ -28,12 +28,16 @@ type drawQueue struct {
 	order       []int32     // draws in draw order, as indices into draws
 	keys        []uint64    // each draw's packed sort key, the sort's working set
 	keyTmp      []uint64    // the radix sort's second buffer
+	sortedKeys  []uint64    // the sorted keys, in keys or keyTmp, until shadowOrder reads them
+	shadowKeys  []uint64    // the opaque draws' keys for the shadow order
+	shadowIDs   []int32     // the opaque draws in the shadow order
 	shaderIDs   idTable     // dense ids for the sort key
 	uniformIDs  idTable
 	setIDs      idTable
 	meshIDs     idTable
-	shadowVis   []bool // draws that reach the shadow map being recorded
+	casters     shadowCasters // the opaque draws' spheres and each shadow map's draws
 	cascadeMats [shadowCascades]lin.Mat4
+	shadow      shadowLights // the frame's shadowed spot and point lights
 	// jitter is this frame's sub-pixel projection offset in clip units,
 	// zero unless temporal anti-aliasing is on, and projJ, viewProjJ and
 	// invViewProjJ are the matrices the scene pass rasterises with once it
