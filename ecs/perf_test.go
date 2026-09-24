@@ -151,6 +151,20 @@ func TestSpawnWithUnregisteredAllocs(t *testing.T) {
 	}
 }
 
+// SpawnWith refuses a pointer component even when a generic call has
+// already registered the pointer type.
+func TestSpawnWithRejectsPointer(t *testing.T) {
+	w := ecs.NewWorld()
+	e := w.Spawn()
+	w.Add(e, &unregA{})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("SpawnWith accepted a pointer")
+		}
+	}()
+	w.SpawnWith(&unregA{})
+}
+
 // Commands keep no closure or argument slice per recorded spawn.
 func TestCommandsSpawnAllocs(t *testing.T) {
 	w := ecs.NewWorld()

@@ -279,11 +279,11 @@ func (w *World) register(t reflect.Type, newColumn func() column, typed bool) Co
 // call upgrades them.
 func (w *World) idOfValue(v any) ComponentID {
 	t := reflect.TypeOf(v)
-	if id, ok := w.compIDs[t]; ok {
-		return id
-	}
 	if t == nil || t.Kind() == reflect.Pointer {
 		panic(fmt.Sprintf("ecs: component must be a value, got %v", t))
+	}
+	if id, ok := w.compIDs[t]; ok {
+		return id
 	}
 	if newColumn, ok := registeredColumn(t); ok {
 		return w.register(t, newColumn, true)
