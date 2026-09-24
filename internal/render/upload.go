@@ -224,6 +224,7 @@ func (d *Device) FlushUploads() error {
 		vk.VkDestroyFence(d.Handle, batch.fence, nil)
 		return fail(err)
 	}
+	d.submitted()
 	u.inflight = append(u.inflight, batch)
 	u.inflightBytes += batch.bytes
 	d.reclaimUploads()
