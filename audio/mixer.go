@@ -14,7 +14,9 @@
 // ramps across a block so nothing clicks; stopping a voice ramps it to
 // silence over about a millisecond first. A setter copies its value in
 // under a short lock and the mixer applies it at the start of the next
-// block, so setters do not wait for a whole block. Stream.Read runs
+// block, so setters do not wait for a whole block. While the mixer waits
+// for that lock, setters yield to it, so a game calling setters in a
+// tight loop does not hold a block back. Stream.Read runs
 // without the settings lock but with the playback lock held; it may
 // call setters or start voices, but must not call Voice.Seek.
 // Voice.Seek waits for the block in flight, because it moves the
@@ -40,6 +42,7 @@ package audio
 import (
 	"errors"
 	"math"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -65,7 +68,8 @@ type Mixer struct {
 	output         *outputSession // deviceMu
 	activeOutput   *outputSession // mixMu: only this endpoint may advance playback
 	mu             sync.Mutex
-	mixMu          sync.Mutex // held across a block; guards playback position
+	mixMu          sync.Mutex  // held across a block; guards playback position
+	mixWaiting     atomic.Bool // the block is waiting for mu; see lock
 	rate           int
 	voices         []*Voice
 	master         float32
@@ -109,6 +113,28 @@ type Mixer struct {
 	music, effects, dialogue *Bus
 }
 
+// lock takes the settings lock for any caller but the mixer's own block.
+// sync.Mutex lets a goroutine that keeps locking barge ahead of a waiter,
+// so a game calling setters in a tight loop could hold the mixer's thread
+// off the lock for milliseconds, until the mutex's starvation mode handed
+// it over. While the mixer is waiting, lock yields instead of queueing,
+// so the mixer takes the lock as soon as the current holder releases it.
+func (m *Mixer) lock() {
+	for m.mixWaiting.Load() {
+		runtime.Gosched()
+	}
+	m.mu.Lock()
+}
+
+// lockMix takes the settings lock for the mixer's block, asking other
+// callers of lock to stand aside until it has it. Callers hold mixMu, so
+// only one block waits at a time.
+func (m *Mixer) lockMix() {
+	m.mixWaiting.Store(true)
+	m.mu.Lock()
+	m.mixWaiting.Store(false)
+}
+
 // NewMixer makes a mixer for a positive output sample rate, with unity
 // master gain and a 64-voice limit. It does not open an output device;
 // the engine supplies and drives Context.Audio for normal games.
@@ -131,7 +157,7 @@ func (m *Mixer) Rate() int { return m.rate }
 
 // SetMasterVolume scales every voice; 1 is unity.
 func (m *Mixer) SetMasterVolume(v float32) {
-	m.mu.Lock()
+	m.lock()
 	m.master = v
 	m.mu.Unlock()
 }
@@ -142,7 +168,7 @@ func (m *Mixer) SetMasterVolume(v float32) {
 // leaves the count at once and ramps out over the next millisecond, so
 // the mixer may briefly render one more voice than the cap.
 func (m *Mixer) SetMaxVoices(n int) {
-	m.mu.Lock()
+	m.lock()
 	m.maxVoices = max(n, 1)
 	m.mu.Unlock()
 }
@@ -247,7 +273,7 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 // keeps ramping out for a millisecond, so the new voice starts on the
 // same block and the old one does not click.
 func (m *Mixer) add(v *Voice) *Voice {
-	m.mu.Lock()
+	m.lock()
 	v.needBinaural()
 	active, ramping, victim := 0, 0, -1
 	for i, o := range m.voices {
@@ -304,7 +330,7 @@ func (v *Voice) makePositional() {
 // StopAll silences every voice. Each one frees its slot at once and
 // ramps out over the next millisecond, so nothing clicks.
 func (m *Mixer) StopAll() {
-	m.mu.Lock()
+	m.lock()
 	for _, v := range m.voices {
 		m.beginStop(v)
 	}
@@ -358,7 +384,7 @@ func (m *Mixer) run(fns []func()) {
 		fn()
 	}
 	clear(fns) // drop the callbacks so the slice keeps nothing alive
-	m.mu.Lock()
+	m.lock()
 	if m.spareFinished == nil {
 		m.spareFinished = fns[:0]
 	}
@@ -368,7 +394,7 @@ func (m *Mixer) run(fns []func()) {
 // Playing counts active voices. A voice that has been stopped is not
 // counted while its last millisecond ramps out.
 func (m *Mixer) Playing() int {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	n := 0
 	for _, v := range m.voices {
@@ -492,7 +518,7 @@ func (m *Mixer) placeHeads() {
 // snapshot copies the block's voices and their settled gains out from
 // under the lock and returns the shared reverb send. Callers hold mixMu.
 func (m *Mixer) snapshot(out []float32) []float32 {
-	m.mu.Lock()
+	m.lockMix()
 	defer m.mu.Unlock()
 	if len(m.scratch) < len(out) {
 		m.scratch = make([]float32, len(out))
@@ -636,7 +662,7 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 // apply writes each voice's block back, retires the ones that ended and
 // hands over their callbacks. Callers hold mixMu.
 func (m *Mixer) apply() []func() {
-	m.mu.Lock()
+	m.lockMix()
 	ended := false
 	for i := range m.snap {
 		sn := &m.snap[i]
@@ -751,7 +777,7 @@ func (f *fade) value() float32 {
 }
 
 func (v *Voice) set(fn func()) {
-	v.m.mu.Lock()
+	v.m.lock()
 	fn()
 	v.m.mu.Unlock()
 }
@@ -789,7 +815,7 @@ func (v *Voice) SetMute(mute bool) { v.set(func() { v.mute = mute }) }
 
 // Muted reports whether the voice is muted.
 func (v *Voice) Muted() bool {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.mute
 }
@@ -801,7 +827,7 @@ func (v *Voice) SetSolo(solo bool) { v.set(func() { v.solo = solo }) }
 
 // Soloed reports whether the voice is soloed.
 func (v *Voice) Soloed() bool {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.solo
 }
@@ -822,7 +848,7 @@ func (v *Voice) SetOcclusion(o float32) { v.set(func() { v.setOcclusion(o) }) }
 
 // Occlusion reports the voice's occlusion amount.
 func (v *Voice) Occlusion() float32 {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.occlusion
 }
@@ -884,7 +910,7 @@ func (v *Voice) FadeOut(seconds float32) {
 // reports false as soon as it is stopped, while its last millisecond
 // ramps out.
 func (v *Voice) Playing() bool {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return !v.done && !v.stop
 }
@@ -953,7 +979,7 @@ func (v *Voice) Seek(seconds float64) error {
 // fn may start another voice, but it must return quickly and must not
 // block. Only the last fn registered runs.
 func (v *Voice) OnDone(fn func()) {
-	v.m.mu.Lock()
+	v.m.lock()
 	done := v.done
 	if !done {
 		v.onDone = fn

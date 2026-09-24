@@ -18,6 +18,11 @@ do not run. Keep essential game progress independent of audio completion.
 Every method is safe to call from the game loop. A setter copies its
 value in under a short lock and the mixer picks it up at the start of the
 next block, so setters do not wait for a whole block to finish.
+The mixer takes the same lock twice a block. While it waits for the lock,
+setters yield to it instead of queueing, so a game that calls setters
+in a tight loop does not delay a block. To keep the lock short, call
+setters once per frame for each voice that changed rather than
+repeatedly for the same value.
 `Stream.Read` runs without the settings lock, but retains the playback
 lock. It may call setters or start voices, but must return promptly and
 must not call `Voice.Seek`: seeking needs that same playback lock.

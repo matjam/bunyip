@@ -53,7 +53,7 @@ type recordState struct {
 }
 
 func (m *Mixer) recordOptions(opts RecordOptions) (RecordOptions, int64, error) {
-	m.mu.Lock()
+	m.lock()
 	disabled, rate := m.noDevice, m.rate
 	m.mu.Unlock()
 	if disabled {

@@ -152,7 +152,7 @@ func (s ReverbSettings) lerp(o ReverbSettings, t float32) ReverbSettings {
 // their signal to it (unless their bus has a reverb of its own); the tail
 // is mixed on top of the dry output. The zero value turns it off.
 func (m *Mixer) SetReverb(s ReverbSettings) {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	m.baseReverb = s
 	m.updateReverb()
@@ -162,7 +162,7 @@ func (m *Mixer) SetReverb(s ReverbSettings) {
 // to SetReverb, or the zone the listener is in blended by how far inside
 // it stands. Wet is 0 when the reverb is off.
 func (m *Mixer) Reverb() ReverbSettings {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	return m.applied
 }
@@ -186,7 +186,7 @@ type ReverbZone struct {
 // against the listener whenever it moves, so a game sets them once per
 // level and moves the listener each frame. Pass nil to clear them.
 func (m *Mixer) SetReverbZones(zones []ReverbZone) {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	m.zones = append(m.zones[:0], zones...)
 	m.updateReverb()
@@ -256,7 +256,7 @@ func (m *Mixer) updateReverb() {
 // while the music stays dry, or the reverse. The zero value removes it.
 // The settings reach the reverb at the start of the next mixed block.
 func (b *Bus) SetReverb(s ReverbSettings) {
-	b.m.mu.Lock()
+	b.m.lock()
 	defer b.m.mu.Unlock()
 	if s.Wet <= 0 {
 		b.reverb = nil

@@ -61,7 +61,7 @@ type Capture struct {
 // The stream is separate from the mixer: what it records is not played
 // back unless the game plays it.
 func (m *Mixer) OpenCapture(opts CaptureOptions) (*Capture, error) {
-	m.mu.Lock()
+	m.lock()
 	noDevice, rate := m.noDevice, m.rate
 	m.mu.Unlock()
 	if noDevice {

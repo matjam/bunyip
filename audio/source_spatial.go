@@ -141,20 +141,20 @@ func (v *Voice) SetDistanceRange(minDistance, maxDistance float32) error {
 }
 
 // RelativeToListener reports whether source coordinates follow the listener.
-func (v *Voice) RelativeToListener() bool { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.relative }
+func (v *Voice) RelativeToListener() bool { v.m.lock(); defer v.m.mu.Unlock(); return v.relative }
 
 // Direction returns the normalized cone direction in the selected coordinate space.
-func (v *Voice) Direction() lin.Vec3 { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.direction }
+func (v *Voice) Direction() lin.Vec3 { v.m.lock(); defer v.m.mu.Unlock(); return v.direction }
 
 // Cone returns the effective cone; the default has full-circle angles and unity gain.
-func (v *Voice) Cone() Cone { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.cone }
+func (v *Voice) Cone() Cone { v.m.lock(); defer v.m.mu.Unlock(); return v.cone }
 
 // Attenuation returns the effective distance model and rolloff.
-func (v *Voice) Attenuation() Attenuation { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.attenuation }
+func (v *Voice) Attenuation() Attenuation { v.m.lock(); defer v.m.mu.Unlock(); return v.attenuation }
 
 // DistanceRange returns the full-volume and silence distances.
 func (v *Voice) DistanceRange() (minDistance, maxDistance float32) {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.minDist, v.maxDist
 }
