@@ -25,6 +25,35 @@ func (m Mat4) Mul(n Mat4) Mat4 {
 	return out
 }
 
+// MulAffine returns m × n for two affine matrices, applying n first. To
+// compose placements (translation, rotation and scale, as TRS builds),
+// call it in place of Mul: it skips the products with the constant
+// bottom row and costs less than half as much. Both matrices must have a
+// bottom row of 0, 0, 0, 1; the result then has that bottom row and
+// agrees with Mul to within rounding in the last bit, since the compiler
+// may fuse the multiplies and adds differently in the two. For a
+// projection or any other matrix with a different bottom row, use Mul.
+func (m Mat4) MulAffine(n Mat4) Mat4 {
+	return Mat4{
+		m[0]*n[0] + m[4]*n[1] + m[8]*n[2],
+		m[1]*n[0] + m[5]*n[1] + m[9]*n[2],
+		m[2]*n[0] + m[6]*n[1] + m[10]*n[2],
+		0,
+		m[0]*n[4] + m[4]*n[5] + m[8]*n[6],
+		m[1]*n[4] + m[5]*n[5] + m[9]*n[6],
+		m[2]*n[4] + m[6]*n[5] + m[10]*n[6],
+		0,
+		m[0]*n[8] + m[4]*n[9] + m[8]*n[10],
+		m[1]*n[8] + m[5]*n[9] + m[9]*n[10],
+		m[2]*n[8] + m[6]*n[9] + m[10]*n[10],
+		0,
+		m[0]*n[12] + m[4]*n[13] + m[8]*n[14] + m[12],
+		m[1]*n[12] + m[5]*n[13] + m[9]*n[14] + m[13],
+		m[2]*n[12] + m[6]*n[13] + m[10]*n[14] + m[14],
+		1,
+	}
+}
+
 // MulVec4 transforms v.
 func (m Mat4) MulVec4(v Vec4) Vec4 {
 	return Vec4{
