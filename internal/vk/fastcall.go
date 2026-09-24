@@ -38,6 +38,9 @@ var (
 	pfnCmdPushConstants      uintptr
 	pfnCmdSetScissor         uintptr
 	pfnCmdSetViewport        uintptr
+	pfnCmdBlitImage          uintptr
+	pfnCmdWriteTimestamp2    uintptr
+	pfnCmdResetQueryPool     uintptr
 )
 
 // fastAddrs maps a generated command variable to the raw address slot that
@@ -63,6 +66,9 @@ var fastAddrs = map[any]*uintptr{
 	&VkCmdPushConstants:      &pfnCmdPushConstants,
 	&VkCmdSetScissor:         &pfnCmdSetScissor,
 	&VkCmdSetViewport:        &pfnCmdSetViewport,
+	&VkCmdBlitImage:          &pfnCmdBlitImage,
+	&VkCmdWriteTimestamp2:    &pfnCmdWriteTimestamp2,
+	&VkCmdResetQueryPool:     &pfnCmdResetQueryPool,
 }
 
 // callArgs is the argument slice for the calls below. Spreading a slice
@@ -323,6 +329,47 @@ func CmdSetViewport(cb VkCommandBuffer, first, count uint32, pViewports *VkViewp
 	a[2], a[3] = uintptr(count), uintptr(unsafe.Pointer(pViewports))
 	purego.SyscallN(pfnCmdSetViewport, a...)
 	runtime.KeepAlive(pViewports)
+}
+
+// CmdBlitImage records a scaled copy between images. It is VkCmdBlitImage
+// without the allocating call wrapper. pRegions must point into memory
+// that outlives the call.
+func CmdBlitImage(cb VkCommandBuffer, src VkImage, srcLayout VkImageLayout, dst VkImage, dstLayout VkImageLayout,
+	regionCount uint32, pRegions *VkImageBlit, filter VkFilter) {
+	if pfnCmdBlitImage == 0 {
+		VkCmdBlitImage(cb, src, srcLayout, dst, dstLayout, regionCount, pRegions, filter)
+		return
+	}
+	a := callArgs[:8]
+	a[0], a[1], a[2] = uintptr(cb), uintptr(src), uintptr(srcLayout)
+	a[3], a[4], a[5] = uintptr(dst), uintptr(dstLayout), uintptr(regionCount)
+	a[6], a[7] = uintptr(unsafe.Pointer(pRegions)), uintptr(filter)
+	purego.SyscallN(pfnCmdBlitImage, a...)
+	runtime.KeepAlive(pRegions)
+}
+
+// CmdWriteTimestamp2 writes a timestamp query. It is VkCmdWriteTimestamp2
+// without the allocating call wrapper.
+func CmdWriteTimestamp2(cb VkCommandBuffer, stage VkPipelineStageFlags2, pool VkQueryPool, query uint32) {
+	if pfnCmdWriteTimestamp2 == 0 {
+		VkCmdWriteTimestamp2(cb, stage, pool, query)
+		return
+	}
+	a := callArgs[:4]
+	a[0], a[1], a[2], a[3] = uintptr(cb), uintptr(stage), uintptr(pool), uintptr(query)
+	purego.SyscallN(pfnCmdWriteTimestamp2, a...)
+}
+
+// CmdResetQueryPool resets a range of queries. It is VkCmdResetQueryPool
+// without the allocating call wrapper.
+func CmdResetQueryPool(cb VkCommandBuffer, pool VkQueryPool, first, count uint32) {
+	if pfnCmdResetQueryPool == 0 {
+		VkCmdResetQueryPool(cb, pool, first, count)
+		return
+	}
+	a := callArgs[:4]
+	a[0], a[1], a[2], a[3] = uintptr(cb), uintptr(pool), uintptr(first), uintptr(count)
+	purego.SyscallN(pfnCmdResetQueryPool, a...)
 }
 
 // CmdSetScissor sets scissor rectangles. It is VkCmdSetScissor without the

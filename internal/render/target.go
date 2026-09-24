@@ -155,6 +155,18 @@ func (p PassDesc) depthImage() *Image {
 // slice is not forced onto the heap once a pass.
 var colorAttachScratch [4]vk.VkRenderingAttachmentInfo
 
+// The pass description and its depth and stencil attachments are kept
+// beside the colour attachments for the same reason: the raw call reads
+// them by address, and a pointer to a local would move them to the heap.
+var (
+	renderInfoScratch    vk.VkRenderingInfo
+	depthAttachScratch   vk.VkRenderingAttachmentInfo
+	stencilAttachScratch vk.VkRenderingAttachmentInfo
+)
+
+// blitScratch is the region of the blit being recorded, read by address.
+var blitScratch vk.VkImageBlit
+
 // BeginTargetPass transitions the target's images for rendering and opens a
 // dynamic-rendering pass. The colour image ends in colour-attachment layout
 // and the depth image in depth-attachment layout; EndTargetPass moves both
@@ -238,7 +250,6 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 		info.ColorAttachmentCount = n
 		info.PColorAttachments = &colorAttachScratch[0]
 	}
-	var stencil vk.VkRenderingAttachmentInfo
 	if d := p.depthImage(); d != nil && !p.NoDepth {
 		format := d.Format
 		// Only the target's own depth may be multisampled. A pass given a
@@ -292,13 +303,15 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 			depth.ResolveImageView = d.AttachView
 			depth.ResolveImageLayout = depthLayout(format)
 		}
-		info.PDepthAttachment = &depth
+		depthAttachScratch = depth
+		info.PDepthAttachment = &depthAttachScratch
 		if HasStencil(format) {
-			stencil = depth
-			info.PStencilAttachment = &stencil
+			stencilAttachScratch = depth
+			info.PStencilAttachment = &stencilAttachScratch
 		}
 	}
-	vk.VkCmdBeginRendering(cb, &info)
+	renderInfoScratch = info
+	vk.CmdBeginRendering(cb, &renderInfoScratch)
 	SetViewport(cb, t.Extent)
 }
 
@@ -312,7 +325,7 @@ func EndTargetPass(cb vk.VkCommandBuffer, t *Target) {
 // image as it was.
 func EndTargetPassDesc(cb vk.VkCommandBuffer, p PassDesc) {
 	t := p.Target
-	vk.VkCmdEndRendering(cb)
+	vk.CmdEndRendering(cb)
 	if t.Color != nil {
 		readable := func(img *Image) {
 			imageBarrier(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
@@ -390,7 +403,8 @@ func CopyColorForSampling(cb vk.VkCommandBuffer, src, dst *Image) {
 	}
 	blit.SrcOffsets[1] = vk.VkOffset3D{X: int32(src.Extent.Width), Y: int32(src.Extent.Height), Z: 1}
 	blit.DstOffsets[1] = vk.VkOffset3D{X: int32(dst.Extent.Width), Y: int32(dst.Extent.Height), Z: 1}
-	vk.VkCmdBlitImage(cb, src.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, vk.VK_FILTER_LINEAR)
+	blitScratch = blit
+	vk.CmdBlitImage(cb, src.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blitScratch, vk.VK_FILTER_LINEAR)
 	imageBarrier(cb, src.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT,
 		vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		vk.VK_PIPELINE_STAGE_2_BLIT_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,

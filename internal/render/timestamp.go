@@ -120,7 +120,7 @@ func (t *Timestamps) Reset(cb vk.VkCommandBuffer, slot int) {
 	}
 	s.spans = s.spans[:0]
 	s.next = uint32(slot) * t.perSlot
-	vk.VkCmdResetQueryPool(cb, t.pool, uint32(slot)*t.perSlot, t.perSlot)
+	vk.CmdResetQueryPool(cb, t.pool, uint32(slot)*t.perSlot, t.perSlot)
 }
 
 // Begin starts timing a section named name. Pairs nest, so a pass may
@@ -147,7 +147,7 @@ func (t *Timestamps) Begin(cb vk.VkCommandBuffer, name string) {
 	s.spans = append(s.spans, pendingSpan{name: name, a: q, b: q + 1})
 	s.pending = true
 	t.open = append(t.open, len(s.spans)-1)
-	vk.VkCmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, q)
+	vk.CmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, q)
 }
 
 // End closes the innermost open section. Calling it without a matching
@@ -164,7 +164,7 @@ func (t *Timestamps) End(cb vk.VkCommandBuffer) {
 	s := &t.slots[t.cur]
 	sp := &s.spans[i]
 	sp.closed = true
-	vk.VkCmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, sp.b)
+	vk.CmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, sp.b)
 }
 
 // Spans is the newest frame's sections, in the order they were opened,
