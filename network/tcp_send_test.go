@@ -87,8 +87,10 @@ func TestSendWriteFailuresCloseConnection(t *testing.T) {
 		failCall, n int
 		err         error
 	}{
+		// The header and payload go out in one write, so a partial payload
+		// is a first write that stops past the four header bytes.
 		{"zero", 1, 0, nil}, {"partial_header", 1, 2, broken},
-		{"partial_payload", 2, 1, broken}, {"negative", 1, -1, nil},
+		{"partial_payload", 1, 5, broken}, {"negative", 1, -1, nil},
 		{"oversized", 1, 100, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -301,8 +303,9 @@ func TestSendJoinsCancellationBeforeClearingDeadline(t *testing.T) {
 	writes := 0
 	nc := &sendTestTransport{
 		write: func(p []byte) (int, error) {
+			// The frame is one write; cancel while it is in progress.
 			writes++
-			if writes == 2 {
+			if writes == 1 {
 				cancel()
 				<-entered
 			}
