@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/matjam/bunyip/lin"
@@ -404,14 +405,20 @@ func decodeBase64Cells(text, compression string) ([]uint32, error) {
 // larger layer than it has room for.
 const maxLayerBytes = 64 << 20
 
+// zstdDecoder is shared by every zstd layer and chunk: building one
+// costs far more than decoding a small chunk, and DecodeAll is safe for
+// concurrent use. It is made the first time a map needs it.
+var zstdDecoder = sync.OnceValues(func() (*zstd.Decoder, error) {
+	return zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxLayerBytes))
+})
+
 // decodeZstd expands zstd-compressed layer data. Tiled writes it when
 // the map's tile layer format is "Base64 (zstd compressed)".
 func decodeZstd(buf []byte) ([]byte, error) {
-	dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(maxLayerBytes))
+	dec, err := zstdDecoder()
 	if err != nil {
 		return nil, err
 	}
-	defer dec.Close()
 	return dec.DecodeAll(buf, nil)
 }
 
