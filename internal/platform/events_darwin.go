@@ -24,7 +24,7 @@ const (
 // focus keep working.
 func (a *App) handleEvent(ev objc.ID) bool {
 	c := a.c
-	kind := objc.Send[uint](ev, c.sel.eventType)
+	kind := sendUint(ev, c.sel.eventType)
 	if kind == nsEventTypeAppDefined { // Wake: no window attached
 		a.push(Event{Kind: EventWake})
 		return false
@@ -42,16 +42,16 @@ func (a *App) handleEvent(ev objc.ID) bool {
 	case nsEventTypeMouseMoved, nsEventTypeLeftMouseDragged, nsEventTypeRightMouseDragged, nsEventTypeOtherMouseDragged:
 		x, y := a.mousePos(w, ev)
 		a.push(Event{Kind: EventMouseMove, Window: w, X: x, Y: y, Mods: a.mods,
-			DX: objc.Send[float64](ev, c.sel.deltaX), DY: objc.Send[float64](ev, c.sel.deltaY)})
+			DX: msgSendF64(ev, c.sel.deltaX), DY: msgSendF64(ev, c.sel.deltaY)})
 	case nsEventTypeLeftMouseDown, nsEventTypeRightMouseDown, nsEventTypeOtherMouseDown:
 		a.pushMouseButton(w, ev, EventMouseDown)
 	case nsEventTypeLeftMouseUp, nsEventTypeRightMouseUp, nsEventTypeOtherMouseUp:
 		a.pushMouseButton(w, ev, EventMouseUp)
 	case nsEventTypeScrollWheel:
 		a.push(Event{Kind: EventScroll, Window: w, Mods: a.mods,
-			DX:      objc.Send[float64](ev, c.sel.scrollingDeltaX),
-			DY:      objc.Send[float64](ev, c.sel.scrollingDeltaY),
-			Precise: objc.Send[bool](ev, c.sel.hasPreciseScrollingDeltas)})
+			DX:      msgSendF64(ev, c.sel.scrollingDeltaX),
+			DY:      msgSendF64(ev, c.sel.scrollingDeltaY),
+			Precise: sendBool(ev, c.sel.hasPreciseScrollingDeltas)})
 	case nsEventTypeMouseEntered:
 		a.push(Event{Kind: EventMouseEnter, Window: w})
 	case nsEventTypeMouseExited:
@@ -66,14 +66,14 @@ func (a *App) handleEvent(ev objc.ID) bool {
 // method (see textinput_darwin.go); shortcuts and releases stop here.
 func (a *App) handleKey(w *Window, ev objc.ID, down bool) bool {
 	c := a.c
-	code := objc.Send[uint16](ev, c.sel.keyCode)
-	a.mods = modsFromFlags(objc.Send[uint](ev, c.sel.modifierFlags))
+	code := uint16(sendUint(ev, c.sel.keyCode))
+	a.mods = modsFromFlags(sendUint(ev, c.sel.modifierFlags))
 	key := keyFromCode(code)
 	if !down {
 		a.push(Event{Kind: EventKeyUp, Window: w, Key: key, Mods: a.mods})
 		return false
 	}
-	repeat := objc.Send[bool](ev, c.sel.isARepeat)
+	repeat := sendBool(ev, c.sel.isARepeat)
 	a.push(Event{Kind: EventKeyDown, Window: w, Key: key, Mods: a.mods, Repeat: repeat})
 	if a.mods&input.ModSuper != 0 {
 		if key == input.KeyQ {
@@ -90,9 +90,9 @@ func (a *App) handleKey(w *Window, ev objc.ID, down bool) bool {
 // not its travel.
 func (a *App) handleFlagsChanged(w *Window, ev objc.ID) {
 	c := a.c
-	flags := objc.Send[uint](ev, c.sel.modifierFlags)
+	flags := sendUint(ev, c.sel.modifierFlags)
 	a.mods = modsFromFlags(flags)
-	code := objc.Send[uint16](ev, c.sel.keyCode)
+	code := uint16(sendUint(ev, c.sel.keyCode))
 	key := keyFromCode(code)
 	var mask uint
 	switch key {
@@ -152,8 +152,8 @@ func modsFromFlags(flags uint) Mods {
 // mousePos converts an event location to points from the top-left of the
 // content view; AppKit's origin is bottom-left.
 func (a *App) mousePos(w *Window, ev objc.ID) (float64, float64) {
-	p := objc.Send[nsPoint](ev, a.c.sel.locationInWindow)
-	p = objc.Send[nsPoint](w.view, objc.RegisterName("convertPoint:fromView:"), p, objc.ID(0))
+	p := msgSendPoint(ev, a.c.sel.locationInWindow)
+	p = msgSendPointID(w.view, selConvertPointFromView, p, 0)
 	return p.X, float64(w.height) - p.Y
 }
 
@@ -164,7 +164,7 @@ func (a *App) pushMouseButton(w *Window, ev objc.ID, kind EventKind) {
 	if kind == EventMouseDown && (x < 0 || y < 0 || x >= float64(w.width) || y >= float64(w.height)) {
 		return
 	}
-	n := objc.Send[int](ev, a.c.sel.buttonNumber)
+	n := int(sendUint(ev, a.c.sel.buttonNumber))
 	var button MouseButton
 	switch n {
 	case 0:

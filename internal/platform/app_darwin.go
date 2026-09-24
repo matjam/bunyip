@@ -3,6 +3,7 @@ package platform
 import (
 	"fmt"
 	"runtime"
+	"time"
 
 	"github.com/ebitengine/purego/objc"
 )
@@ -49,25 +50,44 @@ func NewApp() (*App, error) {
 // the next call. With wait set it blocks until at least one event arrives,
 // which is how a turn-based game idles without spinning.
 func (a *App) Poll(wait bool) []Event {
+	pool := poolPush()
+	defer poolPop(pool)
+	until := sendID(objc.ID(a.c.NSDate), a.c.sel.distantPast)
+	if wait {
+		until = sendID(objc.ID(a.c.NSDate), a.c.sel.distantFuture)
+	}
+	return a.poll(until)
+}
+
+// PollTimeout is Poll that waits at most timeout for the first event. A
+// timeout of zero or less waits for nothing, as Poll(false) does.
+func (a *App) PollTimeout(timeout time.Duration) []Event {
+	if timeout <= 0 {
+		return a.Poll(false)
+	}
+	pool := poolPush()
+	defer poolPop(pool)
+	return a.poll(msgSendIDF64(objc.ID(a.c.NSDate), selDateSinceNow, timeout.Seconds()))
+}
+
+// poll drains the queue, waiting until the date until for the first
+// event. It runs inside an autorelease pool, which releases the events
+// and everything the handlers made while reading them.
+func (a *App) poll(until objc.ID) []Event {
 	a.pending = a.pending[:0]
 	c := a.c
-	pool := objc.ID(c.NSAutoreleasePool).Send(c.sel.new)
-	defer pool.Send(c.sel.drain)
-	until := objc.ID(c.NSDate).Send(c.sel.distantPast)
-	if wait {
-		until = objc.ID(c.NSDate).Send(c.sel.distantFuture)
-	}
 	for {
-		ev := a.nsApp.Send(c.sel.nextEvent, nsEventMaskAny, until, c.defaultRunLoopMode, true)
+		ev := objc.ID(call(msgSendAddr, 6, uintptr(a.nsApp), uintptr(c.sel.nextEvent),
+			uintptr(nsEventMaskAny), uintptr(until), uintptr(c.defaultRunLoopMode), 1))
 		if ev == 0 {
 			break
 		}
-		until = objc.ID(c.NSDate).Send(c.sel.distantPast)
+		until = sendID(objc.ID(c.NSDate), c.sel.distantPast)
 		if a.handleEvent(ev) {
-			a.nsApp.Send(c.sel.sendEvent, ev)
+			sendID1(a.nsApp, c.sel.sendEvent, uintptr(ev))
 		}
 	}
-	a.nsApp.Send(c.sel.updateWindows)
+	sendID(a.nsApp, c.sel.updateWindows)
 	a.syncEmbedded()
 	return a.pending
 }

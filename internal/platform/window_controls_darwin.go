@@ -18,23 +18,23 @@ func (w *Window) SetSize(width, height int) error {
 	if width <= 0 || height <= 0 {
 		return errors.New("platform: window dimensions must be positive")
 	}
-	w.nsWindow.Send(objc.RegisterName("setContentSize:"), nsSize{Width: float64(width), Height: float64(height)})
+	w.nsWindow.Send(selSetContentSize, nsSize{Width: float64(width), Height: float64(height)})
 	return nil
 }
 func (w *Window) Show() error {
 	if w.parent != 0 {
-		w.view.Send(objc.RegisterName("setHidden:"), false)
+		w.view.Send(selSetHidden, false)
 		return nil
 	}
-	w.nsWindow.Send(objc.RegisterName("orderFront:"), objc.ID(0))
+	w.nsWindow.Send(selOrderFront, objc.ID(0))
 	return nil
 }
 func (w *Window) Hide() error {
 	if w.parent != 0 {
-		w.view.Send(objc.RegisterName("setHidden:"), true)
+		w.view.Send(selSetHidden, true)
 		return nil
 	}
-	w.nsWindow.Send(objc.RegisterName("orderOut:"), objc.ID(0))
+	w.nsWindow.Send(selOrderOut, objc.ID(0))
 	return nil
 }
 func (w *Window) RequestFocus() error {
@@ -55,8 +55,8 @@ func (w *Window) SetPointerPosition(x, y float64) error {
 	// NSWindow converts its content-base point into global AppKit coordinates;
 	// Quartz uses the main screen's top edge as its Y origin.
 	_, height := w.Size()
-	p := objc.Send[nsPoint](w.view, objc.RegisterName("convertPoint:toView:"), nsPoint{X: x, Y: float64(height) - y}, objc.ID(0))
-	p = objc.Send[nsPoint](w.nsWindow, objc.RegisterName("convertPointToScreen:"), p)
+	p := objc.Send[nsPoint](w.view, selConvertPointToView, nsPoint{X: x, Y: float64(height) - y}, objc.ID(0))
+	p = objc.Send[nsPoint](w.nsWindow, selConvertPointToScreen, p)
 	p.Y = w.screenHeight() - p.Y
 	if status := warp(p); status != 0 {
 		return fmt.Errorf("platform: warp pointer: CoreGraphics status %d", status)

@@ -1,8 +1,12 @@
 package platform
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ebitengine/purego/objc"
@@ -13,9 +17,55 @@ import (
 // before the test goroutines start; TestTextInput reports its outcome.
 var textInputResult, wakeResult error
 
+// testApp is the one App the test binary makes: NewApp registers
+// Objective-C classes, which cannot be registered twice.
+var testApp = sync.OnceValues(NewApp)
+
+// mainCalls carries work to the main thread, which TestMain keeps
+// serving while the tests and benchmarks run on other goroutines.
+var mainCalls = make(chan func())
+
+// onMain runs f on the main thread and returns when it has finished.
+func onMain(f func()) {
+	done := make(chan struct{})
+	mainCalls <- func() {
+		defer close(done)
+		f()
+	}
+	<-done
+}
+
 func TestMain(m *testing.M) {
-	textInputResult = runTextInput()
-	os.Exit(m.Run())
+	flag.Parse()
+	if wantsWindowTests() {
+		textInputResult = runTextInput()
+	}
+	code := make(chan int)
+	go func() { code <- m.Run() }()
+	for {
+		select {
+		case f := <-mainCalls:
+			f()
+		case c := <-code:
+			os.Exit(c)
+		}
+	}
+}
+
+// wantsWindowTests reports whether -test.run selects TestTextInput or
+// TestWake, the tests that put a window on screen. A benchmark run with
+// -run '^$' opens no window.
+func wantsWindowTests() bool {
+	f := flag.Lookup("test.run")
+	if f == nil || f.Value.String() == "" {
+		return true
+	}
+	top, _, _ := strings.Cut(f.Value.String(), "/")
+	re, err := regexp.Compile(top)
+	if err != nil {
+		return true
+	}
+	return re.MatchString("TestTextInput") || re.MatchString("TestWake")
 }
 
 // TestWake reports the outcome of runWake, which TestMain drove through
@@ -36,7 +86,7 @@ func TestTextInput(t *testing.T) {
 }
 
 func runTextInput() error {
-	app, err := NewApp()
+	app, err := testApp()
 	if err != nil {
 		return nil // no window system; nothing to test
 	}
