@@ -154,26 +154,29 @@ func TestMouseMoveTranslation(t *testing.T) {
 // returns when its time is up, and that a Wake ends it early.
 func TestPollTimeout(t *testing.T) {
 	a := benchApp(t)
+	// An AppKit event the layer does not translate also ends the wait, so
+	// a poll can come back empty early; the loop treats that as nothing.
+	// What must hold is that no poll overruns its timeout and that one
+	// with nothing arriving lasts the whole timeout.
 	const limit = 50 * time.Millisecond
 	quiet := false
-	for range 5 { // the first polls may pick up the process's own events
-		var n int
+	for range 20 {
 		var took time.Duration
 		onMain(func() {
 			start := time.Now()
-			n = len(a.PollTimeout(limit))
+			a.PollTimeout(limit)
 			took = time.Since(start)
 		})
-		if n == 0 {
-			if took < limit-5*time.Millisecond || took > limit+time.Second {
-				t.Errorf("an empty PollTimeout(%v) took %v", limit, took)
-			}
+		if took > limit+time.Second {
+			t.Fatalf("PollTimeout(%v) took %v", limit, took)
+		}
+		if took >= limit-5*time.Millisecond {
 			quiet = true
 			break
 		}
 	}
 	if !quiet {
-		t.Fatal("no poll came back empty")
+		t.Fatalf("no PollTimeout(%v) in 20 lasted its timeout", limit)
 	}
 	go func() {
 		time.Sleep(20 * time.Millisecond)
