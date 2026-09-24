@@ -11,10 +11,21 @@
 // Update runs at Config.FixedStep regardless of frame rate, Draw runs
 // once per frame, and Context.Alpha reports how far the next update is
 // so drawing can interpolate. Turn-based games set TurnBased. The loop
-// then sleeps in the operating system until input arrives, or until
-// Context.Wake is called from another goroutine, and runs one Update
-// and one Draw per batch of events while not paused. The main loop blocks
-// between batches; audio and any game-owned goroutines can keep running.
+// then draws the first frame, sleeps in the operating system until input
+// arrives, or until Context.Wake is called from another goroutine, and
+// runs one Update and one Draw per batch of events while not paused. A
+// wake that brings no event runs nothing. While a controller is
+// connected the sleep lasts at most 10 ms, because controller input does
+// not wake the operating system's wait, and a change in any controller's
+// state runs a turn. The main loop blocks between batches; audio and any
+// game-owned goroutines can keep running.
+//
+// A window that cannot be seen (Context.Visible is false) does not draw:
+// Draw is not called and nothing is presented until the window is seen
+// again, which draws at once. A hidden real-time window still updates at
+// its fixed step unless Config.PauseHidden stops it, and the loop sleeps
+// between those updates rather than spinning. A headless run paces its
+// frames to FixedStep against the wall clock.
 //
 // # The view
 //
@@ -91,7 +102,10 @@ type Config struct {
 	// default, and a headless run is always visible. With both settings
 	// on this window is paused while either is true. The loop writes the
 	// mixer only when the all-windows pause state changes, so a mixer the game paused itself
-	// stays paused.
+	// stays paused. A hidden window never draws, with or without this
+	// setting; with it, a hidden game costs nothing until it is seen,
+	// except that a close request is drawn so a paused game's Draw can
+	// see it.
 	PauseHidden bool
 
 	// DrawBudget is the number of draw calls (2D and 3D together) a
@@ -410,8 +424,8 @@ func (c *Context) Focused() bool { return c.focused }
 // the platforms that report that; Windows reports only minimising, and a
 // Wayland compositor older than xdg_toplevel version six reports nothing,
 // so the window stays visible there. A headless run is always visible.
-// Config.PauseHidden stops updates and silences the mixer while it is
-// false.
+// While it is false the window does not draw, and Config.PauseHidden
+// also stops updates and silences the mixer.
 func (c *Context) Visible() bool { return c.visible }
 
 // CloseRequested reports that the user asked to close the window since

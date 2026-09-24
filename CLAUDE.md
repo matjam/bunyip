@@ -60,7 +60,13 @@ X11 and `platform.Backend()` says which was chosen.
 **The loop.** `Run` owns the window, renderer, mixer and clock. In
 real-time mode `Update` runs at `Config.FixedStep` and `Draw` once per
 frame; `Context.Delta` is the step and `Context.Alpha` the interpolation
-fraction. Turn-based mode blocks in the OS until events arrive. Input
+fraction. Turn-based mode draws the first frame, then blocks in the OS
+until events arrive; only an event, a Wake, a redraw request or a
+controller change runs a turn, and a connected controller bounds the wait
+(`padPollInterval`) because no backend's poll wakes for it. A window that
+cannot be seen does not draw (`loop.shouldDraw`), and `windowFamily.idleFor`
+picks the wait: none, a timeout through `PollTimeout`, or a blocking
+`Poll(true)`. Input
 edges are per update and are latched for the whole frame during `Draw`,
 so an interface built in `Draw` sees every press.
 

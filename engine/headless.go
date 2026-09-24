@@ -22,6 +22,11 @@ type window interface {
 type eventSource interface {
 	waker
 	Poll(wait bool) []platform.Event
+	// PollTimeout is Poll that waits at most the given time for the first
+	// event. The loop uses it when something other than an event needs it
+	// back: an update falling due in a hidden window, or a controller to
+	// read, since controllers do not wake a blocked Poll.
+	PollTimeout(time.Duration) []platform.Event
 	Gamepads() []platform.GamepadState
 	Clipboard() (string, error)
 	SetClipboard(string) error
@@ -55,16 +60,28 @@ func (w *headlessWindow) Position() (int, int)                       { return 0,
 func (w *headlessWindow) SetAlwaysOnTop(bool) error                  { return platform.ErrUnsupported }
 func (w *headlessWindow) SetCursorImage(image.Image, int, int) error { return platform.ErrUnsupported }
 
-// headlessApp delivers no events; a waiting poll sleeps one step so a
-// turn-based headless game still ticks.
+// headlessApp delivers no input. A waiting poll sleeps one step and
+// returns a wake, which is what keeps a turn-based headless game ticking:
+// the loop only runs a turn-based window for an event.
 type headlessApp struct {
 	step time.Duration
 	clip string
+	wake [1]platform.Event
 }
 
 func (a *headlessApp) Poll(wait bool) []platform.Event {
-	if wait {
-		time.Sleep(a.step)
+	if !wait {
+		return nil
+	}
+	time.Sleep(a.step)
+	a.wake[0] = platform.Event{Kind: platform.EventWake}
+	return a.wake[:]
+}
+
+// PollTimeout sleeps for the timeout. Nothing can arrive sooner.
+func (a *headlessApp) PollTimeout(timeout time.Duration) []platform.Event {
+	if timeout > 0 {
+		time.Sleep(timeout)
 	}
 	return nil
 }
