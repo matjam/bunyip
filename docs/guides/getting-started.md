@@ -153,7 +153,8 @@ rebinding.
 
 F3 toggles an overlay with the frame time, the update and draw times,
 draw-call counts and any profile scopes the game recorded; `Config.Debug`
-shows it from the start.
+shows it from the start. Its figures change four times a second so they
+can be read; `ctx.Stats` still holds every frame's.
 
 `ctx.Profile` times a section of game code. It returns a scope, and
 `End` closes it and records how long it took, into `ctx.Stats.Scopes`

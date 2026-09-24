@@ -1160,8 +1160,8 @@ into one atlas, group draws by texture with layers, and set blend modes
 and shaders around groups rather than around single draws.
 
 F3 toggles an overlay with the frame time, the update and draw times,
-the draw counts and any `ctx.Profile` scopes; `Config.Debug` shows it
-from the start. `Config.DrawBudget` sets the number of draw calls a
+the draw counts and any `ctx.Profile` scopes, refreshed four times a
+second; `Config.Debug` shows it from the start. `Config.DrawBudget` sets the number of draw calls a
 frame should stay under, and the overlay warns when a frame goes over,
 so a batching regression shows up as soon as it appears. Sprites outside
 the 2D camera's view are dropped before they cost anything, as are

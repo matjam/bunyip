@@ -153,7 +153,9 @@ type Config struct {
 	NoAudio    bool // disable audio output and microphone capture
 	Log        *slog.Logger
 
-	// Debug shows the frame-timing overlay at start; F3 toggles it either way.
+	// Debug shows the frame-timing overlay at start; F3 toggles it either
+	// way. The overlay's figures change four times a second so they can be
+	// read; Context.Stats holds every frame's.
 	Debug bool
 
 	// Pprof starts a Go profiling HTTP server at this address, for example
