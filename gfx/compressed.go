@@ -92,8 +92,9 @@ func (g *Graphics) supportsKTX2(f *ktx2.File) bool {
 // uploadKTX2 creates the image and fills every level it should carry.
 // Inside a frame the copies are recorded into the frame's command
 // buffer from the staging arena, before any pass, so a draw later in the
-// same frame samples them; outside one they go through a submission that
-// waits.
+// same frame samples them; outside one they go into the device's upload
+// batch, which is submitted ahead of the next frame and costs no wait.
+// Either way the levels are written straight into the staging memory.
 func (g *Graphics) uploadKTX2(f *ktx2.File, opts TextureOptions) (*render.Image, int, error) {
 	n := len(f.Levels)
 	if opts.NoMipmaps {
@@ -102,40 +103,57 @@ func (g *Graphics) uploadKTX2(f *ktx2.File, opts TextureOptions) (*render.Image,
 	// The levels are packed into one staging allocation, each starting on
 	// a multiple of the block size the driver needs for a copy offset.
 	const align = 16
-	var packed []byte
+	var size vk.VkDeviceSize
 	levels := make([]render.LevelCopy, n)
 	for i := range n {
-		for len(packed)%align != 0 {
-			packed = append(packed, 0)
-		}
+		size = (size + align - 1) / align * align
 		w, h := f.LevelSize(i)
-		levels[i] = render.LevelCopy{Offset: vk.VkDeviceSize(len(packed)), Width: uint32(w), Height: uint32(h)}
-		packed = append(packed, f.Levels[i]...)
+		levels[i] = render.LevelCopy{Offset: size, Width: uint32(w), Height: uint32(h)}
+		size += vk.VkDeviceSize(len(f.Levels[i]))
+	}
+	if size == 0 {
+		return nil, 0, fmt.Errorf("gfx: KTX2 file has no texel data")
 	}
 	extent := vk.VkExtent2D{Width: uint32(f.Width), Height: uint32(f.Height)}
-	format := vk.VkFormat(f.Format)
-	if g.frame == nil {
-		img, err := g.r.Device.NewLevelledTextureImage(extent, format, packed, levels)
-		if err != nil {
-			return nil, 0, err
-		}
-		return img, n, nil
-	}
-	img, err := g.r.Device.NewLevelledImage(extent, format, uint32(n))
+	img, err := g.r.Device.NewLevelledImage(extent, vk.VkFormat(f.Format), uint32(n))
 	if err != nil {
 		return nil, 0, err
 	}
-	staging, offset, err := g.stage(packed)
+	var (
+		staging *render.Buffer
+		offset  vk.VkDeviceSize
+		dst     []byte
+		cb      vk.VkCommandBuffer
+	)
+	if fr := g.frame; fr != nil {
+		staging, offset, dst, err = g.staging.Reserve(fr.Slot, size)
+		cb = fr.CB
+	} else if staging, offset, dst, err = g.r.Device.StageUpload(size); err == nil {
+		cb, err = g.r.Device.UploadCommands()
+	}
 	if err != nil {
 		img.Destroy()
 		return nil, 0, err
 	}
-	// The arena's own alignment is a multiple of the block size, so
-	// shifting every level by the allocation's offset keeps them aligned.
 	for i := range levels {
-		levels[i].Offset += offset
+		lv := &levels[i]
+		// The gaps between levels are padding; clear them so the
+		// staging holds no stale bytes.
+		end := vk.VkDeviceSize(len(dst))
+		if i+1 < len(levels) {
+			end = levels[i+1].Offset
+		}
+		k := copy(dst[lv.Offset:], f.Levels[i])
+		clear(dst[lv.Offset+vk.VkDeviceSize(k) : end])
+		// The arena's own alignment is a multiple of the block size, so
+		// shifting every level by the allocation's offset keeps them
+		// aligned.
+		lv.Offset += offset
 	}
-	render.RecordLevelsUpload(g.frame.CB, img, staging, levels)
+	render.RecordLevelsUpload(cb, img, staging, levels)
+	if g.frame == nil {
+		img.NoteUpload()
+	}
 	return img, n, nil
 }
 

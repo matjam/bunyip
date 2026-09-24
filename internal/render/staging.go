@@ -1,6 +1,10 @@
 package render
 
-import "github.com/matjam/bunyip/internal/vk"
+import (
+	"unsafe"
+
+	"github.com/matjam/bunyip/internal/vk"
+)
 
 // stagingBlock is the size a slot's arena starts at, and the step it
 // grows by.
@@ -52,21 +56,29 @@ func (s *Staging) Begin(slot int) {
 // Begin of that slot, which is why the copy must be recorded into that
 // slot's frame.
 func (s *Staging) Alloc(slot int, data []byte) (*Buffer, vk.VkDeviceSize, error) {
+	buf, offset, dst, err := s.Reserve(slot, vk.VkDeviceSize(len(data)))
+	if err != nil {
+		return nil, 0, err
+	}
+	copy(dst, data)
+	return buf, offset, nil
+}
+
+// Reserve is Alloc without the copy: it takes size bytes of the slot's
+// arena and returns the buffer, the offset and the mapped bytes, for a
+// caller that writes its data in place rather than building a slice to
+// copy from. The same lifetime applies.
+func (s *Staging) Reserve(slot int, size vk.VkDeviceSize) (*Buffer, vk.VkDeviceSize, []byte, error) {
 	sl := &s.slots[slot]
-	size := vk.VkDeviceSize(len(data))
 	if size > stagingMax {
 		// Too big for the arena: one buffer for this upload alone.
 		buf, err := s.dev.NewBuffer(size, vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 		if err != nil {
-			return nil, 0, err
-		}
-		if err := buf.Write(0, data); err != nil {
-			buf.Destroy()
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		sl.old = append(sl.old, buf)
-		return buf, 0, nil
+		return buf, 0, unsafe.Slice((*byte)(buf.Mapped), int(size)), nil
 	}
 	offset := (sl.used + s.align - 1) / s.align * s.align
 	if sl.buf == nil || offset+size > sl.buf.Size {
@@ -80,18 +92,15 @@ func (s *Staging) Alloc(slot int, data []byte) (*Buffer, vk.VkDeviceSize, error)
 		buf, err := s.dev.NewBuffer(min(want, stagingMax), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 		if sl.buf != nil {
 			sl.old = append(sl.old, sl.buf)
 		}
 		sl.buf, offset = buf, 0
 	}
-	if err := sl.buf.Write(int(offset), data); err != nil {
-		return nil, 0, err
-	}
 	sl.used = offset + size
-	return sl.buf, offset, nil
+	return sl.buf, offset, unsafe.Slice((*byte)(unsafe.Add(sl.buf.Mapped, offset)), int(size)), nil
 }
 
 // bufSize is the slot's current arena size, zero before its first use.
