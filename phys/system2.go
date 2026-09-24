@@ -234,8 +234,8 @@ func System2(w *ecs.World, dt float64) {
 	// As in 3D, only the step moves colliders between its substeps, so
 	// the walk over every collider happens once an update.
 	s.cols.refresh(s.colliders)
-	for range substeps {
-		s.step(w, settings, h, iterations)
+	for i := range substeps {
+		s.step(w, settings, h, iterations, i == substeps-1, float32(dt))
 	}
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform2, b *Body2) {
 		b.force, b.torque = lin.Vec2{}, 0
@@ -254,7 +254,7 @@ func active2(b *Body2) bool {
 	return b.invMass > 0
 }
 
-func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations int) {
+func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations int, last bool, dt float32) {
 	// Integrate velocities, and link each body's collider row to it.
 	x := &s.cols
 	s.dynamic = s.dynamic[:0]
@@ -451,13 +451,18 @@ func (s *state2) step(w *ecs.World, settings *Settings2, h float32, iterations i
 	// Relax: the positions have taken the correction the bias asked for,
 	// so take the speed it added back out. Without this a resting stack
 	// keeps the separating speed the bias gave it and never rests below
-	// the sleep threshold.
+	// the sleep threshold. Only the speed the update ends with is read,
+	// by the sleep test and by the game, so the pass runs once, after the
+	// last substep, and the sleep test with it.
+	if !last {
+		return
+	}
 	for range relaxIterations {
 		for i := range s.arbiters {
 			s.arbiters[i].solve(false)
 		}
 	}
-	s.sleep(settings, h)
+	s.sleep(settings, dt)
 }
 
 func (s *state2) find(i int) int {

@@ -394,11 +394,12 @@ of ten thousand static boxes costs little more than the bodies moving
 through it. The shapes generate contact points. A sequential
 impulse solver iterates over the contacts and joints, applying normal
 impulses with restitution, friction impulses clamped by the normal
-impulse, and a small positional correction. Positions then integrate,
-and a relax pass solves the contacts once more with the positional
-correction dropped, which takes the separating speed that correction
-added back out of the velocities. Restitution is kept out of that
-correction, so bounces survive the relax pass.
+impulse, and a small positional correction. Positions then integrate.
+After the last substep of the update, a relax pass solves the contacts
+once more with the positional correction dropped, which takes the
+separating speed that correction added back out of the velocities the
+update ends with, and bodies are then tested for sleep. Restitution is
+kept out of that correction, so bounces survive the relax pass.
 
 `Settings.Substeps` (default 4) trades speed for stability under fast
 motion and tall stacks; `Iterations` (default 8) stiffens contacts and

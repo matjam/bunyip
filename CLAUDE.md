@@ -597,10 +597,12 @@ test's output.
   `-gcflags=all=-d=fmahash=n`, results are exact functions of the
   arithmetic; compare physics dumps there to prove a refactor keeps
   results bit for bit.
-- Each physics substep ends with a relax pass over the contacts that
-  solves them again with the position-correction bias dropped. The bias
-  leaves the bodies separating at about the sleep threshold, so without
-  the pass a stack never rests. Restitution is held in its own field
+- The last physics substep of an update ends with a relax pass over the
+  contacts that solves them again with the position-correction bias
+  dropped, and the sleep test follows it, counting the whole update's
+  time. The bias leaves the bodies separating at about the sleep
+  threshold, so without the pass a stack never rests; running it once
+  an update rather than every substep costs a quarter as much. Restitution is held in its own field
   (`solverContact.restBias`) and stays in the relax pass, so bounces
   survive it.
 - Input edges are fed into two sets at once: the per-update set that
