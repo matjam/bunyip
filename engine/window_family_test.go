@@ -57,8 +57,9 @@ func TestWindowFamilyRoutesHeadlessEventsAndPollsOnce(t *testing.T) {
 	if err := f.run(); err != nil {
 		t.Fatal(err)
 	}
-	// Each window's first frame, then one turn for its key.
-	if polls != 4 || rootGame.draws != 2 || childGame.draws != 2 || len(rootGame.deltas) != 2 || len(childGame.deltas) != 2 {
+	// Each window draws its first frame without an Update, then takes one
+	// turn for its key.
+	if polls != 4 || rootGame.draws != 2 || childGame.draws != 2 || len(rootGame.deltas) != 1 || len(childGame.deltas) != 1 {
 		t.Fatalf("polls=%d, root=%+v, child=%+v", polls, rootGame, childGame)
 	}
 }

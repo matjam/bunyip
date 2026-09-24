@@ -205,6 +205,10 @@ type loop struct {
 	eventWindow      *platform.Window
 	clock            windowClock
 	ready, wasPaused bool
+	// firstFrame is set until the window's first frame, which the loop
+	// draws without waiting for an event and, in turn-based mode, without
+	// an Update.
+	firstFrame bool
 
 	// The engine's side of the public values in ctx: the frame, the event
 	// feed and the audio pull, none of which a game calls.

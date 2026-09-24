@@ -11,9 +11,10 @@
 // Update runs at Config.FixedStep regardless of frame rate, Draw runs
 // once per frame, and Context.Alpha reports how far the next update is
 // so drawing can interpolate. Turn-based games set TurnBased. The loop
-// then draws the first frame, sleeps in the operating system until input
-// arrives, or until Context.Wake is called from another goroutine, and
-// runs one Update and one Draw per batch of events while not paused. A
+// then draws the first frame without an Update, sleeps in the operating
+// system until input arrives, or until Context.Wake is called from
+// another goroutine, and runs one Update and one Draw per batch of
+// events while not paused. A paused game draws but never updates. A
 // wake that brings no event runs nothing. While a controller is
 // connected the sleep lasts at most 10 ms, because controller input does
 // not wake the operating system's wait, and a change in any controller's

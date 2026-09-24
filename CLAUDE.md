@@ -60,7 +60,8 @@ X11 and `platform.Backend()` says which was chosen.
 **The loop.** `Run` owns the window, renderer, mixer and clock. In
 real-time mode `Update` runs at `Config.FixedStep` and `Draw` once per
 frame; `Context.Delta` is the step and `Context.Alpha` the interpolation
-fraction. Turn-based mode draws the first frame, then blocks in the OS
+fraction. Turn-based mode draws the first frame without an Update
+(`loop.firstFrame`), then blocks in the OS
 until events arrive; only an event, a Wake, a redraw request or a
 controller change runs a turn, and a connected controller bounds the wait
 (`padPollInterval`) because no backend's poll wakes for it. A window that

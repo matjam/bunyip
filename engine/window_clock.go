@@ -17,8 +17,17 @@ func (l *loop) resetClock() {
 // only for ready turn-based windows, or on every cycle for real-time windows.
 // It updates as the clock says and then draws, unless draw is false: a
 // window nobody can see still keeps its game time but renders nothing.
-func (l *loop) advance(now time.Time, draw bool) error {
+// With update false, which only a turn-based window's unasked first frame
+// passes, it draws without an Update and leaves the clock alone, so the
+// first real turn's Delta runs from the start.
+func (l *loop) advance(now time.Time, draw, update bool) error {
 	l.overlay.toggle(l.ctx.Input)
+	if !update && l.cfg.TurnBased {
+		l.beginFrame(now)
+		l.ctx.Time = now.Sub(l.clock.start).Seconds()
+		l.ctx.Alpha = 1
+		return l.drawIf(draw)
+	}
 	clock := &l.clock
 	elapsed := now.Sub(clock.last)
 	clock.last = now
@@ -97,7 +106,7 @@ func (l *loop) shouldDraw() bool {
 func (l *loop) idleFor(now time.Time) time.Duration {
 	switch {
 	case l.cfg.TurnBased:
-		if l.ready {
+		if l.ready || l.firstFrame {
 			return 0
 		}
 		return -1

@@ -97,9 +97,9 @@ func TestTurnBasedPauseStopsUpdates(t *testing.T) {
 				if err := l.run(); err != nil {
 					t.Fatal(err)
 				}
-				// One update and one draw are the first frame's.
-				if len(g.deltas) != 1+tc.updates {
-					t.Errorf("updates = %d, want 1+%d", len(g.deltas), tc.updates)
+				// The first frame only draws: no Update.
+				if len(g.deltas) != tc.updates {
+					t.Errorf("updates = %d, want %d", len(g.deltas), tc.updates)
 				}
 				if g.draws != 1+tc.draws || polls != 3 {
 					t.Errorf("draws/polls = %d/%d, want 1+%d/3", g.draws, polls, tc.draws)
@@ -235,8 +235,8 @@ func TestTurnBasedPausedDrawRedrawWakeAndClose(t *testing.T) {
 		if err := l.run(); err != nil {
 			t.Fatal(err)
 		}
-		if len(g.deltas) != 1 {
-			t.Errorf("updates = %d, want only the first frame's", len(g.deltas))
+		if len(g.deltas) != 0 {
+			t.Errorf("paused game updated %d times", len(g.deltas))
 		}
 		// The first frame, the pause, the redraw, the wake and the close.
 		if g.draws != 5 {
@@ -299,8 +299,10 @@ func TestHiddenWindowSkipsDrawsUntilShownOrClosing(t *testing.T) {
 	if !slices.Equal(drawsAt, []int{1, 2}) || g.draws != 3 {
 		t.Errorf("draws while hidden, after showing = %v, total %d; want [1 2], 3", drawsAt, g.draws)
 	}
-	if len(g.deltas) != 2 {
-		t.Errorf("updates = %d, want 2 (only while shown)", len(g.deltas))
+	// Only the turn on showing updates: the first frame just draws, and a
+	// hidden paused window updates for nothing.
+	if len(g.deltas) != 1 {
+		t.Errorf("updates = %d, want 1 (only while shown)", len(g.deltas))
 	}
 }
 
@@ -357,9 +359,9 @@ func TestTurnBasedEmptyWakesDoNotDraw(t *testing.T) {
 		if err := l.run(); err != nil {
 			t.Fatal(err)
 		}
-		// The first frame and the Wake's.
-		if g.draws != 2 || len(g.deltas) != 2 {
-			t.Errorf("draws, updates = %d, %d over 18 empty wakes and one Wake; want 2, 2", g.draws, len(g.deltas))
+		// Draws for the first frame and the Wake; only the Wake updates.
+		if g.draws != 2 || len(g.deltas) != 1 {
+			t.Errorf("draws, updates = %d, %d over 18 empty wakes and one Wake; want 2, 1", g.draws, len(g.deltas))
 		}
 		if a.waits[0] != 0 || slices.Contains(a.waits[1:], 0) {
 			t.Errorf("waits = %v; only the first frame's poll should not wait", a.waits)

@@ -59,8 +59,9 @@ func (f *windowFamily) attach(w *Window) {
 	// A new window draws its first frame without waiting for an event. A
 	// turn-based one would otherwise start blank on macOS and Windows,
 	// where the events a new window raises arrive before the first Poll
-	// and are not delivered.
-	w.loop.ready = true
+	// and are not delivered. The frame only draws: no input asked for a
+	// turn, so a turn-based game does not update for it.
+	w.loop.firstFrame = true
 }
 func (f *windowFamily) closeChildren(parent *Window) {
 	// A deferred continuation drains the rest even if a child's Shutdown or
@@ -199,11 +200,14 @@ func (f *windowFamily) run() error {
 			if !w.ctx.canCreateWindow() {
 				continue
 			}
-			if l.cfg.TurnBased && !l.ready {
+			if l.cfg.TurnBased && !l.ready && !l.firstFrame {
 				continue
 			}
-			l.ready = false
-			if err := l.advance(now, l.shouldDraw()); err != nil {
+			// A turn-based window updates only for a turn something asked
+			// for; its unasked first frame just draws.
+			update := !l.cfg.TurnBased || l.ready
+			l.ready, l.firstFrame = false, false
+			if err := l.advance(now, l.shouldDraw(), update); err != nil {
 				return fmt.Errorf("bunyip: window %q: %w", l.cfg.Title, err)
 			}
 			if f.root.ctx.quit {
