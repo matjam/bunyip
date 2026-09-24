@@ -153,10 +153,11 @@ func pow32(base, exp float32) float32 {
 	return float32(math.Pow(float64(base), float64(exp)))
 }
 
-// renderBinaural mixes n frames of the voice into out through the head
-// model, ramping the block's gains and gliding every head parameter from
-// where the last block left it. It allocates nothing.
-func (sn *voiceMix) renderBinaural(scratch, out []float32, n int) {
+// renderBinaural mixes a block of the voice, already mono, into out
+// through the head model, ramping the block's gains and gliding every
+// head parameter from where the last block left it. It allocates nothing.
+func (sn *voiceMix) renderBinaural(mono, out []float32) {
+	n := len(mono)
 	b := sn.bin
 	t := sn.ear
 	if !b.started {
@@ -176,7 +177,7 @@ func (sn *voiceMix) renderBinaural(scratch, out []float32, n int) {
 	send, rev := sn.send, sn.reverb
 	ring, w, shelf := b.ring, b.w, b.shelf
 	low, lpL, lpR := b.low, b.lpL, b.lpR
-	for i := range n {
+	for i, x := range mono {
 		p.delayL += dDelayL
 		p.delayR += dDelayR
 		p.shadowL += dShadowL
@@ -184,9 +185,6 @@ func (sn *voiceMix) renderBinaural(scratch, out []float32, n int) {
 		p.tilt += dTilt
 		gl += dl
 		gr += dr
-
-		// The head model is fed one signal, so a stereo source collapses.
-		x := (scratch[i*2] + scratch[i*2+1]) * 0.5
 		low += shelf * (x - low)
 		ring[w] = low + p.tilt*(x-low)
 		l, r := tap(ring, w, p.delayL), tap(ring, w, p.delayR)

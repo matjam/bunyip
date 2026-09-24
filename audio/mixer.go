@@ -893,9 +893,13 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	}
 	var n int
 	var more bool
-	if sn.stream != nil {
+	mono := sn.snd != nil && sn.snd.mono
+	switch {
+	case sn.stream != nil:
 		n, more = sn.readStream(scratch[:frames*2])
-	} else {
+	case mono:
+		n, more = sn.readSoundMono(scratch[:frames])
+	default:
 		n, more = sn.readSound(scratch[:frames*2])
 	}
 	sn.frames, sn.more = n, more
@@ -905,15 +909,34 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	if n == 0 {
 		return
 	}
+	if sn.bin != nil && !mono {
+		// The head model is fed one signal, so a stereo source collapses
+		// here, before the filters, which then run once instead of twice.
+		for i := range n {
+			scratch[i] = (scratch[i*2] + scratch[i*2+1]) * 0.5
+		}
+		mono = true
+	}
+	if mono {
+		buf := scratch[:n]
+		if sn.lp != nil {
+			sn.lp.processMono(sn.lpc, buf)
+		}
+		if sn.occ != nil {
+			sn.occ.processMono(sn.occc, buf)
+		}
+		if sn.bin != nil {
+			sn.renderBinaural(buf, out)
+		} else {
+			sn.renderMono(buf, out)
+		}
+		return
+	}
 	if sn.lp != nil {
 		sn.lp.process(sn.lpc, scratch[:n*2])
 	}
 	if sn.occ != nil {
 		sn.occ.process(sn.occc, scratch[:n*2])
-	}
-	if sn.bin != nil {
-		sn.renderBinaural(scratch, out, n)
-		return
 	}
 	dl := (sn.tl - sn.curL) / float32(n)
 	dr := (sn.tr - sn.curR) / float32(n)
@@ -924,6 +947,28 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 		r += dr
 		sl := scratch[i*2] * l
 		sr := scratch[i*2+1] * r
+		out[i*2] += sl
+		out[i*2+1] += sr
+		if rev > 0 {
+			send[i*2] += sl * rev
+			send[i*2+1] += sr * rev
+		}
+	}
+}
+
+// renderMono accumulates one mono block into both channels of out and
+// the reverb send, ramping the gains as render does for stereo.
+func (sn *voiceMix) renderMono(buf, out []float32) {
+	n := len(buf)
+	dl := (sn.tl - sn.curL) / float32(n)
+	dr := (sn.tr - sn.curR) / float32(n)
+	l, r := sn.curL, sn.curR
+	send, rev := sn.send, sn.reverb
+	for i, x := range buf {
+		l += dl
+		r += dr
+		sl := x * l
+		sr := x * r
 		out[i*2] += sl
 		out[i*2+1] += sr
 		if rev > 0 {
@@ -977,10 +1022,49 @@ func (sn *voiceMix) readSound(dst []float32) (int, bool) {
 				k = j
 			}
 		}
-		dst[i*2] = s.samples[j*2]*(1-t) + s.samples[k*2]*t
-		dst[i*2+1] = s.samples[j*2+1]*(1-t) + s.samples[k*2+1]*t
+		// The conversions pin which product arm64 fuses into the add, so
+		// readSoundMono can match this bit for bit.
+		dst[i*2] = s.samples[j*2]*(1-t) + float32(s.samples[k*2]*t)
+		dst[i*2+1] = s.samples[j*2+1]*(1-t) + float32(s.samples[k*2+1]*t)
 		pos += step
 	}
 	sn.pos = pos
 	return frames, true
+}
+
+// readSoundMono is readSound for a mono sound: it reads the left channel
+// into len(dst) consecutive samples, since the right one is the same.
+func (sn *voiceMix) readSoundMono(dst []float32) (int, bool) {
+	s := sn.snd
+	if s == nil || len(s.samples) < 2 {
+		return 0, false
+	}
+	total := len(s.samples) / 2
+	pos, step, loop := sn.pos, float64(sn.step), sn.loop
+	for i := range dst {
+		if pos >= float64(total) {
+			if !loop {
+				sn.pos = pos
+				return i, false
+			}
+			pos = math.Mod(pos, float64(total))
+		}
+		j := min(int(pos), total-1)
+		t := float32(pos - float64(j))
+		k := j + 1
+		if k >= total {
+			if loop {
+				k = 0
+			} else {
+				k = j
+			}
+		}
+		// The conversion rounds the second product before the add, so
+		// arm64 fuses the same multiply as it does in readSound and a mono
+		// sound mixes bit for bit as it did when both channels were read.
+		dst[i] = s.samples[j*2]*(1-t) + float32(s.samples[k*2]*t)
+		pos += step
+	}
+	sn.pos = pos
+	return len(dst), true
 }

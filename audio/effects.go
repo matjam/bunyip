@@ -89,6 +89,25 @@ func (f *lowPass) process(c biquad, buf []float32) {
 	f.l0, f.l1, f.r0, f.r1 = flushTiny(l0), flushTiny(l1), flushTiny(r0), flushTiny(r1)
 }
 
+// processMono filters a block of mono samples in place with the left
+// channel's state, then copies that state to the right channel. The
+// mixer uses it for a mono sound, whose two channels would be filtered
+// to the same values, and for the downmix a binaural voice feeds the head
+// model; either way both channels continue from the same state if the
+// voice later filters in stereo.
+func (f *lowPass) processMono(c biquad, buf []float32) {
+	b0, b1, b2, a1, a2 := c.b0, c.b1, c.b2, c.a1, c.a2
+	l0, l1 := f.l0, f.l1
+	for i, x := range buf {
+		y := b0*x + l0
+		l0 = b1*x - a1*y + l1
+		l1 = b2*x - a2*y
+		buf[i] = y
+	}
+	l0, l1 = flushTiny(l0), flushTiny(l1)
+	f.l0, f.l1, f.r0, f.r1 = l0, l1, l0, l1
+}
+
 // ReverbSettings describe a reverb, which voices feed through their Reverb
 // send. Zero RoomSize, Damping and Width take the defaults 0.5, 0.5 and 1;
 // a zero Wet turns the reverb off, so the zero value is no reverb. Every
