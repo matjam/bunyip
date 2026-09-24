@@ -1,6 +1,8 @@
 package gfx
 
 import (
+	"image"
+
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
 	"github.com/matjam/bunyip/lin"
@@ -115,8 +117,10 @@ type drawQueue struct {
 	// draws once the frustum and the occluders are known.
 	batches    []*StaticBatch
 	shadowTex  *Texture     // the polar shadow maps, one row per light
-	shadowPix  []byte       // the strip's pixels, filled each frame
+	shadowPix  []byte       // the strip's pixels, filled when the inputs change
 	shadowDist []float32    // one light's distances, reused across lights
+	shadowImg  *image.RGBA  // shadowPix as an image, for uploading
+	shadowFrom shadowInputs // what the strip on the GPU was built from
 	xform      lin.Affine   // composed 2D transform in force
 	xforms     []lin.Affine // transform stack below it
 	skyCached  skyKey       // the sky whose harmonics are in skySH
@@ -220,6 +224,7 @@ func (q *drawQueue) setView(w, h float32) {
 	} else {
 		q.spriteProj = q.proj
 	}
+	q.stream.invalidate()
 }
 
 // subFrame is a render-texture pass queued for this frame.

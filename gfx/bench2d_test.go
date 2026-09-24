@@ -44,9 +44,6 @@ func a2dTextures(b *testing.B, g *Graphics, n int) []*Texture {
 // streamQuads is the number of quads the main queue's 2D stream holds.
 func streamQuads(g *Graphics) int { return len(g.main.stream.verts) / 6 }
 
-// dropLayouts empties a font's layout cache, so the next layout is cold.
-func dropLayouts(f *Font) { f.layouts = genCache[textLayoutKey, *TextLayout]{} }
-
 // a2dFrame opens a frame, runs draw and submits it.
 func a2dFrame(b *testing.B, g *Graphics, draw func()) {
 	b.Helper()
@@ -350,7 +347,7 @@ func Benchmark2DRichParagraph2k(b *testing.B) {
 	b.Run("layout_cold", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			dropLayouts(f)
+			f.dropLayouts()
 			if _, err := fonts.Layout(rt, opts); err != nil {
 				b.Fatal(err)
 			}

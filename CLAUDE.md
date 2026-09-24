@@ -616,7 +616,28 @@ test's output.
   render pass, so a glyph first drawn in a frame appears in it. Text
   drawing flushes before it queues its sprites. The atlas never grows,
   so a font whose atlas is full drops later glyphs rather than replacing
-  the texture the frame's draws already point at.
+  the texture the frame's draws already point at. The CPU copy is an
+  `image.Alpha` (`Font.mask`) until the first colour glyph, when
+  `colorPix` turns it into `Font.pix`; write plain coverage through
+  `setCoverage` and colour texels through `colorPix`.
+- A 2D draw resolves its `state2D` through `spriteState`, which reuses
+  the previous draw's state (an index into `stream2D.states`) while the
+  texture, the filter, the queue's shader, the shader clock, the
+  texture's descriptor set, `Graphics.imageVersion` and the shader's
+  placed uniforms are unchanged. Everything else that feeds `state2D`
+  (blend, clip, stencil, colour matrix, projection, camera, view, group)
+  must call `q.stream.invalidate()` when it changes, restores included,
+  or later sprites draw under the old state. Without a camera, sprites,
+  tilemaps and text layouts are culled against the view
+  (`drawQueue.viewRect`, `localView` for the inverse transform).
+- Text drawing, `Font.Measure` and `Font.Layout` share one layout cache
+  per font (`Font.plain` for the zero options, `Font.layouts` otherwise;
+  `gfx/textcache.go`). A generation retires only after filling for two
+  whole frames and grows instead within a frame, and a key is stored the
+  second time it is put. A rich layout is keyed by `richHash` of its
+  runs and keeps the runs to tell collisions apart. Parsed font faces
+  are shared across fonts through `parseFace` (`gfx/fontface.go`), keyed
+  weakly by the source bytes.
 - A colour glyph (COLR layers, an SVG document, a bitmap strike) is
   composited on the CPU in `gfx/colr.go` and `gfx/svgglyph.go` and
   stored premultiplied in linear light, because the atlas is a `Data`

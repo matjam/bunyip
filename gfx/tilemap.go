@@ -209,7 +209,10 @@ func (t *Tilemap) Get(x, y int) int {
 }
 
 // DrawTilemap draws the map with its top-left at (x, y), skipping tiles
-// outside the active 2D camera's view.
+// outside the view, or outside the active 2D camera's view under a
+// camera. The view is taken back through the transform stack into the
+// map's own units, so a scrolled, scaled or rotated map only visits the
+// tiles that can be seen.
 func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
 	tw, th := t.TileW, t.TileH
 	if tw == 0 {
@@ -219,17 +222,9 @@ func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
 		th = float32(t.Sheet.FrameH)
 	}
 	x0, y0, x1, y1 := 0, 0, t.Width, t.Height
-	if cam, ok := g.Camera2D(); ok {
-		vis := cam.VisibleRect(g.cur.viewW, g.cur.viewH)
-		if xf := g.cur.xform; !xf.IsIdentity() {
-			// The map is drawn through the transform stack, so the view
-			// is taken back into the map's own units before culling.
-			vis = transformedBounds(xf.Inverse(), vis)
-		}
-		x0 = max(0, int((vis.X-x)/tw)-1)
-		y0 = max(0, int((vis.Y-y)/th)-1)
-		x1 = min(t.Width, int((vis.X+vis.W-x)/tw)+2)
-		y1 = min(t.Height, int((vis.Y+vis.H-y)/th)+2)
+	if vis, ok := g.cur.localView(); ok && tw > 0 && th > 0 {
+		x0, x1 = tileSpan(vis.X, vis.X+vis.W, x, tw, t.Width)
+		y0, y1 = tileSpan(vis.Y, vis.Y+vis.H, y, th, t.Height)
 	}
 	for ty := y0; ty < y1; ty++ {
 		for tx := x0; tx < x1; tx++ {
@@ -247,6 +242,42 @@ func (g *Graphics) DrawTilemap(t *Tilemap, x, y float32, tint Color) {
 			g.DrawFrame(t.Sheet, t.current(frame), s)
 		}
 	}
+}
+
+// localView is the part of the drawing space that can reach the output,
+// in the coordinates drawing is placed in before the transform stack:
+// the view, or the 2D camera's view under a camera, taken back through
+// the inverse of the transform in force. It is the axis-aligned bounds of
+// that region, so it holds everything visible under any rotation, scale
+// or shear. It reports false when the transform cannot be inverted or
+// the result is not finite, and then nothing should be culled.
+func (q *drawQueue) localView() (lin.Rect, bool) {
+	vis := q.viewRect()
+	if xf := q.xform; !xf.IsIdentity() {
+		inv := xf.Inverse()
+		if inv == (lin.Affine{}) {
+			return lin.Rect{}, false
+		}
+		vis = transformedBounds(inv, vis)
+	}
+	for _, v := range [4]float32{vis.X, vis.Y, vis.W, vis.H} {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return lin.Rect{}, false
+		}
+	}
+	return vis, true
+}
+
+// tileSpan is the range of tiles, of size along one axis from origin, that
+// a visible span from lo to hi can touch, with a tile of margin on each
+// side, clamped to the n tiles there are.
+func tileSpan(lo, hi, origin, size float32, n int) (first, end int) {
+	// Clamping before converting keeps a far-off view from overflowing
+	// the conversion to int; outside that range the result is the same.
+	limit := float32(n) + 3
+	a := min(max((lo-origin)/size, -3), limit)
+	b := min(max((hi-origin)/size, -3), limit)
+	return max(0, int(a)-1), min(n, int(b)+2)
 }
 
 // transformedBounds is the axis-aligned bounds of a rectangle's corners

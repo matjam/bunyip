@@ -115,6 +115,7 @@ func (m ColorMatrix) Apply(c Color) Color {
 func (g *Graphics) SetColorMatrix(m *ColorMatrix) {
 	q := g.cur
 	q.colorMatrix = m
+	q.stream.invalidate()
 	if m != nil {
 		g.recordDrawError(g.matrixShader.SetUniforms(m))
 	}
@@ -154,10 +155,13 @@ type lights2D struct {
 // SetLights2D sets the ambient light and up to eight point lights that
 // DrawLit sprites in the current queue are lit by, for this frame.
 // Lights with Shadows are blocked by the frame's AddOccluder2D
-// occluders. Lights past the eighth are dropped.
+// occluders. Eight is the limit the lit shader holds: lights past the
+// eighth are dropped and counted in FrameStats.Lights2DDropped, so pass
+// the lights nearest what is drawn first.
 func (g *Graphics) SetLights2D(ambient Color, lights ...Light2D) {
 	q := g.cur
 	n := min(len(lights), maxLights2D)
+	g.stats.Lights2DDropped += len(lights) - n
 	q.lights = lights2D{Ambient: lin.V4(ambient.R, ambient.G, ambient.B, float32(n))}
 	q.shadows = false
 	for i, l := range lights[:n] {
@@ -201,5 +205,8 @@ func (g *Graphics) DrawLit(tex, normal *Texture, s Sprite) {
 	}
 	g.litShader.SetImage(0, normal)
 	g.litShader.SetImage(1, q.shadowTex)
-	g.Shaded(g.litShader, func() { g.Draw(tex, s) })
+	previous := q.shader
+	g.SetShader(g.litShader)
+	defer g.restoreShader(q, previous)
+	g.Draw(tex, s)
 }

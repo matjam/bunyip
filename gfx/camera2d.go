@@ -161,6 +161,7 @@ func (g *Graphics) SetCamera2D(cam Camera2D) {
 	q.cam2D, q.hasCam2D = cam, true
 	q.spriteProj = q.proj.Mul(cam.Matrix(q.viewW, q.viewH))
 	q.visible = cam.VisibleRect(q.viewW, q.viewH)
+	q.stream.invalidate()
 }
 
 // ScreenSpace returns sprite drawing to view coordinates.
@@ -168,6 +169,7 @@ func (g *Graphics) ScreenSpace() {
 	q := g.cur
 	q.hasCam2D = false
 	q.spriteProj = q.proj
+	q.stream.invalidate()
 }
 
 // Camera2D returns the active 2D camera and whether one is set.

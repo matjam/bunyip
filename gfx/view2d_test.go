@@ -156,8 +156,8 @@ func TestWithViewFrameSnapshotsAndPanic(t *testing.T) {
 			t.Fatal("lost queued draws")
 		}
 		for i, frame := range want {
-			if q.stream.items[i].state.frame != frame {
-				t.Errorf("draw%d frame %v, want %v", i, q.stream.items[i].state.frame, frame)
+			if got := q.stream.states[q.stream.items[i].state].frame; got != frame {
+				t.Errorf("draw%d frame %v, want %v", i, got, frame)
 			}
 		}
 		for i, p := range q.parts.flat {

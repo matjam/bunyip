@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg" // bitmap emoji strikes
 	_ "image/png"
 	"math"
@@ -42,7 +43,8 @@ type Font struct {
 	scale         float32 // atlas pixels per view unit
 	pxPerEm       float32 // face pixels per em, the shaping size
 	packer        shelfPacker
-	pix           *image.RGBA
+	pix           *image.RGBA  // the atlas's pixels, once a colour glyph needs them
+	mask          *image.Alpha // the atlas's coverage while every glyph is one colour
 	dirty         bool
 	dirtyRect     image.Rectangle // the atlas pixels changed since the last flush
 	sdf           bool
@@ -52,10 +54,9 @@ type Font struct {
 	wrapper       shaping.LineWrapper
 	runs          genCache[runKey, []shaping.Output]
 	lines         genCache[lineKey, []shaping.Line]
-	blocks        genCache[blockKey, []Glyph]
-	measures      genCache[measureKey, lin.Vec2]
 	scratch       textScratch
 	layouts       genCache[textLayoutKey, *TextLayout]
+	plain         genCache[string, *TextLayout] // layouts made with the zero options, by text
 	ink           map[glyphKey]lin.Rect
 	destroyed     bool
 	glyphErr      error
@@ -131,24 +132,23 @@ func (g *Graphics) newFont(ttf []byte, size float32, opts FontOptions, scale, px
 		pxPerEm:       pxPerEm,
 		sdf:           sdf,
 		packer:        shelfPacker{width: side, height: side, pad: 1},
-		pix:           image.NewRGBA(image.Rect(0, 0, side, side)),
 		g:             g,
+		// A plain glyph is white at its coverage, so until a colour glyph
+		// arrives the atlas is kept as one byte a texel rather than four.
+		mask: image.NewAlpha(image.Rect(0, 0, side, side)),
 	}
 	if f.outlineBudget == 0 {
 		f.outlineBudget = 16
 	}
-	// A cached block is one glyph per character, so the glyph cache is
-	// bounded by the glyphs it holds rather than by how many blocks.
-	f.blocks.weigh = func(glyphs []Glyph) int { return len(glyphs) + 1 }
-	f.blocks.limit = textBlockGlyphs
+	// A cached layout holds a glyph and a caret or two per character, so
+	// the layout cache is bounded by those rather than by how many layouts.
+	// A layout is only kept once its text has been asked for twice, so
+	// text that changes every frame does not crowd out text that does not.
+	f.layouts.weigh, f.layouts.base, f.layouts.admit = weighLayout, textBlockGlyphs, true
+	f.plain.weigh, f.plain.base, f.plain.admit = weighLayout, textBlockGlyphs, true
 	for i, data := range append([][]byte{ttf}, opts.Fallbacks...) {
-		face, err := font.ParseTTF(bytes.NewReader(data))
-		if err != nil {
-			// A collection (.ttc) holds several faces; take the first.
-			if faces, errC := font.ParseTTC(bytes.NewReader(data)); errC == nil && len(faces) > 0 {
-				face, err = faces[0], nil
-			}
-		}
+		// A collection (.ttc) holds several faces; the first is used.
+		face, err := parseFace(data)
 		if err != nil {
 			if i == 0 {
 				return nil, fmt.Errorf("gfx: parse font: %w", err)
@@ -384,7 +384,7 @@ func (f *Font) add(face uint8, gid font.GID) glyph {
 	}
 	for yy := range h {
 		for xx := range w {
-			f.pix.SetRGBA(x+xx, y+yy, rgbaPremul(mask.Pix[yy*mask.Stride+xx]))
+			f.setCoverage(x+xx, y+yy, mask.Pix[yy*mask.Stride+xx])
 		}
 	}
 	side := float32(f.packer.width)
@@ -418,14 +418,15 @@ func (f *Font) addBitmap(face uint8, gid font.GID, bm font.GlyphBitmap) glyph {
 		f.glyphErr = fmt.Errorf("gfx: glyph atlas is full (%d by %d); increase FontOptions.AtlasSize", f.packer.width, f.packer.height)
 		return glyph{empty: true}
 	}
-	dst := f.pix.SubImage(image.Rect(x, y, x+w, y+h)).(*image.RGBA)
+	pix := f.colorPix()
+	dst := pix.SubImage(image.Rect(x, y, x+w, y+h)).(*image.RGBA)
 	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, b, xdraw.Src, nil)
 	// The atlas is sampled as data, so store linear light: undo the
 	// premultiplication, decode sRGB, premultiply again.
 	for yy := y; yy < y+h; yy++ {
 		for xx := x; xx < x+w; xx++ {
-			i := f.pix.PixOffset(xx, yy)
-			p := f.pix.Pix[i : i+4 : i+4]
+			i := pix.PixOffset(xx, yy)
+			p := pix.Pix[i : i+4 : i+4]
 			a := float32(p[3]) / 255
 			if a == 0 {
 				continue
@@ -450,7 +451,58 @@ func (f *Font) addBitmap(face uint8, gid font.GID, bm font.GlyphBitmap) glyph {
 	}
 }
 
-// flush uploads the CPU atlas when glyphs were added.
+// setCoverage writes a plain glyph's coverage into the CPU atlas: white
+// at that coverage, premultiplied.
+func (f *Font) setCoverage(x, y int, a uint8) {
+	if f.pix != nil {
+		f.pix.SetRGBA(x, y, rgbaPremul(a))
+		return
+	}
+	f.mask.SetAlpha(x, y, color.Alpha{A: a})
+}
+
+// coverageAt reads the alpha of an atlas texel.
+func (f *Font) coverageAt(x, y int) uint8 {
+	if f.pix != nil {
+		return f.pix.RGBAAt(x, y).A
+	}
+	return f.mask.AlphaAt(x, y).A
+}
+
+// colorPix returns the CPU atlas as colour texels, converting it from
+// coverage the first time a colour glyph needs it. Coverage a becomes
+// premultiplied white (a, a, a, a), which is what a plain glyph's texels
+// hold either way, so nothing already in the atlas changes.
+func (f *Font) colorPix() *image.RGBA {
+	if f.pix == nil {
+		f.pix = image.NewRGBA(f.mask.Rect)
+		for i, a := range f.mask.Pix {
+			p := f.pix.Pix[4*i : 4*i+4 : 4*i+4]
+			p[0], p[1], p[2], p[3] = a, a, a, a
+		}
+		f.mask = nil
+	}
+	return f.pix
+}
+
+// atlasImage is the CPU atlas as it is held: colour texels once a colour
+// glyph has arrived, coverage before. Uploading either gives the same
+// texels, since coverage converts to premultiplied white.
+func (f *Font) atlasImage() image.Image {
+	if f.pix != nil {
+		return f.pix
+	}
+	return f.mask
+}
+
+// atlasRegion is part of the CPU atlas, for uploading.
+func (f *Font) atlasRegion(r image.Rectangle) image.Image {
+	if f.pix != nil {
+		return f.pix.SubImage(r)
+	}
+	return f.mask.SubImage(r)
+}
+
 // touched marks atlas pixels as changed since the last flush.
 func (f *Font) touched(x, y, w, h int) {
 	f.dirty = true
@@ -468,7 +520,7 @@ func (f *Font) flush() error {
 	if f.atlas == nil {
 		// No mip chain: a padded atlas sampled at lower mips bleeds
 		// neighbouring glyphs into each other.
-		tex, err := f.g.NewTexture(f.pix, TextureOptions{Linear: true, Data: true, NoMipmaps: true})
+		tex, err := f.g.NewTexture(f.atlasImage(), TextureOptions{Linear: true, Data: true, NoMipmaps: true})
 		if err != nil {
 			return err
 		}
@@ -477,8 +529,8 @@ func (f *Font) flush() error {
 		// The font's own entry in the resource list covers the atlas, so
 		// the atlas is not listed as a texture of its own as well.
 		f.g.forget(tex)
-	} else if r := f.dirtyRect.Intersect(f.pix.Bounds()); !r.Empty() {
-		if err := f.atlas.Write(r.Min.X, r.Min.Y, f.pix.SubImage(r)); err != nil {
+	} else if r := f.dirtyRect.Intersect(f.atlasImage().Bounds()); !r.Empty() {
+		if err := f.atlas.Write(r.Min.X, r.Min.Y, f.atlasRegion(r)); err != nil {
 			return err
 		}
 	}

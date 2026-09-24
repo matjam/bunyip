@@ -52,8 +52,9 @@ func (g *Graphics) Stenciled(options StencilOptions, draw func()) {
 	g.requireStencil()
 	q := g.cur
 	previous := q.stencil2D
-	defer func() { q.stencil2D = previous }()
+	defer func() { q.stencil2D = previous; q.stream.invalidate() }()
 	q.stencil2D = stencil2D{options: options, set: true}
+	q.stream.invalidate()
 	draw()
 }
 
@@ -98,6 +99,7 @@ func (g *Graphics) Masked(mask, draw func()) {
 		g.clearStencilBits(q, 0, bit, false)
 		q.stream.barrier()
 		q.stencil2D, q.layer, q.sortKey = previous, layer, key
+		q.stream.invalidate()
 		q.maskTests, q.maskWrites = parent, writes
 		q.maskDepth--
 	}()
@@ -109,6 +111,7 @@ func (g *Graphics) Masked(mask, draw func()) {
 		writer.Test = StencilEqual
 	}
 	q.stencil2D = stencil2D{options: writer, set: true}
+	q.stream.invalidate()
 	q.maskTests, q.maskWrites = parent, bit
 	mask()
 	q.stream.barrier()
@@ -119,6 +122,7 @@ func (g *Graphics) Masked(mask, draw func()) {
 		body.Pass, body.WriteMask, body.NoColor = StencilReplace, writes, true
 	}
 	q.stencil2D = stencil2D{options: body, set: true}
+	q.stream.invalidate()
 	draw()
 }
 

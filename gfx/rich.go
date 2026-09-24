@@ -176,15 +176,34 @@ func (rf RichFonts) MeasureRich(rt RichText, opts TextOptions) (w, h float32) {
 	if rf.Regular == nil || rf.Regular.destroyed || validateTextOptions(opts) != nil || !utf8.ValidString(rt.Plain()) {
 		return 0, 0
 	}
-	opts = opts.resolved()
+	for _, run := range rt.Runs {
+		if rf.font(run).destroyed {
+			return 0, 0
+		}
+	}
+	l := measureOnly(rf, rt, opts.resolved())
+	if l == nil {
+		return 0, 0
+	}
+	return l.bounds.W, l.bounds.H
+}
+
+// measureOnly lays text out for its dimensions alone, shaping and
+// wrapping it without rasterising or uploading a glyph, which a destroyed
+// font can still do. It returns nil when the fonts or options cannot lay
+// the text out. opts must already be resolved.
+func measureOnly(rf RichFonts, rt RichText, opts TextOptions) *TextLayout {
+	if rf.Regular == nil {
+		return nil
+	}
 	l := &TextLayout{text: rt.Plain(), options: opts, rotation: lin.Identity2()}
-	b := layoutBuilder{layout: l, regular: rf.Regular, unit: rf.Regular.scale / rf.Regular.sizeScale(opts.Size), measureOnly: true}
+	b := layoutBuilder{layout: l, regular: rf.Regular, measureOnly: true}
 	start := 0
 	fonts := []*Font{rf.Regular}
 	for _, run := range rt.Runs {
 		f := rf.font(run)
-		if f.destroyed || f.g != rf.Regular.g {
-			return 0, 0
+		if f.g != rf.Regular.g {
+			return nil
 		}
 		fonts = append(fonts, f)
 		b.spans = append(b.spans, layoutSpan{start: start, end: start + len(run.Text), font: f, style: run})
@@ -192,11 +211,11 @@ func (rf RichFonts) MeasureRich(rt RichText, opts TextOptions) (w, h float32) {
 	}
 	unit, err := validateTextArithmetic(rf.Regular, fonts, b.spans, opts, l.text)
 	if err != nil {
-		return 0, 0
+		return nil
 	}
 	b.unit = unit
 	if err := b.build(); err != nil {
-		return 0, 0
+		return nil
 	}
-	return l.bounds.W, l.bounds.H
+	return l
 }

@@ -88,7 +88,7 @@ func (f *Font) addSDF(face uint8, gid font.GID) glyph {
 	}
 	for yy := range h {
 		for xx := range w {
-			f.pix.SetRGBA(x+xx, y+yy, rgbaPremul(field.texels[yy*w+xx]))
+			f.setCoverage(x+xx, y+yy, field.texels[yy*w+xx])
 		}
 	}
 	const os = sdfOversample

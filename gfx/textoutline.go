@@ -141,7 +141,7 @@ func (f *Font) outlineMask(face uint8, gid font.GID, original glyph, spread int)
 	side := float32(f.packer.width)
 	source := image.Rect(int(original.uv0.X*side+0.5), int(original.uv0.Y*side+0.5), int(original.uv1.X*side+0.5), int(original.uv1.Y*side+0.5))
 	mask := image.NewAlpha(image.Rect(0, 0, w+2*pad, h+2*pad))
-	xdraw.CatmullRom.Scale(mask, image.Rect(pad, pad, pad+w, pad+h), f.pix, source, xdraw.Src, nil)
+	xdraw.CatmullRom.Scale(mask, image.Rect(pad, pad, pad+w, pad+h), f.colorPix(), source, xdraw.Src, nil)
 	return mask, int(math.Floor(float64(original.bearing.X*scale))) - pad, int(math.Floor(float64(original.bearing.Y*scale))) - pad, nil
 }
 

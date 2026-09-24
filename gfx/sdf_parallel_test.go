@@ -168,7 +168,8 @@ func TestSDFParallelMatchesSerial(t *testing.T) {
 	serial, parallel := build(false), build(true)
 	defer serial.Destroy()
 	defer parallel.Destroy()
-	if !bytes.Equal(serial.pix.Pix, parallel.pix.Pix) {
+	// A distance-field font holds its atlas as coverage, a byte a texel.
+	if serial.mask == nil || parallel.mask == nil || !bytes.Equal(serial.mask.Pix, parallel.mask.Pix) {
 		t.Error("the atlases differ")
 	}
 	if len(serial.glyphs) != len(parallel.glyphs) {

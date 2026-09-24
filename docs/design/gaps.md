@@ -119,8 +119,9 @@ writes (CSV, base64 plain, zlib, gzip and zstd), TexturePacker and
 Aseprite JSON atlases with `asset.Atlas` to load one, Aseprite's own
 binary files through `ParseAseprite` and `asset.Aseprite`,
 `Atlas.Animation` to play a tag at its own timings, sprite culling
-against the 2D camera by the sprite's own corners and under the
-transform stack, a sort key within a layer (`SetSortKey`), camera
+against the 2D camera, or the view without one, by the sprite's own
+corners and under the transform stack, tilemap and text layout culling
+in screen space as well, a sort key within a layer (`SetSortKey`), camera
 follow, clamp and shake on `Camera2D`, tiled nine-slices,
 `Shader.Reload`, batch statistics and a draw budget warning are in.
 Shader parameters pack exported Go structs into std140 automatically, including

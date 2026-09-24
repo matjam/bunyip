@@ -103,6 +103,7 @@ func (g *Graphics) WithView(view View2D, draw func()) {
 		q.viewW, q.viewH, q.proj, q.spriteProj = w, h, proj, spriteProj
 		q.layout, q.clips = layout, clips
 		q.cam2D, q.hasCam2D, q.visible = cam, hasCam, visible
+		q.stream.invalidate()
 	}()
 	// PushClip converts from the enclosing local coordinates into root
 	// coordinates before we change the layout used by child clips.
@@ -111,6 +112,7 @@ func (g *Graphics) WithView(view View2D, draw func()) {
 	q.layout = childLayout
 	q.proj = childProj
 	q.spriteProj = q.proj
+	q.stream.invalidate()
 	if q.hasCam2D {
 		g.SetCamera2D(q.cam2D)
 	}

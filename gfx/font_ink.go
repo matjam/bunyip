@@ -40,7 +40,7 @@ func (f *Font) glyphInk(face uint8, gid font.GID, gl glyph) lin.Rect {
 		loX, loY, hiX, hiY := x1, y1, x0, y0
 		for y := y0; y < y1; y++ {
 			for x := x0; x < x1; x++ {
-				if f.pix.RGBAAt(x, y).A > 0 {
+				if f.coverageAt(x, y) > 0 {
 					loX = min(loX, x)
 					loY = min(loY, y)
 					hiX = max(hiX, x+1)
