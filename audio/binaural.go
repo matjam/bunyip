@@ -203,6 +203,13 @@ func (sn *voiceMix) renderBinaural(scratch, out []float32, n int) {
 			send[i*2+1] += sr * rev
 		}
 	}
-	b.w, b.low, b.lpL, b.lpR = w, low, lpL, lpR
+	// Flush state that has decayed below 1e-15 (see flushTiny). Once the
+	// shelf's low band has died away the input has been silent for longer
+	// than the delay line, so what the line still holds is the same decay
+	// and is flushed with it.
+	if low = flushTiny(low); low == 0 {
+		flushSlice(ring)
+	}
+	b.w, b.low, b.lpL, b.lpR = w, low, flushTiny(lpL), flushTiny(lpR)
 	b.cur = t
 }
