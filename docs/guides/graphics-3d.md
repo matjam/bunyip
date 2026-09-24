@@ -539,7 +539,9 @@ channels, uncompressed or compressed with RLE, ZIPS or ZIP, and refuses
 tiled, deep, multi-part and PIZ, PXR24, B44 or DWA files with an error
 that names what the file is.
 `EnvironmentOptions.Intensity` scales it and `Size` sets the cube map's
-side in texels (default 128). Set it as `Light.Environment` and it
+side in texels (default 128). The prefilter for every roughness runs on
+all cores, and the image types Go's decoders return are read straight
+from their pixels. Set it as `Light.Environment` and it
 replaces the ambient and the sky. Metals reflect it, rough surfaces take
 its tint from every direction, and `Light.Background` draws it behind the
 scene. Environments hold GPU memory; `Destroy` releases it early.
