@@ -70,11 +70,11 @@ func (i *Image) NoteUpload() { i.upload = i.dev.up.serial }
 // NoteUpload is Image.NoteUpload for a buffer an upload batch writes.
 func (b *Buffer) NoteUpload() { b.upload = b.dev.up.serial }
 
-// settleUpload makes sure the batch numbered serial has finished before
-// something it writes is destroyed: an open batch is submitted, and a
-// submitted one still running is waited for. A batch already seen to
-// finish costs nothing, which is the usual case, because WaitIdle and
-// the frame fences have long covered it.
+// settleUpload makes sure the batch numbered serial, and every batch
+// before it, has finished before something it writes is destroyed: an
+// open batch is submitted, and a submitted one still running is waited
+// for. A batch already seen to finish costs nothing, which is the usual
+// case, because WaitIdle and the frame fences have long covered it.
 func (d *Device) settleUpload(serial uint64) {
 	u := &d.up
 	if serial == 0 {
@@ -83,17 +83,18 @@ func (d *Device) settleUpload(serial uint64) {
 	if u.cb != 0 && serial == u.serial {
 		_ = d.FlushUploads()
 	}
+	waited := false
 	for _, b := range u.inflight {
-		if b.serial != serial {
+		if b.serial > serial || vk.VkGetFenceStatus(d.Handle, b.fence) == vk.VK_SUCCESS {
 			continue
 		}
-		if vk.VkGetFenceStatus(d.Handle, b.fence) != vk.VK_SUCCESS {
+		if !waited {
 			d.waits++
-			_ = vk.WaitForFences(d.Handle, 1, &b.fence, vk.VK_TRUE, ^uint64(0))
+			waited = true
 		}
-		d.reclaimUploads()
-		return
+		_ = vk.WaitForFences(d.Handle, 1, &b.fence, vk.VK_TRUE, ^uint64(0))
 	}
+	d.reclaimUploads()
 }
 
 // StageUpload reserves size bytes of host-visible staging in the open
