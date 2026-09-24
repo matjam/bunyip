@@ -212,12 +212,17 @@ func (q *Query4[A, B, C, D]) Each(fn func(e Entity, a *A, b *B, c *C, d *D)) {
 // Count is the number of matching entities.
 func (q *Query4[A, B, C, D]) Count() int { return q.m.count() }
 
-// queryKey names one component set in the order the type parameters
-// gave it, so the memo hands back a query of the type that asked for it.
-type queryKey struct {
-	n          uint8
-	a, b, c, d ComponentID
-}
+// The memo keys are empty types, one per component set in the order the
+// type parameters gave it, so the memo hands back a query of the type
+// that asked for it. An empty value in an interface needs no allocation,
+// and looking one up hashes only its type, which costs less than
+// resolving the component ids first.
+type (
+	queryKey1[A any]          struct{}
+	queryKey2[A, B any]       struct{}
+	queryKey3[A, B, C any]    struct{}
+	queryKey4[A, B, C, D any] struct{}
+)
 
 // Each is a one-off iteration over entities with a T, for code that
 // does not keep a query around. The query it needs is built once per
@@ -245,7 +250,7 @@ func (w *World) Count[T any]() int { return query1[T](w).Count() }
 // first time. The queries live as long as the world, so a one-off Each
 // in a loop allocates nothing after the first call.
 func query1[A any](w *World) *Query1[A] {
-	key := queryKey{n: 1, a: componentID[A](w)}
+	key := queryKey1[A]{}
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query1[A])
 	}
@@ -255,7 +260,7 @@ func query1[A any](w *World) *Query1[A] {
 }
 
 func query2[A, B any](w *World) *Query2[A, B] {
-	key := queryKey{n: 2, a: componentID[A](w), b: componentID[B](w)}
+	key := queryKey2[A, B]{}
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query2[A, B])
 	}
@@ -265,7 +270,7 @@ func query2[A, B any](w *World) *Query2[A, B] {
 }
 
 func query3[A, B, C any](w *World) *Query3[A, B, C] {
-	key := queryKey{n: 3, a: componentID[A](w), b: componentID[B](w), c: componentID[C](w)}
+	key := queryKey3[A, B, C]{}
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query3[A, B, C])
 	}
@@ -275,7 +280,7 @@ func query3[A, B, C any](w *World) *Query3[A, B, C] {
 }
 
 func query4[A, B, C, D any](w *World) *Query4[A, B, C, D] {
-	key := queryKey{n: 4, a: componentID[A](w), b: componentID[B](w), c: componentID[C](w), d: componentID[D](w)}
+	key := queryKey4[A, B, C, D]{}
 	if q, ok := w.oneOff[key]; ok {
 		return q.(*Query4[A, B, C, D])
 	}

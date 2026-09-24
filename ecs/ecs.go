@@ -190,10 +190,12 @@ type World struct {
 
 	// oneOff memoises the queries Each, Each2, Each3, Each4 and Count
 	// build, one per component set in the order the call named it.
-	oneOff map[queryKey]any
+	oneOff map[any]any
 
 	updates uint64 // bumps at the start of every Update
 	wmat    worldMatrices
+
+	cmdFree []*Commands // command buffers Defer reuses
 }
 
 type system struct {
@@ -206,7 +208,7 @@ type system struct {
 func NewWorld() *World {
 	w := &World{compIDs: map[reflect.Type]ComponentID{}, archByKey: map[mask]*archetype{},
 		resources: map[reflect.Type]any{}, events: map[reflect.Type]eventQueue{},
-		oneOff: map[queryKey]any{}}
+		oneOff: map[any]any{}}
 	w.empty = w.archetypeFor(mask{})
 	return w
 }
@@ -255,8 +257,11 @@ func componentID[T any](w *World) ComponentID {
 		}
 		return id
 	}
-	return w.register(t, func() column { return &typedColumn[T]{} }, true)
+	return w.register(t, newTypedColumn[T], true)
 }
+
+// newTypedColumn makes an empty typed column for T.
+func newTypedColumn[T any]() column { return &typedColumn[T]{} }
 
 func (w *World) register(t reflect.Type, newColumn func() column, typed bool) ComponentID {
 	if len(w.comps) >= maxComponents {
@@ -269,43 +274,61 @@ func (w *World) register(t reflect.Type, newColumn func() column, typed bool) Co
 }
 
 // idOfValue finds or registers the component type of a value, which
-// must not be a pointer.
+// must not be a pointer. A type named with Register gets typed columns
+// at once; any other type gets reflect-backed columns until a generic
+// call upgrades them.
 func (w *World) idOfValue(v any) ComponentID {
 	t := reflect.TypeOf(v)
-	if t == nil || t.Kind() == reflect.Pointer {
-		panic(fmt.Sprintf("ecs: component must be a value, got %T", v))
-	}
 	if id, ok := w.compIDs[t]; ok {
 		return id
+	}
+	if t == nil || t.Kind() == reflect.Pointer {
+		panic(fmt.Sprintf("ecs: component must be a value, got %v", t))
+	}
+	if newColumn, ok := registeredColumn(t); ok {
+		return w.register(t, newColumn, true)
 	}
 	return w.register(t, func() column { return newReflectColumn(t) }, false)
 }
 
-// newReflectColumn builds a typed column for a type first seen through
-// an any value, without generics available.
+// newReflectColumn builds a column for a type first seen through an any
+// value, without generics available.
 func newReflectColumn(t reflect.Type) column {
-	return &anyColumn{typ: t, data: reflect.MakeSlice(reflect.SliceOf(t), 0, 0)}
+	return &anyColumn{data: reflect.New(reflect.SliceOf(t)).Elem()}
 }
 
-// anyColumn stores values of a type known only at run time. Get[T]
-// reads it through reflection-free unsafe indexing when T matches.
+// anyColumn stores values of a type known only at run time, in a slice
+// of that type. data is addressable, so it grows in place without
+// allocating per row.
 type anyColumn struct {
-	typ  reflect.Type
 	data reflect.Value // []T
 }
 
-func (c *anyColumn) appendZero()           { c.data = reflect.Append(c.data, reflect.Zero(c.typ)) }
+// push adds a zero row and returns its index.
+func (c *anyColumn) push() int {
+	n := c.data.Len()
+	if n == c.data.Cap() {
+		c.data.Grow(1)
+	}
+	c.data.SetLen(n + 1)
+	c.data.Index(n).SetZero()
+	return n
+}
+
+func (c *anyColumn) appendZero()           { c.push() }
 func (c *anyColumn) setAny(row int, v any) { c.data.Index(row).Set(reflect.ValueOf(v)) }
 func (c *anyColumn) getAny(row int) any    { return c.data.Index(row).Interface() }
 func (c *anyColumn) moveTo(dst column, row int) {
 	d := dst.(*anyColumn)
-	d.data = reflect.Append(d.data, c.data.Index(row))
+	d.data.Index(d.push()).Set(c.data.Index(row))
 }
 func (c *anyColumn) swapRemove(row int) {
 	last := c.data.Len() - 1
-	c.data.Index(row).Set(c.data.Index(last))
-	c.data.Index(last).Set(reflect.Zero(c.typ))
-	c.data = c.data.Slice(0, last)
+	if row != last {
+		c.data.Index(row).Set(c.data.Index(last))
+	}
+	c.data.Index(last).SetZero()
+	c.data.SetLen(last)
 }
 func (c *anyColumn) len() int { return c.data.Len() }
 
@@ -319,8 +342,12 @@ func (w *World) Spawn() Entity {
 // SpawnWith creates an entity carrying the given component values.
 func (w *World) SpawnWith(comps ...any) Entity {
 	var m mask
+	var small [8]ComponentID
+	ids := small[:0]
 	for _, c := range comps {
-		m.set(w.idOfValue(c))
+		id := w.idOfValue(c)
+		m.set(id)
+		ids = append(ids, id)
 	}
 	e := w.allocate()
 	a := w.archetypeFor(m)
@@ -330,8 +357,8 @@ func (w *World) SpawnWith(comps ...any) Entity {
 		a.columns[i].appendZero()
 	}
 	row := len(a.entities) - 1
-	for _, c := range comps {
-		a.columns[a.column(w.idOfValue(c))].setAny(row, c)
+	for i, c := range comps {
+		a.columns[a.column(ids[i])].setAny(row, c)
 	}
 	return e
 }
@@ -401,13 +428,27 @@ func (w *World) Despawn(e Entity) {
 	if !w.Alive(e) {
 		return
 	}
+	w.despawnTree(e, None)
+}
+
+// despawnTree removes e and its subtree. dying is the parent being
+// despawned that reached e, or None: a child of a dying parent is not
+// detached from it, because the parent's list goes with it, and
+// detaching each child in turn would shift the list once per child.
+func (w *World) despawnTree(e, dying Entity) {
 	if ch, ok := w.Get[Children](e); ok {
-		kids := append([]Entity(nil), ch.List...)
+		// Nothing detaches from e while its children go, so the list
+		// can be walked in place. The pointer ch is not used again,
+		// because removing the children may move e's row.
+		kids := ch.List
+		ch.List = nil
 		for _, c := range kids {
-			w.Despawn(c)
+			if w.Alive(c) {
+				w.despawnTree(c, e)
+			}
 		}
 	}
-	if p, ok := w.Get[Parent](e); ok && w.Alive(p.Entity) {
+	if p, ok := w.Get[Parent](e); ok && p.Entity != dying && w.Alive(p.Entity) {
 		detach(w, p.Entity, e)
 	}
 	w.remove(e)
@@ -501,9 +542,14 @@ func typeOf[T any]() reflect.Type {
 
 // upgrade replaces reflect-backed columns for T with typed ones so
 // queries and Get run without reflection. It runs once per type, the
-// first time a generic method meets a type first seen via SpawnWith.
+// first time a generic method meets a type first seen via SpawnWith. A
+// column keeps its storage: the typed column takes over the slice the
+// reflect-backed one held, so no row is copied.
 func upgrade[T any](w *World, id ComponentID) {
-	w.comps[id].newColumn = func() column { return &typedColumn[T]{} }
+	if w.comps[id].typed {
+		return
+	}
+	w.comps[id].newColumn = newTypedColumn[T]
 	w.comps[id].typed = true
 	for _, a := range w.archs {
 		col := a.column(id)
@@ -511,11 +557,7 @@ func upgrade[T any](w *World, id ComponentID) {
 			continue
 		}
 		if ac, ok := a.columns[col].(*anyColumn); ok {
-			tc := &typedColumn[T]{data: make([]T, ac.len())}
-			for i := range tc.data {
-				tc.data[i] = ac.data.Index(i).Interface().(T)
-			}
-			a.columns[col] = tc
+			a.columns[col] = &typedColumn[T]{data: ac.data.Interface().([]T)}
 		}
 	}
 }

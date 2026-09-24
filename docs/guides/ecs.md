@@ -27,6 +27,14 @@ w.Remove[Velocity](e)
 w.Despawn(e)
 ```
 
+Components are stored in typed columns. A type that reaches a world
+only through `SpawnWith`, `Commands` or `SetComponent` has no type
+parameter to build one from, so it starts in reflection-backed columns
+and moves to typed ones the first time a generic call (`Get`, `Add`, a
+query) names it. To store a type in typed columns from its first
+`SpawnWith`, register it with `ecs.Register` (see Saving and loading);
+registering costs nothing else.
+
 Entity handles are generational. A handle to a despawned entity stays
 invalid even after its slot is reused, so a stale handle never reads
 another entity's data.
