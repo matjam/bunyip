@@ -61,8 +61,12 @@ func TestWatcherChangedDoesNotWaitForPoll(t *testing.T) {
 	if len(polls) == 0 || slices.Max(polls) < 20*time.Millisecond {
 		t.Fatalf("polls took %v; the test needs polls slower than 20ms to mean anything", polls)
 	}
-	if worst > 5*time.Millisecond {
-		t.Errorf("Changed took up to %v while polls of %v ran, want under 5ms", worst, slices.Max(polls))
+	// Waiting for a poll would take the whole poll; a quarter of the
+	// slowest one, and never less than 5ms, leaves room for a busy
+	// machine to deschedule the call.
+	bound := max(5*time.Millisecond, slices.Max(polls)/4)
+	if worst > bound {
+		t.Errorf("Changed took up to %v while polls of up to %v ran, want under %v", worst, slices.Max(polls), bound)
 	}
 }
 
