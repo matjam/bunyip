@@ -85,6 +85,7 @@ type Cloth struct {
 	lambda     []float32
 	verts      []gfx.Vertex
 	indices    []uint32
+	reach      reach3
 }
 
 // NewCloth builds a sheet from a spec. The particles start on a flat
@@ -256,11 +257,14 @@ func (c *Cloth) step(s *state, settings *Settings, gravity lin.Vec3, h float32, 
 	for range iterations {
 		solveLinks(c.pos, c.inv, c.links, c.lambda, h)
 	}
+	if lo, hi, ok := bounds3(c.pos, c.inv, c.Radius); ok {
+		s.reach3(&c.reach, lo, hi, c.Radius)
+	}
 	for i := range c.pos {
 		if c.inv[i] == 0 {
 			continue
 		}
-		s.project3(&c.pos[i], c.prev[i], c.Radius, c.Friction, c.Mask, settings)
+		s.project3(&c.reach, &c.pos[i], c.prev[i], c.Radius, c.Friction, c.Mask, settings)
 		c.vel[i] = c.pos[i].Sub(c.prev[i]).Mul(1 / h)
 	}
 }

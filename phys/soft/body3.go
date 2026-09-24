@@ -95,6 +95,7 @@ type SoftBody3 struct {
 	verts   []gfx.Vertex
 	indices []uint32
 	owner   []int32 // particle behind each render vertex
+	reach   reach3
 }
 
 // NewSoftBody3 builds a soft body from a closed mesh. Vertices closer
@@ -299,11 +300,14 @@ func (b *SoftBody3) step(s *state, settings *Settings, gravity lin.Vec3, h float
 		b.solveVolume(s, h, len(b.links))
 	}
 	b.matchShape()
+	if lo, hi, ok := bounds3(b.pos, b.inv, b.Radius); ok {
+		s.reach3(&b.reach, lo, hi, b.Radius)
+	}
 	for i := range b.pos {
 		if b.inv[i] == 0 {
 			continue
 		}
-		s.project3(&b.pos[i], b.prev[i], b.Radius, b.Friction, b.Mask, settings)
+		s.project3(&b.reach, &b.pos[i], b.prev[i], b.Radius, b.Friction, b.Mask, settings)
 		b.vel[i] = b.pos[i].Sub(b.prev[i]).Mul(1 / h)
 	}
 }

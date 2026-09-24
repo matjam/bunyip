@@ -88,6 +88,8 @@ type Fluid2 struct {
 	cells    []cell2
 	nbrStart []int32
 	nbr      []int32
+	// reach is the colliders within reach of the particles this substep.
+	reach reach2
 }
 
 // cell2 is a particle's cell in the spatial hash.
@@ -254,6 +256,7 @@ func (f *Fluid2) step(s *state, settings *Settings, gravity lin.Vec2, h float32,
 		f.pos[i] = f.pos[i].Add(f.vel[i].Mul(h))
 	}
 	f.neighbours()
+	f.gatherReach(s)
 	eps := f.Relaxation / (f.radius * f.radius)
 	wq := poly6(0.2*f.radius, f.radius)
 	for range iterations {
@@ -327,7 +330,19 @@ func (f *Fluid2) bound(s *state, i int, settings *Settings) {
 		}
 		f.pos[i] = p
 	}
-	s.project2(&f.pos[i], f.prev[i], r, f.Friction, f.Mask)
+	s.project2(&f.reach, &f.pos[i], f.prev[i], r, f.Friction, f.Mask)
+}
+
+// gatherReach picks the solids the particles can reach this substep:
+// those near the box around them, grown by a spacing so the small moves
+// the density solve makes rarely take a particle out of it.
+func (f *Fluid2) gatherReach(s *state) {
+	lo, hi := f.pos[0], f.pos[0]
+	for _, p := range f.pos[1:] {
+		lo, hi = lo.Min(p), hi.Max(p)
+	}
+	d := lin.V2(f.spacing, f.spacing)
+	s.reach2(&f.reach, lo.Sub(d), hi.Add(d), f.spacing/2)
 }
 
 // substeps is how many solves the fluid takes per update, at least one.
