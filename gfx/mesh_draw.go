@@ -1106,6 +1106,9 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 	u.gridOrigin, u.gridSpacing, u.gridCounts = q.grid.gridUniforms()
 	copy(u.spotViewProj[:], q.shadow.spotMats)
 	copy(u.pointViewProj[:], q.shadow.pointMats)
+	// The depth mapping is this frame's camera's even when writeLights
+	// finds nothing to sort.
+	q.clusters.setDepthMapping(q.camera)
 	u.cluster = q.clusters.clusterParams(float32(extent.Width), float32(extent.Height))
 	if f := l.Fog; f.End > f.Start || f.Density > 0 {
 		u.fog = lin.V4(f.Color.R, f.Color.G, f.Color.B, f.Density)
@@ -1149,6 +1152,12 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 // its record.
 func (q *drawQueue) writeLights(slot int, aspect float32, spots, cubes []int32) error {
 	n := len(q.points)
+	if n == 0 && q.clustersEmpty[slot] {
+		// The slot's table already gives every cluster no lights, and
+		// with no lights nothing reads the records or the index list.
+		return nil
+	}
+	q.clustersEmpty[slot] = n == 0
 	q.spotSlots = slices.Grow(q.spotSlots[:0], n)[:n]
 	q.pointSlots = slices.Grow(q.pointSlots[:0], n)[:n]
 	for i := range n {

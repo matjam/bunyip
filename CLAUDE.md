@@ -198,7 +198,12 @@ lights into the clusters they reach on the CPU, and writes the records,
 the per-cluster table and the index list into set 1. The fragment
 prelude finds its cluster from the fragment-position builtin and the view depth and
 loops over that cluster's lights. A cluster keeps 64 lights and a frame
-1024 (`MaxLights`).
+1024 (`MaxLights`). A light's tiles are fitted per depth slice to the
+part of its sphere between the slice's depths, and
+`TestClusterConservative` checks the fit never misses a cluster the
+sphere reaches. A frame with no lights leaves a slot's table alone when
+it already lists none; the depth mapping in the frame block is set
+every frame either way (`setDepthMapping`).
 
 **Shadow maps share one atlas** (`shadowRegion` in `gfx/mesh_draw.go`,
 mirrored by the fragment prelude): three cascades of 2048 in the square

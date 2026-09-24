@@ -68,13 +68,16 @@ type drawQueue struct {
 	hasCam       bool
 	points       []pointLight
 	clusters     clusterGrid // this frame's lights, sorted into the view's clusters
-	spotSlots    []int32     // each light's spot shadow map, or -1
-	pointSlots   []int32     // each light's cube shadow map slot, or -1
-	uniforms     *render.UniformSets
-	inst         instanceStream
-	joints       []lin.Mat4 // joint matrices for skinned draws this frame
-	jointBuf     *render.StorageSets
-	clear        Color
+	// clustersEmpty says which slots' cluster tables were last written
+	// with no lights, so a frame without lights need not write them again.
+	clustersEmpty [render.FramesInFlight]bool
+	spotSlots     []int32 // each light's spot shadow map, or -1
+	pointSlots    []int32 // each light's cube shadow map slot, or -1
+	uniforms      *render.UniformSets
+	inst          instanceStream
+	joints        []lin.Mat4 // joint matrices for skinned draws this frame
+	jointBuf      *render.StorageSets
+	clear         Color
 	// out is the attachment set of the pass this queue's composite and 2D
 	// stream land in: the zero value for the screen, a render texture's
 	// own colour format, depth and sample count otherwise.
