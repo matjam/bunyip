@@ -98,7 +98,9 @@ Two cached queries find drawable bodies and bodies on a Kepler orbit;
 separate entity handles identify the star and the ship. `focus` is the
 list of bodies Tab cycles through and `focused` is the index into it.
 The camera is again three numbers, and `stars` is a set of unit
-directions used to place the background starfield.
+directions used to place the background starfield. `simTime` counts
+simulation seconds and `path` keeps the predicted path between the
+frames that recompute it.
 
 ```go
 type game struct {
@@ -129,6 +131,35 @@ type game struct {
 	dragging bool
 	shotDone bool
 	stars    []lin.Vec3 // unit directions of a background starfield
+	simTime  float64    // simulation seconds elapsed, for the path's age
+	path     pathCache
+}
+```
+
+## The path cache
+
+Predicting the path integrates the ship a minute or more ahead, which
+costs more than the rest of the frame. The path hardly changes between
+frames, so the example keeps it in a `pathCache` with what it was
+computed from: the time, the body it is drawn around and where that body
+was, the thrust, the time warp and the horizon. `stale` forces the next
+frame to recompute it.
+
+```go
+// pathCache holds the ship's predicted path between the frames that
+// recompute it. Predicting integrates the ship minutes ahead, which costs
+// more than drawing the whole frame, and the path barely changes from
+// one frame to the next, so it is recomputed only when the ship has
+// moved one dot along it or an input to the prediction has changed.
+type pathCache struct {
+	points  []lin.Vec3
+	at      float64    // simTime when predicted
+	primary ecs.Entity // the body it is drawn around
+	anchor  orbit.Vec3 // where that body was then, less the origin
+	thrust  orbit.Vec3 // the thrust it assumed
+	warp    float32    // the time warp it assumed
+	horizon float64    // how far ahead it reaches
+	stale   bool       // recompute on the next frame regardless
 }
 ```
 
@@ -274,7 +305,9 @@ The last step sets `settings.Origin` to the focused body's position.
 Everything is then drawn relative to that point, so the coordinates the
 renderer sees stay small however far the system extends. Positions in
 `orbit` are `float64`, and the origin is what keeps the `float32` render
-side precise.
+side precise. After the world updates, `simTime` advances by the
+simulation time that update covered. A frame that takes a screenshot
+marks the path stale, so the picture always shows a fresh prediction.
 
 ```go
 func (g *game) Update(ctx *engine.Context) error {
@@ -285,6 +318,7 @@ func (g *game) Update(ctx *engine.Context) error {
 	if g.shot != "" && !g.shotDone && (g.seconds == 0 || ctx.Time >= g.seconds/2) {
 		ctx.Screenshot(g.shot)
 		g.shotDone = true
+		g.path.stale = true // a screenshot shows a freshly predicted path
 	}
 	if in.KeyPressed(input.KeyTab) {
 		g.focused = (g.focused + 1) % len(g.focus)
@@ -330,6 +364,7 @@ func (g *game) Update(ctx *engine.Context) error {
 		settings.Origin = fb.Pos
 	}
 	w.Update(ctx.Delta)
+	g.simTime += ctx.Delta * settings.TimeScale
 	return nil
 }
 ```
@@ -348,6 +383,56 @@ func (g *game) camera() gfx.Camera {
 	cp, sp := float32(math.Cos(float64(g.pitch))), float32(math.Sin(float64(g.pitch)))
 	cy, sy := float32(math.Cos(float64(g.yaw))), float32(math.Sin(float64(g.yaw)))
 	return gfx.Camera{Position: lin.V3(g.dist*cp*cy, g.dist*cp*sy, g.dist*sp), Up: lin.V3(0, 0, 1), Near: 0.05, Far: 8000}
+}
+```
+
+## Keeping the predicted path
+
+`predictPath` recomputes the path when there is none yet, when a
+screenshot asked for a fresh one, when the body it is drawn around, the
+thrust or the time warp changed, when the horizon moved by more than a
+twentieth, and when the ship has travelled one of the path's 90 steps
+since the last prediction. `orbit.AppendPredictRelative` writes into the
+cached slice, so recomputing allocates nothing once the slice has grown.
+
+Between recomputes the points stay where they were computed, relative
+to the primary as it was then. The function returns how far the primary
+has moved against the floating origin since, and the draw adds that to
+every point, so the path stays around its planet. On a frame that
+recomputes, the move is zero and the points are drawn exactly as
+predicted.
+
+```go
+// predictPath refreshes the cached path when it is due and returns how
+// far to move its points so they sit around the primary where it is now.
+// A path recomputed this frame needs no move.
+func (g *game) predictPath(primary ecs.Entity, horizon float64) lin.Vec3 {
+	w := g.world
+	settings := w.Resource[orbit.Settings]()
+	var anchor orbit.Vec3
+	if pb, ok := w.Get[orbit.Body](primary); ok {
+		anchor = pb.Pos
+	}
+	anchor = anchor.Sub(settings.Origin)
+	var thrust orbit.Vec3
+	if t, ok := w.Get[orbit.Thrust](g.ship); ok {
+		thrust = t.Accel
+	}
+	c := &g.path
+	// The horizon follows the orbit's period, which drifts a little
+	// every frame; only a real change of orbit counts.
+	due := c.points == nil || c.stale || primary != c.primary || thrust != c.thrust || g.warp != c.warp ||
+		math.Abs(horizon-c.horizon) > 0.05*c.horizon || g.simTime-c.at >= c.horizon/90
+	if due {
+		c.points = orbit.AppendPredictRelative(c.points[:0], w, g.ship, primary, horizon, 90)
+		c.at, c.primary, c.anchor, c.thrust, c.warp, c.horizon, c.stale = g.simTime, primary, anchor, thrust, g.warp, horizon, false
+		return lin.Vec3{}
+	}
+	unit := settings.Scale
+	if unit == 0 {
+		unit = 1
+	}
+	return anchor.Sub(c.anchor).Mul(unit).Lin()
 }
 ```
 
@@ -481,7 +566,9 @@ a closed orbit the prediction horizon is one and a half periods, capped;
 on an escape trajectory it falls back to a fixed 60 seconds.
 `orbit.PredictRelative` returns points along the future path in the
 primary's frame, which is what makes the path stand still while the
-ship and its primary both move.
+ship and its primary both move. `predictPath` keeps those points, from
+its own `orbit.AppendPredictRelative` call, and the draw moves them by
+the offset it returns.
 
 The labels are projected by hand: `cam.ViewProj(aspect)` gives the
 matrix, the position is multiplied through it as a homogeneous point,
@@ -498,8 +585,9 @@ or the body is minor, so the screen does not fill with names.
 		horizon = min(1.5*el.Period(mu), 600)
 	}
 	pathSize := lin.V3(g.dist*0.002, g.dist*0.002, g.dist*0.002)
-	for _, p := range orbit.PredictRelative(w, g.ship, primary, horizon, 90) {
-		gr.DrawMesh(g.dot, gfx.Material{BaseColor: gfx.RGB(120, 220, 255), Emissive: 1.5}, lin.Translate(p).Mul(lin.Scale(pathSize)))
+	shift := g.predictPath(primary, horizon)
+	for _, p := range g.path.points {
+		gr.DrawMesh(g.dot, gfx.Material{BaseColor: gfx.RGB(120, 220, 255), Emissive: 1.5}, lin.Translate(p.Add(shift)).Mul(lin.Scale(pathSize)))
 	}
 	// Labels, projected through the camera.
 	vp := cam.ViewProj(float32(ctx.Width) / float32(ctx.Height))
