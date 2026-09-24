@@ -52,6 +52,73 @@ type Scene struct {
 	// Entities are the entities the scene spawns, in the order
 	// Instantiate creates them. The zero value is an empty scene.
 	Entities []SceneEntity
+
+	// names indexes Entities by name for AddEntity and AddPrefab, so
+	// building a scene of many named entities is not quadratic.
+	names sceneNames
+}
+
+// sceneNames maps entity names to their index in Scene.Entities. It
+// covers the first n entries of the slice whose first element was at
+// base when they were indexed. Entities appended to the slice directly
+// are indexed on the next add, a replaced slice is indexed afresh, and
+// every hit is checked against the entry it names, so a name changed in
+// place is not reported as a duplicate. A name changed in place to
+// another entity's name is caught by Encode and Instantiate instead.
+type sceneNames struct {
+	index map[string]int
+	n     int
+	base  *SceneEntity
+}
+
+// named reports whether an entity of the scene already has name.
+func (s *Scene) named(name string) bool {
+	ix := &s.names
+	var base *SceneEntity
+	if len(s.Entities) > 0 {
+		base = &s.Entities[0]
+	}
+	if ix.index == nil || ix.base != base || ix.n > len(s.Entities) {
+		// A fresh map rather than a cleared one: a copied Scene shares
+		// the old map and keeps its own view of it.
+		ix.index, ix.n, ix.base = make(map[string]int, len(s.Entities)), 0, base
+	}
+	for ; ix.n < len(s.Entities); ix.n++ {
+		if n := s.Entities[ix.n].Name; n != "" {
+			if _, dup := ix.index[n]; !dup {
+				ix.index[n] = ix.n
+			}
+		}
+	}
+	i, ok := ix.index[name]
+	if !ok {
+		return false
+	}
+	if i < len(s.Entities) && s.Entities[i].Name == name {
+		return true
+	}
+	// The entry was renamed in place, or a copy of the scene added to
+	// the shared map, since it was indexed: index the whole slice again
+	// and look once more. The fresh map is built from Entities alone, so
+	// the second look cannot come back here.
+	ix.index = nil
+	return s.named(name)
+}
+
+// indexName records the entity add has just appended. named indexed
+// every entry before it, and append copies them unchanged when it moves
+// the slice, so the index stays valid for the new backing array.
+func (s *Scene) indexName() {
+	ix := &s.names
+	last := len(s.Entities) - 1
+	if ix.index == nil || ix.n != last {
+		ix.index = nil
+		return
+	}
+	if n := s.Entities[last].Name; n != "" {
+		ix.index[n] = last
+	}
+	ix.n, ix.base = last+1, &s.Entities[0]
 }
 
 // SceneEntity is one entity of a Scene.
@@ -118,12 +185,8 @@ func (s *Scene) AddPrefab(name, prefab string, overrides ...any) (int, error) {
 }
 
 func (s *Scene) add(rec SceneEntity, comps []any) (int, error) {
-	if rec.Name != "" {
-		for _, e := range s.Entities {
-			if e.Name == rec.Name {
-				return 0, fmt.Errorf("ecs: scene: two entities are named %q", rec.Name)
-			}
-		}
+	if rec.Name != "" && s.named(rec.Name) {
+		return 0, fmt.Errorf("ecs: scene: two entities are named %q", rec.Name)
 	}
 	var missing []string
 	for _, c := range comps {
@@ -148,7 +211,16 @@ func (s *Scene) add(rec SceneEntity, comps []any) (int, error) {
 	if len(missing) > 0 {
 		return 0, &UnregisteredError{Names: missing}
 	}
+	if rec.Name == "" && s.names.index == nil {
+		// Unnamed entities need no index until a named one arrives.
+		s.Entities = append(s.Entities, rec)
+		return len(s.Entities), nil
+	}
+	if rec.Name == "" {
+		s.named("") // bring the index up to date before the slice moves
+	}
 	s.Entities = append(s.Entities, rec)
+	s.indexName()
 	return len(s.Entities), nil
 }
 
