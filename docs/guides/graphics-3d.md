@@ -1260,4 +1260,7 @@ calling `Destroy` again is harmless. Uploads
 inside a frame are the same shape: `NewMesh`, `Mesh.Update`,
 `NewTexture`, `Texture.Write` and `NewEnvironment` copy through a
 staging arena into the frame's own command buffer, and what a frame
-uploads is what that frame draws.
+uploads is what that frame draws. Outside a frame, in `Init` or between
+frames, the same calls go into one batch that the renderer submits ahead
+of the next frame, so loading a thousand meshes and textures waits for
+the GPU no more than loading one.
