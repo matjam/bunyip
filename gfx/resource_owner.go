@@ -39,7 +39,10 @@ func (g *Graphics) requireShaderOwner(s *Shader) {
 	}
 }
 
-func (g *Graphics) materialOwnerError(m Material) error {
+// materialOwnerError checks a material's shader and textures. Mesh draws
+// run it once per distinct material per frame, when internMaterial first
+// meets the material, rather than once per draw.
+func (g *Graphics) materialOwnerError(m *Material) error {
 	if err := g.shaderOwnerError(m.Shader); err != nil {
 		return err
 	}
@@ -51,14 +54,18 @@ func (g *Graphics) materialOwnerError(m Material) error {
 	return nil
 }
 
-func (g *Graphics) meshOwnerError(m *Mesh, mat Material) error {
+// meshOwnerError checks a mesh and, when mat is not nil, its material.
+func (g *Graphics) meshOwnerError(m *Mesh, mat *Material) error {
 	if m != nil && m.g != g {
 		return fmt.Errorf("gfx: mesh belongs to another Graphics")
+	}
+	if mat == nil {
+		return nil
 	}
 	return g.materialOwnerError(mat)
 }
 
-func (g *Graphics) requireMeshOwner(m *Mesh, mat Material) {
+func (g *Graphics) requireMeshOwner(m *Mesh, mat *Material) {
 	if err := g.meshOwnerError(m, mat); err != nil {
 		panic(err)
 	}
@@ -73,10 +80,11 @@ func (g *Graphics) modelOwnerError(m *Model, materials bool) error {
 	if m.g != nil && m.g != g {
 		return fmt.Errorf("gfx: model belongs to another Graphics")
 	}
-	for _, p := range m.Parts {
-		mat := Material{}
+	for i := range m.Parts {
+		p := &m.Parts[i]
+		var mat *Material
 		if materials {
-			mat = p.Material
+			mat = &p.Material
 		}
 		if err := g.meshOwnerError(p.Mesh, mat); err != nil {
 			return err

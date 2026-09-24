@@ -469,46 +469,55 @@ type Fog struct {
 	HeightFalloff float32
 }
 
+// meshDraw is one queued mesh draw. It is kept small, since a frame holds
+// one per draw and prepareDraws walks them several times: the material
+// lives once per frame in the queue's material table and the draw names
+// it by index, and the rarer previous transform and morph block live in
+// tables of their own.
 type meshDraw struct {
-	mesh  *Mesh
-	mat   Material
-	model lin.Mat4
-	// prev is the model matrix the draw had last frame and moved says the
-	// game supplied one. The velocity pass draws only what moved.
-	prev  lin.Mat4
-	moved bool
-	set   vk.VkDescriptorSet
-	// samplers packs the sampler index of each of the material set's
-	// eleven texture slots, two bits apiece, for the instance stream.
-	samplers float32
-	shader   *Shader // never nil once queued
-	uniform  int32   // arena offset of the shader's uniforms, -1 for none
-	depth    float32 // view-space distance for transparency sorting
-	blended  bool    // mat.blended(), resolved once by prepareDraws for the sort
-	oit      bool    // blended and drawn in the order-independent pass
-	culled   bool    // outside the camera's view; drawn only into shadows
-	skinned  bool
-	// shell is 0 for the mesh itself and rises to 1 on the outermost fur
-	// shell, which stands ShellLength world units off the surface.
-	shell      float32
-	jointBase  int // first joint matrix in the queue's joint list
-	jointCount int // how many joint matrices the draw's pose uses
-	// morph captures the targets and weights when queued, empty for a
-	// processor blend; morphSet is its model's delta buffer, or zero for
-	// the empty set the mesh pass keeps.
-	morph    morphDraw
+	mesh   *Mesh
+	shader *Shader // never nil once queued; the material's shader or the default
+	model  lin.Mat4
+	set    vk.VkDescriptorSet
+	// morphSet is the draw's model's delta buffer, or zero for the empty
+	// set the mesh pass keeps.
 	morphSet vk.VkDescriptorSet
 	// centre and radius are the draw's world bounding sphere, resolved by
 	// prepareDraws; cullable is false for a shader that may move a vertex
 	// anywhere. The shadow pass tests the sphere against each light.
-	centre   lin.Vec3
-	radius   float32
-	cullable bool
+	centre  lin.Vec3
+	radius  float32
+	mat     uint32  // the draw's material in the queue's material table
+	uniform int32   // arena offset of the shader's uniforms, -1 for none
+	depth   float32 // view-space distance for transparency sorting
+	// shell is 0 for the mesh itself and rises to 1 on the outermost fur
+	// shell, which stands ShellLength world units off the surface.
+	shell      float32
+	jointBase  int32 // first joint matrix in the queue's joint list
+	jointCount int32 // how many joint matrices the draw's pose uses
+	// prev is the model matrix the draw had last frame, as an index into
+	// the queue's prevs, or -1 when the game gave none or the same one. The
+	// velocity pass draws only draws with one.
+	prev int32
+	// morph is the targets and weights captured when the draw was queued,
+	// as an index into the queue's morphs, or -1 for none or a processor
+	// blend.
+	morph int32
 	// probe is the reflection probe whose cube map the draw's material set
 	// binds, as an index into the queue's probes plus one; zero means the
 	// frame's own environment.
-	probe int
+	probe    int32
+	blended  bool // the material's blended(), or a fur shell, resolved by prepareDraws for the sort
+	oit      bool // blended and drawn in the order-independent pass
+	culled   bool // outside the camera's view; drawn only into shadows
+	skinned  bool
+	cullable bool
+	bounded  bool // centre and radius already hold the mesh's sphere under the model, from a static batch
 }
+
+// moved reports whether the game gave the draw a previous transform that
+// differs from its current one.
+func (d *meshDraw) moved() bool { return d.prev >= 0 }
 
 // meshInstance is the per-instance vertex stream: see pbr.vert.
 type meshInstance struct {

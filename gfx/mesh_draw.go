@@ -712,7 +712,7 @@ func (q *drawQueue) pointShadows() (lights []int, mats []lin.Mat4) {
 // share a mesh and material become one instanced draw call; blended
 // materials draw after everything opaque, farthest first.
 func (g *Graphics) DrawMesh(m *Mesh, mat Material, model lin.Mat4) {
-	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model})
+	g.queueMesh(m, &mat, &model, nil, nil, meshDraw{})
 }
 
 // DrawMeshMoved is DrawMesh for a mesh that moved: prev is the model
@@ -723,28 +723,35 @@ func (g *Graphics) DrawMesh(m *Mesh, mat Material, model lin.Mat4) {
 // scene wants; the camera's own motion is reconstructed from depth
 // either way.
 func (g *Graphics) DrawMeshMoved(m *Mesh, mat Material, model, prev lin.Mat4) {
-	g.queueMesh(meshDraw{mesh: m, mat: mat, model: model, prev: prev, moved: prev != model})
+	g.queueMesh(m, &mat, &model, &prev, nil, meshDraw{})
 }
 
-// queueMesh fills a draw's defaults, captures its shader's uniforms, and
-// adds it to the current queue.
-func (g *Graphics) queueMesh(d meshDraw) {
-	g.requireMeshOwner(d.mesh, d.mat)
-	if d.mat.BaseColor == (Color{}) {
-		d.mat.BaseColor = White
-	}
-	if d.mat.Roughness == 0 {
-		d.mat.Roughness = 0.6
-	}
-	d.shader = d.mat.Shader
-	if d.shader == nil {
-		d.shader = g.meshes.defaultShader
-	} else if !d.shader.mesh {
-		panic("gfx: Material.Shader wants a mesh shader from NewMeshShader")
-	}
+// queueMesh checks a draw's mesh and material, interns the material,
+// captures the shader's uniforms, and adds the draw to the current
+// queue. prev is the previous frame's model matrix, nil for none. morph
+// is the draw's GPU morph block, nil for none. d carries the fields a
+// caller fills itself: the joints of a skinned draw and a model's morph
+// set. The material and matrices are read, not kept.
+func (g *Graphics) queueMesh(m *Mesh, mat *Material, model, prev *lin.Mat4, morph *morphDraw, d meshDraw) {
+	g.requireMeshOwner(m, nil)
+	q := g.cur
+	d.mesh = m
+	d.model = *model
+	d.mat = g.internMaterial(q, mat)
+	fm := &q.mats[d.mat]
+	d.shader = fm.shader
 	d.uniform = d.shader.uniformOffset()
-	g.cur.draws = append(g.cur.draws, d)
-	if n := d.mat.Shells; n > 0 {
+	d.prev, d.morph = -1, -1
+	if prev != nil && *prev != *model {
+		d.prev = int32(len(q.prevs))
+		q.prevs = append(q.prevs, *prev)
+	}
+	if morph != nil {
+		d.morph = int32(len(q.morphs))
+		q.morphs = append(q.morphs, *morph)
+	}
+	q.draws = append(q.draws, d)
+	if n := fm.mat.Shells; n > 0 {
 		// Fur: the same mesh again for each shell, standing further out
 		// along its normals. They share the material and so become one
 		// instanced draw, and each one's height rides in the instance
@@ -755,7 +762,7 @@ func (g *Graphics) queueMesh(d meshDraw) {
 		for i := 1; i <= n; i++ {
 			shell := d
 			shell.shell = float32(i) / float32(n)
-			g.cur.draws = append(g.cur.draws, shell)
+			q.draws = append(q.draws, shell)
 		}
 	}
 }
@@ -1171,7 +1178,15 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		env = nil
 	}
 	occluding := g.rasteriseOccluders(q, viewProj)
+	// A queue prepared again, once for each face of a probe bake, drops
+	// the batch items the last preparation added before walking the
+	// batches for this view.
+	if at := q.expandedAt - 1; at >= 0 && at <= len(q.draws) {
+		q.draws = q.draws[:at]
+	}
+	q.expandedAt = len(q.draws) + 1
 	g.expandBatches(q, frustum, viewProj, occluding)
+	q.prepGen++
 	culled, occluded, tests := 0, 0, 0
 	q.depthClamp = g.r.Device.DepthClamp()
 	q.hasCasters, q.casterAlong, q.hasMoved = false, 0, false
@@ -1184,20 +1199,25 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	for i := range q.draws {
 		d := &q.draws[i]
 		d.centre, d.radius, d.cullable = q.drawBounds(d)
+		d.bounded = false // the radius may have grown; the batch's sphere is gone
+		fm := &q.mats[d.mat]
 		// The probe holding the draw's centre supplies its reflections, so
 		// its cube map is what the material set binds.
-		d.probe = q.probeFor(d.centre)
-		if d.set, d.samplers, err = g.materialSet(&d.mat, q.probeEnv(d.probe, env), scene); err != nil {
+		d.probe = 0
+		if len(q.probes) > 0 {
+			d.probe = int32(q.probeFor(d.centre))
+		}
+		if d.set, err = g.resolveMaterial(q, fm, d.probe, env, scene); err != nil {
 			return drawList{}, drawList{}, drawList{}, err
 		}
 		d.depth = -view.MulPoint(d.centre).Z
-		d.blended = d.mat.blended() || d.shell > 0
+		d.blended = fm.blended || d.shell > 0
 		if d.shell > 0 {
-			d.radius += shellLength(&d.mat) // a shell stands off the surface
+			d.radius += shellLength(&fm.mat) // a shell stands off the surface
 		}
 		// Fur shells are drawn from the inside out and read as one surface
 		// only in that order, so they keep the sorted path.
-		d.oit = independent && d.blended && d.shell == 0 && d.mat.Transmission == 0 && d.shader.orderIndependent()
+		d.oit = independent && d.blended && d.shell == 0 && !fm.transmissive && d.shader.orderIndependent()
 		if d.cullable {
 			tests++
 		}
@@ -1234,81 +1254,11 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 	q.inst.reset()
 	for k := range all.len() {
 		d := all.at(k)
-		m := &d.mat
-		flags := boolFloat(m.NormalTexture != nil) + 2*boolFloat(m.Unlit) + 4*boolFloat(m.OcclusionUV2) + 8*boolFloat(m.EmissiveTexture == nil)
-		occlusion := float32(0)
-		if m.OcclusionTexture != nil {
-			occlusion = orOne(m.OcclusionStrength, true)
-		}
-		uv := m.UVTransform
-		if uv == (lin.Affine{}) {
-			uv = lin.Identity2()
-		}
-		ccRough := m.ClearcoatRoughness
-		if m.Clearcoat > 0 && ccRough == 0 {
-			ccRough = 0.03
-		}
-		sheenRough := m.SheenRoughness
-		if m.Sheen != (Color{}) && sheenRough == 0 {
-			sheenRough = 0.5
-		}
-		ior := m.IOR
-		if ior == 0 {
-			ior = 1.5
-		}
-		atten := m.AttenuationColor
-		if atten == (Color{}) {
-			atten = White
-		}
-		specColor := m.SpecularColor
-		if specColor == (Color{}) {
-			specColor = White
-		}
-		specular := m.Specular
-		if specular == 0 {
-			specular = 1
-		}
-		filmIOR := m.IridescenceIOR
-		if filmIOR == 0 {
-			filmIOR = 1.3
-		}
-		filmThick := m.IridescenceThickness
-		if filmThick == 0 {
-			filmThick = 400
-		}
-		mm := d.model
-		pm := d.prev
-		if !d.moved {
-			pm = mm
-		} else {
+		if d.prev >= 0 {
 			q.hasMoved = true
 		}
-		in := meshInstance{
-			model: [3]lin.Vec4{
-				lin.V4(mm.At(0, 0), mm.At(0, 1), mm.At(0, 2), mm.At(0, 3)),
-				lin.V4(mm.At(1, 0), mm.At(1, 1), mm.At(1, 2), mm.At(1, 3)),
-				lin.V4(mm.At(2, 0), mm.At(2, 1), mm.At(2, 2), mm.At(2, 3)),
-			},
-			prevModel: [3]lin.Vec4{
-				lin.V4(pm.At(0, 0), pm.At(0, 1), pm.At(0, 2), pm.At(0, 3)),
-				lin.V4(pm.At(1, 0), pm.At(1, 1), pm.At(1, 2), pm.At(1, 3)),
-				lin.V4(pm.At(2, 0), pm.At(2, 1), pm.At(2, 2), pm.At(2, 3)),
-			},
-			baseColor: [4]float32{m.BaseColor.R, m.BaseColor.G, m.BaseColor.B, m.BaseColor.A},
-			material:  [4]float32{orOne(m.Metallic, m.MetalRoughTexture != nil), m.Roughness, m.Emissive, flags},
-			extra:     [4]float32{float32(d.jointBase), m.AlphaCutoff, occlusion, m.Subsurface},
-			uvT0:      [4]float32{uv.A, uv.B, uv.C, uv.D},
-			uvT1:      [4]float32{uv.E, uv.F, m.Clearcoat, ccRough},
-			sheen:     [4]float32{m.Sheen.R, m.Sheen.G, m.Sheen.B, sheenRough},
-			volume:    [4]float32{m.Transmission, ior, m.Thickness, m.AttenuationDistance},
-			atten:     [4]float32{atten.R, atten.G, atten.B, d.samplers},
-			gi:        [4]float32{float32(d.probe), boolFloat(!d.blended), 0, 0},
-			spec:      [4]float32{specColor.R, specColor.G, specColor.B, specular},
-			irid:      [4]float32{m.Iridescence, filmIOR, m.IridescenceThicknessMin, filmThick},
-			fur:       [4]float32{m.Anisotropy, m.AnisotropyRotation, d.shell * shellLength(m), d.shell},
-		}
-		d.morph.instance(&in)
-		q.inst.add(in)
+		q.inst.items = append(q.inst.items, meshInstance{})
+		q.writeInstance(&q.inst.items[len(q.inst.items)-1], d, &q.mats[d.mat])
 	}
 	if err := q.inst.upload(g, slot); err != nil {
 		return drawList{}, drawList{}, drawList{}, err
@@ -1359,9 +1309,9 @@ func visibleCount(draws drawList) int {
 }
 
 // transmissive reports whether any draw needs the opaque scene copy.
-func transmissive(draws drawList) bool {
+func (q *drawQueue) transmissive(draws drawList) bool {
 	for i := range draws.len() {
-		if draws.at(i).mat.Transmission > 0 {
+		if q.mats[draws.at(i).mat].transmissive {
 			return true
 		}
 	}
@@ -1407,14 +1357,14 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 			out = outKey{}
 		}
 		run := 1
+		key := q.litKey(d)
 		if !d.skinned {
-			runKey := meshKey(&d.mat, false, d.shell > 0, out)
 			for i+run < n {
 				e := draws.at(i + run)
 				if mask != nil && !mask[i+run] {
 					break
 				}
-				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0, out) != runKey {
+				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || (e.mat != d.mat && q.litKey(e) != key) {
 					break
 				}
 				if e.morphSet != d.morphSet { // a different model's deltas
@@ -1423,7 +1373,8 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 				run++
 			}
 		}
-		key := meshKey(&d.mat, d.skinned, d.shell > 0, out)
+		key.skinned = d.skinned
+		key.out = out
 		key.oit = oit
 		if cascade != nil {
 			key = pipeKey{shadow: true, skinned: d.skinned}
@@ -1474,6 +1425,16 @@ func (g *Graphics) drawRuns(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueu
 		i += run
 	}
 	return nil
+}
+
+// litKey is the lit pass's pipeline key for a draw, as meshKey gives it
+// for a static mesh and the zero output.
+func (q *drawQueue) litKey(d *meshDraw) pipeKey {
+	fm := &q.mats[d.mat]
+	if d.shell > 0 {
+		return fm.shellKey
+	}
+	return fm.key
 }
 
 // renderScene runs the shadow and lit passes of a queue into the targets'
@@ -1579,7 +1540,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		return err
 	}
 	reflections := g.reflections(seen)
-	if reflections || transmissive(seenBlended) {
+	if reflections || q.transmissive(seenBlended) {
 		// Glass reads what is behind it and a reflection ray reads what the
 		// screen already shows: snapshot the opaque scene, with blurred
 		// mips for rough glass, then carry on into the same images.
@@ -1677,7 +1638,8 @@ func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQue
 		var pipe *render.Pipeline
 		for i := range draws.len() {
 			d := draws.at(i)
-			if d.skinned || (pass.outline && d.mat.Outline <= 0) || (!pass.outline && d.mat.XRay == (Color{})) {
+			mat := &q.mats[d.mat].mat
+			if d.skinned || (pass.outline && mat.Outline <= 0) || (!pass.outline && mat.XRay == (Color{})) {
 				continue
 			}
 			if pipe == nil {
@@ -1691,14 +1653,14 @@ func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQue
 			}
 			rec.solid = solidPush{params: lin.V4(0, float32(extent.Width), float32(extent.Height), 0)}
 			if pass.outline {
-				c := d.mat.OutlineColor
+				c := mat.OutlineColor
 				if c == (Color{}) {
 					c = Color{0, 0, 0, 1}
 				}
 				rec.solid.color = lin.V4(c.R, c.G, c.B, c.A)
-				rec.solid.params.X = d.mat.Outline
+				rec.solid.params.X = mat.Outline
 			} else {
-				c := d.mat.XRay.premultiplied()
+				c := mat.XRay.premultiplied()
 				rec.solid.color = lin.V4(c[0], c[1], c[2], c[3])
 			}
 			vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(rec.solid)), unsafe.Pointer(&rec.solid))

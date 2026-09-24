@@ -9,12 +9,26 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	stream      stream2D
-	draws       []meshDraw
-	order       []int32  // draws in draw order, as indices into draws
-	keys        []uint64 // each draw's packed sort key, the sort's working set
-	keyTmp      []uint64 // the radix sort's second buffer
-	shaderIDs   idTable  // dense ids for the sort key
+	stream stream2D
+	draws  []meshDraw
+	// mats is the frame's distinct materials, which draws name by index;
+	// matSlots is the hash table over it, holding an index plus one, and
+	// lastMat the index plus one of the material found last.
+	mats     []frameMaterial
+	matSlots []int32
+	lastMat  int32
+	prepGen  uint32 // counts preparations, so a material's sets are resolved once per preparation
+	frame    uint64 // counts resets, so a static batch knows when its material indices are stale
+	// expandedAt is one more than how many draws the queue held before
+	// prepareDraws added the static batches' items, or zero before the
+	// frame's first preparation.
+	expandedAt  int
+	prevs       []lin.Mat4  // the previous transforms of draws that moved
+	morphs      []morphDraw // the morph blocks of draws with GPU morph targets
+	order       []int32     // draws in draw order, as indices into draws
+	keys        []uint64    // each draw's packed sort key, the sort's working set
+	keyTmp      []uint64    // the radix sort's second buffer
+	shaderIDs   idTable     // dense ids for the sort key
 	uniformIDs  idTable
 	setIDs      idTable
 	meshIDs     idTable
@@ -105,6 +119,11 @@ type drawQueue struct {
 func (q *drawQueue) reset() {
 	q.stream.reset()
 	q.draws = q.draws[:0]
+	q.resetMaterials()
+	q.frame++
+	q.expandedAt = 0
+	q.prevs = q.prevs[:0]
+	q.morphs = q.morphs[:0]
 	q.decals = q.decals[:0]
 	q.lines.reset()
 	q.parts.reset()

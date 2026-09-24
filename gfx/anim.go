@@ -906,17 +906,20 @@ func (g *Graphics) DrawModelAnimatedMoved(m *Model, t, prev Transform, p *AnimPl
 	var joints []lin.Mat4
 	for i, part := range m.Parts {
 		mat := override.apply(i, part)
-		d := meshDraw{mesh: part.Mesh, morphSet: set}
-		m.morphOf[part.Mesh].snapshot(&d)
+		var morph morphDraw
+		mesh, morphed := m.morphOf[part.Mesh].snapshot(part.Mesh, &morph)
+		mp := &morph
+		if !morphed {
+			mp = nil
+		}
+		d := meshDraw{morphSet: set}
 		if part.Mesh.skinned && part.skin >= 0 {
 			joints = p.jointMatrices(part.skin, joints[:0])
-			g.drawSkinned(d.mesh, mat, world, was, joints, d)
+			g.drawSkinned(mesh, &mat, &world, &was, joints, mp, d)
 			continue
 		}
 		node := p.NodeMatrix(part.node)
-		d.mat = mat
-		d.model, d.prev = world.Mul(node), was.Mul(node)
-		d.moved = d.prev != d.model
-		g.queueMesh(d)
+		model, prev := world.Mul(node), was.Mul(node)
+		g.queueMesh(mesh, &mat, &model, &prev, mp, d)
 	}
 }

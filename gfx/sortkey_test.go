@@ -10,10 +10,24 @@ import (
 	"github.com/matjam/bunyip/internal/vk"
 )
 
+// testMaterial adds a material to a queue's table without a Graphics, for
+// tests that need draws without a device, and returns its index.
+func (q *drawQueue) testMaterial(m Material) uint32 {
+	at, h := q.findMaterial(&m)
+	if at < 0 {
+		at = q.addMaterial(&m, m.Shader, h)
+	}
+	return uint32(at)
+}
+
 // sortTestDraws builds a spread of draws with the fields the sort reads:
 // n distinct shaders, meshes, sets and uniform offsets, a quarter of
-// them blended and a scattering culled and skinned.
-func sortTestDraws(n, shaders, meshes int) []meshDraw {
+// them blended and a scattering culled and skinned. It returns the draws
+// and the material table they index.
+func sortTestDraws(n, shaders, meshes int) ([]meshDraw, []frameMaterial) {
+	var table drawQueue
+	plain := table.testMaterial(Material{Roughness: 0.5})
+	blend := table.testMaterial(Material{Roughness: 0.5, Blend: true})
 	sh := make([]*Shader, shaders)
 	for i := range sh {
 		sh[i] = &Shader{}
@@ -32,27 +46,28 @@ func sortTestDraws(n, shaders, meshes int) []meshDraw {
 		d.depth = float32(math.Mod(float64(i)*37.5, 100))
 		d.culled = i%9 == 0
 		d.skinned = i%11 == 0
-		d.mat = Material{Roughness: 0.5}
+		d.mat = plain
+		d.prev, d.morph = -1, -1
 		if i%4 == 0 {
-			d.mat.Blend = true
+			d.mat = blend
 		}
-		d.blended = d.mat.blended()
+		d.blended = table.mats[d.mat].blended
 	}
-	return draws
+	return draws, table.mats
 }
 
 // runsOf counts the instanced runs a sorted list records, by the rule
 // drawRuns merges with.
-func runsOf(l drawList) int {
+func runsOf(q *drawQueue, l drawList) int {
 	runs := 0
 	for i := 0; i < l.len(); {
 		d := l.at(i)
 		run := 1
 		if !d.skinned {
-			key := meshKey(&d.mat, false, d.shell > 0, outKey{})
+			key := q.litKey(d)
 			for i+run < l.len() {
 				e := l.at(i + run)
-				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || meshKey(&e.mat, false, e.shell > 0, outKey{}) != key {
+				if e.skinned || e.mesh != d.mesh || e.set != d.set || e.shader != d.shader || e.uniform != d.uniform || q.litKey(e) != key {
 					break
 				}
 				run++
@@ -107,10 +122,11 @@ func checkOrder(t *testing.T, l drawList, n int) {
 // comparator: the same draws in each class, the same blended order, and
 // the same instanced runs, which is what the batching depends on.
 func TestSortKeyMatchesRecords(t *testing.T) {
-	src := sortTestDraws(2000, 4, 16)
+	src, mats := sortTestDraws(2000, 4, 16)
 	var fast, slow drawQueue
 	fast.draws = append(fast.draws, src...)
 	slow.draws = append(slow.draws, src...)
+	fast.mats, slow.mats = mats, mats
 	got := fast.sortDraws()
 	slow.order = make([]int32, len(src))
 	want := slow.sortRecords()
@@ -125,7 +141,7 @@ func TestSortKeyMatchesRecords(t *testing.T) {
 			t.Fatalf("blended draw %d: depth %v, want %v", i, a.depth, b.depth)
 		}
 	}
-	if a, b := runsOf(got), runsOf(want); a != b {
+	if a, b := runsOf(&fast, got), runsOf(&slow, want); a != b {
 		t.Errorf("packed key records %d runs, the record sort %d", a, b)
 	}
 }
@@ -133,9 +149,10 @@ func TestSortKeyMatchesRecords(t *testing.T) {
 // TestSortKeyOverflow gives a frame more shaders than the key's field
 // holds, so the sort falls back to comparing records.
 func TestSortKeyOverflow(t *testing.T) {
-	src := sortTestDraws(2048, 1<<sortShaderBits+3, 16)
+	src, mats := sortTestDraws(2048, 1<<sortShaderBits+3, 16)
 	var q drawQueue
 	q.draws = append(q.draws, src...)
+	q.mats = mats
 	if q.buildKeys() {
 		t.Fatalf("%d shaders fit an %d-bit field", 1<<sortShaderBits+3, sortShaderBits)
 	}
@@ -143,8 +160,9 @@ func TestSortKeyOverflow(t *testing.T) {
 	checkOrder(t, got, len(src))
 	var ref drawQueue
 	ref.draws = append(ref.draws, src...)
+	ref.mats = mats
 	ref.order = make([]int32, len(src))
-	if a, b := runsOf(got), runsOf(ref.sortRecords()); a != b {
+	if a, b := runsOf(&q, got), runsOf(&ref, ref.sortRecords()); a != b {
 		t.Errorf("the fallback records %d runs, the record sort %d", a, b)
 	}
 }

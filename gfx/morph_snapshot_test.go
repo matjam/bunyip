@@ -38,7 +38,9 @@ func TestMorphDrawSnapshotsWeights(t *testing.T) {
 			}
 			for i, want := range []float32{0.25, 0.75} {
 				var in meshInstance
-				g.cur.draws[i].morph.instance(&in)
+				if at := g.cur.draws[i].morph; at >= 0 {
+					g.cur.morphs[at].instance(&in)
+				}
 				if in.morphW[0] != want {
 					t.Errorf("draw %d weight = %v, want %v", i, in.morphW[0], want)
 				}

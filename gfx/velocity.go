@@ -94,7 +94,7 @@ func (g *Graphics) renderVelocity(cb vk.VkCommandBuffer, fr *render.Frame, q *dr
 		var bound *render.Pipeline
 		for i := range draws.len() {
 			d := draws.at(i)
-			if !d.moved {
+			if !d.moved() {
 				continue
 			}
 			pipe := p.velocity

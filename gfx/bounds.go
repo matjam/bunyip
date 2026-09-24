@@ -143,7 +143,11 @@ func (q *drawQueue) shadowMask(draws drawList, index int, spots, points []lin.Ma
 // material shader with a vertex program grows the radius by its
 // VertexBounds, and a zero VertexBounds means the draw is never culled.
 func (q *drawQueue) drawBounds(d *meshDraw) (centre lin.Vec3, radius float32, cullable bool) {
-	centre, radius = d.mesh.boundingSphere(d.model)
+	if d.bounded {
+		centre, radius = d.centre, d.radius // a static batch item's, worked out once
+	} else {
+		centre, radius = d.mesh.boundingSphere(d.model)
+	}
 	if d.skinned && d.jointCount > 0 {
 		if c, r, ok := skinBounds(d.mesh, d.model, q.joints[d.jointBase:d.jointBase+d.jointCount]); ok {
 			centre, radius = c, r

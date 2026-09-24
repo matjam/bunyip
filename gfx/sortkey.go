@@ -84,7 +84,7 @@ func (q *drawQueue) buildKeys() bool {
 		} else {
 			// A draw that marks the stencil buffer comes first, so a draw
 			// that tests the mark sees it however the two were queued.
-			if !d.mat.marksStencil() {
+			if !q.mats[d.mat].stencil {
 				key |= 1 << sortStencilBit
 			}
 			if d.skinned {
@@ -194,9 +194,10 @@ func (q *drawQueue) sortRecords() drawList {
 	for i := range q.order {
 		q.order[i] = int32(i)
 	}
-	draws := q.draws
+	draws, mats := q.draws, q.mats
 	slices.SortStableFunc(q.order, func(x, y int32) int {
 		a, b := &draws[x], &draws[y]
+		aStencil, bStencil := mats[a.mat].stencil, mats[b.mat].stencil
 		switch {
 		case a.blended != b.blended:
 			if a.blended {
@@ -216,8 +217,8 @@ func (q *drawQueue) sortRecords() drawList {
 				return 1
 			}
 			return 0
-		case a.mat.marksStencil() != b.mat.marksStencil(): // a mask before what tests it
-			if a.mat.marksStencil() {
+		case aStencil != bStencil: // a mask before what tests it
+			if aStencil {
 				return -1
 			}
 			return 1
