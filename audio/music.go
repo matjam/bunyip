@@ -26,6 +26,10 @@ type Music struct {
 	rs     resampler
 	rate   int   // the mixer's
 	length int64 // source frames, 0 when unknown
+	// decRate is the decoder's rate, read once at open. The decoder
+	// belongs to the fill goroutine, which rebuilds it when it rewinds,
+	// so other goroutines read this copy instead of calling dec.Rate.
+	decRate int
 
 	mu                 sync.Mutex
 	cond               *sync.Cond
@@ -89,7 +93,7 @@ func (m *Mixer) OpenMusic(r io.ReadSeeker, loop bool) (*Music, error) {
 	if dec.Channels() < 1 || dec.Channels() > 2 || dec.Rate() <= 0 {
 		return nil, fmt.Errorf("audio: music: unsupported %d channels at %d Hz", dec.Channels(), dec.Rate())
 	}
-	mu := &Music{dec: dec, loop: loop, rate: m.rate, length: dec.Length(), seek: -1,
+	mu := &Music{dec: dec, loop: loop, rate: m.rate, length: dec.Length(), decRate: dec.Rate(), seek: -1,
 		ring: make([]float32, m.rate*2*2)} // two seconds
 	mu.cond = sync.NewCond(&mu.mu)
 	mu.rs = resampler{step: float64(dec.Rate()) / float64(m.rate)}
@@ -138,7 +142,7 @@ func (mu *Music) Buffered() float64 {
 // not seek to find out.
 // FLAC uses STREAMINFO's sample count, which may also be unknown (0).
 func (mu *Music) Duration() float64 {
-	return float64(mu.length) / float64(mu.dec.Rate())
+	return float64(mu.length) / float64(mu.decRate)
 }
 
 // Seek moves playback to seconds from the start. It returns at once and
@@ -153,7 +157,7 @@ func (mu *Music) Duration() float64 {
 // its Position follows. Music whose voice has already ended can be sought
 // and played again with PlayStream.
 func (mu *Music) Seek(seconds float64) error {
-	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds >= float64(math.MaxInt64)/float64(mu.dec.Rate()) {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds >= float64(math.MaxInt64)/float64(mu.decRate) {
 		return errors.New("audio: music: seek time must be finite")
 	}
 	mu.mu.Lock()
@@ -169,7 +173,7 @@ func (mu *Music) Seek(seconds float64) error {
 }
 
 func (mu *Music) setSeekLocked(seconds float64) {
-	mu.setSeekFrameLocked(math.Floor(seconds * float64(mu.dec.Rate())))
+	mu.setSeekFrameLocked(math.Floor(seconds * float64(mu.decRate)))
 }
 
 func (mu *Music) setSeekFrameLocked(frame float64) {
@@ -180,7 +184,7 @@ func (mu *Music) setSeekFrameLocked(frame float64) {
 		frame = float64(mu.loopStart)
 	}
 	mu.playFrame = math.Floor(frame)
-	mu.seek = mu.playFrame / float64(mu.dec.Rate())
+	mu.seek = mu.playFrame / float64(mu.decRate)
 	mu.voiceBuffered = 0
 	mu.gen++
 	mu.rd, mu.count = 0, 0
@@ -203,7 +207,7 @@ func (mu *Music) SetLooping(loop bool) {
 	if mu.close || mu.err != nil || mu.loop == loop {
 		return
 	}
-	frame := mu.playFrame - mu.voiceBuffered*float64(mu.dec.Rate())/float64(mu.rate)
+	frame := mu.playFrame - mu.voiceBuffered*float64(mu.decRate)/float64(mu.rate)
 	end := mu.loopEnd
 	if end == 0 {
 		end = mu.length
@@ -238,7 +242,7 @@ func (mu *Music) SetLoopRange(start, end time.Duration) error {
 	if start < 0 || end < 0 || ((start != 0 || end != 0) && end <= start) {
 		return errors.New("audio: music: invalid loop range")
 	}
-	rate := float64(mu.dec.Rate())
+	rate := float64(mu.decRate)
 	if end.Seconds() >= float64(math.MaxInt64)/rate {
 		return errors.New("audio: music: loop range exceeds source frame limit")
 	}
@@ -257,7 +261,7 @@ func (mu *Music) SetLoopRange(start, end time.Duration) error {
 func (mu *Music) LoopRange() (start, end time.Duration) {
 	mu.mu.Lock()
 	defer mu.mu.Unlock()
-	rate := float64(mu.dec.Rate())
+	rate := float64(mu.decRate)
 	return time.Duration(math.Ceil(float64(mu.loopStart) / rate * float64(time.Second))), time.Duration(math.Ceil(float64(mu.loopEnd) / rate * float64(time.Second)))
 }
 
@@ -342,7 +346,7 @@ func (mu *Music) readSourceLocked(out []float32) (int, int) {
 	copy(out[first:n], mu.ring[:n-first])
 	mu.rd = (mu.rd + n) % len(mu.ring)
 	mu.count -= n
-	mu.playFrame += float64(n/2) * float64(mu.dec.Rate()) / float64(mu.rate)
+	mu.playFrame += float64(n/2) * float64(mu.decRate) / float64(mu.rate)
 	end := mu.loopEnd
 	if end == 0 {
 		end = mu.length
@@ -470,7 +474,7 @@ func (mu *Music) applySeek() (int, bool) {
 	if target < 0 {
 		return gen, true
 	}
-	frame := int64(math.Round(target * float64(mu.dec.Rate())))
+	frame := int64(math.Round(target * float64(mu.decRate)))
 	if err := mu.dec.SeekFrame(frame); err != nil {
 		mu.mu.Lock()
 		mu.err = fmt.Errorf("audio: music: seek: %w", err)
