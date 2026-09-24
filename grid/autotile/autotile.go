@@ -1,9 +1,10 @@
 // Package autotile picks tile frames from a terrain grid, so a map of
 // plain terrain ids draws with matching edges, corners and transitions.
 // The game keeps one small int per cell; a Mapper turns that into frame
-// indices for a tile sheet, whole maps at a time with Apply or one
-// changed cell at a time with Cell. The package is pure logic: frames
-// are ints for gfx.Tilemap or anything else, and -1 means no tile.
+// indices for a tile sheet, whole maps at a time with Apply, one changed
+// cell at a time with Cell, or one changed rectangle at a time with
+// Region. The package is pure logic: frames are ints for gfx.Tilemap or
+// anything else, and -1 means no tile.
 //
 // Five rule kinds cover the usual tilesets. Edge16 matches the four
 // edge neighbours and needs 16 tiles: walls, pipes, fences. Edge64 is
@@ -184,6 +185,16 @@ type Mapper struct {
 	OutsideFixed bool
 
 	scratch []weighted // reused by Wang matching to keep Apply allocation-free
+	wang    wangIndex  // Wang tiles by exact colours, rebuilt when the set changes
+	mark    []bool     // reused by Region to visit each affected cell once
+}
+
+// prepare brings the mapper's cached state up to date with its rules
+// before a call computes frames.
+func (m *Mapper) prepare() {
+	if m.Rules.kind == kindWang {
+		m.refreshWang()
+	}
 }
 
 // Apply computes a frame for every cell and hands each to set, with -1
@@ -194,6 +205,7 @@ func (m *Mapper) Apply(w, h int, terrain func(x, y int) int, set func(x, y, fram
 	if m.Rules == nil {
 		return
 	}
+	m.prepare()
 	if m.Rules.kind == kindCorner16 {
 		for y := 0; y <= h; y++ {
 			for x := 0; x <= w; x++ {
@@ -212,11 +224,13 @@ func (m *Mapper) Apply(w, h int, terrain func(x, y int) int, set func(x, y, fram
 // Cell recomputes the cells a change at (x, y) can affect: the cell and
 // the neighbours the layout gives it, or the four surrounding corners
 // for Corner16 rules. Call it after editing one cell instead of
-// reapplying the map.
+// reapplying the map. To update after editing a block of cells, call
+// Region instead, which computes each affected cell once.
 func (m *Mapper) Cell(x, y, w, h int, terrain func(x, y int) int, set func(x, y, frame int)) {
 	if m.Rules == nil {
 		return
 	}
+	m.prepare()
 	if m.Rules.kind == kindCorner16 {
 		for cy := y; cy <= y+1; cy++ {
 			for cx := x; cx <= x+1; cx++ {
@@ -234,6 +248,73 @@ func (m *Mapper) Cell(x, y, w, h int, terrain func(x, y int) int, set func(x, y,
 		cx, cy := m.Layout.Neighbour(x, y, d)
 		if cx >= 0 && cy >= 0 && cx < w && cy < h {
 			set(cx, cy, m.frame(cx, cy, w, h, terrain))
+		}
+	}
+}
+
+// Region recomputes the cells a change anywhere in a rectangle can
+// affect, and hands each to set once. To re-autotile after a brush
+// stroke or a pasted block, call it with the rectangle of edited cells:
+// rw by rh cells with its top-left cell at (x, y), on a w by h map. The
+// frames it sets are the ones calling Cell for every cell of the
+// rectangle would set, but a cell next to several edited cells is
+// computed once instead of once per edited neighbour. Cells go to set
+// in row-major order. Parts of the rectangle outside the map are
+// allowed; a nil Rules or an empty rectangle makes no calls.
+func (m *Mapper) Region(x, y, rw, rh, w, h int, terrain func(x, y int) int, set func(x, y, frame int)) {
+	if m.Rules == nil || rw <= 0 || rh <= 0 {
+		return
+	}
+	m.prepare()
+	if m.Rules.kind == kindCorner16 {
+		// Cell covers the corners from (x, y) to (x+1, y+1), so the
+		// rectangle covers one more corner than cells each way.
+		for cy := max(y, 0); cy <= min(y+rh, h); cy++ {
+			for cx := max(x, 0); cx <= min(x+rw, w); cx++ {
+				set(cx, cy, m.corner(cx, cy, w, h, terrain))
+			}
+		}
+		return
+	}
+	// Every layout's neighbours lie within one cell each way, so the
+	// affected cells are inside the rectangle grown by one and clipped
+	// to the map. Mark the ones Cell would visit, then compute each once.
+	bx0, by0 := max(x-1, 0), max(y-1, 0)
+	bx1, by1 := min(x+rw+1, w), min(y+rh+1, h)
+	if bx0 >= bx1 || by0 >= by1 {
+		return
+	}
+	bw := bx1 - bx0
+	n := bw * (by1 - by0)
+	if cap(m.mark) < n {
+		m.mark = make([]bool, n)
+	}
+	mark := m.mark[:n]
+	clear(mark)
+	in := func(cx, cy int) bool { return cx >= bx0 && cy >= by0 && cx < bx1 && cy < by1 }
+	dirs := m.Layout.dirs()
+	// Edited cells more than one step outside the map have no neighbours
+	// inside it, so the loop only walks the rectangle's part near the map.
+	for ey := max(y, by0-1); ey < min(y+rh, by1+1); ey++ {
+		for ex := max(x, bx0-1); ex < min(x+rw, bx1+1); ex++ {
+			if in(ex, ey) {
+				mark[(ey-by0)*bw+ex-bx0] = true
+			}
+			for _, d := range dirs {
+				cx, cy := m.Layout.Neighbour(ex, ey, d)
+				if in(cx, cy) {
+					mark[(cy-by0)*bw+cx-bx0] = true
+				}
+			}
+		}
+	}
+	for cy := by0; cy < by1; cy++ {
+		row := mark[(cy-by0)*bw : (cy-by0+1)*bw]
+		for i, on := range row {
+			if on {
+				cx := bx0 + i
+				set(cx, cy, m.frame(cx, cy, w, h, terrain))
+			}
 		}
 	}
 }
