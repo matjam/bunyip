@@ -13,6 +13,7 @@ type drawQueue struct {
 	draws       []meshDraw
 	order       []int32  // draws in draw order, as indices into draws
 	keys        []uint64 // each draw's packed sort key, the sort's working set
+	keyTmp      []uint64 // the radix sort's second buffer
 	shaderIDs   idTable  // dense ids for the sort key
 	uniformIDs  idTable
 	setIDs      idTable

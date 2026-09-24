@@ -1,7 +1,10 @@
 package gfx
 
 import (
+	"fmt"
 	"math"
+	"math/rand"
+	"slices"
 	"testing"
 
 	"github.com/matjam/bunyip/internal/vk"
@@ -143,6 +146,52 @@ func TestSortKeyOverflow(t *testing.T) {
 	ref.order = make([]int32, len(src))
 	if a, b := runsOf(got), runsOf(ref.sortRecords()); a != b {
 		t.Errorf("the fallback records %d runs, the record sort %d", a, b)
+	}
+}
+
+// TestRadixSortMatchesSort checks the radix sort against slices.Sort:
+// random keys with many ties, keys whose low bits are their index as
+// sortDraws builds them, keys sharing whole bytes, and short inputs.
+func TestRadixSortMatchesSort(t *testing.T) {
+	r := rand.New(rand.NewSource(7))
+	check := func(name string, keys []uint64, lowSorted uint) {
+		t.Helper()
+		want := slices.Clone(keys)
+		slices.Sort(want)
+		work := slices.Clone(keys)
+		got := radixSort(work, make([]uint64, len(keys)), lowSorted)
+		if !slices.Equal(got, want) {
+			for i := range got {
+				if got[i] != want[i] {
+					t.Fatalf("%s: key %d is %#x, want %#x", name, i, got[i], want[i])
+				}
+			}
+			t.Fatalf("%s: lengths differ", name)
+		}
+	}
+	for _, n := range []int{0, 1, 2, 3, 100, 257, 1000, 5000, 70000} {
+		// Few distinct values, so most keys tie with others.
+		keys := make([]uint64, n)
+		for i := range keys {
+			keys[i] = uint64(r.Intn(7))<<61 | uint64(r.Intn(3))<<17 | uint64(r.Intn(2))
+		}
+		check(fmt.Sprintf("ties/%d", n), keys, 0)
+		// Every bit random.
+		for i := range keys {
+			keys[i] = r.Uint64()
+		}
+		check(fmt.Sprintf("random/%d", n), keys, 0)
+		// The shape sortDraws gives it: fields above the index, ties in the
+		// fields, and the index in the low bits in ascending order.
+		for i := range keys {
+			keys[i] = uint64(r.Intn(3))<<63 | uint64(r.Intn(5))<<sortSetShift | uint64(r.Intn(4))<<sortMeshShift | uint64(i)
+		}
+		check(fmt.Sprintf("indexed/%d", n), keys, sortIndexBits)
+		// Only one byte varies.
+		for i := range keys {
+			keys[i] = 0xAB00_0000_0000_00CD | uint64(r.Intn(256))<<24
+		}
+		check(fmt.Sprintf("one byte/%d", n), keys, 0)
 	}
 }
 

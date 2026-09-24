@@ -117,11 +117,74 @@ func (q *drawQueue) sortDraws() drawList {
 	if !q.buildKeys() {
 		return q.sortRecords()
 	}
-	slices.Sort(q.keys)
-	for i, key := range q.keys {
+	if cap(q.keyTmp) < n {
+		q.keyTmp = make([]uint64, n)
+	}
+	// The keys are built in draw order and carry the draw's index in their
+	// low bits, so they are already ordered by those bits.
+	for i, key := range radixSort(q.keys, q.keyTmp[:n], sortIndexBits) {
 		q.order[i] = int32(key & sortIndexMask)
 	}
 	return drawList{draws: q.draws, order: q.order}
+}
+
+// radixSortMin is the length below which radixSort hands the keys to a
+// comparison sort, which is quicker than clearing the digit counts.
+const radixSortMin = 256
+
+// radixSort sorts keys in ascending order and returns the sorted slice,
+// which is either keys or tmp; tmp must be as long as keys. It is a
+// least-significant-digit radix sort on bytes. A byte every key shares
+// takes no pass. lowSorted says the input is already in ascending order
+// of its low lowSorted bits, so the bytes wholly below that bit take no
+// pass either: each pass is stable, so the input's order survives as the
+// order among keys whose higher bytes tie.
+func radixSort(keys, tmp []uint64, lowSorted uint) []uint64 {
+	n := len(keys)
+	if n < radixSortMin {
+		slices.Sort(keys)
+		return keys
+	}
+	and, or := ^uint64(0), uint64(0)
+	for _, k := range keys {
+		and &= k
+		or |= k
+	}
+	varies := and ^ or
+	var digits [8]uint
+	passes := 0
+	for d := lowSorted / 8; d < 8; d++ {
+		if (varies>>(8*d))&0xff != 0 {
+			digits[passes] = d
+			passes++
+		}
+	}
+	if passes == 0 {
+		return keys
+	}
+	var count [8][256]uint32
+	for _, k := range keys {
+		for p := range passes {
+			count[p][(k>>(8*digits[p]))&0xff]++
+		}
+	}
+	src, dst := keys, tmp[:n]
+	for p := range passes {
+		c := &count[p]
+		sum := uint32(0)
+		for i, v := range c {
+			c[i] = sum
+			sum += v
+		}
+		shift := 8 * digits[p]
+		for _, k := range src {
+			b := (k >> shift) & 0xff
+			dst[c[b]] = k
+			c[b]++
+		}
+		src, dst = dst, src
+	}
+	return src
 }
 
 // sortRecords is sortDraws by comparing the draw records themselves. It
