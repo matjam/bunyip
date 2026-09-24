@@ -216,6 +216,36 @@ store.Write("settings", s)
 names, _ := store.List() // the save slots, for a load menu
 ```
 
+`Write` returns once the file is synced to the drive. A sync waits for
+the storage device, which takes several milliseconds even for a small
+file (on macOS it flushes the drive's cache), so a `Write` from `Update`
+can miss a frame. To autosave from the game loop, call `WriteAsync`: it
+encodes the value before it returns, so the game can keep changing it,
+and writes, syncs and renames on a background goroutine. The returned
+channel receives nil once the file is in place, or the error. Writes to
+one name land in the order they were made, and `Read`, `Load`, `Exists`
+and `Delete` for that name wait for them. Call `Flush` before the game
+exits so pending writes reach the disk.
+
+```go
+// In Update: costs the encoding, not the disk.
+g.saving = store.WriteAsync("autosave", g.state)
+
+// On a later frame. A nil channel never receives, so this is a no-op
+// once the result has been read.
+select {
+case err := <-g.saving:
+	g.saving = nil
+	if err != nil {
+		g.warn("autosave failed:", err)
+	}
+default: // still writing, or nothing pending
+}
+
+// In Shutdown.
+store.Flush()
+```
+
 `save.OpenAt(dir)` takes any directory, which is what tests use.
 `BUNYIP_DATA_DIR` overrides the base data directory and the app name is
 appended to it. Save names omit `.json` and must be nonempty leaf names
@@ -398,13 +428,16 @@ The algorithms take a cost or passability function over points, not a
 Costs may be zero or fractional, but must not be NaN. The callback
 defines diagonal costs and whether cutting across a blocked corner is
 allowed; the algorithms add neither restriction nor a diagonal multiplier.
-`AStar` uses a zero heuristic, so it
-finds cheapest paths without needing a lower bound on step costs.
-When that bound is known, `AStarWithMinCost` can explore fewer cells:
-pass `1` for unit-cost movement, or `0.1` if every traversable step
-costs at least `0.1`. The bound applies to diagonal steps too. The
-search scales Manhattan distance for four-way movement or Chebyshev
-distance for eight-way movement by that bound.
+Without a minimum step cost, `AStar` is an uninformed search: it uses a
+zero heuristic, so it finds cheapest paths without needing a lower bound
+on step costs, but it expands cells in every direction as `Dijkstra`
+does. On an open 256 by 256 map that is several times slower than a
+guided search. For speed, call `AStarWithMinCost` with the smallest cost
+any step can have: pass `1` for unit-cost movement, or `0.1` if every
+traversable step costs at least `0.1`. The bound applies to diagonal
+steps too. The search scales Manhattan distance for four-way movement or
+Chebyshev distance for eight-way movement by that bound. Where several
+paths cost the same, the two searches may return different ones.
 
 A positive finite bound must never exceed any traversable step's cost;
 overstating it can produce a more expensive path. Pass zero when the
@@ -425,17 +458,20 @@ keep a `Pathfinder` for the map and a `Vision` for the viewer and call
 their methods. They avoid steady-state allocations once their scratch
 and caller-owned result buffers have sufficient capacity.
 `Pathfinder.AStar` and `Pathfinder.AStarWithMinCost` append the path to
-a slice the game owns and report whether there was one.
+a slice the game owns and report whether there was one. To guide every
+`Pathfinder.AStar` call on a map, set `Pathfinder.MinCost` once when the
+map is made; its zero value leaves the search uninformed.
 `Pathfinder.DijkstraInto` fills a map the game
 already has, and `Vision.FOV` reuses the scratch space a cast needs.
 
 ```go
 // Made once, with the map, and kept.
 g.pf = grid.NewPathfinder(64, 48)
+g.pf.MinCost = 1 // every step costs at least 1
 g.dist = grid.New[float32](64, 48)
 
 // Each frame, searching into the game's own buffers.
-if path, ok := g.pf.AStarWithMinCost(g.path[:0], g.player, g.exit, true, cost, 1); ok {
+if path, ok := g.pf.AStar(g.path[:0], g.player, g.exit, true, cost); ok {
 	g.path = path
 }
 g.pf.DijkstraInto(g.dist, []grid.Point{g.player}, true, cost)
@@ -486,8 +522,14 @@ preserve `errors.Is` checks for `context.Canceled` and
 `context.DeadlineExceeded`. A completed send means the transport
 accepted the message, not that the peer processed it.
 
-`Broadcast` sends sequentially with one shared five-second budget for
-all selected peers. `BroadcastContext` uses one caller-supplied budget.
+Each message goes to the transport as one frame, its length header and
+payload in a single write. `Send` and `Broadcast` enforce their budget
+with the connection's write deadline, so a send allocates nothing beyond
+the encoding.
+
+`Broadcast` encodes the message once and sends the same frame
+sequentially to every selected peer, with one shared five-second budget.
+`BroadcastContext` uses one caller-supplied budget.
 Both return a `map[*network.Conn]error` containing only failed peers,
 including peers not reached before cancellation; nil means every
 selected peer accepted its message. Connection iteration order is
@@ -500,7 +542,10 @@ for peer, err := range server.Broadcast(Chat{From: "server", Text: "Ready"}) {
 ```
 
 Complete registry registration before opening connections and leave it
-unchanged while network goroutines use it.
+unchanged while network goroutines use it. TCP and UDP connections
+decode each message from a read buffer they reuse, so a binary
+message's `UnmarshalBinary` must copy any bytes it keeps, as
+`encoding.BinaryUnmarshaler` requires.
 
 Messages are plain structs. Both ends build the same registry in the
 same order:
@@ -606,8 +651,18 @@ with the server's state by replaying the inputs the server has not yet
 seen. A `History` lets a server rewind targets to where a shooter saw
 them. A `Clock` estimates the server's time from pings. `EncodeDelta`
 sends only the fields of a snapshot struct that changed since a
-baseline; `SnapshotBuffer` picks each client's baseline from what it
-last acknowledged, with `SnapshotReceiver` on the other end. `Interest`
+baseline, and only the changed elements of an array field, so a
+struct of arrays with one entry per entity sends the entities that
+moved. `SnapshotBuffer` picks each client's baseline from what it
+last acknowledged, with `SnapshotReceiver` on the other end. To encode
+every client's snapshot into one buffer without allocating, call
+`SnapshotBuffer.AppendEncode`, or `AppendDelta` for a single delta. A
+server sending 200 entities as arrays of positions and angles, with a
+tenth of them moving each tick and acknowledgements three ticks old,
+produces deltas of about 800 bytes, which fit one UDP datagram
+(`MaxDatagram`). The delta encoding may change between Bunyip versions
+before 1.0, so the server and its clients must run the same version.
+`Interest`
 chooses which entities are near enough to a viewer to be worth sending,
 with hysteresis at the edge so nothing flickers in and out. The two
 slices `Interest.End` returns belong to the `Interest` and are refilled
