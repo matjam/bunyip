@@ -59,29 +59,36 @@ func RecordLevelsUpload(cb vk.VkCommandBuffer, img *Image, staging *Buffer, leve
 		vk.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, vk.VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)
 }
 
-// NewLevelledTextureImage uploads a whole mip chain outside a frame,
-// through a staging buffer of its own that is waited for. Inside a frame
-// use NewLevelledImage with RecordLevelsUpload instead, which costs no
-// wait.
+// NewLevelledTextureImage uploads a whole mip chain outside a frame. The
+// copy goes into the device's upload batch and costs no wait. Inside a
+// frame use NewLevelledImage with RecordLevelsUpload instead. To fill
+// the staging in place rather than from a packed slice, use
+// NewLevelledImage, StageUpload and UploadCommands.
 func (d *Device) NewLevelledTextureImage(extent vk.VkExtent2D, format vk.VkFormat, data []byte, levels []LevelCopy) (*Image, error) {
+	if len(data) == 0 {
+		return nil, errNoUpload
+	}
 	img, err := d.NewLevelledImage(extent, format, uint32(len(levels)))
 	if err != nil {
 		return nil, err
 	}
-	staging, err := d.NewBuffer(vk.VkDeviceSize(len(data)), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	staging, offset, dst, err := d.StageUpload(vk.VkDeviceSize(len(data)))
 	if err != nil {
 		img.Destroy()
 		return nil, err
 	}
-	defer staging.Destroy()
-	if err := staging.Write(0, data); err != nil {
+	copy(dst, data)
+	cb, err := d.UploadCommands()
+	if err != nil {
 		img.Destroy()
 		return nil, err
 	}
-	if err := d.OneShot(func(cb vk.VkCommandBuffer) { RecordLevelsUpload(cb, img, staging, levels) }); err != nil {
-		img.Destroy()
-		return nil, err
+	shifted := make([]LevelCopy, len(levels))
+	for i, lv := range levels {
+		lv.Offset += offset
+		shifted[i] = lv
 	}
+	RecordLevelsUpload(cb, img, staging, shifted)
+	img.NoteUpload()
 	return img, nil
 }

@@ -205,8 +205,8 @@ func (g *Graphics) newEnvironmentFrom(sample radianceSampler, opts EnvironmentOp
 
 // uploadCubemap creates a cube map and fills it. Inside a frame the copy
 // is recorded into the frame's command buffer from the staging arena,
-// before any pass; outside one it goes through a one-shot submission
-// that waits.
+// before any pass; outside one it goes into the device's upload batch,
+// which is submitted ahead of the next frame and costs no wait.
 func (g *Graphics) uploadCubemap(size uint32, format vk.VkFormat, texelBytes int, faces [][6][]byte) (*render.Image, error) {
 	if g.frame == nil {
 		return g.r.Device.NewCubemapImage(size, format, texelBytes, faces)

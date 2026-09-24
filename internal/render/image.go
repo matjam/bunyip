@@ -22,6 +22,7 @@ type Image struct {
 	Samples    vk.VkSampleCountFlagBits // one unless the image is a multisampled attachment
 	mem        allocation
 	dev        *Device
+	upload     uint64 // the last upload batch that writes the image, zero for none
 }
 
 // HasStencil reports whether a depth format carries a stencil aspect.
@@ -152,48 +153,58 @@ func RecordImageUpload(cb vk.VkCommandBuffer, img *Image, staging *Buffer, offse
 
 // NewTextureImage uploads RGBA pixels (row-major, 4 bytes per pixel) into a
 // sampled image, generates a full mip chain when mipmaps is set, and leaves
-// it in shader-read-only layout. It waits for the queue, so it is for
-// setup; inside a frame use NewSampledImage and RecordImageUpload.
+// it in shader-read-only layout. It is for uploads outside a frame: the
+// copy goes into the device's upload batch and costs no wait, and the
+// batch is submitted before the next frame or wait. Inside a frame use
+// NewSampledImage and RecordImageUpload.
 func (d *Device) NewTextureImage(extent vk.VkExtent2D, format vk.VkFormat, pixels []byte, mipmaps bool) (*Image, error) {
+	if len(pixels) == 0 {
+		return nil, errNoUpload
+	}
 	img, err := d.NewSampledImage(extent, format, mipmaps)
 	if err != nil {
 		return nil, err
 	}
-	staging, err := d.NewBuffer(vk.VkDeviceSize(len(pixels)), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	staging, offset, dst, err := d.StageUpload(vk.VkDeviceSize(len(pixels)))
 	if err != nil {
 		img.Destroy()
 		return nil, err
 	}
-	defer staging.Destroy()
-	if err := staging.Write(0, pixels); err != nil {
+	copy(dst, pixels)
+	cb, err := d.UploadCommands()
+	if err != nil {
 		img.Destroy()
 		return nil, err
 	}
-	if err := d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageUpload(cb, img, staging, 0) }); err != nil {
-		img.Destroy()
-		return nil, err
-	}
+	RecordImageUpload(cb, img, staging, offset)
+	img.NoteUpload()
 	return img, nil
 }
 
 // WriteImage replaces a rectangle of a sampled image's level 0 with RGBA
 // pixels (row-major, 4 bytes per pixel, w*h*4 bytes) and rebuilds any mip
-// chain. The image must not be in use by a frame in flight.
+// chain. It is for writes outside a frame: the copy goes into the
+// device's upload batch and costs no wait. Its barriers order it after
+// every earlier read of the image on the queue.
 func (d *Device) WriteImage(img *Image, x, y, w, h int, pixels []byte) error {
 	if len(pixels) < w*h*4 {
 		return fmt.Errorf("render: %d bytes for a %dx%d write", len(pixels), w, h)
 	}
-	staging, err := d.NewBuffer(vk.VkDeviceSize(w*h*4), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if w <= 0 || h <= 0 {
+		return errNoUpload
+	}
+	staging, offset, dst, err := d.StageUpload(vk.VkDeviceSize(w * h * 4))
 	if err != nil {
 		return err
 	}
-	defer staging.Destroy()
-	if err := staging.Write(0, pixels[:w*h*4]); err != nil {
+	copy(dst, pixels[:w*h*4])
+	cb, err := d.UploadCommands()
+	if err != nil {
 		return err
 	}
-	return d.OneShot(func(cb vk.VkCommandBuffer) { RecordImageWrite(cb, img, x, y, w, h, staging, 0) })
+	RecordImageWrite(cb, img, x, y, w, h, staging, offset)
+	img.NoteUpload()
+	return nil
 }
 
 // RecordImageWrite records a copy of a staging buffer, from offset, into
@@ -371,7 +382,14 @@ func (d *Device) ReadDepth(img *Image) ([]float32, error) {
 	return out, nil
 }
 
+// Destroy frees the image. An upload batch still writing it is submitted
+// or finished first, so an image destroyed straight after an upload
+// outside a frame is safe to free.
 func (i *Image) Destroy() {
+	if i.upload != 0 {
+		i.dev.settleUpload(i.upload)
+		i.upload = 0
+	}
 	if i.AttachView != 0 && i.AttachView != i.View {
 		vk.VkDestroyImageView(i.dev.Handle, i.AttachView, nil)
 	}

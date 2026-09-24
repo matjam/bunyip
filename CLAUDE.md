@@ -382,7 +382,17 @@ render pass, so text tests draw one frame.
   per-slot staging arena (`render.Staging`, taken with
   `Graphics.stage`) into the frame's command buffer before any pass,
   with the barriers that let a draw recorded later in the frame read
-  the data. Outside a frame they keep the `OneShot` path. Everything
+  the data. Outside a frame they go into the device's upload batch
+  (`internal/render/upload.go`): `Device.StageUpload` takes staging,
+  `UploadCommands` returns the batch's command buffer, and
+  `FlushUploads` submits it with a fence and no wait. `EndFrame` flushes
+  before it submits the frame, and `WaitIdle` and `OneShot` flush before
+  they wait, so the single queue runs every upload ahead of whatever
+  reads it; the batch ends in a barrier to all later commands, and its
+  staging is freed once its fence signals. `Image.Destroy` and
+  `Buffer.Destroy` settle a batch that still writes the object, so
+  destroying straight after an upload is safe. `OneShot` stays the
+  synchronous path for readbacks and bakes. Everything
   destroyed or replaced inside a frame goes on that slot's retire list
   through `Graphics.deferDestroy` and is freed at the slot's next
   `begin`, when its fence has been waited on; outside a frame

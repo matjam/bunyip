@@ -16,6 +16,7 @@ type Buffer struct {
 	Mapped unsafe.Pointer // nil unless host-visible
 	mem    allocation
 	dev    *Device
+	upload uint64 // the last upload batch that writes the buffer, zero for none
 }
 
 // NewBuffer creates and binds a buffer. Host-visible buffers are mapped.
@@ -68,7 +69,13 @@ func (b *Buffer) Bytes() []byte {
 	return unsafe.Slice((*byte)(b.Mapped), int(b.Size))
 }
 
+// Destroy frees the buffer. An upload batch still writing it is
+// submitted or finished first.
 func (b *Buffer) Destroy() {
+	if b.upload != 0 {
+		b.dev.settleUpload(b.upload)
+		b.upload = 0
+	}
 	if b.Handle != 0 {
 		vk.VkDestroyBuffer(b.dev.Handle, b.Handle, nil)
 		b.Handle = 0
@@ -99,30 +106,33 @@ func RecordBufferUpload(cb vk.VkCommandBuffer, dst, staging *Buffer, offset, siz
 }
 
 // NewDeviceLocalBuffer uploads data into device-local memory through a
-// staging buffer, for vertex and index data that never changes. It waits
-// for the queue, so it is for setup; inside a frame use NewDeviceBuffer
-// and RecordBufferUpload.
+// staging buffer, for vertex, index and storage data that never changes.
+// It is for uploads outside a frame: the copy goes into the device's
+// upload batch and costs no wait, and the batch is submitted before the
+// next frame or wait. Inside a frame use NewDeviceBuffer and
+// RecordBufferUpload.
 func (d *Device) NewDeviceLocalBuffer(data []byte, usage vk.VkBufferUsageFlags) (*Buffer, error) {
-	staging, err := d.NewBuffer(vk.VkDeviceSize(len(data)), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if len(data) == 0 {
+		return nil, errNoUpload
+	}
+	size := vk.VkDeviceSize(len(data))
+	buf, err := d.NewDeviceBuffer(size, usage)
 	if err != nil {
 		return nil, err
 	}
-	defer staging.Destroy()
-	if err := staging.Write(0, data); err != nil {
-		return nil, err
-	}
-	buf, err := d.NewDeviceBuffer(vk.VkDeviceSize(len(data)), usage)
-	if err != nil {
-		return nil, err
-	}
-	err = d.OneShot(func(cb vk.VkCommandBuffer) {
-		region := vk.VkBufferCopy{Size: vk.VkDeviceSize(len(data))}
-		vk.VkCmdCopyBuffer(cb, staging.Handle, buf.Handle, 1, &region)
-	})
+	staging, offset, dst, err := d.StageUpload(size)
 	if err != nil {
 		buf.Destroy()
 		return nil, err
 	}
+	copy(dst, data)
+	cb, err := d.UploadCommands()
+	if err != nil {
+		buf.Destroy()
+		return nil, err
+	}
+	d.up.region = vk.VkBufferCopy{SrcOffset: offset, Size: size}
+	vk.VkCmdCopyBuffer(cb, staging.Handle, buf.Handle, 1, &d.up.region)
+	buf.NoteUpload()
 	return buf, nil
 }
