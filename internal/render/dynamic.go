@@ -141,7 +141,9 @@ func (u *DynamicUniforms) NewArena() *Arena { return &Arena{align: int(u.Align)}
 // Reset empties the arena for a new frame.
 func (a *Arena) Reset() { a.data = a.data[:0] }
 
-// Add copies a block in and returns its offset.
+// Add copies a block in and returns its offset. The padding before the
+// block is zeroed. The storage grows by doubling and is kept across
+// Reset, so a frame of n blocks costs time linear in its size.
 func (a *Arena) Add(block []byte) (uint32, error) {
 	if len(block) == 0 {
 		return 0, fmt.Errorf("render: empty uniform block")
@@ -150,12 +152,13 @@ func (a *Arena) Add(block []byte) (uint32, error) {
 	if off+len(block) > 1<<30 {
 		return 0, fmt.Errorf("render: uniform arena full")
 	}
-	a.data = append(a.data[:len(a.data):len(a.data)], make([]byte, off-len(a.data))...)
+	a.data = append(a.data, make([]byte, off-len(a.data))...)
 	a.data = append(a.data, block...)
 	return uint32(off), nil
 }
 
-// Bytes is the frame's data so far.
+// Bytes is the frame's data so far. It shares the arena's storage, so it
+// is valid until the next Add or Reset; Write copies it at once.
 func (a *Arena) Bytes() []byte { return a.data }
 
 func (u *DynamicUniforms) Destroy() {
