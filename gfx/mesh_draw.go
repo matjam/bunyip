@@ -1212,6 +1212,10 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		// fits the near planes once the casters are known.
 		q.cascadeMats, _, _ = q.cascades(aspect)
 	}
+	q.volumes = q.volumes[:0]
+	if shadowing && len(q.batches) > 0 {
+		q.findShadowVolumes()
+	}
 	// A queue prepared again, once for each face of a probe bake, drops
 	// the batch items the last preparation added before walking the
 	// batches for this view.
@@ -1252,15 +1256,21 @@ func (g *Graphics) prepareDraws(q *drawQueue, slot int, scene *render.Image, asp
 		// Fur shells are drawn from the inside out and read as one surface
 		// only in that order, so they keep the sorted path.
 		d.oit = independent && d.blended && d.shell == 0 && !fm.transmissive && d.shader.orderIndependent()
-		if d.cullable {
-			tests++
-		}
-		d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
-		if occluding && d.cullable && !d.culled && g.occ.hides(viewProj, d.centre, d.radius) {
-			d.culled, occluded = true, occluded+1
-		}
-		if d.culled {
-			culled++
+		if d.shadowOnly {
+			// A batch item under a node the camera does not see; the walk
+			// counted it culled already.
+			d.culled = true
+		} else {
+			if d.cullable {
+				tests++
+			}
+			d.culled = d.cullable && !frustum.ContainsSphere(d.centre, d.radius)
+			if occluding && d.cullable && !d.culled && g.occ.hides(viewProj, d.centre, d.radius) {
+				d.culled, occluded = true, occluded+1
+			}
+			if d.culled {
+				culled++
+			}
 		}
 		if !d.blended { // opaque draws are the shadow pass's casters
 			if along := -lightDir.Dot(d.centre) + d.radius; !q.hasCasters || along > q.casterAlong {

@@ -38,6 +38,10 @@ type drawQueue struct {
 	casters     shadowCasters // the opaque draws' spheres and each shadow map's draws
 	cascadeMats [shadowCascades]lin.Mat4
 	shadow      shadowLights // the frame's shadowed spot and point lights
+	// volumes is what each of the frame's shadow maps can take casters
+	// from, which static batches walk their hidden subtrees against.
+	volumes    []shadowVolume
+	volumesArr [shadowCascades + maxSpotShadows + maxPointShadows]shadowVolume
 	// jitter is this frame's sub-pixel projection offset in clip units,
 	// zero unless temporal anti-aliasing is on, and projJ, viewProjJ and
 	// invViewProjJ are the matrices the scene pass rasterises with once it

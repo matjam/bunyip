@@ -513,6 +513,9 @@ type meshDraw struct {
 	skinned  bool
 	cullable bool
 	bounded  bool // centre and radius already hold the mesh's sphere under the model, from a static batch
+	// shadowOnly is a static batch item the camera does not see, queued
+	// only for the shadow maps it may reach; it is always culled.
+	shadowOnly bool
 }
 
 // moved reports whether the game gave the draw a previous transform that

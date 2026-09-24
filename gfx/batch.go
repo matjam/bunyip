@@ -20,7 +20,9 @@ type BatchItem struct {
 // queues only the items that survive, so a level's ten thousand rocks,
 // crates and lamp posts cost a few dozen box tests instead of ten
 // thousand. Items keep their own meshes and materials, so draws that
-// share both are still merged into one instanced call.
+// share both are still merged into one instanced call. Items the camera
+// cannot see still cast shadows: a subtree the camera rejects is walked
+// again against the frame's shadow maps.
 //
 // A batch does not own its meshes or textures; destroy those as usual.
 // Its meshes, materials and shader belong to the Graphics that built it;
@@ -224,7 +226,9 @@ func (b *StaticBatch) Bounds() (min, max lin.Vec3) {
 // hierarchy is walked when the frame's draws are prepared, so occluders
 // added after this call still cull it, and the items that survive are
 // ordinary draws: instanced together, sorted, shadowed and lit like any
-// others.
+// others. Items the camera cannot see but a shadow map can are queued
+// for the shadow pass alone, so they cast shadows as culled DrawMesh
+// draws do.
 func (g *Graphics) DrawBatch(b *StaticBatch) {
 	if b == nil || len(b.items) == 0 {
 		return
@@ -237,7 +241,11 @@ func (g *Graphics) DrawBatch(b *StaticBatch) {
 
 // expandBatches walks each queued batch's hierarchy against the frustum
 // and the occlusion buffer and appends the surviving items to the
-// queue's draws, where the ordinary per-draw culling then sees them.
+// queue's draws, where the ordinary per-draw culling then sees them. A
+// subtree the camera does not see is walked again against the frame's
+// shadow volumes (q.volumes), and the items that may reach one are
+// queued as culled draws, which only the shadow pass records, so a
+// batch casts the same shadows as its items drawn one by one.
 func (g *Graphics) expandBatches(q *drawQueue, frustum Frustum, viewProj lin.Mat4, occluding bool) {
 	for _, b := range q.batches {
 		g.walkBatch(q, b, frustum, viewProj, occluding, 0)
@@ -251,6 +259,7 @@ func (g *Graphics) walkBatch(q *drawQueue, b *StaticBatch, frustum Frustum, view
 	g.stats.CullTests++
 	if !frustum.ContainsBox(n.lo, n.hi) {
 		g.stats.Culled += int(n.total)
+		b.walkShadow(q, at, 1<<len(q.volumes)-1)
 		return
 	}
 	if occluding {
@@ -258,6 +267,7 @@ func (g *Graphics) walkBatch(q *drawQueue, b *StaticBatch, frustum Frustum, view
 		if g.occ.hides(viewProj, c, n.hi.Sub(c).Len()) {
 			g.stats.Culled += int(n.total)
 			g.stats.Occluded += int(n.total)
+			b.walkShadow(q, at, 1<<len(q.volumes)-1)
 			return
 		}
 	}
@@ -266,12 +276,36 @@ func (g *Graphics) walkBatch(q *drawQueue, b *StaticBatch, frustum Frustum, view
 		g.walkBatch(q, b, frustum, viewProj, occluding, n.right)
 		return
 	}
-	b.queueItems(q, n.start, n.start+n.total)
+	b.queueItems(q, n.start, n.start+n.total, false)
+}
+
+// walkShadow visits a node the camera does not see, keeping in live the
+// shadow volumes its box may reach, and queues a leaf's items as culled
+// draws when any remain. The shadow pass then tests each item's sphere
+// against each map as it does every other culled draw.
+func (b *StaticBatch) walkShadow(q *drawQueue, at int32, live uint32) {
+	n := &b.nodes[at]
+	for v := range q.volumes {
+		if live&(1<<v) != 0 && !q.volumes[v].touches(n.lo, n.hi) {
+			live &^= 1 << v
+		}
+	}
+	if live == 0 {
+		return
+	}
+	if n.right != 0 {
+		b.walkShadow(q, at+1, live)
+		b.walkShadow(q, n.right, live)
+		return
+	}
+	b.queueItems(q, n.start, n.start+n.total, true)
 }
 
 // queueItems appends items[from:to] to the queue's draws, with their
-// cached bounds and their materials in the queue's table.
-func (b *StaticBatch) queueItems(q *drawQueue, from, to int32) {
+// cached bounds and their materials in the queue's table. shadowOnly
+// queues them as culled draws for the shadow pass alone, and leaves out
+// blended items, which cast no shadow.
+func (b *StaticBatch) queueItems(q *drawQueue, from, to int32, shadowOnly bool) {
 	if b.mapQueue != q || b.mapFrame != q.frame {
 		b.mapQueue, b.mapFrame = q, q.frame
 		clear(b.mapped)
@@ -289,11 +323,71 @@ func (b *StaticBatch) queueItems(q *drawQueue, from, to int32) {
 			m = uint32(at) + 1
 			b.mapped[it.mat] = m
 		}
+		if shadowOnly && q.mats[m-1].blended {
+			continue
+		}
 		q.draws = append(q.draws, meshDraw{
 			mesh: it.mesh, shader: it.shader, model: it.model,
-			centre: it.centre, radius: it.radius, bounded: true,
+			centre: it.centre, radius: it.radius, bounded: true, shadowOnly: shadowOnly,
 			mat: m - 1, uniform: it.shader.uniformOffset(), // the arena moves every frame
 			prev: -1, morph: -1,
 		})
+	}
+}
+
+// shadowVolume is the part of the world one shadow map can take casters
+// from, for walking a static batch's hierarchy: a cascade's frustum
+// without its near plane, a spot light's frustum within its range, or a
+// point light's range sphere.
+type shadowVolume struct {
+	f          Frustum
+	frustum    bool // f bounds the volume
+	ignoreNear bool
+	sphere     lin.Vec4 // xyz the light, w its range; a negative w for none
+}
+
+// touches reports whether a box may reach the volume. It errs towards
+// yes, which costs a culled draw that the shadow pass then culls.
+func (v *shadowVolume) touches(lo, hi lin.Vec3) bool {
+	if v.frustum {
+		for i, p := range v.f.planes {
+			if v.ignoreNear && i == nearPlane {
+				continue
+			}
+			n := p.Vec3()
+			corner := lin.V3(pick(n.X >= 0, lo.X, hi.X), pick(n.Y >= 0, lo.Y, hi.Y), pick(n.Z >= 0, lo.Z, hi.Z))
+			if n.Dot(corner)+p.W < -1e-4 {
+				return false
+			}
+		}
+	}
+	if s := v.sphere; s.W >= 0 {
+		c := s.Vec3()
+		nearest := lin.V3(min(max(c.X, lo.X), hi.X), min(max(c.Y, lo.Y), hi.Y), min(max(c.Z, lo.Z), hi.Z))
+		r := s.W*(1+1e-5) + 1e-4
+		if d := nearest.Sub(c); d.Dot(d) > r*r {
+			return false
+		}
+	}
+	return true
+}
+
+// findShadowVolumes fills q.volumes with the frame's shadow maps'
+// volumes: the cascades when the light casts shadows, whose matrices
+// must be current, and each shadowed spot and point light.
+func (q *drawQueue) findShadowVolumes() {
+	q.volumes = q.volumesArr[:0]
+	if q.light.Shadows {
+		for k := range shadowCascades {
+			q.volumes = append(q.volumes, shadowVolume{f: FrustumOf(q.cascadeMats[k]), frustum: true, ignoreNear: true, sphere: lin.V4(0, 0, 0, -1)})
+		}
+	}
+	for k, li := range q.shadow.spots {
+		p := &q.points[li]
+		q.volumes = append(q.volumes, shadowVolume{f: FrustumOf(q.shadow.spotMats[k]), frustum: true, sphere: p.pos.Vec4(max(p.rng, 0.5))})
+	}
+	for _, li := range q.shadow.points {
+		p := &q.points[li]
+		q.volumes = append(q.volumes, shadowVolume{sphere: p.pos.Vec4(max(p.rng, 0.5))})
 	}
 }
