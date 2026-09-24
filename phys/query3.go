@@ -212,7 +212,7 @@ func shapeCast3(w *ecs.World, s Shape3, pos lin.Vec3, rot mat3, delta lin.Vec3, 
 		for i := range parts {
 			a := &parts[i].conv
 			if m, ok := p.c.Shape.(MeshShape); ok {
-				if t, n, pt, hit := sweepMesh(m, p.pos, p.rot, a, parts[i].lo, parts[i].hi, delta); hit && t < best.Distance {
+				if t, n, pt, hit := sweepMesh(&st.qs, m, p.pos, p.rot, a, parts[i].lo, parts[i].hi, delta); hit && t < best.Distance {
 					best, found = Hit3{Entity: p.e, Point: pt, Normal: n, Distance: t}, true
 				}
 				continue
@@ -267,7 +267,8 @@ func RaycastAll3(w *ecs.World, r Ray3, mask uint32) []Hit3 {
 // are sorted among themselves, not against what out already held.
 func RaycastAll3Into(out []Hit3, w *ecs.World, r Ray3, mask uint32) []Hit3 {
 	start := len(out)
-	stateOf3(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
+	st := stateOf3(w)
+	st.colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
 		if c.Shape == nil || c.Trigger || !(Layers{Mask: mask}).collides(c.Layers) {
 			return
 		}
@@ -277,7 +278,7 @@ func RaycastAll3Into(out []Hit3, w *ecs.World, r Ray3, mask uint32) []Hit3 {
 		if !raySlab3(r, lo, hi, 1) {
 			return
 		}
-		if tt, n, ok := rayShape3(r, c.Shape, pos, rot); ok {
+		if tt, n, ok := rayShape3(&st.qs, r, c.Shape, pos, rot); ok {
 			out = append(out, Hit3{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
 		}
 	})

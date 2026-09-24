@@ -229,8 +229,9 @@ func Nearest2(w *ecs.World, point lin.Vec2, radius float32, mask uint32) (Hit2, 
 	r := lin.V2(radius, radius)
 	best := Hit2{Distance: float32(math.Inf(1))}
 	found := false
+	st := stateOf2(w)
 	eachCollider2(w, point.Sub(r), point.Add(r), mask, false, func(p placed2) {
-		q, d := closestPoint2(p.c.Shape, p.pos, p.rot, point)
+		q, d := closestPoint2(&st.qs, p.c.Shape, p.pos, p.rot, point)
 		if d <= radius && d < best.Distance {
 			best, found = Hit2{Entity: p.e, Point: q, Normal: point.Sub(q).Norm(), Distance: d}, true
 		}
@@ -251,7 +252,8 @@ func RaycastAll2(w *ecs.World, r Ray2, mask uint32) []Hit2 {
 // are sorted among themselves, not against what out already held.
 func RaycastAll2Into(out []Hit2, w *ecs.World, r Ray2, mask uint32) []Hit2 {
 	start := len(out)
-	stateOf2(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
+	st := stateOf2(w)
+	st.colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
 		if c.Shape == nil || c.Trigger || !(Layers{Mask: mask}).collides(c.Layers) {
 			return
 		}
@@ -261,7 +263,7 @@ func RaycastAll2Into(out []Hit2, w *ecs.World, r Ray2, mask uint32) []Hit2 {
 		if !raySlab2(r, lo, hi, 1) {
 			return
 		}
-		if tt, n, ok := rayShape2(r, c.Shape, pos, t.Rotation); ok {
+		if tt, n, ok := rayShape2(&st.qs, r, c.Shape, pos, t.Rotation); ok {
 			out = append(out, Hit2{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt})
 		}
 	})

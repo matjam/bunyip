@@ -286,7 +286,9 @@ type Ray2 struct {
 
 // rayShape2 intersects a ray with a placed shape, returning the nearest
 // t along the ray in [0, 1] (for Dir as the full extent) and the normal.
-func rayShape2(r Ray2, s Shape2, pos lin.Vec2, rot float32) (t float32, normal lin.Vec2, ok bool) {
+// A polygon is placed in the scratch's ptsA and normA, so casting at one
+// allocates nothing once they have grown.
+func rayShape2(sc *scratch2, r Ray2, s Shape2, pos lin.Vec2, rot float32) (t float32, normal lin.Vec2, ok bool) {
 	switch sh := s.(type) {
 	case Circle:
 		m := r.Origin.Sub(pos)
@@ -304,21 +306,24 @@ func rayShape2(r Ray2, s Shape2, pos lin.Vec2, rot float32) (t float32, normal l
 		hit := r.Origin.Add(r.Dir.Mul(t))
 		return t, hit.Sub(pos).Norm(), true
 	case Box2:
-		var buf [4]lin.Vec2
-		return rayPolygon(r, worldPolygon(buf[:0], sh.polygon(), pos, rot))
+		sc.ptsA = worldPolygon(sc.ptsA[:0], sh.polygon(), pos, rot)
+		return rayPolygon(sc, r, sc.ptsA)
 	case Polygon2:
-		return rayPolygon(r, worldPolygon(nil, sh, pos, rot))
+		sc.ptsA = worldPolygon(sc.ptsA[:0], sh, pos, rot)
+		return rayPolygon(sc, r, sc.ptsA)
 	case Capsule2:
 		a, b := sh.segment(pos, rot)
-		return rayCapsule2(r, a, b, sh.Radius)
+		return rayCapsule2(sc, r, a, b, sh.Radius)
 	case Edge2:
 		cs, sn := cosSin(rot)
 		return raySegment(r, rotate2(sh.A, cs, sn).Add(pos), rotate2(sh.B, cs, sn).Add(pos))
 	case Chain2:
 		best, found := float32(math.Inf(1)), false
 		var bestN lin.Vec2
-		for _, seg := range sh.segments(pos, rot) {
-			if t, n, ok := raySegment(r, seg[0], seg[1]); ok && t < best {
+		cs, sn := cosSin(rot)
+		for i := range sh.segmentCount() {
+			a, b := sh.segment(i, pos, cs, sn)
+			if t, n, ok := raySegment(r, a, b); ok && t < best {
 				best, bestN, found = t, n, true
 			}
 		}
@@ -327,9 +332,11 @@ func rayShape2(r Ray2, s Shape2, pos lin.Vec2, rot float32) (t float32, normal l
 	return 0, lin.Vec2{}, false
 }
 
-func rayPolygon(r Ray2, poly []lin.Vec2) (float32, lin.Vec2, bool) {
-	var nbuf [8]lin.Vec2
-	normals := polygonNormals(nbuf[:0], poly)
+// rayPolygon casts a ray at a world polygon, with the edge normals in
+// the scratch's normA.
+func rayPolygon(sc *scratch2, r Ray2, poly []lin.Vec2) (float32, lin.Vec2, bool) {
+	sc.normA = polygonNormals(sc.normA[:0], poly)
+	normals := sc.normA
 	tEnter, tExit := float32(0), float32(1)
 	var enterNormal lin.Vec2
 	for i, n := range normals {

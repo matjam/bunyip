@@ -423,7 +423,9 @@ type Ray3 struct {
 	Origin, Dir lin.Vec3 // Dir need not be unit length
 }
 
-func rayShape3(r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.Vec3, ok bool) {
+// rayShape3 intersects a ray with a placed shape. A capsule or hull is
+// placed in the scratch's convA, so casting at one allocates nothing.
+func rayShape3(sc *scratch3, r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.Vec3, ok bool) {
 	switch sh := s.(type) {
 	case Sphere:
 		m := r.Origin.Sub(pos)
@@ -494,14 +496,15 @@ func rayShape3(r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.
 				continue
 			}
 			pp, pr := p.place(pos, rot)
-			if t, n, ok := rayShape3(r, p.Shape, pp, pr); ok && t < best {
+			if t, n, ok := rayShape3(sc, r, p.Shape, pp, pr); ok && t < best {
 				best, bestN, found = t, n, true
 			}
 		}
 		return best, bestN, found
 	}
-	if c, _, ok := placeConvex(nil, s, pos, rot); ok {
-		return rayConvex(r, &c)
+	sc.convA, sc.hullA, ok = placeConvex(sc.hullA, s, pos, rot)
+	if ok {
+		return rayConvex(r, &sc.convA)
 	}
 	return 0, lin.Vec3{}, false
 }

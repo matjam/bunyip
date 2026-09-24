@@ -717,7 +717,8 @@ func Raycast2(w *ecs.World, r Ray2, mask uint32) (Hit2, bool) {
 func raycast2(w *ecs.World, r Ray2, mask uint32, exclude ecs.Entity) (Hit2, bool) {
 	best := Hit2{Distance: float32(math.Inf(1))}
 	found := false
-	stateOf2(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
+	st := stateOf2(w)
+	st.colliders.Each(func(e ecs.Entity, t *gfx.Transform2, c *Collider2) {
 		if c.Shape == nil || c.Trigger || e == exclude || !(Layers{Mask: mask}).collides(c.Layers) {
 			return
 		}
@@ -727,7 +728,7 @@ func raycast2(w *ecs.World, r Ray2, mask uint32, exclude ecs.Entity) (Hit2, bool
 		if !raySlab2(r, lo, hi, min(best.Distance, 1)) {
 			return
 		}
-		if tt, n, ok := rayShape2(r, c.Shape, pos, t.Rotation); ok && tt < best.Distance {
+		if tt, n, ok := rayShape2(&st.qs, r, c.Shape, pos, t.Rotation); ok && tt < best.Distance {
 			best = Hit2{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
 			found = true
 		}

@@ -267,15 +267,16 @@ func rayMesh(r Ray3, m MeshShape, pos lin.Vec3, rot mat3) (float32, lin.Vec3, bo
 }
 
 // sweepMesh moves a convex shape by delta and finds the first triangle
-// it touches.
-func sweepMesh(m MeshShape, pos lin.Vec3, rot mat3, a *convex, slo, shi, delta lin.Vec3) (t float32, normal, point lin.Vec3, ok bool) {
+// it touches. Each triangle is placed in the scratch's convB, because a
+// placed convex handed on by pointer escapes; a must not be that field.
+func sweepMesh(sc *scratch3, m MeshShape, pos lin.Vec3, rot mat3, a *convex, slo, shi, delta lin.Vec3) (t float32, normal, point lin.Vec3, ok bool) {
 	end0, end1 := slo.Add(delta), shi.Add(delta)
 	lo, hi := localBounds(slo.Min(end0), shi.Max(end1), pos, rot)
 	best := float32(math.Inf(1))
 	m.treeOf().query(lo, hi, func(ti int) {
 		p, q, r := m.triangle(ti)
-		tri := triangleConvex(pos.Add(rot.mulVec(p)), pos.Add(rot.mulVec(q)), pos.Add(rot.mulVec(r)))
-		if tt, n, pt, hit := sweepConvex(a, &tri, delta); hit && tt < best {
+		sc.convB = triangleConvex(pos.Add(rot.mulVec(p)), pos.Add(rot.mulVec(q)), pos.Add(rot.mulVec(r)))
+		if tt, n, pt, hit := sweepConvex(a, &sc.convB, delta); hit && tt < best {
 			best, normal, point, ok = tt, n, pt, true
 		}
 	})

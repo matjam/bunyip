@@ -586,7 +586,7 @@ func (s *state3) sweepDynamic(e *entry3, h float32) {
 // collider, taking that collider's pieces from the cache.
 func (s *state3) sweepAgainst(parts []convexPart, o *entry3, delta lin.Vec3) (float32, bool) {
 	if m, ok := o.c.Shape.(MeshShape); ok {
-		return sweepMeshParts(parts, m, o.pos, o.rot, delta)
+		return sweepMeshParts(&s.ss, parts, m, o.pos, o.rot, delta)
 	}
 	return sweepAgainstParts(parts, s.shapes.parts(o.e, o.c.Shape, o.pos, o.rot, o.lo, o.hi), delta)
 }
@@ -612,10 +612,10 @@ func spheresMeet(dd, dv, vv, radius float32) bool {
 }
 
 // sweepMeshParts sweeps convex pieces against a placed triangle mesh.
-func sweepMeshParts(parts []convexPart, m MeshShape, pos lin.Vec3, rot mat3, delta lin.Vec3) (float32, bool) {
+func sweepMeshParts(sc *scratch3, parts []convexPart, m MeshShape, pos lin.Vec3, rot mat3, delta lin.Vec3) (float32, bool) {
 	best, found := float32(math.Inf(1)), false
 	for i := range parts {
-		if t, _, _, hit := sweepMesh(m, pos, rot, &parts[i].conv, parts[i].lo, parts[i].hi, delta); hit && t < best {
+		if t, _, _, hit := sweepMesh(sc, m, pos, rot, &parts[i].conv, parts[i].lo, parts[i].hi, delta); hit && t < best {
 			best, found = t, true
 		}
 	}
@@ -807,7 +807,8 @@ func Raycast3(w *ecs.World, r Ray3, mask uint32) (Hit3, bool) {
 func raycast3(w *ecs.World, r Ray3, mask uint32, exclude ecs.Entity) (Hit3, bool) {
 	best := Hit3{Distance: float32(math.Inf(1))}
 	found := false
-	stateOf3(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
+	st := stateOf3(w)
+	st.colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
 		if c.Shape == nil || c.Trigger || e == exclude || !(Layers{Mask: mask}).collides(c.Layers) {
 			return
 		}
@@ -817,7 +818,7 @@ func raycast3(w *ecs.World, r Ray3, mask uint32, exclude ecs.Entity) (Hit3, bool
 		if !raySlab3(r, lo, hi, min(best.Distance, 1)) {
 			return
 		}
-		if tt, n, ok := rayShape3(r, c.Shape, pos, rot); ok && tt < best.Distance {
+		if tt, n, ok := rayShape3(&st.qs, r, c.Shape, pos, rot); ok && tt < best.Distance {
 			best = Hit3{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
 			found = true
 		}
