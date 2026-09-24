@@ -69,9 +69,19 @@ func (q Quat) Slerp(p Quat, t float32) Quat {
 	return Quat{a*q.X + b*p.X, a*q.Y + b*p.Y, a*q.Z + b*p.Z, a*q.W + b*p.W}
 }
 
-// TRS composes translation, rotation and scale into one matrix.
+// TRS composes translation, rotation and scale into one matrix: the
+// product Translate(t) × r.Mat4() × Scale(s), which scales first, then
+// rotates, then translates. It writes the product's entries directly
+// instead of multiplying the three matrices, and gives the same values
+// apart from the sign of zero entries.
 func TRS(t Vec3, r Quat, s Vec3) Mat4 {
-	return Translate(t).Mul(r.Mat4()).Mul(Scale(s))
+	x, y, z, w := r.X, r.Y, r.Z, r.W
+	return Mat4{
+		(1 - 2*(y*y+z*z)) * s.X, 2 * (x*y + z*w) * s.X, 2 * (x*z - y*w) * s.X, 0,
+		2 * (x*y - z*w) * s.Y, (1 - 2*(x*x+z*z)) * s.Y, 2 * (y*z + x*w) * s.Y, 0,
+		2 * (x*z + y*w) * s.Z, 2 * (y*z - x*w) * s.Z, (1 - 2*(x*x+y*y)) * s.Z, 0,
+		t.X, t.Y, t.Z, 1,
+	}
 }
 
 // QuatFromMat4 extracts the rotation of an orthonormal matrix.

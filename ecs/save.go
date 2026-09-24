@@ -16,11 +16,14 @@ import (
 // The registry maps component and resource types to the names save
 // files and prefab files use, so a file written by one build of the
 // game loads in the next.
+// It also keeps each type's typed column constructor, so SpawnWith, Load
+// and prefabs store a registered type in typed columns from the start.
 var registry = struct {
 	sync.RWMutex
-	byName map[string]reflect.Type
-	byType map[reflect.Type]string
-}{byName: map[string]reflect.Type{}, byType: map[reflect.Type]string{}}
+	byName  map[string]reflect.Type
+	byType  map[reflect.Type]string
+	columns map[reflect.Type]func() column
+}{byName: map[string]reflect.Type{}, byType: map[reflect.Type]string{}, columns: map[reflect.Type]func() column{}}
 
 func init() {
 	Register[gfx.Transform]("gfx.Transform")
@@ -33,7 +36,9 @@ func init() {
 // type under the same name again does nothing; binding a name or a type
 // that is already bound to something else panics. gfx.Transform,
 // gfx.Transform2 and ecs.Name are registered under those names by
-// default.
+// default. A registered type is also stored in typed columns when it
+// first reaches a world through SpawnWith, Load or a prefab, so spawning
+// it that way costs the same as through Add.
 func Register[T any](name string) {
 	t := typeOf[T]()
 	if t == nil || t.Kind() == reflect.Pointer {
@@ -52,6 +57,16 @@ func Register[T any](name string) {
 	}
 	registry.byName[name] = t
 	registry.byType[t] = name
+	registry.columns[t] = newTypedColumn[T]
+}
+
+// registeredColumn returns the typed column constructor of a type named
+// with Register.
+func registeredColumn(t reflect.Type) (func() column, bool) {
+	registry.RLock()
+	defer registry.RUnlock()
+	f, ok := registry.columns[t]
+	return f, ok
 }
 
 func nameOf(t reflect.Type) (string, bool) {

@@ -257,7 +257,7 @@ func walkMatrices(w *World, c *worldMatrices, e Entity, parent lin.Mat4, tid, ci
 	if col := a.column(tid); col >= 0 {
 		local = a.columns[col].(*typedColumn[gfx.Transform]).data[meta.row].Matrix()
 	}
-	m := parent.Mul(local)
+	m := parent.MulAffine(local) // transforms and identity are affine
 	i := int(e.id) - 1
 	c.mats[i], c.gens[i], c.has[i] = m, e.gen, true
 	col := a.column(cid)
@@ -290,7 +290,7 @@ func WorldMatrix(w *World, e Entity) lin.Mat4 {
 		local = t.Matrix()
 	}
 	if p, ok := ParentOf(w, e); ok {
-		return WorldMatrix(w, p).Mul(local)
+		return WorldMatrix(w, p).MulAffine(local)
 	}
 	return local
 }
@@ -306,12 +306,21 @@ func WorldMatrix(w *World, e Entity) lin.Mat4 {
 // command buffer or call Apply on it inside fn. Use a separate Commands
 // value when commands need to survive beyond one closure.
 func (w *World) Defer(fn func(*Commands)) {
-	var cmd Commands
+	// Buffers are reused across scopes, one per nesting level, so a
+	// scope that records thousands of commands does not grow a fresh
+	// buffer every time.
+	var cmd *Commands
+	if n := len(w.cmdFree); n > 0 {
+		cmd = w.cmdFree[n-1]
+		w.cmdFree = w.cmdFree[:n-1]
+	} else {
+		cmd = &Commands{}
+	}
 	defer func() {
-		clear(cmd.ops[:cap(cmd.ops)])
-		cmd.ops = nil
+		cmd.reset()
+		w.cmdFree = append(w.cmdFree, cmd)
 	}()
-	fn(&cmd)
+	fn(cmd)
 	cmd.Apply(w)
 }
 
@@ -319,46 +328,88 @@ func (w *World) Defer(fn func(*Commands)) {
 // code running inside a query that must not change other entities'
 // tables mid-iteration. The zero value is ready to use. Component values
 // passed to Spawn and Add are retained until Apply, not deep-copied;
-// do not mutate their referenced storage or argument slices before then.
+// do not mutate their referenced storage before then. The argument
+// slice itself is copied, so it may be reused at once.
 // World.Defer manages a command buffer for a single closure.
 type Commands struct {
-	ops []func(w *World)
+	ops []command
+	// vals holds the component values of the recorded Spawn and Add
+	// commands back to back, so recording one copies its values here
+	// instead of keeping the caller's argument slice.
+	vals []any
 }
+
+// command is one recorded change. Spawn, Despawn and Add are plain
+// records over vals; Remove, which needs its type parameter, is a
+// closure.
+type command struct {
+	kind   commandKind
+	e      Entity
+	lo, hi int
+	fn     func(w *World)
+}
+
+type commandKind uint8
+
+const (
+	cmdSpawn commandKind = iota
+	cmdDespawn
+	cmdAdd
+	cmdFunc
+)
 
 // Spawn records creating an entity with components.
 func (c *Commands) Spawn(comps ...any) {
-	c.ops = append(c.ops, func(w *World) { w.SpawnWith(comps...) })
+	lo := len(c.vals)
+	c.vals = append(c.vals, comps...)
+	c.ops = append(c.ops, command{kind: cmdSpawn, lo: lo, hi: len(c.vals)})
 }
 
 // Despawn records removing an entity.
 func (c *Commands) Despawn(e Entity) {
-	c.ops = append(c.ops, func(w *World) { w.Despawn(e) })
+	c.ops = append(c.ops, command{kind: cmdDespawn, e: e})
 }
 
 // Add records attaching component values to an entity.
 func (c *Commands) Add(e Entity, comps ...any) {
-	c.ops = append(c.ops, func(w *World) {
-		if !w.Alive(e) {
-			return
-		}
-		for _, comp := range comps {
-			addAny(w, e, comp)
-		}
-	})
+	lo := len(c.vals)
+	c.vals = append(c.vals, comps...)
+	c.ops = append(c.ops, command{kind: cmdAdd, e: e, lo: lo, hi: len(c.vals)})
 }
 
 // Remove records detaching a T from an entity, the deferred form of
 // World.Remove. Commands apply when their scope finishes or Apply is called.
 func (c *Commands) Remove[T any](e Entity) {
-	c.ops = append(c.ops, func(w *World) { w.Remove[T](e) })
+	c.ops = append(c.ops, command{kind: cmdFunc, fn: func(w *World) { w.Remove[T](e) }})
 }
 
 // Apply runs the recorded changes in order and clears the buffer.
 func (c *Commands) Apply(w *World) {
 	for _, op := range c.ops {
-		op(w)
+		switch op.kind {
+		case cmdSpawn:
+			w.SpawnWith(c.vals[op.lo:op.hi]...)
+		case cmdDespawn:
+			w.Despawn(op.e)
+		case cmdAdd:
+			if w.Alive(op.e) {
+				for _, comp := range c.vals[op.lo:op.hi] {
+					addAny(w, op.e, comp)
+				}
+			}
+		case cmdFunc:
+			op.fn(w)
+		}
 	}
-	c.ops = c.ops[:0]
+	c.reset()
+}
+
+// reset empties the buffer and drops its references to component values,
+// keeping the storage for the next commands.
+func (c *Commands) reset() {
+	clear(c.ops)
+	clear(c.vals)
+	c.ops, c.vals = c.ops[:0], c.vals[:0]
 }
 
 // Len is the number of pending commands.

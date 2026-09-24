@@ -101,6 +101,24 @@ type game struct {
 	dragging bool
 	shotDone bool
 	stars    []lin.Vec3 // unit directions of a background starfield
+	simTime  float64    // simulation seconds elapsed, for the path's age
+	path     pathCache
+}
+
+// pathCache holds the ship's predicted path between the frames that
+// recompute it. Predicting integrates the ship minutes ahead, which costs
+// more than drawing the whole frame, and the path barely changes from
+// one frame to the next, so it is recomputed only when the ship has
+// moved one dot along it or an input to the prediction has changed.
+type pathCache struct {
+	points  []lin.Vec3
+	at      float64    // simTime when predicted
+	primary ecs.Entity // the body it is drawn around
+	anchor  orbit.Vec3 // where that body was then, less the origin
+	thrust  orbit.Vec3 // the thrust it assumed
+	warp    float32    // the time warp it assumed
+	horizon float64    // how far ahead it reaches
+	stale   bool       // recompute on the next frame regardless
 }
 
 func (g *game) Init(ctx *engine.Context) error {
@@ -196,6 +214,7 @@ func (g *game) Update(ctx *engine.Context) error {
 	if g.shot != "" && !g.shotDone && (g.seconds == 0 || ctx.Time >= g.seconds/2) {
 		ctx.Screenshot(g.shot)
 		g.shotDone = true
+		g.path.stale = true // a screenshot shows a freshly predicted path
 	}
 	if in.KeyPressed(input.KeyTab) {
 		g.focused = (g.focused + 1) % len(g.focus)
@@ -241,6 +260,7 @@ func (g *game) Update(ctx *engine.Context) error {
 		settings.Origin = fb.Pos
 	}
 	w.Update(ctx.Delta)
+	g.simTime += ctx.Delta * settings.TimeScale
 	return nil
 }
 
@@ -250,6 +270,38 @@ func (g *game) camera() gfx.Camera {
 	cp, sp := float32(math.Cos(float64(g.pitch))), float32(math.Sin(float64(g.pitch)))
 	cy, sy := float32(math.Cos(float64(g.yaw))), float32(math.Sin(float64(g.yaw)))
 	return gfx.Camera{Position: lin.V3(g.dist*cp*cy, g.dist*cp*sy, g.dist*sp), Up: lin.V3(0, 0, 1), Near: 0.05, Far: 8000}
+}
+
+// predictPath refreshes the cached path when it is due and returns how
+// far to move its points so they sit around the primary where it is now.
+// A path recomputed this frame needs no move.
+func (g *game) predictPath(primary ecs.Entity, horizon float64) lin.Vec3 {
+	w := g.world
+	settings := w.Resource[orbit.Settings]()
+	var anchor orbit.Vec3
+	if pb, ok := w.Get[orbit.Body](primary); ok {
+		anchor = pb.Pos
+	}
+	anchor = anchor.Sub(settings.Origin)
+	var thrust orbit.Vec3
+	if t, ok := w.Get[orbit.Thrust](g.ship); ok {
+		thrust = t.Accel
+	}
+	c := &g.path
+	// The horizon follows the orbit's period, which drifts a little
+	// every frame; only a real change of orbit counts.
+	due := c.points == nil || c.stale || primary != c.primary || thrust != c.thrust || g.warp != c.warp ||
+		math.Abs(horizon-c.horizon) > 0.05*c.horizon || g.simTime-c.at >= c.horizon/90
+	if due {
+		c.points = orbit.AppendPredictRelative(c.points[:0], w, g.ship, primary, horizon, 90)
+		c.at, c.primary, c.anchor, c.thrust, c.warp, c.horizon, c.stale = g.simTime, primary, anchor, thrust, g.warp, horizon, false
+		return lin.Vec3{}
+	}
+	unit := settings.Scale
+	if unit == 0 {
+		unit = 1
+	}
+	return anchor.Sub(c.anchor).Mul(unit).Lin()
 }
 
 func (g *game) Draw(ctx *engine.Context) error {
@@ -343,8 +395,9 @@ func (g *game) Draw(ctx *engine.Context) error {
 		horizon = min(1.5*el.Period(mu), 600)
 	}
 	pathSize := lin.V3(g.dist*0.002, g.dist*0.002, g.dist*0.002)
-	for _, p := range orbit.PredictRelative(w, g.ship, primary, horizon, 90) {
-		gr.DrawMesh(g.dot, gfx.Material{BaseColor: gfx.RGB(120, 220, 255), Emissive: 1.5}, lin.Translate(p).Mul(lin.Scale(pathSize)))
+	shift := g.predictPath(primary, horizon)
+	for _, p := range g.path.points {
+		gr.DrawMesh(g.dot, gfx.Material{BaseColor: gfx.RGB(120, 220, 255), Emissive: 1.5}, lin.Translate(p.Add(shift)).Mul(lin.Scale(pathSize)))
 	}
 	// Labels, projected through the camera.
 	vp := cam.ViewProj(float32(ctx.Width) / float32(ctx.Height))

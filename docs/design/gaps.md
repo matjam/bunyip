@@ -372,6 +372,12 @@ once, on the processor past that), and blend spaces and trees as data
   the bounds culling uses are of the shape before the targets. A game
   that picks against a morphed face has to allow for that or set the
   bounds by hand.
+- `anim.System` poses skeletons one after another on the game
+  goroutine. Each pose is independent, but `AnimPlayer.Advance` runs the
+  game's `OnEvent` and `PostPose` callbacks, which may touch the world,
+  and two `Skeleton` components may share a player or a `Blend`, so the
+  loop cannot be split across goroutines without a way to know neither
+  happens.
 - Aseprite tilemap layers and tilesets, which `ParseAseprite` skips, and
   the blend modes past normal, which it draws as normal. Layers, groups,
   cels, tags, slices, palettes and the three colour modes read.

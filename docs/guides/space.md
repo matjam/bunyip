@@ -55,6 +55,10 @@ symplectic leapfrog. A suitably small fixed step limits energy error;
 energy is not conserved exactly. `Softening` adds its square to squared
 separations to regularize close encounters. `Energy()` reports the
 unsoftened energy, so it is not the softened system's conserved quantity.
+Each `Step` computes the accelerations once and starts the next step
+from them; editing the bodies, `G` or `Softening` between steps is
+noticed and costs one extra pass. From 256 bodies the accelerations are
+computed across goroutines with the same result as on one.
 `RK4` steps a single particle through an acceleration field.
 Use `RK4` for a ship whose engine contributes to the force on it.
 
@@ -136,6 +140,11 @@ position instead of a long arc across the scene. Only Kepler reference
 bodies advance in that moving-frame correction. `Around` reports which
 body dominates a ship and the ship's orbital elements relative to it,
 which is what a readout needs. Pass that primary to `PredictRelative`.
+To predict every frame without allocating, call `AppendPredictRelative`
+(or `AppendPredict`) with the last frame's path sliced to zero length.
+A path drawn every frame need not be predicted every frame: the space
+example keeps it and recomputes it when the ship has moved one sample
+along it or the thrust, the time warp or the primary changed.
 
 ```go
 // Draw a lap and a half of the ship's path around its primary.
@@ -152,8 +161,11 @@ for _, p := range orbit.PredictRelative(w, ship, primary, horizon, 90) {
 Ships use adaptive RK4 steps, starting with at least `Substeps` per
 update (default 8) and reducing the step according to local speed and
 acceleration, down to one sixty-fourth of that initial step. Kepler
-sources are sampled at each step's midpoint. Large time warps still
-need adequate substeps and validation for the intended trajectories.
+sources are sampled at each step's midpoint. All ships step together,
+and ships whose steps share a midpoint share one placement of the Kepler
+sources, so ten ships cost little more than one when their steps agree.
+Large time warps still need adequate substeps and validation for the
+intended trajectories.
 
 ## The space example
 
