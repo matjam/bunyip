@@ -304,6 +304,22 @@ type Context struct {
 	// are shared by pointer input and the inverse text-input mapping.
 	viewport       lin.Rect
 	pixelsPerPoint float32
+
+	// con holds what ConsoleFrame hands the console every frame, made
+	// once so a closed console allocates nothing.
+	con consoleParts
+}
+
+// consoleParts are the method values and the scope slices of the frame
+// ConsoleFrame reports. A method value that outlives the call is an
+// allocation each time it is taken, so they are taken on the first call.
+type consoleParts struct {
+	made         bool
+	screenshot   func(string)
+	quit         func()
+	setTimeScale func(float64)
+	timeScale    func() float64
+	scopes, gpu  []console.Scope
 }
 
 // waker is what the context needs from the platform app.
@@ -497,8 +513,16 @@ func (c *Context) TimeScale() float64 { return c.timeScale }
 
 // ConsoleFrame reports the state the debug console draws from. The
 // console calls it; the engine passes its context to Console.Draw and never
-// calls this itself.
+// calls this itself. The Stats.Scopes and Stats.GPU slices of the frame it
+// returns are reused by the next call, so a caller that keeps them past
+// the frame copies them first.
 func (c *Context) ConsoleFrame() console.Frame {
+	p := &c.con
+	if !p.made {
+		p.made = true
+		p.screenshot, p.quit = c.Screenshot, c.Quit
+		p.setTimeScale, p.timeScale = c.SetTimeScale, c.TimeScale
+	}
 	f := console.Frame{
 		Gfx: c.Gfx, Input: c.Input, Audio: c.Audio, Log: c.Log, Clipboard: c,
 		Width: c.Width, Height: c.Height, Delta: c.Delta, Time: c.Time, FrameCount: c.Frame,
@@ -508,16 +532,23 @@ func (c *Context) ConsoleFrame() console.Frame {
 			GPUFrameMS: c.Stats.GPUFrameMS,
 			DrawBudget: c.budget,
 		},
-		Screenshot:   c.Screenshot,
-		Quit:         c.Quit,
-		SetTimeScale: c.SetTimeScale,
-		TimeScale:    c.TimeScale,
+		Screenshot:   p.screenshot,
+		Quit:         p.quit,
+		SetTimeScale: p.setTimeScale,
+		TimeScale:    p.timeScale,
 	}
+	p.scopes, p.gpu = p.scopes[:0], p.gpu[:0]
 	for _, s := range c.Stats.Scopes {
-		f.Stats.Scopes = append(f.Stats.Scopes, console.Scope{Name: s.Name, MS: s.MS})
+		p.scopes = append(p.scopes, console.Scope{Name: s.Name, MS: s.MS})
 	}
 	for _, s := range c.Stats.GPU {
-		f.Stats.GPU = append(f.Stats.GPU, console.Scope{Name: s.Name, MS: s.MS})
+		p.gpu = append(p.gpu, console.Scope{Name: s.Name, MS: s.MS})
+	}
+	if len(p.scopes) > 0 {
+		f.Stats.Scopes = p.scopes
+	}
+	if len(p.gpu) > 0 {
+		f.Stats.GPU = p.gpu
 	}
 	return f
 }
