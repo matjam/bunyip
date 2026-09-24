@@ -1,5 +1,11 @@
 package orbit
 
+import (
+	"math"
+	"runtime"
+	"sync"
+)
+
 // Body is a mass with a position and velocity, used both as an ECS
 // component and inside a Simulation. In a Simulation, Mass zero makes
 // a test particle that feels gravity without exerting it. In the ECS,
@@ -18,8 +24,26 @@ type Simulation struct {
 	G         float64 // zero means the real constant
 	Softening float64 // simulation distance: its square is added to squared separations
 	Time      float64 // elapsed simulation time, advanced by Step
-	acc       []Vec3
+	acc       *accCache
 }
+
+// accCache holds the accelerations the last Step ended with, which are
+// what the next Step starts with, and the bodies, G and Softening they
+// were computed from, so the next Step reuses them only when nothing
+// they depend on has changed. It sits behind a pointer so that copies of
+// a Simulation that share it always see a consistent set.
+type accCache struct {
+	acc   []Vec3
+	from  []Body
+	g     float64
+	soft  float64
+	valid bool
+}
+
+// parallelBodies is the body count from which Accelerations splits the
+// bodies across goroutines. Below it the goroutines cost more than they
+// save.
+const parallelBodies = 256
 
 func (s *Simulation) g() float64 {
 	if s.G == 0 {
@@ -30,11 +54,32 @@ func (s *Simulation) g() float64 {
 
 // Accelerations fills out with the gravitational acceleration on each body.
 // out must have length at least len(Bodies). Positive Softening avoids
-// the singularity when distinct bodies occupy the same position.
+// the singularity when distinct bodies occupy the same position. From
+// 256 bodies it shares the bodies out across goroutines, one range per
+// processor; each body's sum still runs over the others in order, so the
+// result is the same as on one goroutine. Do not change Bodies while it
+// runs.
 func (s *Simulation) Accelerations(out []Vec3) {
+	n := len(s.Bodies)
+	workers := min(runtime.GOMAXPROCS(0), n/(parallelBodies/4))
+	if n < parallelBodies || workers < 2 {
+		s.accelRange(out, 0, n)
+		return
+	}
+	var wg sync.WaitGroup
+	per := (n + workers - 1) / workers
+	for lo := 0; lo < n; lo += per {
+		hi := min(lo+per, n)
+		wg.Go(func() { s.accelRange(out, lo, hi) })
+	}
+	wg.Wait()
+}
+
+// accelRange fills out[lo:hi] with the accelerations of those bodies.
+func (s *Simulation) accelRange(out []Vec3, lo, hi int) {
 	g := s.g()
 	eps2 := s.Softening * s.Softening
-	for i := range s.Bodies {
+	for i := lo; i < hi; i++ {
 		var a Vec3
 		pi := s.Bodies[i].Pos
 		for j := range s.Bodies {
@@ -69,14 +114,24 @@ func (s *Simulation) FieldAt(p Vec3) Vec3 {
 	return a
 }
 
-// Step advances every body and Time by dt simulation time units.
+// Step advances every body and Time by dt simulation time units. The
+// accelerations it ends with are the ones the next Step starts with, so
+// it computes them once per step, not twice. Changing a body's position
+// or mass, adding or removing bodies, or changing G or Softening between
+// steps is noticed, and the next Step computes them afresh.
 func (s *Simulation) Step(dt float64) {
-	n := len(s.Bodies)
-	if cap(s.acc) < n {
-		s.acc = make([]Vec3, n)
+	if s.acc == nil {
+		s.acc = &accCache{}
 	}
-	acc := s.acc[:n]
-	s.Accelerations(acc)
+	c := s.acc
+	n := len(s.Bodies)
+	if cap(c.acc) < n {
+		c.acc, c.valid = make([]Vec3, n), false
+	}
+	acc := c.acc[:n]
+	if !s.accCurrent(c) {
+		s.Accelerations(acc)
+	}
 	for i := range s.Bodies {
 		b := &s.Bodies[i]
 		b.Vel = b.Vel.Add(acc[i].Mul(dt / 2))
@@ -88,7 +143,27 @@ func (s *Simulation) Step(dt float64) {
 		b.Vel = b.Vel.Add(acc[i].Mul(dt / 2))
 	}
 	s.Time += dt
+	c.from = append(c.from[:0], s.Bodies...)
+	c.g, c.soft, c.valid = s.G, s.Softening, true
 }
+
+// accCurrent reports whether c still holds the accelerations of the
+// bodies as they are: computed from the same positions, masses, G and
+// Softening, compared bit for bit.
+func (s *Simulation) accCurrent(c *accCache) bool {
+	if !c.valid || len(c.from) != len(s.Bodies) || !sameBits(c.g, s.G) || !sameBits(c.soft, s.Softening) {
+		return false
+	}
+	for i := range s.Bodies {
+		b, was := &s.Bodies[i], &c.from[i]
+		if !sameBits(b.Pos.X, was.Pos.X) || !sameBits(b.Pos.Y, was.Pos.Y) || !sameBits(b.Pos.Z, was.Pos.Z) || !sameBits(b.Mass, was.Mass) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameBits(a, b float64) bool { return math.Float64bits(a) == math.Float64bits(b) }
 
 // Energy returns total kinetic plus unsoftened Newtonian potential energy.
 // It ignores Softening and omits potential terms for coincident bodies,
