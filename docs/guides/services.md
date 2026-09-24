@@ -153,7 +153,12 @@ polling goroutine and nothing else, and the same code runs in both
 builds. A file that fails to decode keeps the asset the game already has
 and reports the error, so a half-written save does not take the game
 down with it, and the next write is tried again. `Watcher` is the layer
-under all this for a game that would rather reload by hand.
+under all this for a game that would rather reload by hand. It resolves
+each name to its file once and then stats that file per poll, plus the
+directory in each overlaying source where a new copy would appear, so a
+thousand watched files cost about what a thousand `os.Stat` calls do.
+The poll runs outside the lock `Changed` takes, so the call a game makes
+every frame never waits for it.
 
 Models and environments are not reloaded. Swapping a glTF file's
 contents gives back different meshes, a different skeleton and different
