@@ -1708,10 +1708,12 @@ func (w *wlWindow) setFullscreen(on bool) {
 
 // --- the event loop ---
 
-// poll drains what the compositor has sent. With wait set it blocks until
-// an event, a Wake or a due key repeat.
-func (a *wlApp) poll(wait bool) []Event {
+// poll drains what the compositor has sent. With a nonzero limit it
+// blocks until an event, a Wake, a due key repeat or, when the limit is
+// positive, the limit's end; a negative limit waits without one.
+func (a *wlApp) poll(limit time.Duration) []Event {
 	l := a.l
+	wait := limit != 0
 	a.out.startPoll()
 	a.pumpRepeats(time.Now())
 	if l.dispatchPending(a.display) < 0 {
@@ -1726,6 +1728,12 @@ func (a *wlApp) poll(wait bool) []Event {
 			return a.out.pending
 		}
 		timeout = a.repeatWait(time.Now())
+		if limit > 0 {
+			ms := int32((limit + time.Millisecond - 1) / time.Millisecond)
+			if timeout < 0 || ms < timeout {
+				timeout = ms
+			}
+		}
 	}
 	// wl_display_prepare_read reserves the connection so that the read below
 	// races no other reader; it fails while the queue still holds events,

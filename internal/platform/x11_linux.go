@@ -654,11 +654,12 @@ func (a *App) newX11Window(cfg Config) (*Window, error) {
 
 // x11Poll drains pending X events into the returned slice, reused by the
 // next call. With wait set it blocks until at least one event arrives.
-func (a *App) x11Poll(wait bool) []Event {
+func (a *App) x11Poll(timeout time.Duration) []Event {
 	a.startPoll()
 	x := a.x
 	x.flush(a.conn)
-	if wait {
+	switch {
+	case timeout < 0:
 		ev := x.waitForEvent(a.conn)
 		if ev == nil {
 			for _, w := range a.windows {
@@ -667,6 +668,15 @@ func (a *App) x11Poll(wait bool) []Event {
 			return a.pending
 		}
 		a.dispatch(ev)
+	case timeout > 0:
+		// xcb has no timed wait: take what is already read, and otherwise
+		// sleep in poll(2) on the connection until data or the timeout.
+		if ev := x.pollForEvent(a.conn); ev != nil {
+			a.dispatch(ev)
+		} else {
+			fd := pollFD{Fd: x.fileDescriptor(a.conn), Events: pollIn}
+			x.poll(&fd, 1, int32((timeout+time.Millisecond-1)/time.Millisecond))
+		}
 	}
 	for {
 		ev := x.pollForEvent(a.conn)
@@ -676,7 +686,6 @@ func (a *App) x11Poll(wait bool) []Event {
 		a.dispatch(ev)
 	}
 	a.sweepIncr(time.Now())
-	a.syncEmbedded()
 	return a.pending
 }
 
@@ -877,6 +886,11 @@ func (a *App) handle(ge *xcbGenericEvent) {
 			w.width, w.height = int(ev.Width), int(ev.Height)
 			a.push(Event{Kind: EventResize, Window: w, Width: w.width, Height: w.height, PixelW: w.width, PixelH: w.height, Scale: 1})
 		}
+		// A host window an embedded child watches reports its own changes
+		// here too (Event and Window are both the host).
+		if ev.Event == ev.Window {
+			a.parentConfigured(ev.Window, ev.Width, ev.Height)
+		}
 	case xcbClientMessage:
 		ev := (*xcbClientMessageEvent)(unsafe.Pointer(ge))
 		w := a.windows[ev.Window]
@@ -917,6 +931,7 @@ func (a *App) handle(ge *xcbGenericEvent) {
 		}
 	case xcbDestroyNotify:
 		ev := (*xcbConfigureEvent)(unsafe.Pointer(ge)) // window field sits at the same offset
+		a.parentDestroyed(ev.Window)
 		if w := a.windows[ev.Window]; w != nil {
 			a.unwatchParent(w.parent)
 			w.closed = true

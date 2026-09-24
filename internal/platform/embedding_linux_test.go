@@ -9,6 +9,7 @@ import (
 
 func TestEmbeddedX11OwnsOnlyChildAndFitsParent(t *testing.T) {
 	geometry := embeddedGeometry{Root: 1, Width: 120, Height: 90}
+	geometryCalls := 0
 	var destroyed []uint32
 	var configured [][4]uint32
 	parentMask := uint32(0)
@@ -23,6 +24,7 @@ func TestEmbeddedX11OwnsOnlyChildAndFitsParent(t *testing.T) {
 			if id != 7 {
 				t.Error("wrong parent geometry")
 			}
+			geometryCalls++
 			return xcbCookie{}
 		},
 		geometryReply: func(unsafe.Pointer, xcbCookie, unsafe.Pointer) *embeddedGeometry { return &geometry },
@@ -58,18 +60,25 @@ func TestEmbeddedX11OwnsOnlyChildAndFitsParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	geometry.Width = 200
-	a.syncEmbedded()
+	// The host's size arrives as a ConfigureNotify on the watched parent,
+	// so the geometry is asked for once, when the child is made.
+	hostConfigured(a, 7, 200, 90)
 	if !slices.Equal(configured, [][4]uint32{{0, 0, 200, 90}}) {
 		t.Fatalf("auto-fit=%v", configured)
+	}
+	hostConfigured(a, 7, 200, 90) // moved, not resized
+	if len(configured) != 1 {
+		t.Fatalf("an unchanged host size refitted the child: %v", configured)
 	}
 	if err := w.SetBounds(10, 15, 80, 60); err != nil {
 		t.Fatal(err)
 	}
-	geometry.Width = 300
-	a.syncEmbedded()
+	hostConfigured(a, 7, 300, 90)
 	if len(configured) != 2 || configured[1] != [4]uint32{10, 15, 80, 60} {
 		t.Fatalf("manual bounds=%v", configured)
+	}
+	if geometryCalls != 1 {
+		t.Fatalf("parent geometry requested %d times, want once at creation", geometryCalls)
 	}
 	if !w.Capabilities().EmbeddedBounds || w.Capabilities().AlwaysOnTop || w.Capabilities().Resize {
 		t.Fatal("embedded capabilities expose host controls")
@@ -81,6 +90,34 @@ func TestEmbeddedX11OwnsOnlyChildAndFitsParent(t *testing.T) {
 	}
 	if !slices.Equal(destroyed, []uint32{8}) || len(a.windows) != 0 {
 		t.Fatalf("detach destroyed=%v windows=%v", destroyed, a.windows)
+	}
+}
+
+// hostConfigured delivers the ConfigureNotify a watched host window
+// sends itself when it moves or resizes.
+func hostConfigured(a *App, parent uint32, width, height uint16) {
+	var buf [64]byte // at least the size of any X event
+	ev := (*xcbConfigureEvent)(unsafe.Pointer(&buf[0]))
+	ev.ResponseType, ev.Event, ev.Window, ev.Width, ev.Height = xcbConfigureNotify, parent, parent, width, height
+	a.handle((*xcbGenericEvent)(unsafe.Pointer(&buf[0])))
+}
+
+// TestEmbeddedX11HostDestroyedClosesChild checks that a DestroyNotify for
+// the host reports every child embedded in it closed.
+func TestEmbeddedX11HostDestroyedClosesChild(t *testing.T) {
+	a := &App{windows: map[uint32]*Window{}, parentWatches: map[uint32]*parentWatch{7: {refs: 1}}}
+	child := &Window{app: a, id: 8, parent: 7}
+	a.windows[8] = child
+	a.windows[9] = &Window{app: a, id: 9} // a top-level window of the game's own
+	var buf [64]byte
+	ev := (*xcbConfigureEvent)(unsafe.Pointer(&buf[0]))
+	ev.ResponseType, ev.Event, ev.Window = xcbDestroyNotify, 7, 7
+	a.handle((*xcbGenericEvent)(unsafe.Pointer(&buf[0])))
+	if !child.Closed() || len(a.pending) != 1 || a.pending[0].Kind != EventClose || a.pending[0].Window != child {
+		t.Fatalf("closed=%v events=%+v", child.Closed(), a.pending)
+	}
+	if a.windows[9].Closed() {
+		t.Fatal("a window outside the host was closed")
 	}
 }
 
