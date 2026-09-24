@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/matjam/bunyip/gfx"
@@ -101,7 +102,15 @@ func (c *Context) Tabs(labels []string, selected *int) bool {
 // with the usual widgets. Rows alternate in shade. The rows are one Tab
 // stop that the arrows move through; it returns the row clicked or
 // activated with Enter this frame, or -1. Widgets inside cells are
-// their own Tab stops.
+// their own Tab stops, and their identity is scoped to their row.
+//
+// Rows outside the clip the table is drawn under, such as the rows of a
+// long table scrolled out of a ScrollArea, keep their place, their Tab
+// stop and their accessibility entry, but cell is not called for them,
+// so a thousand-row table costs about what its visible rows do. A row
+// holding the focused or held widget is always built, so scrolling it
+// out of view keeps the focus. A skipped row takes the height it had
+// when it was last built, or a row of the theme's height before that.
 func (c *Context) Table(columns []string, weights []float32, rows int, cell func(row, col int)) (clicked int) {
 	clicked = -1
 	if weights == nil {
@@ -119,30 +128,145 @@ func (c *Context) Table(columns []string, weights []float32, rows int, cell func
 		}
 	})
 	id := c.id("table:" + strings.Join(columns, "|"))
+	p := c.currentPanel()
+	ts := c.table(id, rows)
+	lo, hi, cull := c.visibleRows()
+	blocked := c.modal != 0 && !c.inModal
+	var sub *panel // the row's own panel, which scopes its cells' identities
 	for row := range rows {
-		saved := c.beginGroup(id, navUpDown, 10)
-		if p := c.currentPanel(); p != nil {
-			r := Rect{X: p.rect.X + c.Theme.Padding, Y: p.cursor - c.Theme.Spacing/2, W: p.rect.W - 2*c.Theme.Padding, H: c.Theme.RowHeight + c.Theme.Spacing}
-			hover, _, click := c.interact(id+widgetID(row+1), r)
-			if click {
-				clicked = row
-			}
-			switch {
-			case hover:
-				c.fill(r, c.Theme.ButtonHover.WithAlpha(0.5))
-			case row%2 == 1:
-				c.fill(r, c.Theme.Field.WithAlpha(0.35))
-			}
-			c.noteAt("row", c.formatInt(row), "", false, r, id+widgetID(row+1))
+		rowID := id + widgetID(row+1)
+		if p == nil {
+			c.tableCells(nil, nil, weights, columns, row, cell)
+			continue
 		}
-		c.endGroup(saved)
-		c.Columns(weights, func() {
-			for col := range columns {
-				cell(row, col)
+		r := Rect{X: p.rect.X + c.Theme.Padding, Y: p.cursor - c.Theme.Spacing/2, W: p.rect.W - 2*c.Theme.Padding, H: c.Theme.RowHeight + c.Theme.Spacing}
+		if pitch := ts.pitch(row, c.Theme.RowHeight+c.Theme.Spacing); cull && row != ts.keep && (r.Y+pitch < lo || r.Y > hi) {
+			// Out of view: the row keeps its stop, its entry and its
+			// place without building its cells.
+			saved := c.beginGroup(id, navUpDown, 10)
+			if !blocked {
+				c.register(rowID, r)
+				if c.navFocus == rowID && c.activate {
+					clicked = row
+				}
 			}
-		})
+			c.endGroup(saved)
+			c.noteAt("row", c.rowLabel(row), "", false, r, rowID)
+			p.cursor += pitch
+			continue
+		}
+		saved := c.beginGroup(id, navUpDown, 10)
+		hover, _, click := c.interact(rowID, r)
+		if click {
+			clicked = row
+		}
+		switch {
+		case hover:
+			c.fill(r, c.Theme.ButtonHover.WithAlpha(0.5))
+		case row%2 == 1:
+			c.fill(r, c.Theme.Field.WithAlpha(0.35))
+		}
+		c.noteAt("row", c.rowLabel(row), "", false, r, rowID)
+		c.endGroup(saved)
+		if sub == nil {
+			sub = &panel{}
+		}
+		*sub = panel{id: rowID, rect: p.rect, cursor: p.cursor}
+		top, stops := p.cursor, len(c.focusables)
+		c.tableCells(p, sub, weights, columns, row, cell)
+		p.cursor = sub.cursor
+		ts.heights[row] = p.cursor - top
+		// A row holding the focused, text-focused or held widget is built
+		// even out of view, so the widget keeps its state.
+		holds := false
+		for _, f := range c.focusables[stops:] {
+			if f.id != 0 && (f.id == c.navFocus || f.id == c.focus || f.id == c.active) {
+				holds = true
+			}
+		}
+		switch {
+		case holds:
+			ts.keep = row
+		case ts.keep == row:
+			ts.keep = -1
+		}
 	}
 	return clicked
+}
+
+// tableCells builds one row's cells in columns inside the row's own
+// panel, pushed over the table's.
+func (c *Context) tableCells(p, sub *panel, weights []float32, columns []string, row int, cell func(row, col int)) {
+	if sub != nil {
+		c.panels = append(c.panels, sub)
+		defer func() { c.panels = c.panels[:len(c.panels)-1] }()
+	}
+	c.Columns(weights, func() {
+		for col := range columns {
+			cell(row, col)
+		}
+	})
+}
+
+// tableState is what a Table remembers between frames: each row's height
+// the last time it was built, and the row holding the focus, which is
+// built even out of view.
+type tableState struct {
+	heights []float32
+	keep    int
+}
+
+// table returns a table's state, sized for rows.
+func (c *Context) table(id widgetID, rows int) *tableState {
+	if c.tables == nil {
+		c.tables = map[widgetID]*tableState{}
+	}
+	ts := c.tables[id]
+	if ts == nil {
+		ts = &tableState{keep: -1}
+		c.tables[id] = ts
+	}
+	for len(ts.heights) < rows {
+		ts.heights = append(ts.heights, 0)
+	}
+	return ts
+}
+
+// pitch is how far a row moves the cursor: its height when it was last
+// built, or def before it has been.
+func (ts *tableState) pitch(row int, def float32) float32 {
+	if h := ts.heights[row]; h > 0 {
+		return h
+	}
+	return def
+}
+
+// visibleRows is the span of y the rows of a table can be seen in: the
+// clip of the container being built, or the view, widened by a row so a
+// focus ring or a row straddling the edge is built. It reports false when
+// there is nothing to cull against.
+func (c *Context) visibleRows() (lo, hi float32, ok bool) {
+	var r Rect
+	switch {
+	case len(c.clips) > 0:
+		r = c.clips[len(c.clips)-1]
+	case c.g != nil:
+		w, h := c.g.View()
+		r = Rect{W: w, H: h}
+	default:
+		return 0, 0, false
+	}
+	margin := c.Theme.RowHeight + c.Theme.Spacing
+	return r.Y - margin, r.Y + r.H + margin, true
+}
+
+// rowLabel is a row's number as text, kept so a long table does not
+// format every row's number every frame.
+func (c *Context) rowLabel(row int) string {
+	for len(c.rowLabels) <= row {
+		c.rowLabels = append(c.rowLabels, strconv.Itoa(len(c.rowLabels)))
+	}
+	return c.rowLabels[row]
 }
 
 // Cell draws a plain text cell, for tables of values.

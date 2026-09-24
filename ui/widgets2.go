@@ -211,7 +211,8 @@ func (c *Context) Columns(weights []float32, body func()) {
 		total += w
 	}
 	inner := p.rect.W - 2*c.Theme.Padding - float32(len(weights)-1)*c.Theme.Spacing
-	p.row = &row{x: p.rect.X + c.Theme.Padding, y: p.cursor, count: len(weights), weights: weights, total: total, inner: inner}
+	p.spare = row{x: p.rect.X + c.Theme.Padding, y: p.cursor, count: len(weights), weights: weights, total: total, inner: inner}
+	p.row = &p.spare
 	body()
 	c.endRow(p)
 }

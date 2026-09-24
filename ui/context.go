@@ -117,17 +117,25 @@ type Context struct {
 
 	// buf is scratch for formatting numbers into captions without fmt.
 	buf []byte
+
+	// tables holds each Table's row heights and focused row; rowLabels
+	// holds row numbers as text for the rows' accessibility entries.
+	tables    map[widgetID]*tableState
+	rowLabels []string
 }
 
 // richEntry is one markup string's parsed runs, its plain text and the
-// size those runs took the last time they were measured.
+// layout those runs took the last time they were laid out, with its size
+// and its links relative to where it is drawn.
 type richEntry struct {
-	rt    gfx.RichText
-	plain string
-	fonts gfx.RichFonts
-	opts  gfx.TextOptions
-	w, h  float32
-	sized bool
+	rt     gfx.RichText
+	plain  string
+	fonts  gfx.RichFonts
+	opts   gfx.TextOptions
+	layout *gfx.TextLayout // nil when the runs could not be laid out
+	links  []gfx.RichLink
+	w, h   float32
+	sized  bool
 }
 
 type focusable struct {

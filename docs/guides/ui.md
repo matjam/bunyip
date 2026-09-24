@@ -220,6 +220,17 @@ Right opens a focused tree node and Left closes it. A focused `Slider`,
 minus and plus keys, or the d-pad. `Table` returns the row clicked or
 activated, or -1.
 
+A `Table` in a `ScrollArea` only builds the rows in view: rows scrolled
+out keep their place, their Tab stop and their accessibility entry, but
+their cells are not called, so a table of thousands of rows costs about
+what its visible rows do. The arrows, PageUp, PageDown, Home and End
+still move through every row and scroll the focused one into view. The
+row holding the focused or held widget is always built, so a text field
+in a row keeps the keyboard while it is scrolled away. Widgets inside a
+row are scoped to that row, so a `Button("Buy")` in every row has its own
+identity. A row skipped this frame keeps the height it had when it was
+last built.
+
 ```go
 u.Theme.FocusWidth = 3 // the ring Tab draws; zero means 2
 u.Panel("Party", ui.Rect{X: 20, Y: 20, W: 300, H: 200}, func() {
