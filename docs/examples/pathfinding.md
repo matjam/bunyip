@@ -283,8 +283,13 @@ because the components are computed rather than sampled from an image:
 the fields are linear values from zero to one, which is what the
 renderer works in, while `gfx.RGB` converts from sRGB bytes.
 
-`grid.AStar` returns the path including both endpoints, or nil when there
-is none. `grid.Line` returns the cells a straight line passes through,
+`grid.AStarWithMinCost` returns the path including both endpoints, or nil
+when there is none. Its last argument is the smallest cost any step can
+have. A straight step here costs 1 and a diagonal step costs √2, so the
+bound is 1, and the search heads for the goal instead of spreading out
+in every direction as `grid.AStar` does without a bound. If cheaper
+terrain is added, lower the bound to its step cost; pass zero when the
+minimum is unknown or zero-cost moves exist. `grid.Line` returns the cells a straight line passes through,
 which a game uses for a thrown weapon or a line of sight check.
 `gfx.RGBA` takes an alpha byte, so the line is drawn translucent over the
 cells.
@@ -307,7 +312,8 @@ cells.
 		}
 		gr.FillRect(float32(x*cell)+1, float32(y*cell)+1, cell-2, cell-2, c)
 	})
-	path := grid.AStar(cols, rows, g.start, goal, g.diagonal, g.cost)
+	// Every step costs at least 1 (a diagonal costs √2), so 1 guides the search.
+	path := grid.AStarWithMinCost(cols, rows, g.start, goal, g.diagonal, g.cost, 1)
 	for _, p := range path {
 		gr.FillRect(float32(p.X*cell)+7, float32(p.Y*cell)+7, cell-14, cell-14, gfx.RGB(255, 235, 90))
 	}
@@ -363,13 +369,13 @@ func main() {
   route around it while the Dijkstra shading shows why.
 - Raise the field of view radius in `Draw` and see the shadowcasting cost
   nothing noticeable at this size.
-- Keep a `grid.Pathfinder` on the game type and call its `AStar` method
-  from `Draw` instead of the package function, which is what a game with
-  many actors does.
-- Use `AStarWithMinCost` with a final argument of `1` to speed up the
-  search: every traversable move in this example costs at least one.
-  If cheaper terrain is added, lower that bound to its minimum step
-  cost; use zero when the minimum is unknown or zero-cost moves exist.
+- Keep a `grid.Pathfinder` on the game type, set its `MinCost` to 1 once,
+  and call its `AStar` method from `Draw` instead of the package
+  function, which is what a game with many actors does.
+- Replace the call with `grid.AStar` and compare the time: without a
+  minimum step cost the search is uninformed and visits far more cells.
+  Both find a path of the same cost, though where several paths tie they
+  may draw a different one.
 - Move the searches into `Update` and keep their results on the game, so
   they run at the fixed step rather than once per frame.
 - Add a `Version` check to the load in `Update` and refuse a file from a
