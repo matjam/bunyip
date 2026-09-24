@@ -24,14 +24,16 @@ type AnimPlayer struct {
 	// kinematics, look-at and any other node override.
 	PostPose func(p *AnimPlayer)
 
-	model  *Model
-	speed  float64
-	cur    animTrack   // the main clip
-	prev   animTrack   // the clip fading out under a crossfade
-	fade   float64     // seconds of fade left
-	fadeD  float64     // the fade's length
-	blend  []animBlend // the weighted clips set by SetBlend, in place of cur
-	layers []*AnimLayer
+	model *Model
+	speed float64
+	cur   animTrack   // the main clip
+	prev  animTrack   // the clip fading out under a crossfade
+	fade  float64     // seconds of fade left
+	fadeD float64     // the fade's length
+	blend []animBlend // the weighted clips set by SetBlend, in place of cur
+	// blendOld is SetBlend's copy of the previous blend, kept for reuse.
+	blendOld []animBlend
+	layers   []*AnimLayer
 
 	rest  animPose // the rest pose and default morph weights
 	pose  animPose // the blended pose
@@ -242,8 +244,11 @@ func (p *AnimPlayer) Stop() {
 // every clip in the blend by its weight. Play, CrossFade and Stop drop
 // the blend; layers play over it as they do over a clip.
 func (p *AnimPlayer) SetBlend(clips []AnimBlend) {
-	old := p.blend
-	p.blend = make([]animBlend, 0, len(clips))
+	// A blend controller calls this every update, so both slices keep
+	// their storage: the previous set moves to blendOld for the lookup.
+	p.blendOld = append(p.blendOld[:0], p.blend...)
+	old := p.blendOld
+	p.blend = p.blend[:0]
 	for _, c := range clips {
 		i := p.model.clipIndex(c.Clip)
 		if i < 0 || c.Weight <= 0 {
@@ -545,35 +550,61 @@ func (p *AnimPlayer) fire(tr *animTrack, from, to float64, wrapped, forward bool
 // into out.
 func (p *AnimPlayer) sample(tr *animTrack, out *animPose) {
 	out.copyFrom(&p.rest)
-	clip := p.model.clips[tr.clip]
+	channels := p.model.clips[tr.clip].Channels
 	t := float32(tr.time)
-	for _, ch := range clip.Channels {
+	var keys keyCache
+	for i := range channels {
+		ch := &channels[i]
 		if ch.Node < 0 || ch.Node >= len(out.local) || len(ch.Times) == 0 {
 			continue
 		}
 		if ch.Path == gltf.PathWeights {
 			if w := out.morph[ch.Node]; w != nil {
-				sampleWeights(ch, t, w)
+				sampleWeights(*ch, t, w)
 			}
 			continue
 		}
-		applyChannel(ch, t, &out.local[ch.Node])
+		applyChannel(ch, &keys, t, &out.local[ch.Node])
 	}
 }
 
 // sampleNode samples only one node of a clip, for root motion.
 func (p *AnimPlayer) sampleNode(clip gltf.Animation, node int, t float32) nodeTRS {
 	n := p.rest.local[node]
-	for _, ch := range clip.Channels {
+	var keys keyCache
+	for i := range clip.Channels {
+		ch := &clip.Channels[i]
 		if ch.Node == node && ch.Path != gltf.PathWeights && len(ch.Times) > 0 {
-			applyChannel(ch, t, &n)
+			applyChannel(ch, &keys, t, &n)
 		}
 	}
 	return n
 }
 
-func applyChannel(ch gltf.Channel, t float32, n *nodeTRS) {
-	v := sampleChannel(ch, t)
+// keyCache remembers the last key lookup, so the channels that share one
+// times array (exporters usually write one per node, for its
+// translation, rotation and scale) search it once per sample.
+type keyCache struct {
+	times  *float32
+	n      int
+	t      float32
+	lo, hi int
+	f      float32
+}
+
+// pair is keyPair through the cache.
+func (k *keyCache) pair(times []float32, t float32) (lo, hi int, f float32) {
+	if k.times == &times[0] && k.n == len(times) && k.t == t {
+		return k.lo, k.hi, k.f
+	}
+	lo, hi, f = keyPair(times, t)
+	*k = keyCache{times: &times[0], n: len(times), t: t, lo: lo, hi: hi, f: f}
+	return lo, hi, f
+}
+
+func applyChannel(ch *gltf.Channel, keys *keyCache, t float32, n *nodeTRS) {
+	lo, hi, f := keys.pair(ch.Times, t)
+	v := sampleKeys(ch, lo, hi, f)
 	switch ch.Path {
 	case gltf.PathTranslation:
 		n.t = v.Vec3()
@@ -689,7 +720,7 @@ func (p *AnimPlayer) evaluate() {
 		n := p.model.nodes[i]
 		local := lin.TRS(p.pose.local[i].t, p.pose.local[i].r, p.pose.local[i].s)
 		if n.Parent >= 0 {
-			p.world[i] = p.world[n.Parent].Mul(local)
+			p.world[i] = p.world[n.Parent].MulAffine(local) // both are placements
 		} else {
 			p.world[i] = local
 		}
@@ -825,24 +856,38 @@ func keyPair(times []float32, t float32) (lo, hi int, f float32) {
 	if t >= times[last] {
 		return last, last, 0
 	}
-	lo, hi = 0, last
-	for hi-lo > 1 {
-		mid := (lo + hi) / 2
-		if times[mid] <= t {
-			lo = mid
-		} else {
-			hi = mid
+	// The answer is the one lo with times[lo] <= t < times[lo+1]. Keys
+	// are usually evenly spaced, so the index in proportion to t is that
+	// key or a neighbour of it; anything else takes the binary search.
+	c := int(float32(last) * ((t - times[0]) / (times[last] - times[0])))
+	c = min(max(c, 0), last-1)
+	switch {
+	case times[c] <= t && t < times[c+1]:
+		lo = c
+	case c > 0 && times[c-1] <= t && t < times[c]:
+		lo = c - 1
+	case c+2 <= last && times[c+1] <= t && t < times[c+2]:
+		lo = c + 1
+	default:
+		lo, hi = 0, last
+		for hi-lo > 1 {
+			mid := (lo + hi) / 2
+			if times[mid] <= t {
+				lo = mid
+			} else {
+				hi = mid
+			}
 		}
 	}
+	hi = lo + 1
 	if span := times[hi] - times[lo]; span > 0 {
 		f = (t - times[lo]) / span
 	}
 	return lo, hi, f
 }
 
-// sampleChannel interpolates a channel at time t.
-func sampleChannel(ch gltf.Channel, t float32) lin.Vec4 {
-	lo, hi, f := keyPair(ch.Times, t)
+// sampleKeys interpolates a channel between the keys keyPair found.
+func sampleKeys(ch *gltf.Channel, lo, hi int, f float32) lin.Vec4 {
 	if lo == hi || ch.Step {
 		return ch.Values[lo]
 	}
