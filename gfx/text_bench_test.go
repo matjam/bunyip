@@ -101,6 +101,27 @@ func BenchmarkLayoutBlock_880(b *testing.B) {
 	}
 }
 
+// BenchmarkLayout_880 lays the paragraph out from cold every iteration
+// through Font.Layout, the path drawing and measuring use, so that the
+// cost of shaping, wrapping and alignment is visible on its own.
+func BenchmarkLayout_880(b *testing.B) {
+	g := benchHeadless(b, 640, 480)
+	g.SetView(640, 480)
+	f := benchFont(b, g, 16)
+	opts := TextOptions{Width: 560}
+	if _, err := f.Layout(benchParagraph, opts); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		dropLayouts(f)
+		if _, err := f.Layout(benchParagraph, opts); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkDrawText_200Labels draws 200 distinct short labels per
 // iteration, the interface workload: the same strings every frame, so
 // the caches are warm from the second frame on.
