@@ -85,7 +85,9 @@ func (g *Graphics) initVelocity() error {
 func (g *Graphics) renderVelocity(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets, draws drawList) {
 	p := &g.post
 	p.vel = velocityPush{viewProj: q.viewProjJ, prevViewProj: q.prevViewProj}
-	pass := render.PassDesc{Target: &t.velPass, LoadDepth: true}
+	// The pass tests against the scene depth and writes none, so the
+	// depth is not written back.
+	pass := render.PassDesc{Target: &t.velPass, LoadDepth: true, ReadOnlyDepth: true}
 	render.BeginTargetPass(cb, pass)
 	rec := &g.rec
 	rec.offset = 0

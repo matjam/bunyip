@@ -375,6 +375,47 @@ func TestPostChainTogether(t *testing.T) {
 	}
 }
 
+// TestPostChainImages follows which image holds the scene through the
+// chain: the temporal pass writes the history image the next frame reads
+// and so alternates between the two, the passes after it write whichever
+// of the scene and scratch images is free, and a frame with no effect
+// leaves the scene where the scene pass resolved it.
+func TestPostChainImages(t *testing.T) {
+	g := newHeadless(t, 64, 64)
+	cv, ci := CubeMesh()
+	cube, err := g.NewMesh(cv, ci)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cube.Destroy()
+	scene := func(int) {
+		g.SetCamera(Camera{Position: lin.V3(0, 2, 6), Target: lin.V3(0, 0, 0)})
+		g.DrawMesh(cube, Material{BaseColor: White}, lin.Identity())
+	}
+	postShot(t, g, unlitPost(), 1, scene)
+	if cur := g.post.main.cur; cur != imgHDR {
+		t.Errorf("with no effect the scene is in image %d, want the scene pass's own", cur)
+	}
+	taa := unlitPost()
+	taa.TemporalAA = true
+	var seen []sceneImage
+	for range 4 {
+		postShot(t, g, taa, 1, scene)
+		seen = append(seen, g.post.main.cur)
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] != imgHist0 && seen[i] != imgHist1 || seen[i] == seen[i-1] {
+			t.Fatalf("temporal frames left the scene in images %v, want the two history images in turn", seen)
+		}
+	}
+	all := taa
+	all.MotionBlur, all.FocusDistance = 0.5, 6
+	postShot(t, g, all, 2, scene)
+	if cur := g.post.main.cur; cur != imgHDR && cur != imgPong {
+		t.Errorf("after depth of field the scene is in image %d, want the scene or scratch image", cur)
+	}
+}
+
 // TestPost2D checks that a frame with no 3D in it reaches the composite
 // when Post2D is on: the vignette darkens the corners and leaves the
 // middle alone, and the direct path is untouched.

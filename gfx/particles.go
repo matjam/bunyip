@@ -375,9 +375,10 @@ func (g *Graphics) drawFlatParticles(cb vk.VkCommandBuffer, q *drawQueue, at int
 	return at, nil
 }
 
-// drawSceneParticles records the 3D batches over the finished scene, in
-// a pass with no depth attachment so the fragment program can read the
-// depth image and fade against it.
+// drawSceneParticles records the 3D batches over the finished scene into
+// the open pass renderScene draws over it: single-sample, over the
+// resolved scene image, with no depth attachment so the fragment program
+// can read the depth image and fade against it.
 func (g *Graphics) drawSceneParticles(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets, aspect float32) error {
 	if len(q.parts.scene) == 0 {
 		return nil
@@ -388,11 +389,6 @@ func (g *Graphics) drawSceneParticles(cb vk.VkCommandBuffer, q *drawQueue, t *sc
 	right := forward.Cross(up).Norm()
 	camUp := right.Cross(forward).Norm()
 	pp := &g.particles
-	g.timestamps.Begin(cb, "particles")
-	defer g.timestamps.End(cb)
-	pass := render.PassDesc{Target: t.hdr, LoadColor: true, NoDepth: true}
-	render.BeginTargetPass(cb, pass)
-	render.SetViewport(cb, t.extent)
 	var ortho float32
 	if cam.Ortho > 0 {
 		ortho = 1
@@ -404,7 +400,7 @@ func (g *Graphics) drawSceneParticles(cb vk.VkCommandBuffer, q *drawQueue, t *sc
 		mode:     lin.V4(ortho, 0, 0, 0),
 	}
 	for _, b := range q.parts.scene {
-		pipe, err := g.scenePipeline(b.blend, g.sceneOut)
+		pipe, err := g.scenePipeline(b.blend, outKey{})
 		if err != nil {
 			return err
 		}
@@ -420,6 +416,5 @@ func (g *Graphics) drawSceneParticles(cb vk.VkCommandBuffer, q *drawQueue, t *sc
 		g.stats.Draws3D++
 		g.stats.Particles += int(b.count)
 	}
-	render.EndTargetPassDesc(cb, pass)
 	return nil
 }

@@ -751,8 +751,12 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 			}
 		}
 		if bloom {
+			src, err := t.sceneSet(g)
+			if err != nil {
+				return err
+			}
 			g.timestamps.Begin(cb, "bloom")
-			g.renderBloom(cb, t, t.hdrSet)
+			g.renderBloom(cb, t, src)
 			g.timestamps.End(cb)
 		}
 		if ao {
@@ -810,6 +814,11 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 			return err
 		}
 	}
+	// The output pass is timed as one span opened outside it: a timestamp
+	// written inside a render pass reads as the pass's edge on Metal, so
+	// spans for its parts measure nothing. The screen's pass closes in
+	// EndFrame, so its span closes after its last draw.
+	g.timestamps.Begin(cb, "output")
 	switch {
 	case target != nil:
 		render.BeginTargetPass(cb, render.PassDesc{Target: target, ClearColor: clear, ClearDepth: 1})
@@ -825,28 +834,21 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	}
 	switch {
 	case aa:
-		g.timestamps.Begin(cb, "antialias")
 		g.antiAlias(cb, t, aaSet)
-		g.timestamps.End(cb)
 	case has3D || flat:
-		g.timestamps.Begin(cb, "composite")
-		err := g.composite(cb, t, q.out, bloom, ao, rays, flat)
-		g.timestamps.End(cb)
-		if err != nil {
+		if err := g.composite(cb, t, q.out, bloom, ao, rays, flat); err != nil {
 			return err
 		}
 	}
 	if !flat { // a 2D post frame has already drawn its stream
-		g.timestamps.Begin(cb, "2d")
-		err := g.flush2D(fr, q, vp)
-		g.timestamps.End(cb)
-		if err != nil {
+		if err := g.flush2D(fr, q, vp); err != nil {
 			return err
 		}
 	}
 	if target != nil {
 		render.EndTargetPass(cb, target)
 	}
+	g.timestamps.End(cb)
 	if has3D {
 		// What the next frame reprojects against, without the jitter.
 		aspect := float32(t.extent.Width) / float32(t.extent.Height)

@@ -1,17 +1,19 @@
-// Depth of field: the circle of confusion grows with the distance from
-// the focus plane, and each pixel gathers a disc of samples that wide.
-// A sample nearer the camera than the pixel only contributes as much as
-// its own blur allows, so a sharp foreground does not smear over the
-// background behind it.
+// Depth of field, the gather half: at half resolution, the circle of
+// confusion grows with the distance from the focus plane, and each pixel
+// gathers a disc of samples that wide. A sample nearer the camera than
+// the pixel only contributes as much as its own blur allows, so a sharp
+// foreground does not smear over the background behind it. The full-size
+// pass in dofcombine.frag mixes the result with the sharp image by the
+// blur each full-size pixel wants.
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var sceneSampler: sampler;
 @group(0) @binding(2) var depthTex: texture_2d<f32>;
-@group(0) @binding(3) var depthTexSampler: sampler;
+@group(0) @binding(3) var depthTexSampler: sampler; // the half-resolution depth
 
 struct PC {
     matrix: mat4x4f, // the inverse projection, for view-space distance from depth
-    a: vec4f, // xy = 1 / size, z = focus distance, w = focus range
-    b: vec4f, // x = blur radius in pixels, y = sample count
+    a: vec4f, // xy = 1 / half size, z = focus distance, w = focus range
+    b: vec4f, // x = blur radius in half-size pixels, y = sample count
 }
 var<push_constant> pc: PC;
 
@@ -58,7 +60,7 @@ fn effect() {
         sum += textureSampleLevel(scene, sceneSampler, uv, 0.0).rgb * w;
         weight += w;
     }
-    outColor = vec4f(mix(sharp, sum / weight, here), 1.0);
+    outColor = vec4f(sum / weight, 1.0);
 }
 
 struct EffectOutput {

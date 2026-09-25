@@ -1592,9 +1592,44 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		render.EndTargetPass(cb, mp.shadowAtlas)
 		g.timestamps.End(cb)
 	}
+	// The scene pass draws the sky and the opaque draws and carries on
+	// into the translucent ones (late), unless something has to see the
+	// opaque scene alone first (split): glass reads a copy of it, the
+	// order-independent draws test against its resolved depth in a pass
+	// of their own, and the reflection trace reads its colour and weights
+	// before a translucent draw covers them. Only a split with translucent
+	// draws after it (resume) opens the scene's attachments a second time,
+	// and whichever pass is the last to touch them drops the multisampled
+	// copies once they are resolved. Everything drawn over the finished
+	// scene without its depth attachment (the reflections applied with
+	// their exact weights, a transparency resolve with nothing after it,
+	// decals, particles) goes into one single-sample pass over the
+	// resolved image.
+	t.cur = imgHDR
+	reflections := g.reflections(seen)
+	glass := q.transmissive(seenBlended)
+	late := seenBlended.len() > 0 || len(q.lines.items) > 0
+	split := glass || seenOIT.len() > 0 || (reflections && late)
+	resume := split && late
+	halfDepth := reflections || (presenting && g.wantsHalfDepth())
+	if halfDepth {
+		if err := t.needHalfDepth(g); err != nil {
+			return err
+		}
+	}
+	if reflections {
+		if err := t.needReflections(g); err != nil {
+			return err
+		}
+	}
+	// A pass that clears and discards its depth without drawing anything
+	// can take a driver path that faults after a multisampled pass (see
+	// BeginSwapchainPass), so an empty scene pass stores as it always did.
+	drew := q.light.Background || seen.len() > 0 || (!split && late)
 	c := q.clear.premultiplied()
-	render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1})
+	scenePass := render.PassDesc{Target: t.hdr, ClearColor: c, ClearDepth: 1, DiscardMS: drew && !resume}
 	g.timestamps.Begin(cb, "opaque")
+	render.BeginTargetPass(cb, scenePass)
 	if q.light.Background {
 		// The sky first, under everything: it neither tests nor writes
 		// depth. An image environment is looked up; the procedural sky is
@@ -1627,76 +1662,70 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err := g.drawRuns(cb, fr, q, seen, 0, nil, false); err != nil {
 		return err
 	}
-	err = g.drawSolid(cb, fr, q, seen, 0, t.extent)
-	g.timestamps.End(cb)
-	if err != nil {
+	if err := g.drawSolid(cb, fr, q, seen, 0, t.extent); err != nil {
 		return err
 	}
-	reflections := g.reflections(seen)
-	if reflections || q.transmissive(seenBlended) {
-		// Glass reads what is behind it and a reflection ray reads what the
-		// screen already shows: snapshot the opaque scene, with blurred
-		// mips for rough glass, then carry on into the same images.
-		render.EndTargetPass(cb, t.hdr)
-		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
-		if reflections {
-			g.timestamps.Begin(cb, "reflections")
-			err := g.drawReflections(cb, fr, q, t)
-			g.timestamps.End(cb)
-			if err != nil {
-				return err
-			}
+	lateFirst := uint32(opaque.len() + oit.len())
+	if !split {
+		if err := g.drawLate(cb, fr, q, seenBlended, lateFirst); err != nil {
+			return err
 		}
-		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
+	}
+	render.EndTargetPassDesc(cb, scenePass)
+	g.timestamps.End(cb)
+	// Nothing after the opaque draws writes depth, so the half-size copy
+	// made here is final.
+	if halfDepth {
+		g.buildHalfDepth(cb, t)
+	}
+	if glass {
+		// Glass reads what is behind it: snapshot the opaque scene, with
+		// blurred mips for rough glass.
+		g.timestamps.Begin(cb, "scene copy")
+		render.CopyColorForSampling(cb, t.hdr.Color, t.scene)
+		g.timestamps.End(cb)
+	}
+	if reflections {
+		g.timestamps.Begin(cb, "reflections")
+		g.traceReflections(cb, fr, q, t, resume)
+		g.timestamps.End(cb)
 	}
 	if seenOIT.len() > 0 {
 		// Order-independent transparency: the translucent draws go into
 		// their own two images, depth-tested against the opaque scene but
-		// not against each other, and one fullscreen pass resolves them
-		// over the scene. It runs after the reflection pass, which reads
-		// the opaque scene alone.
+		// not against each other, and one fullscreen draw resolves them
+		// over the scene. It comes after the reflection trace, which reads
+		// the opaque scene alone. The depth is only tested, so it is not
+		// written back, unless a material writes the stencil.
 		g.timestamps.Begin(cb, "transparency")
-		render.EndTargetPass(cb, t.hdr)
 		pass := render.PassDesc{
-			Target: t.accum, Depth: t.hdr.Depth, LoadDepth: true,
+			Target: t.accum, Depth: t.hdr.Depth, LoadDepth: true, ReadOnlyDepth: !q.writesStencil(seenOIT),
 			Extra: []*render.Image{t.reveal.Color}, ExtraClear: [][4]float32{{1, 1, 1, 1}},
 		}
 		render.BeginTargetPass(cb, pass)
-		if err := g.drawRuns(cb, fr, q, seenOIT, uint32(opaque.len()), nil, true); err != nil {
-			return err
-		}
+		err := g.drawRuns(cb, fr, q, seenOIT, uint32(opaque.len()), nil, true)
 		render.EndTargetPassDesc(cb, pass)
 		g.timestamps.End(cb)
-		g.timestamps.Begin(cb, "transparency resolve")
-		oitPipe, err := g.post.oit.at(g.sceneOut)
 		if err != nil {
 			return err
 		}
-		render.BeginTargetPass(cb, render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true})
-		render.SetViewport(cb, t.extent)
-		g.post.fullscreen(cb, oitPipe, t.oitSet, postPush{})
-		g.timestamps.End(cb)
 	}
-	g.timestamps.Begin(cb, "blended")
-	if err := g.drawRuns(cb, fr, q, seenBlended, uint32(opaque.len()+oit.len()), nil, false); err != nil {
-		return err
-	}
-	if err := g.drawDebugLines(cb, fr, q); err != nil {
-		return err
-	}
-	g.timestamps.End(cb)
-	render.EndTargetPass(cb, t.hdr)
-	if len(q.decals) > 0 {
-		g.timestamps.Begin(cb, "decals")
-		err := g.drawDecals(cb, fr, q, t)
+	if resume {
+		g.timestamps.Begin(cb, "translucent")
+		pass := render.PassDesc{Target: t.hdr, LoadColor: true, LoadDepth: true, DiscardMS: true}
+		render.BeginTargetPass(cb, pass)
+		err := g.drawResumed(cb, fr, q, t, reflections, seenOIT.len() > 0, seenBlended, lateFirst)
+		render.EndTargetPassDesc(cb, pass)
 		g.timestamps.End(cb)
 		if err != nil {
 			return err
 		}
+	}
+	if err := g.drawOverlay(cb, fr, q, t, reflections && !resume, seenOIT.len() > 0 && !resume, aspect); err != nil {
+		return err
 	}
 	// The motion vectors go in over the finished depth buffer, so a
-	// moved mesh hidden behind something else writes nothing. Particles
-	// write no depth, so they come after.
+	// moved mesh hidden behind something else writes nothing.
 	if s := g.post.settings; presenting && (s.TemporalAA || s.MotionBlur > 0) {
 		if err := t.needVelocity(g); err != nil {
 			return err
@@ -1705,12 +1734,102 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 		g.renderVelocity(cb, fr, q, t, seen)
 		g.timestamps.End(cb)
 	}
-	// Instanced particles last, over the finished scene: they read the
-	// depth image rather than testing against it, which is what lets
-	// them fade softly into the geometry behind them.
+	return nil
+}
+
+// drawLate records the sorted translucent draws and the debug lines,
+// the last of the scene pass.
+func (g *Graphics) drawLate(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, blended drawList, first uint32) error {
+	if err := g.drawRuns(cb, fr, q, blended, first, nil, false); err != nil {
+		return err
+	}
+	return g.drawDebugLines(cb, fr, q)
+}
+
+// drawResumed records the pass that reopens the scene's attachments
+// after a split: the reflection trace blended over the opaque scene, the
+// order-independent transparency resolved over that, then the late draws.
+func (g *Graphics) drawResumed(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets, reflections, oit bool, blended drawList, first uint32) error {
+	if reflections {
+		if err := g.blendReflections(cb, t); err != nil {
+			return err
+		}
+	}
+	if oit {
+		if err := g.resolveOIT(cb, t, g.sceneOut); err != nil {
+			return err
+		}
+	}
+	return g.drawLate(cb, fr, q, blended, first)
+}
+
+// resolveOIT records the fullscreen draw that composites the
+// order-independent transparency images over the open pass's colour.
+func (g *Graphics) resolveOIT(cb vk.VkCommandBuffer, t *sceneTargets, out outKey) error {
+	pipe, err := g.post.oit.at(out)
+	if err != nil {
+		return err
+	}
+	g.post.fullscreen(cb, pipe, t.oitSet, postPush{})
+	return nil
+}
+
+// writesStencil reports whether any of the draws writes the stencil
+// buffer, which a pass that only tests its depth must then store.
+func (q *drawQueue) writesStencil(draws drawList) bool {
+	for i := range draws.len() {
+		k := q.litKey(draws.at(i))
+		if k.stencil || k.stencilOp != StencilKeep {
+			return true
+		}
+	}
+	return false
+}
+
+// drawOverlay records the single-sample pass over the finished scene:
+// the reflections applied by each pixel's own weight (apply), a
+// transparency resolve (resolve), decals and particles, whichever the
+// frame has. None of them tests the depth image, so the pass leaves it
+// out and they read it instead. Applying the reflections reads the image
+// that holds the scene and writes a spare one, which then holds it; the
+// rest draw over the image in place.
+func (g *Graphics) drawOverlay(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets, apply, resolve bool, aspect float32) error {
+	// Particle uploads are recorded outside any pass.
 	if err := g.prepareParticles(q, fr.Slot); err != nil {
 		return err
 	}
+	if !apply && !resolve && len(q.decals) == 0 && len(q.parts.scene) == 0 {
+		return nil
+	}
+	dst, load := t.cur, true
+	if apply {
+		dst, load = t.spare(), false
+	}
+	g.timestamps.Begin(cb, "overlay")
+	pass := render.PassDesc{Target: t.target(dst), LoadColor: load, NoDepth: true}
+	render.BeginTargetPass(cb, pass)
+	err := g.drawOverlayContents(cb, fr, q, t, apply, resolve, aspect)
+	render.EndTargetPassDesc(cb, pass)
+	g.timestamps.End(cb)
+	t.cur = dst
+	return err
+}
+
+func (g *Graphics) drawOverlayContents(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets, apply, resolve bool, aspect float32) error {
+	if apply {
+		g.applyReflections(cb, q, t)
+	}
+	if resolve {
+		if err := g.resolveOIT(cb, t, outKey{noDepth: true}); err != nil {
+			return err
+		}
+	}
+	if err := g.drawDecals(cb, fr, q, t); err != nil {
+		return err
+	}
+	// Instanced particles last: they read the depth image rather than
+	// testing against it, which is what lets them fade softly into the
+	// geometry behind them.
 	return g.drawSceneParticles(cb, q, t, aspect)
 }
 
@@ -1765,18 +1884,18 @@ func (g *Graphics) drawSolid(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQue
 	return nil
 }
 
-// drawDecals projects the queue's decals onto the finished opaque scene,
-// reading the depth image and blending over the colour.
+// drawDecals projects the queue's decals onto the finished scene,
+// reading the depth image and blending over the colour, in the open
+// single-sample pass drawOverlay began over the resolved scene image.
 func (g *Graphics) drawDecals(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQueue, t *sceneTargets) error {
+	if len(q.decals) == 0 {
+		return nil
+	}
 	mp := &g.meshes
-	// The decals draw over the multisampled colour and resolve with it,
-	// and read the depth the scene pass already resolved.
-	pipe, err := mp.decalPipe.at(g.sceneOut)
+	pipe, err := mp.decalPipe.at(outKey{})
 	if err != nil {
 		return err
 	}
-	pass := render.PassDesc{Target: t.hdr, LoadColor: true, NoDepth: true}
-	render.BeginTargetPass(cb, pass)
 	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &t.depthSet, 0, nil)
 	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &q.uniforms.Sets[fr.Slot], 0, nil)
@@ -1795,7 +1914,6 @@ func (g *Graphics) drawDecals(cb vk.VkCommandBuffer, fr *render.Frame, q *drawQu
 		vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 2, 1, &rec.set, 0, nil)
 		vk.CmdDrawIndexed(cb, mp.decalMesh.IndexCount, 1, 0, 0, 0)
 	}
-	render.EndTargetPassDesc(cb, pass)
 	return nil
 }
 

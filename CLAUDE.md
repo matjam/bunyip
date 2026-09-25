@@ -88,16 +88,48 @@ and premultiplies blended output after `finish` and fog. The existing
 opaque flag in `vGI.y` distinguishes those draws. Both sorted blending
 and order-independent accumulation consume the premultiplied result.
 
-**The post chain.** `postChain` in `gfx/posteffects.go` runs the effects
-that read the scene and its depth, each through `chainPass`: a
-fullscreen pass from `t.hdr` into `t.pong`, copied back over `t.hdr`.
-Every pass therefore has one input set to keep and the composite always
-finds its scene in `t.hdr`. The optional images (velocity, history,
-pong, rays, the second LDR image) are made by the `need*` methods the
-first time a setting asks for them and freed with the target set, so a
-game that turns none of them on pays nothing. The composite reads four
-samplers (scene, bloom, occlusion, rays) plus the LUT, with a set per
-combination of bloom and rays in `sceneTargets.finals`.
+**The post chain.** The scene moves between full-size images with
+nothing copied: `sceneTargets.cur` names the one holding it (`imgHDR`,
+the scene pass's resolve target, `imgPong`, or one of the two temporal
+history images). `postChain` in `gfx/posteffects.go` runs the effects
+that read the scene and its depth; `chainPass` reads `cur` and writes
+`spare()` (whichever of hdr and pong is free), which becomes `cur`. The
+temporal pass reads the history image the last frame wrote and writes
+the other (`histNext`), so its output is both the scene and the next
+frame's history. The composite and bloom read `cur`, and a probe bake
+reads `sceneImage()`. Descriptor sets that name a scene image are
+cached per image in `sceneTargets.sets` (`setKey`). The optional
+images (velocity, history, pong, the half-size depth, the reflection
+trace, the depth of field gather, rays, the second LDR image) are made
+by the `need*` methods the first time a setting asks for them and freed
+with the target set, so a game that turns none of them on pays nothing.
+The composite reads four samplers (scene, bloom, occlusion, rays) plus
+the LUT. The reflection trace and the depth of field gather read
+`t.half`, the nearest of each 2x2 of the scene depth as an R32F image,
+built after the scene pass only on frames with reflections or depth of
+field (`buildHalfDepth`). Ambient occlusion and the light shafts read
+the full depth (`t.depthSet`): at half size they saved nothing and
+changed their output. Depth of field gathers at half size and mixes with
+the sharp image at full size (`dofcombine.frag`), weighting the four
+gather texels by depth.
+
+**The scene passes.** `renderScene` draws sky, opaque, blended and
+debug lines in one pass unless something needs the opaque scene alone
+(`split`: glass needs the transmission copy, order-independent draws
+need their own pass, the reflection trace needs the opaque colour and
+weights before a translucent draw covers them). Only a split with
+blended draws or lines after it reopens the scene's attachments
+(`resume`). The last pass to touch a multisampled target sets
+`PassDesc.DiscardMS`, so its samples resolve and are not stored; a pass
+that only tests depth (velocity, the order-independent accumulation)
+sets `ReadOnlyDepth` (`STORE_OP_NONE`). Everything drawn over the
+finished scene without its depth attachment goes into one single-sample
+pass over the resolved image (`drawOverlay`): the reflections applied
+with exact per-pixel weights (it reads `cur` and writes `spare()`), a
+transparency resolve with nothing after it, decals and 3D particles.
+GPU timestamp spans open and close outside render passes, because on
+Metal a timestamp inside a pass reads as the pass's edge; the screen's
+pass is one `output` span.
 
 **Multisampling.** `PostSettings.Samples` (1, 2, 4 or 8, clamped by
 `Device.SampleCount`) multisamples the HDR scene pass. A `render.Target`
@@ -130,12 +162,12 @@ and then by call order, which is why `draw2D` carries the layer and the
 submission offset of its first item and why `item2D` carries `breaks`:
 two sprite runs with a batch between them must not merge into one draw.
 `DrawParticles3D` records into `parts.scene`, which `renderScene` draws
-after decals in a `NoDepth` pass over `t.hdr`, sampling `t.depthSet` and
-doing the depth test in the fragment program, which is what gives the
-soft fade. Its push block is its own 128 bytes carrying the camera
-basis, so the shared `Frame` block is untouched. That pass writes the
-scene's colour attachment, so its pipeline is built per sample count
-through `pipeCache` like the sky and the decals.
+after decals in the single-sample overlay pass over the resolved scene
+image, sampling `t.depthSet` and doing the depth test in the fragment
+program, which is what gives the soft fade. Its push block is its own
+128 bytes carrying the camera basis, so the shared `Frame` block is
+untouched. The overlay pass is always single-sample, so its pipeline is
+the zero `outKey` whatever the scene's sample count.
 
 **Descriptor sets for meshes.** Set 0 is the material: seventeen
 `SAMPLED_IMAGE` bindings (five material textures, four shader images,
@@ -495,11 +527,15 @@ test's output.
   block picks up after those at 22 to 24 plus a pair of packed words at
   25 (`morphInstanceOffset`).
 - An opaque draw writes its screen-space reflection weight into the HDR
-  alpha channel, which nothing else reads, and the reflection pass reads
-  it back from the scene copy. A blended draw keeps its real alpha, which
-  is what the opaque flag in the instance stream is for. The pass runs
-  between the opaque and the blended draws, in its own pass without the
-  depth attachment so it can sample the depth image.
+  alpha channel, which nothing else reads, and the half-size trace
+  (`ssr.frag`) reads it from the resolved scene after the opaque draws.
+  A blended draw keeps its real alpha, which is what the opaque flag in
+  the instance stream is for, so the trace must run before any blended
+  draw or debug line; that is why reflections with translucent draws
+  split the scene pass. Without them the trace is applied by
+  `ssrapply.frag` in the overlay pass with each pixel's exact weight;
+  with them the trace folds the weight in at half size and
+  `ssrblend.frag` blends it as the first draw of the resumed pass.
 - `BakeProbe` and `BakeLightProbes` render the scene through
   `renderScene` on their own one-shot command buffers, so they refuse to
   run inside `Draw`. They build a `baker`, which holds a queue for each

@@ -52,12 +52,16 @@ var (
 //go:generate go run ../../cmd/bunyip-shader -raw -o fxaa.frag.spv fxaa.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o ssao.frag.spv ssao.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o ssr.frag.spv ssr.frag.wgsl
+//go:generate go run ../../cmd/bunyip-shader -raw -o ssrapply.frag.spv ssrapply.frag.wgsl
+//go:generate go run ../../cmd/bunyip-shader -raw -o ssrblend.frag.spv ssrblend.frag.wgsl
+//go:generate go run ../../cmd/bunyip-shader -raw -o depthhalf.frag.spv depthhalf.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o aoblur.frag.spv aoblur.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o velocity.vert.spv velocity.vert.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o velocity_skin.vert.spv velocity_skin.vert.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o velocity.frag.spv velocity.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o taa.frag.spv taa.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o dof.frag.spv dof.frag.wgsl
+//go:generate go run ../../cmd/bunyip-shader -raw -o dofcombine.frag.spv dofcombine.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o motionblur.frag.spv motionblur.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o godrays.frag.spv godrays.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o oit.frag.spv oit.frag.wgsl
@@ -130,6 +134,12 @@ var (
 	SSAOFrag []byte
 	//go:embed ssr.frag.spv
 	SSRFrag []byte
+	//go:embed ssrapply.frag.spv
+	SSRApplyFrag []byte
+	//go:embed ssrblend.frag.spv
+	SSRBlendFrag []byte
+	//go:embed depthhalf.frag.spv
+	DepthHalfFrag []byte
 	//go:embed aoblur.frag.spv
 	AOBlurFrag []byte
 	//go:embed velocity.vert.spv
@@ -142,6 +152,8 @@ var (
 	TAAFrag []byte
 	//go:embed dof.frag.spv
 	DOFFrag []byte
+	//go:embed dofcombine.frag.spv
+	DOFCombineFrag []byte
 	//go:embed motionblur.frag.spv
 	MotionBlurFrag []byte
 	//go:embed godrays.frag.spv

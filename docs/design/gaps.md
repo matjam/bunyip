@@ -289,8 +289,11 @@ grow without ever idling the GPU are in.
 - Screen-space reflections trace against the depth buffer with normals
   reconstructed from it, so a surface reflects as flat as its triangles,
   and what is off screen or hidden falls back to the probe or the
-  environment. There is no temporal accumulation, so a rough surface's
-  rays stay noisy; keep `PostSettings.ReflectionRoughness` low.
+  environment. The rays are marched at half resolution through a
+  half-resolution depth with a linear screen-space march, not a
+  hierarchical depth pyramid, so a thin object a long ray steps over is
+  missed. There is no temporal accumulation, so a rough surface's rays
+  stay noisy; keep `PostSettings.ReflectionRoughness` low.
 - Volumetrics: light shafts through a medium. Fog is a per-pixel fade,
   `Sky.Atmosphere` scatters single bounces only, and the god rays are a
   screen-space radial blur over the depth buffer's sky mask, so none of
@@ -317,10 +320,11 @@ grow without ever idling the GPU are in.
 - A skinned mesh's motion vectors carry its model matrix and not its
   pose, so a limb swinging in place has none. Keeping the previous
   frame's joint matrices would fix it and would double the joint buffer.
-- Depth of field gathers one disc at full resolution rather than a
-  half-resolution near and far layer, so a very wide bokeh costs more
-  than it should and a bright out-of-focus highlight does not bloom into
-  the shape of the aperture.
+- Depth of field gathers one disc at half resolution and mixes it with
+  the sharp image at full resolution, rather than keeping separate near
+  and far layers, so a blurred foreground does not spread over the sharp
+  background behind its edge, and a bright out-of-focus highlight does
+  not bloom into the shape of the aperture.
 - Motion blur gathers along each pixel's own vector, with no tile-max
   pass to dilate a fast object's blur past its silhouette, so an object
   smears inside its own outline and leaves no trail behind it.

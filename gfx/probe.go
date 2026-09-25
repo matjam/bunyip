@@ -312,7 +312,7 @@ func (b *baker) capture(positions ...lin.Vec3) ([]*cubeFaces, error) {
 					if inner = b.g.renderScene(fr, q, b.t); inner != nil {
 						return
 					}
-					render.RecordImageReadback(cb, b.t.hdr.Color, b.readback, vk.VkDeviceSize(k*faceBytes))
+					render.RecordImageReadback(cb, b.t.sceneImage(), b.readback, vk.VkDeviceSize(k*faceBytes))
 				}
 			}
 		})
