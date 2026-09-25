@@ -184,24 +184,30 @@ func (s *Store) WriteAsync(name string, v any) <-chan error {
 }
 
 // run writes a name's queued jobs in order and retires the queue once
-// it is empty.
+// it is empty. A finished job leaves the queue, and an empty queue leaves
+// the store, under the lock before the job reports its result, so a
+// caller that has seen the result, or a Flush that has returned, finds
+// nothing pending for it.
 func (s *Store) run(name string, q *slotQueue) {
-	for {
-		s.mu.Lock()
-		if len(q.jobs) == 0 {
-			q.current = nil
-			delete(s.slots, name)
-			s.mu.Unlock()
-			return
-		}
+	s.mu.Lock()
+	for len(q.jobs) > 0 {
 		job := q.jobs[0]
 		q.jobs[0] = nil
 		q.jobs = q.jobs[1:]
 		q.current = job
 		s.mu.Unlock()
-		job.result <- s.writeFile(name, job.data)
+		err := s.writeFile(name, job.data)
+		s.mu.Lock()
+		q.current = nil
+		if len(q.jobs) == 0 {
+			delete(s.slots, name)
+		}
+		s.mu.Unlock()
+		job.result <- err
 		close(job.finished)
+		s.mu.Lock()
 	}
+	s.mu.Unlock()
 }
 
 // Flush waits until every write that WriteAsync or Write started before
