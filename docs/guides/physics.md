@@ -557,6 +557,18 @@ work with more substeps and fewer iterations than the other way around.
 The solver reuses its scratch buffers; initial steps, particle growth
 and larger neighbourhoods can allocate.
 
+Colliders are placed once an update, and each component measures its
+particles only against the colliders near the box around them, so
+colliders elsewhere in the level cost almost nothing. A cloth solves
+its links in twelve batches of links that share no particle. A fluid
+from about two thousand particles, a cloth from about sixteen thousand
+and a group of soft bodies with that many particles between them are
+split across goroutines, a batch or a pass at a time. The work is cut
+the same way on every machine and each piece writes only its own
+particles, so a scene steps to the same result whatever `GOMAXPROCS`
+is; below those sizes the solver stays on one goroutine and starts
+none.
+
 The `examples/softbody` program puts all three together:
 a flag on a pole, a jelly cube beside a rigid crate, and a tank of
 fluid in the corner of the screen.

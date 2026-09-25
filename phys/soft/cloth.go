@@ -82,6 +82,7 @@ type Cloth struct {
 	vel        []lin.Vec3
 	inv        []float32
 	links      []link
+	batches    [clothBatches + 1]int // where each batch of links starts
 	lambda     []float32
 	verts      []gfx.Vertex
 	indices    []uint32
@@ -157,33 +158,80 @@ func NewCloth(spec ClothSpec) Cloth {
 		}
 	}
 	diag := spacing * sqrt(2)
-	add := func(a, b int, rest, compliance float32) {
+	// Each link goes in one of twelve batches in which no two links share
+	// a particle: edges across and down, the two diagonals and the bends
+	// across and down, each split by the parity of its row or column (or,
+	// for a bend, of its pair of columns or rows). A batch can then be
+	// solved in any order, or split across goroutines, with one result.
+	var batch []uint8
+	add := func(a, b int, rest, compliance float32, group uint8) {
 		c.links = append(c.links, link{a: int32(a), b: int32(b), rest: rest, compliance: compliance})
+		batch = append(batch, group)
 	}
 	for y := range rows {
 		for x := range cols {
 			i := y*cols + x
 			if x+1 < cols {
-				add(i, i+1, spacing, spec.Stretch)
+				add(i, i+1, spacing, spec.Stretch, uint8(x%2))
 			}
 			if y+1 < rows {
-				add(i, i+cols, spacing, spec.Stretch)
+				add(i, i+cols, spacing, spec.Stretch, 2+uint8(y%2))
 			}
 			if x+1 < cols && y+1 < rows {
-				add(i, i+cols+1, diag, spec.Shear)
-				add(i+1, i+cols, diag, spec.Shear)
+				add(i, i+cols+1, diag, spec.Shear, 4+uint8(y%2))
+				add(i+1, i+cols, diag, spec.Shear, 6+uint8(y%2))
 			}
 			if x+2 < cols {
-				add(i, i+2, 2*spacing, bend)
+				add(i, i+2, 2*spacing, bend, 8+uint8(x/2%2))
 			}
 			if y+2 < rows {
-				add(i, i+2*cols, 2*spacing, bend)
+				add(i, i+2*cols, 2*spacing, bend, 10+uint8(y/2%2))
 			}
 		}
 	}
+	c.orderLinks(batch)
 	c.lambda = make([]float32, len(c.links))
 	c.buildMesh()
 	return c
+}
+
+// clothBatches is how many batches of independent links a cloth has.
+const clothBatches = 12
+
+// orderLinks puts the links in batch order, keeping the order they were
+// made in within a batch, and notes where each batch starts.
+func (c *Cloth) orderLinks(batch []uint8) {
+	var count [clothBatches + 1]int
+	for _, g := range batch {
+		count[g+1]++
+	}
+	for g := 1; g <= clothBatches; g++ {
+		count[g] += count[g-1]
+	}
+	c.batches = count
+	next := count
+	ordered := make([]link, len(c.links))
+	for i, l := range c.links {
+		ordered[next[batch[i]]] = l
+		next[batch[i]]++
+	}
+	c.links = ordered
+}
+
+// solveBatches projects the links once, batch by batch. A batch's links
+// share no particle, so a large batch is split across goroutines with
+// the same result.
+func (c *Cloth) solveBatches(h float32) {
+	for g := range clothBatches {
+		lo, hi := c.batches[g], c.batches[g+1]
+		links, lambda := c.links[lo:hi], c.lambda[lo:hi]
+		if n := hi - lo; n >= linkParallelMin {
+			pos, inv, ls, lm, hh := c.pos, c.inv, links, lambda, h
+			parallel(n, func(a, b int) { solveLinks(pos, inv, ls[a:b], lm[a:b], hh) })
+		} else {
+			solveLinks(c.pos, c.inv, links, lambda, h)
+		}
+	}
 }
 
 // Size returns the particle counts across and down.
@@ -255,12 +303,24 @@ func (c *Cloth) step(s *state, settings *Settings, gravity lin.Vec3, h float32, 
 	c.lambda = grow(c.lambda, len(c.links))
 	c.applyCompliance()
 	for range iterations {
-		solveLinks(c.pos, c.inv, c.links, c.lambda, h)
+		c.solveBatches(h)
 	}
 	if lo, hi, ok := bounds3(c.pos, c.inv, c.Radius); ok {
 		s.reach3(&c.reach, lo, hi, c.Radius)
 	}
-	for i := range c.pos {
+	// Each particle is pushed out of the colliders on its own.
+	if n := len(c.pos); n >= linkParallelMin {
+		cl, st, set, hh := c, s, settings, h
+		parallel(n, func(lo, hi int) { cl.project(st, set, hh, lo, hi) })
+	} else {
+		c.project(s, settings, h, 0, n)
+	}
+}
+
+// project pushes particles lo to hi out of the colliders and reads their
+// velocities back.
+func (c *Cloth) project(s *state, settings *Settings, h float32, lo, hi int) {
+	for i := lo; i < hi; i++ {
 		if c.inv[i] == 0 {
 			continue
 		}

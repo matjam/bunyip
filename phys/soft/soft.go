@@ -24,6 +24,16 @@
 // substep count, one by default, for the reason Fluid2Spec.Substeps
 // gives.
 //
+// A cloth's distance constraints are solved in twelve batches, each a
+// set of links that share no particle (edges across and down, the two
+// diagonals and the bends, split by row or column parity), in that
+// order. A large cloth splits each batch across goroutines, a large
+// fluid splits each of its passes, and many soft bodies are stepped on
+// several goroutines at once. The pieces are cut the same way on every
+// machine and each writes only its own particles, so the result is the
+// same whatever GOMAXPROCS is, and the same as a small scene stepped on
+// one goroutine.
+//
 // Particle positions are world space. A cloth or a soft body carries no
 // transform, and is drawn by keeping a gfx.Mesh in step with it:
 //
@@ -31,8 +41,10 @@
 //	ctx.Gfx.DrawMesh(mesh, material, lin.Identity())
 //
 // Particles collide with the static and kinematic phys colliders in the
-// same world, through phys.SignedDistance3 and phys.SignedDistance2, and
-// with the ground plane Settings.Ground turns on. The shapes that carry a
+// same world, placed once an update with phys.PlaceShape3 and
+// phys.PlaceShape2, and with the ground plane Settings.Ground turns on.
+// Each component measures its particles only against the colliders
+// within reach of the box around them. The shapes that carry a
 // signed distance are Sphere, Box3, Capsule and compounds of those in 3D,
 // and Circle, Box2, Polygon2 and Capsule2 in 2D; other shapes, and the
 // colliders of dynamic bodies, are ignored. Soft bodies do not push rigid
@@ -210,8 +222,9 @@ type state struct {
 	fluids  *ecs.Query1[Fluid2]
 	solids3 []solid3
 	solids2 []solid2
-	grads   []lin.Vec3 // volume-constraint gradients
-	rows    []lin.Vec3 // shape-matching scratch
+	// The soft bodies this update and their particle count.
+	bodyList []*SoftBody3
+	bodyWork int
 }
 
 func stateOf(w *ecs.World) *state {
@@ -268,7 +281,26 @@ func System(w *ecs.World, dt float64) {
 	iterations := settings.iterations()
 	for range settings.substeps() {
 		s.cloths.Each(func(_ ecs.Entity, c *Cloth) { c.step(s, settings, gravity3, h, iterations) })
-		s.bodies.Each(func(_ ecs.Entity, b *SoftBody3) { b.step(s, settings, gravity3, h, iterations) })
+	}
+	// Soft bodies never touch each other or the cloths, so each takes all
+	// its substeps on its own, and many of them are stepped on several
+	// goroutines at once with the same result.
+	s.bodyList, s.bodyWork = s.bodyList[:0], 0
+	s.bodies.Each(func(_ ecs.Entity, b *SoftBody3) {
+		s.bodyList = append(s.bodyList, b)
+		s.bodyWork += len(b.pos)
+	})
+	if len(s.bodyList) >= 2 && s.bodyWork >= parallelMin {
+		// The closure gets copies made here, so a small scene, which takes
+		// the other branch, moves nothing to the heap.
+		st, set, g, hh, it := s, settings, gravity3, h, iterations
+		parallelEach(len(st.bodyList), st.bodyWork, func(i int) {
+			st.bodyList[i].steps(st, set, g, hh, it)
+		})
+	} else {
+		for _, b := range s.bodyList {
+			b.steps(s, settings, gravity3, h, iterations)
+		}
 	}
 	// A fluid keeps its own substep count: its density solve is a
 	// whole-step pressure solve, and splitting it finer leaves the same

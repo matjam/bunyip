@@ -589,6 +589,15 @@ test's output.
   list of still rows (`sweepPairs` in `phys/axis.go`) in the order one
   sweep over all of them gives. `index_test.go` checks both against the
   old brute-force walk.
+- `phys/soft` splits large passes across goroutines with `parallel` in
+  `phys/soft/parallel.go`: fixed chunks of 1024, each writing only its
+  own particles, so results do not depend on `GOMAXPROCS`
+  (`TestParallelMatchesOneThread`). A cloth's links are stored in twelve
+  batches that share no particle (`orderLinks`); changing how links are
+  made means keeping `TestClothBatchesAreIndependent` passing. Call
+  sites take a pass in one call below `parallelMin` or
+  `linkParallelMin`, so the closure for the goroutines is only made
+  when it is used.
 - Go on arm64 fuses a multiply and an add into one instruction where
   the compiler chooses, and the choice depends on the surrounding code,
   so moving float arithmetic into another function can change the last
