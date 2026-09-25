@@ -271,7 +271,7 @@ func main() {
 	dir := flag.String("dir", filepath.Join(os.TempDir(), "bunyip-assets"), "asset directory (created and seeded when empty)")
 	seed := flag.Uint64("seed", 5, "random seed, so a run can be repeated")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip assets", Width: 840, Height: 440, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip assets", Width: 840, Height: 440},
 		&game{seconds: *seconds, shot: *shot, dir: *dir, randSeed: *seed})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "assets:", err)

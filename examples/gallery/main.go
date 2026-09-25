@@ -387,7 +387,7 @@ func main() {
 	theme := flag.String("theme", "dark", "starting theme: "+fmt.Sprint(ui.ThemeNames()))
 	tab := flag.Int("tab", 0, "the tab of the More widgets window to open on (0-3)")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip gallery", Width: 1220, Height: 620, Resizable: true, Validation: true, Debug: *debug, Console: true},
+	err := engine.Run(engine.Config{Title: "Bunyip gallery", Width: 1220, Height: 620, Resizable: true, Debug: *debug, Console: true},
 		&gallery{seconds: *seconds, shot: *shot, beep: *beep, skinned: *skin, theme: *theme, startTab: *tab})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gallery:", err)

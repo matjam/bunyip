@@ -22,7 +22,7 @@ import (
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds (0: until closed)")
 	shot := flag.String("shot", "", "write the frame at -seconds/2 (or the first frame) to this PNG")
-	validate := flag.Bool("validate", true, "enable validation layers when installed")
+	validate := flag.Bool("validate", os.Getenv("BUNYIP_VALIDATION") != "", "enable validation layers when installed; setting BUNYIP_VALIDATION turns this on by default")
 	flag.Parse()
 	if err := run(*seconds, *shot, *validate); err != nil {
 		fmt.Fprintln(os.Stderr, "clear:", err)

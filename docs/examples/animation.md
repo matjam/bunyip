@@ -692,7 +692,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	headless := flag.Bool("headless", false, "render without a window, for screenshots")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip animation", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
+	err := engine.Run(engine.Config{Title: "Bunyip animation", Width: 960, Height: 640, Resizable: true, Headless: *headless},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "animation:", err)

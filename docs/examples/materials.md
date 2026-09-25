@@ -546,7 +546,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	env := flag.String("env", "", "panorama for lighting: .exr, .hdr, .png or .jpg")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip materials", Width: 1100, Height: 680, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip materials", Width: 1100, Height: 680, Resizable: true},
 		&game{seconds: *seconds, shot: *shot, envPath: *env})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "materials:", err)

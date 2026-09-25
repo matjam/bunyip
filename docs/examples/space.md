@@ -661,7 +661,7 @@ func main() {
 	dist := flag.Float64("dist", 14, "starting camera distance")
 	warp := flag.Float64("warp", 1, "starting time warp")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip space", Width: 1024, Height: 680, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip space", Width: 1024, Height: 680, Resizable: true},
 		&game{seconds: *seconds, shot: *shot, startFocus: *focus, startDist: float32(*dist), startWarp: float32(*warp)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "space:", err)

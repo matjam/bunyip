@@ -187,6 +187,25 @@ appends a stack trace if the game panics. That file is the one to ask a
 player for. `engine.FlyCamera` is a free-flying camera for looking round
 a 3D scene while it is being built.
 
+### Vulkan validation
+
+To check the game's Vulkan use, turn on the Khronos validation layer with
+`Config.Validation`, or set the environment variable `BUNYIP_VALIDATION=1`
+to turn it on without a code change. The layer checks every Vulkan call
+and logs what it finds through the engine's log. It needs the validation
+layers installed (on macOS, `brew install vulkan-validationlayers`); when
+they are missing the engine logs a warning and runs without them.
+
+```sh
+BUNYIP_VALIDATION=1 go run ./examples/lighting
+```
+
+The layer adds CPU time to every frame: in the lighting example it raises
+the submit time from 0.44 to 1.74 ms. Leave it off when measuring
+performance. The examples leave `Config.Validation` off for that reason,
+so `go run ./examples/<name>` measures the engine; the examples test sets
+`BUNYIP_VALIDATION=1` for every example it runs.
+
 ### Profiling
 
 Enable Go's profiling server when starting the game:

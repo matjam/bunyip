@@ -455,7 +455,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	ragdoll := flag.Bool("ragdoll", true, "drop a ragdoll with the debris")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Validation: true, Console: true},
+	err := engine.Run(engine.Config{Title: "Bunyip physics lab", Width: 1024, Height: 680, Resizable: true, Console: true},
 		&game{seconds: *seconds, shot: *shot, ragdoll: *ragdoll})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "physics-lab:", err)

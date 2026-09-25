@@ -279,7 +279,7 @@ func main() {
 	capture := flag.Bool("capture", false, "start with the cursor captured (C toggles)")
 	post := flag.Bool("post", false, "start with 2D post-processing on (P toggles)")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true},
 		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture, post: *post})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sprites:", err)

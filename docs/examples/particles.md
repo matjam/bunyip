@@ -337,8 +337,8 @@ func (g *game) Draw(ctx *engine.Context) error {
 
 `engine.Run` owns the window, the renderer and the loop. Every field of
 `engine.Config` has a usable zero value; this one sets a title, a size, a
-resizable window, the Vulkan validation layers, and headless mode from
-the flag.
+resizable window, and headless mode from the flag. To turn on the Vulkan
+validation layers, set `BUNYIP_VALIDATION=1` in the environment.
 
 ```go
 func main() {
@@ -347,7 +347,7 @@ func main() {
 	headless := flag.Bool("headless", false, "render without a window, for screenshots")
 	drops := flag.Int("drops", 3000, "raindrops in the instanced storm; try 200000")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
+	err := engine.Run(engine.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Headless: *headless},
 		&game{seconds: *seconds, shot: *shot, drops: max(*drops, 1)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "particles:", err)

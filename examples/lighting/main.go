@@ -338,7 +338,7 @@ func main() {
 	env := flag.String("env", "", "equirectangular panorama (PNG or JPEG) to light the scene with")
 	vacuum := flag.Float64("vacuum", 0, "how thin the air starts: 0 on the ground, 1 in orbit")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip lighting", Width: 1024, Height: 720, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip lighting", Width: 1024, Height: 720, Resizable: true},
 		&game{seconds: *seconds, shot: *shot, modelPath: *model, envPath: *env, vacuum: float32(*vacuum)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lighting:", err)

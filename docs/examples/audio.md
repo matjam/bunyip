@@ -453,7 +453,7 @@ func main() {
 	zone := flag.Bool("zone", false, "put a reverb zone over the left half and move the listener with the mouse")
 	mic := flag.Bool("mic", false, "record from the default microphone and show a level meter")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip audio", Width: 900, Height: 600, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip audio", Width: 900, Height: 600, Resizable: true},
 		&game{seconds: *seconds, shot: *shot, musicPath: *music, zone: *zone, mic: *mic})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "audio:", err)

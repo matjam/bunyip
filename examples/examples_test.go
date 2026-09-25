@@ -136,7 +136,9 @@ func TestExamplesRun(t *testing.T) {
 			// The fixed clock is what makes the frame reproducible: the
 			// clock counts frames rather than reading the wall clock, so
 			// the same frame is drawn however long the machine takes.
-			cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "BUNYIP_HEADLESS=1", "BUNYIP_FIXED_CLOCK=1")
+			// The examples leave validation off so that a run measures the
+			// engine; the test turns it on, where the layer is installed.
+			cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "BUNYIP_HEADLESS=1", "BUNYIP_FIXED_CLOCK=1", "BUNYIP_VALIDATION=1")
 			start := time.Now()
 			out, err := cmd.CombinedOutput()
 			if err != nil {

@@ -511,9 +511,10 @@ func smoothstep(a, b, x float64) float64 {
 
 `main` parses the flags and calls `engine.Run` with a `Config` and the
 game value. `Config`'s zero values are defaults, so only the title,
-size, resizability and validation are given here. `Validation: true`
-turns on the Vulkan validation layers, which every example does because
-they are development programs; a shipped game leaves it off.
+size and resizability are given here. The examples leave
+`Config.Validation` off so that a run measures the engine rather than
+the validation layer. To turn the Vulkan validation layers on, set
+`BUNYIP_VALIDATION=1` in the environment.
 
 ```go
 func main() {
@@ -523,7 +524,7 @@ func main() {
 	capture := flag.Bool("capture", false, "start with the cursor captured (C toggles)")
 	post := flag.Bool("post", false, "start with 2D post-processing on (P toggles)")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip sprites", Width: 960, Height: 600, Resizable: true},
 		&game{seconds: *seconds, shot: *shot, fullscreen: *fullscreen, capture: *capture, post: *post})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sprites:", err)
