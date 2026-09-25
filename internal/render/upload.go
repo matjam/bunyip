@@ -55,6 +55,7 @@ type uploader struct {
 // signals.
 type uploadBatch struct {
 	serial uint64
+	seq    uint64 // the submit job that submits it
 	fence  vk.VkFence
 	cb     vk.VkCommandBuffer
 	blocks []*Buffer
@@ -85,14 +86,14 @@ func (d *Device) settleUpload(serial uint64) {
 	}
 	waited := false
 	for _, b := range u.inflight {
-		if b.serial > serial || vk.VkGetFenceStatus(d.Handle, b.fence) == vk.VK_SUCCESS {
+		if b.serial > serial || d.fenceSignalled(b.seq, b.fence) {
 			continue
 		}
 		if !waited {
 			d.waits++
 			waited = true
 		}
-		_ = vk.WaitForFences(d.Handle, 1, &b.fence, vk.VK_TRUE, ^uint64(0))
+		_ = d.waitFence(b.fence)
 	}
 	d.reclaimUploads()
 }
@@ -219,13 +220,9 @@ func (d *Device) FlushUploads() error {
 			return fail(err)
 		}
 	}
-	cbInfo := vk.VkCommandBufferSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, CommandBuffer: cb}
-	submit := vk.VkSubmitInfo2{SType: vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2, CommandBufferInfoCount: 1, PCommandBufferInfos: &cbInfo}
-	if err := vk.Check("vkQueueSubmit2", vk.QueueSubmit2(d.Queue, 1, &submit, batch.fence)); err != nil {
-		vk.VkDestroyFence(d.Handle, batch.fence, nil)
-		return fail(err)
-	}
-	d.submitted()
+	// The submit goroutine submits the batch in order with everything
+	// else, without this goroutine waiting for it.
+	batch.seq = d.submit(submitJob{cb: cb, fence: batch.fence})
 	u.inflight = append(u.inflight, batch)
 	u.inflightBytes += batch.bytes
 	d.reclaimUploads()
@@ -233,7 +230,7 @@ func (d *Device) FlushUploads() error {
 	// past the limit, wait for the oldest batches to finish.
 	for u.inflightBytes > uploadInFlight && len(u.inflight) > 0 {
 		d.waits++
-		if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &u.inflight[0].fence, vk.VK_TRUE, ^uint64(0))); err != nil {
+		if err := d.waitFence(u.inflight[0].fence); err != nil {
 			return err
 		}
 		d.reclaimUploads()
@@ -246,9 +243,9 @@ func (d *Device) FlushUploads() error {
 func (d *Device) settleUploads() {
 	_ = d.FlushUploads()
 	for _, b := range d.up.inflight {
-		if vk.VkGetFenceStatus(d.Handle, b.fence) != vk.VK_SUCCESS {
+		if !d.fenceSignalled(b.seq, b.fence) {
 			d.waits++
-			_ = vk.WaitForFences(d.Handle, 1, &b.fence, vk.VK_TRUE, ^uint64(0))
+			_ = d.waitFence(b.fence)
 		}
 	}
 	d.reclaimUploads()
@@ -265,7 +262,7 @@ func (d *Device) reclaimUploads() {
 	}
 	keep := u.inflight[:0]
 	for _, b := range u.inflight {
-		if vk.VkGetFenceStatus(d.Handle, b.fence) != vk.VK_SUCCESS {
+		if !d.fenceSignalled(b.seq, b.fence) {
 			keep = append(keep, b)
 			continue
 		}

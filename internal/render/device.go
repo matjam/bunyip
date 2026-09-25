@@ -30,7 +30,8 @@ type Device struct {
 	waits            uint64 // times the device or its queue was waited on
 	frameNo          uint64 // frames begun, for the retire ring
 	retired          []deferred
-	up               uploader // uploads recorded outside a frame, see upload.go
+	up               uploader   // uploads recorded outside a frame, see upload.go
+	q                *submitter // the goroutine that owns Queue, see submit.go
 	// busy is whether anything has been submitted to the queue since the
 	// device was last waited idle. WaitIdle on a device that is already
 	// idle returns at once and counts no wait.
@@ -112,6 +113,7 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 		return nil, err
 	}
 	vk.VkGetDeviceQueue(d.Handle, g.queueFamily, 0, &d.Queue)
+	d.q = newSubmitter(inst.Handle, d.Queue)
 	poolInfo := vk.VkCommandPoolCreateInfo{
 		SType:            vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 		Flags:            vk.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -138,7 +140,16 @@ func (d *Device) WaitIdle() error {
 		return flushErr
 	}
 	d.waits++
-	if err := vk.Check("vkDeviceWaitIdle", vk.VkDeviceWaitIdle(d.Handle)); err != nil {
+	// Waiting on the device touches its queue, so the submit goroutine
+	// must have nothing in hand.
+	d.q.drain()
+	d.q.mu.Lock()
+	res := vk.VkDeviceWaitIdle(d.Handle)
+	d.q.mu.Unlock()
+	if err := vk.Check("vkDeviceWaitIdle", res); err != nil {
+		return err
+	}
+	if err := d.q.failed(); err != nil {
 		return err
 	}
 	d.busy = false
@@ -163,6 +174,9 @@ func (d *Device) Destroy() {
 		return
 	}
 	_ = d.WaitIdle()
+	if d.q != nil {
+		d.q.stop()
+	}
 	d.flushRetired()
 	d.destroyUploads()
 	d.alloc.destroy()
@@ -253,14 +267,15 @@ func (d *Device) OneShot(record func(cb vk.VkCommandBuffer)) error {
 	if err := d.FlushUploads(); err != nil {
 		return err
 	}
-	cbInfo := vk.VkCommandBufferSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, CommandBuffer: cb}
-	submit := vk.VkSubmitInfo2{SType: vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2, CommandBufferInfoCount: 1, PCommandBufferInfos: &cbInfo}
-	if err := vk.Check("vkQueueSubmit2", vk.VkQueueSubmit2(d.Queue, 1, &submit, 0)); err != nil {
+	d.q.await(d.submit(submitJob{cb: cb}))
+	if err := d.q.failed(); err != nil {
 		return err
 	}
-	d.submitted()
 	d.waits++
-	if err := vk.Check("vkQueueWaitIdle", vk.VkQueueWaitIdle(d.Queue)); err != nil {
+	d.q.mu.Lock()
+	res := vk.VkQueueWaitIdle(d.Queue)
+	d.q.mu.Unlock()
+	if err := vk.Check("vkQueueWaitIdle", res); err != nil {
 		return err
 	}
 	d.busy = false // the device's one queue is idle

@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/matjam/bunyip/internal/render"
@@ -15,15 +16,20 @@ import (
 // validationWatch is the log the headless renderer writes to: it prints
 // everything as before and remembers the validation layers' errors, so a
 // test fails on a pipeline or descriptor mistake rather than passing
-// while the driver complains.
+// while the driver complains. The layers report from whichever thread
+// made the call, the submit goroutine included, so the list is
+// guarded.
 type validationWatch struct {
 	slog.Handler
+	mu     *sync.Mutex
 	errors *[]string
 }
 
 func (v validationWatch) Handle(ctx context.Context, r slog.Record) error {
 	if r.Level >= slog.LevelError {
+		v.mu.Lock()
 		*v.errors = append(*v.errors, r.Message)
+		v.mu.Unlock()
 	}
 	return v.Handler.Handle(ctx, r)
 }
@@ -34,8 +40,11 @@ func newHeadless(t *testing.T, w, h int) *Graphics {
 		t.Skipf("no Vulkan: %v", err)
 	}
 	var complaints []string
-	log := slog.New(validationWatch{Handler: slog.NewTextHandler(os.Stderr, nil), errors: &complaints})
+	var mu sync.Mutex
+	log := slog.New(validationWatch{Handler: slog.NewTextHandler(os.Stderr, nil), mu: &mu, errors: &complaints})
 	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
 		if len(complaints) > 0 {
 			t.Errorf("the Vulkan validation layers reported %d errors, the first being: %s", len(complaints), complaints[0])
 		}

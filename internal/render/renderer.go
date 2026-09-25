@@ -29,6 +29,7 @@ type Renderer struct {
 	resize    bool
 	inFrame   bool
 	inPass    bool
+	waited    bool // WaitFrame has waited for the current slot since the last BeginFrame
 	onResize  func(vk.VkExtent2D) error
 	readback  *Buffer
 	depth     *Image
@@ -42,24 +43,21 @@ type frame struct {
 	cb             vk.VkCommandBuffer
 	fence          vk.VkFence
 	imageAvailable vk.VkSemaphore
-	pub            Frame // handed to the caller, refilled each frame
+	pub            Frame  // handed to the caller, refilled each frame
+	seq            uint64 // the submit job that last submitted this slot, zero before the first
 }
 
 // frameScratch holds the structures the per-frame calls take by pointer.
 // A fresh local for each would be forced onto the heap once per frame, so
 // they live with the renderer and are filled in place. A frame is begun,
-// recorded and ended from the goroutine that owns the device.
+// recorded and ended from the goroutine that owns the device; the submit
+// goroutine keeps its own.
 type frameScratch struct {
 	begin    vk.VkCommandBufferBeginInfo
 	color    vk.VkRenderingAttachmentInfo
 	depth    vk.VkRenderingAttachmentInfo
 	stencil  vk.VkRenderingAttachmentInfo
 	renderin vk.VkRenderingInfo
-	wait     vk.VkSemaphoreSubmitInfo
-	signal   vk.VkSemaphoreSubmitInfo
-	cbInfo   vk.VkCommandBufferSubmitInfo
-	submit   vk.VkSubmitInfo2
-	present  vk.VkPresentInfoKHR
 	index    uint32
 }
 
@@ -150,13 +148,44 @@ func (r *Renderer) Resize(width, height int) {
 	r.resize = true
 }
 
-// BeginFrame waits for the frame slot, acquires a swapchain image and
-// starts the command buffer. It returns ok=false, with no error, when the
-// swapchain had to be rebuilt and the caller should try again next loop.
-// The caller then records any offscreen passes and calls BeginSwapchainPass.
+// WaitFrame blocks until the next frame's slot is free: the frame that
+// last used it has been submitted and the GPU has finished it. The engine
+// calls it before polling for input, so the time spent waiting for the
+// GPU comes before the input a frame reads rather than after it.
+// BeginFrame calls it when the caller has not, and a second call before
+// BeginFrame returns at once.
+func (r *Renderer) WaitFrame() error {
+	if r.waited || r.inFrame {
+		return nil
+	}
+	d := r.Device
+	f := &r.frames[r.current]
+	if f.seq != 0 {
+		// The fence is only on the queue once the goroutine has run the
+		// job that submits it.
+		d.q.await(f.seq)
+	}
+	if err := d.q.failed(); err != nil {
+		return deviceLostOr(err)
+	}
+	if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
+		return deviceLostOr(err)
+	}
+	r.waited = true
+	return nil
+}
+
+// BeginFrame waits for the frame slot unless WaitFrame already has,
+// acquires a swapchain image and starts the command buffer. It returns
+// ok=false, with no error, when the swapchain had to be rebuilt and the
+// caller should try again next loop. The caller then records any
+// offscreen passes and calls BeginSwapchainPass.
 func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	if r.inFrame {
 		return nil, false, fmt.Errorf("render: BeginFrame called twice")
+	}
+	if r.Device.q.takeOutOfDate() {
+		r.resize = true // a present on the submit goroutine asked for it
 	}
 	if r.resize {
 		r.resize = false
@@ -175,8 +204,8 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	d := r.Device
 	f := &r.frames[r.current]
 	sc := &r.scratch
-	if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
-		return nil, false, deviceLostOr(err)
+	if err := r.WaitFrame(); err != nil {
+		return nil, false, err
 	}
 	// The slot's fence covers the frame submitted FramesInFlight frames
 	// ago, so anything retired then is now free to destroy.
@@ -186,7 +215,11 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 		// Headless: one image per frame slot, paced by the slot's fence.
 		sc.index = uint32(r.current)
 	} else {
+		// The submit goroutine presents to this swapchain, and acquiring
+		// from it must not overlap a present.
+		d.q.mu.Lock()
 		res := vk.AcquireNextImageKHR(d.Handle, r.Swapchain.Handle, ^uint64(0), f.imageAvailable, 0, &sc.index)
+		d.q.mu.Unlock()
 		if res == vk.VK_ERROR_OUT_OF_DATE_KHR {
 			r.resize = true
 			return nil, false, nil
@@ -206,6 +239,7 @@ func (r *Renderer) BeginFrame() (*Frame, bool, error) {
 	}
 	r.inFrame = true
 	r.inPass = false
+	r.waited = false
 	f.pub = Frame{CB: f.cb, ImageIndex: sc.index, Slot: r.current, Extent: r.Swapchain.Extent}
 	return &f.pub, true, nil
 }
@@ -310,57 +344,29 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 	if err := vk.Check("vkEndCommandBuffer", vk.EndCommandBuffer(f.cb)); err != nil {
 		return nil, err
 	}
-	sc := &r.scratch
-	sc.cbInfo = vk.VkCommandBufferSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, CommandBuffer: f.cb}
-	sc.submit = vk.VkSubmitInfo2{
-		SType:                  vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-		CommandBufferInfoCount: 1,
-		PCommandBufferInfos:    &sc.cbInfo,
-	}
-	if !headless {
-		// The present semaphores only exist for a real swapchain; a headless
-		// frame is paced by the slot fence alone.
-		sc.wait = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: f.imageAvailable, StageMask: vk.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT}
-		sc.signal = vk.VkSemaphoreSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, Semaphore: r.Swapchain.renderDone[fr.ImageIndex], StageMask: vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}
-		sc.submit.WaitSemaphoreInfoCount = 1
-		sc.submit.PWaitSemaphoreInfos = &sc.wait
-		sc.submit.SignalSemaphoreInfoCount = 1
-		sc.submit.PSignalSemaphoreInfos = &sc.signal
-	}
 	// Uploads recorded outside the frame go to the queue first, so the
 	// frame's draws read them.
 	if err := d.FlushUploads(); err != nil {
 		return nil, deviceLostOr(err)
 	}
-	if err := vk.Check("vkQueueSubmit2", vk.QueueSubmit2(d.Queue, 1, &sc.submit, f.fence)); err != nil {
-		return nil, deviceLostOr(err)
-	}
-	d.submitted()
+	job := submitJob{cb: f.cb, fence: f.fence}
 	if !headless {
-		sc.present = vk.VkPresentInfoKHR{
-			SType:              vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-			WaitSemaphoreCount: 1,
-			PWaitSemaphores:    &r.Swapchain.renderDone[fr.ImageIndex],
-			SwapchainCount:     1,
-			PSwapchains:        &r.Swapchain.Handle,
-			PImageIndices:      &fr.ImageIndex,
-		}
-		res := vk.QueuePresentKHR(d.Queue, &sc.present)
-		switch res {
-		case vk.VK_ERROR_OUT_OF_DATE_KHR, vk.VK_SUBOPTIMAL_KHR:
-			r.resize = true
-		default:
-			if err := vk.Check("vkQueuePresentKHR", res); err != nil {
-				return nil, deviceLostOr(err)
-			}
-		}
+		// The present semaphores only exist for a real swapchain; a headless
+		// frame is paced by the slot fence alone.
+		job.wait = f.imageAvailable
+		job.signal = r.Swapchain.renderDone[fr.ImageIndex]
+		job.swapchain, job.image = r.Swapchain.Handle, fr.ImageIndex
 	}
+	// The submit goroutine submits and presents while this goroutine goes
+	// on to the next frame. The slot's command buffer is next recorded
+	// after WaitFrame has seen this job run and its fence signal.
+	f.seq = d.submit(job)
 	r.current = (r.current + 1) % FramesInFlight
 	if !capture {
 		return nil, nil
 	}
-	if err := vk.Check("vkWaitForFences", vk.WaitForFences(d.Handle, 1, &f.fence, vk.VK_TRUE, ^uint64(0))); err != nil {
-		return nil, err
+	if err := d.waitFence(f.fence); err != nil {
+		return nil, deviceLostOr(err)
 	}
 	return r.decodeReadback(readback), nil
 }
