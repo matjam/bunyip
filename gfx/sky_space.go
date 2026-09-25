@@ -16,7 +16,9 @@ func (s Sky) radiance(d lin.Vec3) (float32, float32, float32) {
 
 // spaceTransmittance is the optical depth between the camera and infinity.
 // Unlike atmospheric scattering it requires no samples toward the sun.
-// The same algorithm lives in the shared WGSL atmosphere block.
+// The shaders read the same eight-step integral from the atmosphere's
+// transmittance table (spaceTransmittance in the ATMOSPHERE LOOKUP
+// block of prelude_mesh.wgsl and skyparam.frag.wgsl).
 func (s Sky) spaceTransmittance(d lin.Vec3) lin.Vec3 {
 	if s.Atmosphere.Height <= 0 {
 		visible := float32(1)

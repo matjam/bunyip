@@ -52,9 +52,14 @@ type Sky struct {
 // perspective. Sky.Vacuum still scales the result, and Sky.Ground still
 // lights the half below the horizon.
 //
-// The model is integrated per pixel, eight samples along the view ray
-// and four towards the sun at each, so a sky pixel costs about eighty
-// exponentials. There is no precomputed table to load or keep in step.
+// The model is integrated into small lookup tables on the GPU, eight
+// samples along each view ray and four towards the sun at each, and the
+// sky and the lit meshes read the tables, so a pixel costs a few texture
+// reads. The tables are built on the first frame with an atmosphere and
+// again when the air changes, when the sun moves by more than about a
+// twentieth of its radius, or when Altitude moves by more than a
+// thousandth of Height; a rebuild costs a fraction of a millisecond of
+// GPU time, and a frame that changes nothing costs none.
 type Atmosphere struct {
 	// Height is how deep the air is in world units. Zero means no
 	// atmosphere: the sky keeps its Zenith and Horizon gradient. Density
@@ -89,9 +94,9 @@ type Atmosphere struct {
 }
 
 // The air's density falls to 1/e at Height divided by these, and the
-// integral takes this many samples. atmosphereScatter in
-// prelude_mesh.wgsl and skyparam.frag.wgsl uses the same numbers, so the
-// three implementations agree.
+// integral takes this many samples. atmoslut.frag.wgsl builds the sky's
+// lookup tables with the same numbers, so the drawn sky and the ambient
+// harmonics projected from Sky.radiance agree.
 const (
 	rayleighFalloff     = 7.5
 	mieFalloff          = 50
@@ -251,11 +256,31 @@ func raySphere(o, d lin.Vec3, r float32) (float32, float32) {
 // direction d, for at most dist world units: air and haze thinning with
 // height, each sample lit by what is left of the sunlight that reached
 // it and dimmed by the air back to the camera. Samples the planet
-// shadows are dark, which is what makes dusk fall.
-// atmosphereScatter in prelude_mesh.wgsl and skyparam.frag.wgsl is the same
-// function, and the shaders draw what this projects into the harmonics,
-// so the three must stay in step.
+// shadows are dark, which is what makes dusk fall. The shaders draw the
+// sky from lookup tables atmoslut.frag.wgsl builds with the same
+// integral (scatterTerms), and the ambient harmonics are projected from
+// this, so the two must stay in step.
 func (s Sky) scatter(d lin.Vec3, dist float32) (float32, float32, float32) {
+	a := s.Atmosphere
+	ray, mie, _, _ := s.scatterTerms(d, dist, atmosphereViewSteps, atmosphereSunSteps)
+	mu := d.Dot(s.sun)
+	pr := phaseRayleigh(mu)
+	pm := phaseMie(mu, a.Forward)
+	i := a.Intensity
+	return i * (ray.X*pr + mie.X*pm),
+		i * (ray.Y*pr + mie.Y*pm),
+		i * (ray.Z*pr + mie.Z*pm)
+}
+
+// scatterTerms is scatter without the phase functions and the sun's
+// intensity, in steps samples along the ray and sunSteps towards the sun
+// from each: the light air and haze scatter, each times its scattering
+// coefficient, and the ray's optical depth of air and haze in world
+// units. It is scatterTerms in atmoslut.frag.wgsl, which fills the
+// atmosphere's sky view with eight and four steps, reading the four
+// towards the sun from the transmittance table, and its aerial
+// perspective with four and two.
+func (s Sky) scatterTerms(d lin.Vec3, dist float32, steps, sunSteps int) (ray, mie lin.Vec3, odR, odM float32) {
 	a := s.Atmosphere
 	radius, height := a.PlanetRadius, a.Height
 	hR, hM := height/rayleighFalloff, height/mieFalloff
@@ -264,20 +289,18 @@ func (s Sky) scatter(d lin.Vec3, dist float32) (float32, float32, float32) {
 	near, far := raySphere(origin, d, radius+height)
 	t0, t1 := max(near, 0), far
 	if t1 <= t0 {
-		return 0, 0, 0 // outside the air, looking away from the planet
+		return // outside the air, looking away from the planet
 	}
 	if g0, g1 := raySphere(origin, d, radius); g1 > 0 && g0 > 0 {
 		t1 = min(t1, g0) // the ray meets the ground first
 	}
 	t1 = min(t1, t0+dist)
 	if t1 <= t0 {
-		return 0, 0, 0
+		return
 	}
-	step := (t1 - t0) / atmosphereViewSteps
-	mu := d.Dot(s.sun)
-	var odR, odM float32
+	step := (t1 - t0) / float32(steps)
 	var sumR, sumM lin.Vec3
-	for i := range atmosphereViewSteps {
+	for i := range steps {
 		p := origin.Add(d.Mul(t0 + (float32(i)+0.5)*step))
 		h := max(p.Len()-radius, 0)
 		dR := exp32(-h/hR) * step
@@ -287,15 +310,7 @@ func (s Sky) scatter(d lin.Vec3, dist float32) (float32, float32, float32) {
 		if g0, g1 := raySphere(p, s.sun, radius); g1 > 0 && g0 > 0 {
 			continue // the planet stands between this sample and the sun
 		}
-		_, lit := raySphere(p, s.sun, radius+height)
-		lightStep := max(lit, 0) / atmosphereSunSteps
-		var lodR, lodM float32
-		for j := range atmosphereSunSteps {
-			q := p.Add(s.sun.Mul((float32(j) + 0.5) * lightStep))
-			hj := max(q.Len()-radius, 0)
-			lodR += exp32(-hj/hR) * lightStep
-			lodM += exp32(-hj/hM) * lightStep
-		}
+		lodR, lodM := s.opticalDepth(p, s.sun, sunSteps)
 		att := lin.V3(
 			exp32(-(betaR.X*(odR+lodR) + a.Mie*1.1*(odM+lodM))),
 			exp32(-(betaR.Y*(odR+lodR) + a.Mie*1.1*(odM+lodM))),
@@ -304,12 +319,42 @@ func (s Sky) scatter(d lin.Vec3, dist float32) (float32, float32, float32) {
 		sumR = sumR.Add(att.Mul(dR))
 		sumM = sumM.Add(att.Mul(dM))
 	}
-	pr := phaseRayleigh(mu)
-	pm := phaseMie(mu, a.Forward)
-	i := a.Intensity
-	return i * (sumR.X*betaR.X*pr + sumM.X*a.Mie*pm),
-		i * (sumR.Y*betaR.Y*pr + sumM.Y*a.Mie*pm),
-		i * (sumR.Z*betaR.Z*pr + sumM.Z*a.Mie*pm)
+	ray = lin.V3(sumR.X*betaR.X, sumR.Y*betaR.Y, sumR.Z*betaR.Z)
+	mie = sumM.Mul(a.Mie)
+	return ray, mie, odR, odM
+}
+
+// sunTint is how much of the sun's light reaches the camera through the
+// air, which reddens and dims the drawn disc and its glow: the
+// transmittance of four samples along the ray towards the sun. It is
+// found once a frame and folded into the disc's colour in the frame
+// block.
+func (s Sky) sunTint() lin.Vec3 {
+	a := s.Atmosphere
+	_, _, odR, odM := s.scatterTerms(s.sun, 1e9, 4, 1)
+	return lin.V3(
+		exp32(-(a.Rayleigh.R*odR + a.Mie*1.1*odM)),
+		exp32(-(a.Rayleigh.G*odR + a.Mie*1.1*odM)),
+		exp32(-(a.Rayleigh.B*odR + a.Mie*1.1*odM)))
+}
+
+// opticalDepth integrates the air and the haze from p along dir to the
+// top of the air in steps samples, in world units: the light a sample
+// of a view ray receives from the sun. It is opticalDepth in
+// atmoslut.frag.wgsl, whose transmittance table holds it for four steps
+// and for eight.
+func (s Sky) opticalDepth(p, dir lin.Vec3, steps int) (odR, odM float32) {
+	a := s.Atmosphere
+	hR, hM := a.Height/rayleighFalloff, a.Height/mieFalloff
+	_, lit := raySphere(p, dir, a.PlanetRadius+a.Height)
+	lightStep := max(lit, 0) / float32(steps)
+	for j := range steps {
+		q := p.Add(dir.Mul((float32(j) + 0.5) * lightStep))
+		hj := max(q.Len()-a.PlanetRadius, 0)
+		odR += exp32(-hj/hR) * lightStep
+		odM += exp32(-hj/hM) * lightStep
+	}
+	return odR, odM
 }
 
 // phaseRayleigh is how much air scatters towards an angle whose cosine

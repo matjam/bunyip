@@ -67,6 +67,7 @@ var (
 //go:generate go run ../../cmd/bunyip-shader -raw -o oit.frag.spv oit.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o sky.frag.spv sky.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o skyparam.frag.spv skyparam.frag.wgsl
+//go:generate go run ../../cmd/bunyip-shader -raw -o atmoslut.frag.spv atmoslut.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o line.vert.spv line.vert.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o line.frag.spv line.frag.wgsl
 //go:generate go run ../../cmd/bunyip-shader -raw -o particle.vert.spv particle.vert.wgsl
@@ -83,6 +84,10 @@ var (
 	SkyFrag []byte
 	//go:embed skyparam.frag.spv
 	SkyParamFrag []byte
+	// AtmosLUTFrag builds the atmosphere's lookup tables: the
+	// transmittance table, the sky view and the aerial perspective.
+	//go:embed atmoslut.frag.spv
+	AtmosLUTFrag []byte
 	//go:embed line.vert.spv
 	LineVert []byte
 	//go:embed line.frag.spv
