@@ -75,8 +75,8 @@ func TestBuiltinsSPIRVValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 46 {
-		t.Fatalf("expected 46 built-in programs, got %d", len(files))
+	if len(files) != 47 {
+		t.Fatalf("expected 47 built-in programs, got %d", len(files))
 	}
 	for _, file := range files {
 		t.Run(file, func(t *testing.T) {

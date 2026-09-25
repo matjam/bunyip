@@ -41,9 +41,10 @@ const (
 	// five material textures, four shader images, the environment cube,
 	// the thickness map, the scene copy for transmission, the
 	// transmission map, and the iridescence, anisotropy, specular and fur
-	// maps. Keeping this and the shadow atlas together at or under
-	// thirty-one leaves the mesh pipelines inside the texture limit
-	// MoltenVK reports on Intel Macs; Apple silicon allows 128.
+	// maps. Keeping this, the shadow atlas and the atmosphere's three
+	// lookup tables together at or under thirty-one leaves the mesh
+	// pipelines inside the texture limit MoltenVK reports on Intel Macs;
+	// Apple silicon allows 128.
 	matImages = 17
 	// matSamplerBinding is where the material set's shared samplers
 	// start, after the images.
@@ -51,8 +52,8 @@ const (
 	// matSamplers is how many singleton sampler bindings follow: linear repeat,
 	// linear clamp, nearest repeat, nearest clamp, in that order. They
 	// are immutable in the layout, so no set ever writes them, and Metal
-	// sees five samplers a stage counting the shadow atlas's, well under
-	// its limit of sixteen.
+	// sees six samplers a stage counting the shadow atlas's and the
+	// atmosphere tables', well under its limit of sixteen.
 	matSamplers = 4
 )
 
@@ -102,9 +103,14 @@ type meshPass struct {
 	uniformLayout *render.UniformSets // owns the layout the pipelines were built against
 	shadowAtlas   *render.Target      // every shadow map, see shadowRegion
 	shadowFormat  vk.VkFormat         // the atlas's depth format, which the shadow pipelines render to
-	shadowSet     vk.VkDescriptorSet
-	shadowDesc    *render.DescriptorSets
-	shadowSamp    vk.VkSampler
+	// shadowSet is set 2: the shadow atlas and its comparison sampler,
+	// then the atmosphere's three lookup tables and the linear clamping
+	// sampler they are read through (atlasBindings). Until a frame has an
+	// atmosphere the tables' bindings name the black texture.
+	shadowSet  vk.VkDescriptorSet
+	shadowDesc *render.DescriptorSets
+	shadowSamp vk.VkSampler
+	atmos      atmosTables
 	// materials is set 0: seventeen sampled images (five material
 	// textures, a shader's image0..3, the environment cube, the
 	// thickness map, the scene copy, the transmission map, and the
@@ -243,6 +249,10 @@ type frameUniforms struct {
 	atmos lin.Vec4 // planet radius, air height, rayleigh and mie falloff heights
 	betaR lin.Vec4 // rayleigh scattering per unit at the ground, w = sun intensity
 	betaM lin.Vec4 // mie scattering, forward lobe, camera altitude, w = 1 with an atmosphere
+	// Where the atmosphere's view tables keep a direction for this camera,
+	// found once a frame rather than per pixel (atmosTables.plan).
+	atmosView lin.Vec4 // xyz the horizontal direction towards the sun, w the camera's distance from the planet's centre
+	atmosLimb lin.Vec4 // xyz the view tables' horizon, atmosHorizon in the shaders
 }
 
 // materialKey identifies a material descriptor set: its textures, the
@@ -330,6 +340,24 @@ func (g *Graphics) initMeshPass() error {
 	if mp.skyEmpty, err = g.descriptors.AllocateMany(g.cubeBindings(mp.blackCube)); err != nil {
 		return err
 	}
+	// Set 2 is the shadow atlas and its comparison sampler, then the
+	// atmosphere's transmittance, sky view and aerial perspective tables
+	// and the sampler they are read through. Both samplers are immutable,
+	// which MoltenVK requires for the comparison one.
+	if mp.shadowSamp, err = dev.NewShadowSampler(); err != nil {
+		return err
+	}
+	if mp.shadowDesc, err = dev.NewDescriptors([]render.DescriptorBinding{
+		{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
+		{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLER, Immutable: []vk.VkSampler{mp.shadowSamp}},
+		{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
+		{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
+		{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
+		{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE},
+		{Type: vk.VK_DESCRIPTOR_TYPE_SAMPLER, Immutable: []vk.VkSampler{g.linear}},
+	}, 4); err != nil {
+		return err
+	}
 	if mp.skyPipe, err = newPipeCache(dev, render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.SkyFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
@@ -342,7 +370,8 @@ func (g *Graphics) initMeshPass() error {
 		Vert: shaders.PostVert, Frag: shaders.SkyParamFrag,
 		ColorFormat: hdrFormat, DepthFormat: g.r.DepthFormat,
 		PushConstantSize: push2DSize,
-		SetLayouts:       []vk.VkDescriptorSetLayout{mp.uniformLayout.Layout, g.descriptors.Layout},
+		// The atmosphere's tables are in set 2, as for the meshes.
+		SetLayouts: []vk.VkDescriptorSetLayout{mp.uniformLayout.Layout, g.descriptors.Layout, mp.shadowDesc.Layout},
 	}); err != nil {
 		return err
 	}
@@ -377,12 +406,6 @@ func (g *Graphics) initMeshPass() error {
 	if mp.decalMesh, err = g.NewMesh(cv, ci); err != nil {
 		return err
 	}
-	if mp.shadowSamp, err = dev.NewShadowSampler(); err != nil {
-		return err
-	}
-	if mp.shadowDesc, err = dev.NewImmutableSamplerDescriptors(1, 4, mp.shadowSamp); err != nil {
-		return err
-	}
 	// The atlas is only rendered to and sampled, so it takes a depth
 	// format without a stencil aspect where the device has one, which
 	// halves what the strip of cube faces costs.
@@ -392,9 +415,6 @@ func (g *Graphics) initMeshPass() error {
 	}
 	atlasDepth := mp.shadowAtlas.Depth
 	if err := g.setup(func(cb vk.VkCommandBuffer) { render.ClearDepthForSampling(cb, atlasDepth) }); err != nil {
-		return err
-	}
-	if mp.shadowSet, err = mp.shadowDesc.AllocateMany([]render.SamplerBinding{{View: atlasDepth.View, Sampler: mp.shadowSamp}}); err != nil {
 		return err
 	}
 	// The anisotropy map's stand-in: red 1 and green a half are the
@@ -408,6 +428,12 @@ func (g *Graphics) initMeshPass() error {
 	if mp.black, err = g.newTexture(1, 1, []byte{0, 0, 0, 255}, TextureOptions{Data: true}); err != nil {
 		return err
 	}
+	// The atmosphere's tables are made the first time a frame has an
+	// atmosphere (atmosTables.ensure); until then black stands in.
+	black := mp.black.img.View
+	if mp.shadowSet, err = mp.shadowDesc.AllocateMany(mp.atlasBindings(black, black, black, black)); err != nil {
+		return err
+	}
 	mp.defaultShader = &Shader{g: g, frag: shaders.PBRFrag, oitFrag: shaders.PBROITFrag, mesh: true, pipes: map[pipeKey]*render.Pipeline{}}
 	for _, key := range []pipeKey{{blend: BlendReplace}, {blend: BlendAlpha}, {blend: BlendReplace, shadow: true}} {
 		if _, err := mp.defaultShader.pipeline(key); err != nil {
@@ -415,6 +441,13 @@ func (g *Graphics) initMeshPass() error {
 		}
 	}
 	return nil
+}
+
+// atlasBindings are set 2's images: the shadow atlas, then the
+// atmosphere's transmittance, sky view, aerial perspective and
+// reflection tables. The samplers are immutable in the layout.
+func (mp *meshPass) atlasBindings(trans, sky, aerial, reflect vk.VkImageView) []render.SamplerBinding {
+	return []render.SamplerBinding{{View: mp.shadowAtlas.Depth.View}, {}, {View: trans}, {View: sky}, {View: aerial}, {View: reflect}}
 }
 
 // pipelineDesc is the lit pass pipeline for static or skinned meshes,
@@ -1058,8 +1091,9 @@ func abs32(v float32) float32 {
 // writeUniforms fills the queue's frame block for the slot and uploads
 // the frame's lights and cluster grid. It runs after prepareDraws, whose
 // caster bounds the cascades need, and keeps the cascade matrices for
-// the shadow pass to cull against.
-func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, refl lin.Vec4) error {
+// the shadow pass to cull against. With an atmosphere it plans what the
+// atmosphere's tables need to hold for this frame (atmosTables.plan).
+func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, refl lin.Vec4, atmos *atmosTables) error {
 	q.ensureCamera()
 	aspect := float32(extent.Width) / float32(extent.Height)
 	l := q.light
@@ -1118,6 +1152,13 @@ func (q *drawQueue) writeUniforms(slot int, extent vk.VkExtent2D, time float32, 
 		u.atmos = lin.V4(a.PlanetRadius, a.Height, a.Height/rayleighFalloff, a.Height/mieFalloff)
 		u.betaR = lin.V4(a.Rayleigh.R, a.Rayleigh.G, a.Rayleigh.B, a.Intensity)
 		u.betaM = lin.V4(a.Mie, a.Forward, a.Altitude, 1)
+		// The air reddens and dims the drawn sun by the same amount at
+		// every pixel, so the disc's colour carries it.
+		tint := sky.sunTint()
+		u.sunColor = lin.V4(sky.Sun.R*tint.X, sky.Sun.G*tint.Y, sky.Sun.B*tint.Z, 1)
+		atmos.plan(&u)
+	} else {
+		atmos.planned = false
 	}
 	if env := l.Environment; env != nil && env.cube != nil {
 		u.sh = env.sh
@@ -1561,7 +1602,12 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	if err != nil {
 		return err
 	}
-	if err := q.writeUniforms(fr.Slot, t.extent, g.time, g.reflectParams()); err != nil {
+	if err := q.writeUniforms(fr.Slot, t.extent, g.time, g.reflectParams(), &mp.atmos); err != nil {
+		return err
+	}
+	// The sky and the lit meshes read the atmosphere from its lookup
+	// tables, which are brought up to date before any pass reads them.
+	if err := g.buildAtmosphere(cb); err != nil {
 		return err
 	}
 	seen, seenOIT, seenBlended := opaque.slice(0, q.visOpaque), oit.slice(0, q.visOIT), blended.slice(0, q.visBlended)
@@ -1655,6 +1701,7 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 				spaceSet = env.set
 			}
 			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 1, 1, &spaceSet, 0, nil)
+			vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 2, 1, &mp.shadowSet, 0, nil)
 		}
 		vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, push2DSize, unsafe.Pointer(&rec.push))
 		vk.CmdDraw(cb, 3, 1, 0, 0)
@@ -1950,6 +1997,7 @@ func (mp *meshPass) destroy(g *Graphics) {
 	if mp.black != nil {
 		mp.black.Destroy()
 	}
+	mp.atmos.destroy(g)
 	if mp.shadowSamp != 0 {
 		vk.VkDestroySampler(dev, mp.shadowSamp, nil)
 	}
