@@ -42,6 +42,17 @@ type Graphics interface {
 	Game() any
 }
 
+// FrameWaiter is a Graphics that can wait for the GPU apart from Begin.
+// The loop calls WaitFrame for every window before it polls for events,
+// so a frame's input is read after the wait for the frame slot rather
+// than before it. Begin still waits when WaitFrame was not called, so a
+// Graphics that wraps another without this method stays correct and only
+// loses the earlier wait.
+type FrameWaiter interface {
+	// WaitFrame blocks until the next frame's slot is free on the GPU.
+	WaitFrame() error
+}
+
 // Gamepad array sizes, duplicated from input.GamepadButtonCount and
 // input.GamepadAxisCount so this package does not import input. The
 // arrays are the same types the input package and the platform layer

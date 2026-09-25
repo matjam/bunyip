@@ -345,6 +345,16 @@ func (g *Graphics) SetView(width, height float32) {
 // View returns the current 2D coordinate space size.
 func (g *Graphics) View() (float32, float32) { return g.cur.viewW, g.cur.viewH }
 
+// waitFrame blocks until the next frame's slot is free on the GPU. The
+// engine calls it before polling for input; begin waits itself when it
+// has not been called.
+func (g *Graphics) waitFrame() error {
+	if g.destroyed || g.frame != nil {
+		return nil
+	}
+	return g.r.WaitFrame()
+}
+
 // begin starts a frame cleared to clear. ok is false when the swapchain
 // was rebuilt and the frame should be skipped.
 func (g *Graphics) begin(clear Color) (ok bool, err error) {

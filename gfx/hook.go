@@ -17,6 +17,7 @@ func (d driver) Begin(clear [4]float32) (bool, error) {
 	return d.g.begin(Color{R: clear[0], G: clear[1], B: clear[2], A: clear[3]})
 }
 
+func (d driver) WaitFrame() error                      { return d.g.waitFrame() }
 func (d driver) End(capture bool) (*image.RGBA, error) { return d.g.end(capture) }
 func (d driver) Resize(width, height int)              { d.g.resize(width, height) }
 func (d driver) SetTime(seconds float64)               { d.g.setTime(seconds) }
