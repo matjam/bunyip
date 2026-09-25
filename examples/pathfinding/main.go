@@ -178,7 +178,8 @@ func (g *game) Draw(ctx *engine.Context) error {
 		}
 		gr.FillRect(float32(x*cell)+1, float32(y*cell)+1, cell-2, cell-2, c)
 	})
-	path := grid.AStar(cols, rows, g.start, goal, g.diagonal, g.cost)
+	// Every step costs at least 1 (a diagonal costs √2), so 1 guides the search.
+	path := grid.AStarWithMinCost(cols, rows, g.start, goal, g.diagonal, g.cost, 1)
 	for _, p := range path {
 		gr.FillRect(float32(p.X*cell)+7, float32(p.Y*cell)+7, cell-14, cell-14, gfx.RGB(255, 235, 90))
 	}

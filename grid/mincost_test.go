@@ -165,6 +165,50 @@ func TestAStarWithMinCostBufferAndEndpoints(t *testing.T) {
 	}
 }
 
+// TestPathfinderMinCost checks that the MinCost field makes AStar search
+// exactly as AStarWithMinCost does with the same bound, and that its
+// zero value and invalid values leave AStar's results unchanged.
+func TestPathfinderMinCost(t *testing.T) {
+	const w, h = 12, 9
+	r := rand.New(rand.NewPCG(4, 17))
+	values := []float32{1, 1.5, 2, 3, Blocked}
+	for trial := range 300 {
+		edges := make([][9]float32, w*h)
+		for i := range edges {
+			for j := range edges[i] {
+				edges[i][j] = values[r.IntN(len(values))]
+			}
+		}
+		cost := func(from, to Point) float32 {
+			return edges[from.Y*w+from.X][(to.Y-from.Y+1)*3+to.X-from.X+1]
+		}
+		start, goal := Point{r.IntN(w), r.IntN(h)}, Point{r.IntN(w), r.IntN(h)}
+		diagonal := trial%2 == 0
+		pf := NewPathfinder(w, h)
+		uninformed, okU := pf.AStar(nil, start, goal, diagonal, cost)
+		guided, okG := pf.AStarWithMinCost(nil, start, goal, diagonal, cost, 1)
+		for _, bad := range []float32{0, -1, float32(math.NaN()), float32(math.Inf(1))} {
+			pf.MinCost = bad
+			if got, ok := pf.AStar(nil, start, goal, diagonal, cost); ok != okU || !slices.Equal(got, uninformed) {
+				t.Fatalf("trial %d: MinCost %v changed AStar: %v, want %v", trial, bad, got, uninformed)
+			}
+		}
+		pf.MinCost = 1
+		if got, ok := pf.AStar(nil, start, goal, diagonal, cost); ok != okG || !slices.Equal(got, guided) {
+			t.Fatalf("trial %d: MinCost 1 gave %v, AStarWithMinCost %v", trial, got, guided)
+		}
+		// An explicit bound overrides the field.
+		pf.MinCost = 1
+		if got, _ := pf.AStarWithMinCost(nil, start, goal, diagonal, cost, 0); !slices.Equal(got, uninformed) {
+			t.Fatalf("trial %d: explicit zero bound used the field", trial)
+		}
+		if okU {
+			want := Dijkstra(w, h, []Point{start}, diagonal, cost).At(goal.X, goal.Y)
+			checkPathCost(t, guided, start, goal, diagonal, cost, want)
+		}
+	}
+}
+
 func TestAStarWithMinCostAllocations(t *testing.T) {
 	pf := NewPathfinder(16, 16)
 	out := make([]Point, 0, 256)

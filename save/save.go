@@ -13,7 +13,12 @@
 // written to a temporary name and renamed into place, so a reader sees
 // the old file or the new one where the filesystem supports atomic
 // replacement. The containing directory is not synced, so power-loss
-// durability is not guaranteed. For whole
+// durability is not guaranteed.
+//
+// Write returns once the file is synced to the drive, which takes
+// milliseconds. To autosave from the game loop without missing a frame,
+// call WriteAsync, which encodes the value at once and writes it on a
+// background goroutine, and call Flush before the game exits. For whole
 // ECS worlds, ecs.World.Save produces the bytes and this package stores
 // them.
 package save
@@ -27,6 +32,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Dir returns the per-user data directory for an app: Application
@@ -66,10 +72,27 @@ func Dir(app string) (string, error) {
 
 // Store reads and writes named JSON documents in one directory. Names
 // omit the .json extension and must be nonempty leaf names without
-// slashes; "." and ".." are rejected. Concurrent writes use separate
-// temporary files; the last successful rename to a name wins.
+// slashes; "." and ".." are rejected. A Store is safe for concurrent
+// use. Writes to one name, from Write and WriteAsync, land in the order
+// they were called; writes to different names run independently.
 type Store struct {
 	dir string
+
+	mu    sync.Mutex
+	slots map[string]*slotQueue // names with writes queued or in progress
+}
+
+// slotQueue holds one name's writes, which a background goroutine runs
+// in order while the queue is not empty.
+type slotQueue struct {
+	jobs    []*writeJob // waiting, oldest first
+	current *writeJob   // being written
+}
+
+type writeJob struct {
+	data     []byte
+	result   chan error    // for the caller, buffered
+	finished chan struct{} // closed once the write is done, for Flush
 }
 
 // Open creates the app's data directory if needed and returns a store
@@ -110,14 +133,116 @@ func checkName(name string) error {
 // the previous file with os.Rename. Atomic replacement depends on the
 // host filesystem. Failures before rename leave the old file intact;
 // this method does not sync the containing directory.
+//
+// Write returns once the data is on disk, and the sync waits for the
+// storage device: several milliseconds for a small file on macOS, where
+// a sync is a full flush of the drive's cache. To save from the game
+// loop without missing a frame, call WriteAsync instead. Write waits
+// for earlier WriteAsync calls for the same name to finish first.
 func (s *Store) Write(name string, v any) error {
+	return <-s.WriteAsync(name, v)
+}
+
+// WriteAsync stores v as name.json as Write does, but returns before the
+// file is written. To autosave from the game loop, call it and check the
+// returned channel on a later frame. v is encoded before WriteAsync
+// returns, so the caller may change it straight away; the write, sync
+// and rename run on a background goroutine. The channel receives one
+// value when the write has finished: nil once the new file is in place,
+// or the error. An invalid name or a value that cannot be encoded is
+// reported on the channel at once, and nothing is written.
+//
+// Writes to one name land in the order they were called, and Read,
+// Load, Exists and Delete for a name wait for its pending writes. A
+// process that exits with writes pending loses them; call Flush before
+// exiting.
+func (s *Store) WriteAsync(name string, v any) <-chan error {
+	result := make(chan error, 1)
 	if err := checkName(name); err != nil {
-		return err
+		result <- err
+		return result
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Errorf("save: encode %s: %w", name, err)
+		result <- fmt.Errorf("save: encode %s: %w", name, err)
+		return result
 	}
+	job := &writeJob{data: data, result: result, finished: make(chan struct{})}
+	s.mu.Lock()
+	if s.slots == nil {
+		s.slots = map[string]*slotQueue{}
+	}
+	q := s.slots[name]
+	if q == nil {
+		q = &slotQueue{}
+		s.slots[name] = q
+		go s.run(name, q)
+	}
+	q.jobs = append(q.jobs, job)
+	s.mu.Unlock()
+	return result
+}
+
+// run writes a name's queued jobs in order and retires the queue once
+// it is empty.
+func (s *Store) run(name string, q *slotQueue) {
+	for {
+		s.mu.Lock()
+		if len(q.jobs) == 0 {
+			q.current = nil
+			delete(s.slots, name)
+			s.mu.Unlock()
+			return
+		}
+		job := q.jobs[0]
+		q.jobs[0] = nil
+		q.jobs = q.jobs[1:]
+		q.current = job
+		s.mu.Unlock()
+		job.result <- s.writeFile(name, job.data)
+		close(job.finished)
+	}
+}
+
+// Flush waits until every write that WriteAsync or Write started before
+// the call has finished. To make sure autosaves reach the disk, call it
+// before the game exits. Errors go to each write's own channel.
+func (s *Store) Flush() {
+	for _, f := range s.pending("", true) {
+		<-f
+	}
+}
+
+// wait blocks until the writes pending for one name have finished.
+func (s *Store) wait(name string) {
+	for _, f := range s.pending(name, false) {
+		<-f
+	}
+}
+
+// pending lists the finish signals of the writes queued or in progress,
+// for one name or for all of them.
+func (s *Store) pending(name string, all bool) []chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []chan struct{}
+	for n, q := range s.slots {
+		if !all && n != name {
+			continue
+		}
+		if q.current != nil {
+			out = append(out, q.current.finished)
+		}
+		for _, j := range q.jobs {
+			out = append(out, j.finished)
+		}
+	}
+	return out
+}
+
+// writeFile writes encoded data to name.json through a synced temporary
+// file and a rename.
+func (s *Store) writeFile(name string, data []byte) error {
 	tmp, err := os.CreateTemp(s.dir, name+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("save: %w", err)
@@ -144,12 +269,14 @@ func (s *Store) Write(name string, v any) error {
 	return nil
 }
 
-// Read decodes name.json into v. A missing file returns an error that
-// satisfies errors.Is(err, os.ErrNotExist).
+// Read decodes name.json into v, after any pending writes to name have
+// finished. A missing file returns an error that satisfies
+// errors.Is(err, os.ErrNotExist).
 func (s *Store) Read(name string, v any) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
+	s.wait(name)
 	data, err := os.ReadFile(s.file(name))
 	if err != nil {
 		return err
@@ -160,20 +287,24 @@ func (s *Store) Read(name string, v any) error {
 	return nil
 }
 
-// Exists reports whether name.json is present.
+// Exists reports whether name.json is present, after any pending writes
+// to name have finished.
 func (s *Store) Exists(name string) bool {
 	if checkName(name) != nil {
 		return false
 	}
+	s.wait(name)
 	_, err := os.Stat(s.file(name))
 	return err == nil
 }
 
-// Delete removes name.json; a missing file is not an error.
+// Delete removes name.json, after any pending writes to name have
+// finished; a missing file is not an error.
 func (s *Store) Delete(name string) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
+	s.wait(name)
 	if err := os.Remove(s.file(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("save: %w", err)
 	}

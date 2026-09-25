@@ -16,8 +16,10 @@
 // Interpolator, Predictor, History and Clock handle smoothing,
 // prediction, lag compensation and server time. EncodeDelta with
 // SnapshotBuffer and SnapshotReceiver sends only what changed since the
-// snapshot a client acknowledged. Interest chooses which entities a
-// viewer needs at all.
+// snapshot a client acknowledged, down to single array elements; the
+// delta encoding may change before Bunyip 1.0, so both ends must run
+// the same version. Interest chooses which entities a viewer needs at
+// all.
 // These stateful helpers have no internal synchronization; update them
 // on the game loop goroutine or protect them externally. Snapshots of
 // generic values are shallow copies, so treat referenced data as immutable.
@@ -39,6 +41,9 @@ import (
 // may run concurrently, but Register must not run alongside them. Use
 // non-nil values and at most 65536 distinct types. A binary message must
 // provide matching BinaryMarshaler and BinaryUnmarshaler implementations.
+// Connections decode messages from read buffers they reuse, so
+// UnmarshalBinary must copy the bytes it keeps, as the
+// encoding.BinaryUnmarshaler contract requires.
 type Registry struct {
 	byType map[reflect.Type]uint16
 	byID   []reflect.Type

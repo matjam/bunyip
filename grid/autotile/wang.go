@@ -37,6 +37,13 @@ type WangTile struct {
 // t must be WangCorners, WangEdges or WangFull. The tiles slice is retained,
 // not copied; edits affect later mapping. Use finite weights; nonpositive
 // weights count as 1. An empty set maps every cell to -1.
+//
+// A Mapper indexes the set by the colours each tile shows, so a cell
+// that some tile matches at every position costs one lookup, however
+// large the set. A cell no tile matches exactly scores every tile. Each
+// call to Apply, Cell or Region first compares the set with the copy
+// the index was built from and rebuilds the index if a tile changed,
+// which costs time in proportion to the number of tiles.
 func Wang(t WangType, tiles []WangTile) *Rules {
 	return &Rules{kind: kindWang, wangType: t, wang: tiles}
 }
@@ -84,6 +91,19 @@ func (m *Mapper) wangFrame(x, y, w, h, t int, terrain func(x, y int) int) int {
 	if empty {
 		return -1
 	}
+	if exact, ok := m.wang.exact[want]; ok {
+		// Every tile in exact matches all positions, which is the highest
+		// score a tile can have, so the scan would choose among exactly
+		// these, in the same order.
+		return m.pick(x, y, exact)
+	}
+	return m.pick(x, y, m.wangScan(&want, positions))
+}
+
+// wangScan scores every tile by the positions matching want and returns
+// the best, in slice order. It is the fallback for a wanted colour
+// vector no tile matches exactly.
+func (m *Mapper) wangScan(want *[8]int, positions []int) []weighted {
 	best, score := m.scratch[:0], -1
 	for i := range m.Rules.wang {
 		tile := &m.Rules.wang[i]
@@ -100,7 +120,66 @@ func (m *Mapper) wangFrame(x, y, w, h, t int, terrain func(x, y int) int) int {
 		}
 	}
 	m.scratch = best
-	return m.pick(x, y, best)
+	return best
+}
+
+// wangIndex groups a Wang set's tiles by the colours they show at the
+// matched positions, so a cell whose wanted colours some tile matches
+// exactly finds its candidates without scanning the set.
+type wangIndex struct {
+	rules     *Rules
+	positions []int
+	// tiles is a copy of the set the index was built from. The set is
+	// retained by the rules and may be edited between calls, so every
+	// call compares it before trusting the index.
+	tiles []WangTile
+	// exact holds, for each colour vector (zero at unmatched positions),
+	// the tiles showing it, in slice order.
+	exact map[[8]int][]weighted
+}
+
+// refreshWang rebuilds the Wang index when the rules, the matched
+// positions or any tile has changed since it was built.
+func (m *Mapper) refreshWang() {
+	r := m.Rules
+	positions := m.positions()
+	ix := &m.wang
+	if ix.rules == r && samePositions(ix.positions, positions) && len(ix.tiles) == len(r.wang) {
+		same := true
+		for i := range r.wang {
+			if r.wang[i] != ix.tiles[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return
+		}
+	}
+	ix.rules = r
+	ix.positions = positions
+	ix.tiles = append(ix.tiles[:0], r.wang...)
+	ix.exact = make(map[[8]int][]weighted, len(r.wang))
+	for i := range r.wang {
+		tile := &r.wang[i]
+		var key [8]int
+		for _, p := range positions {
+			key[p] = tile.Colors[p]
+		}
+		ix.exact[key] = append(ix.exact[key], weightedTile(tile))
+	}
+}
+
+func samePositions(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func weightedTile(t *WangTile) weighted {

@@ -4,9 +4,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
+	"math/bits"
 	"reflect"
+	"strconv"
 	"sync"
+	"unsafe"
 )
 
 // ErrDeltaType is returned for a snapshot type a delta cannot describe.
@@ -18,22 +20,51 @@ var ErrDeltaData = errors.New("network: bad delta data")
 // EncodeDelta encodes the exported fields of current that differ from
 // baseline, both structs (or pointers to structs) of the same type, as
 // a change mask followed by only the changed values. An unchanged
-// snapshot encodes to the mask alone, one byte per eight fields.
+// snapshot encodes to the mask alone, one byte per eight fields. To
+// encode into a buffer the caller reuses, call AppendDelta.
 //
 // Supported field types are bool, the sized and unsized integers,
 // float32, float64, string, arrays of those, and nested structs, which
-// are encoded as deltas of their own. Unexported fields are skipped.
-// Anything else (slices, maps, pointers, interfaces) is ErrDeltaType.
+// are encoded as deltas of their own. An array is encoded as a change
+// mask of its own, one bit per element, followed by only the changed
+// elements, so a large array with a few changed entries stays small.
+// Values are compared by their bits, so a float that changes from 0 to
+// -0 is sent and an unchanged NaN is not. Unexported fields are
+// skipped. Anything else (slices, maps, pointers, interfaces) is
+// ErrDeltaType.
+//
+// The encoding may change between Bunyip versions before 1.0; both ends
+// must run the same version.
 func EncodeDelta(baseline, current any) ([]byte, error) {
+	return AppendDelta(nil, baseline, current)
+}
+
+// AppendDelta appends the delta EncodeDelta would return to dst and
+// returns the extended slice. To encode every tick without allocating,
+// pass pointers to baseline and current and a buffer kept from the last
+// call, truncated to zero length. Values passed by value are copied
+// first, which allocates.
+func AppendDelta(dst []byte, baseline, current any) ([]byte, error) {
 	b, c := reflect.Indirect(reflect.ValueOf(baseline)), reflect.Indirect(reflect.ValueOf(current))
 	if !b.IsValid() || !c.IsValid() || b.Type() != c.Type() {
-		return nil, fmt.Errorf("%w: baseline and current must be the same struct type", ErrDeltaType)
+		return dst, fmt.Errorf("%w: baseline and current must be the same struct type", ErrDeltaType)
 	}
 	dt, err := deltaTypeOf(b.Type())
 	if err != nil {
-		return nil, err
+		return dst, err
 	}
-	return dt.encode(nil, b, c), nil
+	return dt.encode(dst, addrOf(b), addrOf(c)), nil
+}
+
+// addrOf returns the address of a struct value, copying it to the heap
+// when it is not addressable.
+func addrOf(v reflect.Value) unsafe.Pointer {
+	if v.CanAddr() {
+		return v.Addr().UnsafePointer()
+	}
+	p := reflect.New(v.Type())
+	p.Elem().Set(v)
+	return p.UnsafePointer()
 }
 
 // DecodeDelta applies delta bytes from EncodeDelta to a copy of
@@ -49,10 +80,15 @@ func DecodeDelta(baseline any, data []byte, into any) error {
 	if err != nil {
 		return err
 	}
-	dst = dst.Elem()
-	dst.Set(b)
+	dst.Elem().Set(b)
+	return dt.apply(dst.UnsafePointer(), data)
+}
+
+// apply decodes data onto the struct at p, which already holds the
+// baseline.
+func (dt *deltaType) apply(p unsafe.Pointer, data []byte) error {
 	r := &deltaReader{data: data}
-	dt.decode(r, dst)
+	dt.decode(r, p)
 	if r.err != nil {
 		return r.err
 	}
@@ -62,9 +98,15 @@ func DecodeDelta(baseline any, data []byte, into any) error {
 	return nil
 }
 
+// deltaField is one exported field of a struct type: a scalar, an array
+// of scalars or a nested struct, found at off bytes into the struct.
 type deltaField struct {
-	index  int
-	nested *deltaType // for struct fields
+	off    uintptr
+	kind   reflect.Kind // the scalar kind, or the element kind of an array
+	array  bool
+	n      int     // array length
+	size   uintptr // bytes per scalar or array element
+	nested *deltaType
 }
 
 type deltaType struct {
@@ -87,7 +129,7 @@ func deltaTypeOf(t reflect.Type) (*deltaType, error) {
 		if !f.IsExported() {
 			continue
 		}
-		df := deltaField{index: i}
+		df := deltaField{off: f.Offset, kind: f.Type.Kind(), size: f.Type.Size()}
 		switch f.Type.Kind() {
 		case reflect.Struct:
 			nested, err := deltaTypeOf(f.Type)
@@ -99,6 +141,8 @@ func deltaTypeOf(t reflect.Type) (*deltaType, error) {
 			if !scalarKind(f.Type.Elem().Kind()) {
 				return nil, fmt.Errorf("%w: field %s.%s is an array of %s", ErrDeltaType, t, f.Name, f.Type.Elem())
 			}
+			df.array, df.n = true, f.Type.Len()
+			df.kind, df.size = f.Type.Elem().Kind(), f.Type.Elem().Size()
 		default:
 			if !scalarKind(f.Type.Kind()) {
 				return nil, fmt.Errorf("%w: field %s.%s has type %s", ErrDeltaType, t, f.Name, f.Type)
@@ -121,85 +165,183 @@ func scalarKind(k reflect.Kind) bool {
 	return false
 }
 
+// sameScalar reports whether the scalars of a kind at a and b have the
+// same bits, or for strings the same bytes.
+func sameScalar(kind reflect.Kind, size uintptr, a, b unsafe.Pointer) bool {
+	if kind == reflect.String {
+		return *(*string)(a) == *(*string)(b)
+	}
+	switch size {
+	case 1:
+		return *(*uint8)(a) == *(*uint8)(b)
+	case 2:
+		return *(*uint16)(a) == *(*uint16)(b)
+	case 4:
+		return *(*uint32)(a) == *(*uint32)(b)
+	}
+	return *(*uint64)(a) == *(*uint64)(b)
+}
+
 // equal reports whether two values of this struct type agree on their
 // exported fields.
-func (dt *deltaType) equal(a, b reflect.Value) bool {
-	for _, f := range dt.fields {
-		af, bf := a.Field(f.index), b.Field(f.index)
-		if f.nested != nil {
+func (dt *deltaType) equal(a, b unsafe.Pointer) bool {
+	for i := range dt.fields {
+		f := &dt.fields[i]
+		af, bf := unsafe.Add(a, f.off), unsafe.Add(b, f.off)
+		switch {
+		case f.nested != nil:
 			if !f.nested.equal(af, bf) {
 				return false
 			}
-		} else if !af.Equal(bf) {
-			return false
+		case f.array:
+			for e := range f.n {
+				o := uintptr(e) * f.size
+				if !sameScalar(f.kind, f.size, unsafe.Add(af, o), unsafe.Add(bf, o)) {
+					return false
+				}
+			}
+		default:
+			if !sameScalar(f.kind, f.size, af, bf) {
+				return false
+			}
 		}
 	}
 	return true
 }
 
-func (dt *deltaType) encode(buf []byte, base, cur reflect.Value) []byte {
+// encode appends the delta from the struct at base to the one at cur.
+func (dt *deltaType) encode(buf []byte, base, cur unsafe.Pointer) []byte {
 	maskAt := len(buf)
-	buf = append(buf, make([]byte, dt.maskLen)...)
-	for i, f := range dt.fields {
-		bf, cf := base.Field(f.index), cur.Field(f.index)
-		if f.nested != nil {
+	buf = appendZeros(buf, dt.maskLen)
+	for i := range dt.fields {
+		f := &dt.fields[i]
+		bf, cf := unsafe.Add(base, f.off), unsafe.Add(cur, f.off)
+		switch {
+		case f.nested != nil:
 			if f.nested.equal(bf, cf) {
 				continue
 			}
-			buf[maskAt+i/8] |= 1 << (i % 8)
 			buf = f.nested.encode(buf, bf, cf)
-			continue
-		}
-		if bf.Equal(cf) {
-			continue
+		case f.array:
+			var changed bool
+			if buf, changed = f.encodeArray(buf, bf, cf); !changed {
+				continue
+			}
+		default:
+			if sameScalar(f.kind, f.size, bf, cf) {
+				continue
+			}
+			buf = appendScalar(buf, f.kind, cf)
 		}
 		buf[maskAt+i/8] |= 1 << (i % 8)
-		buf = encodeValue(buf, cf)
 	}
 	return buf
 }
 
-func encodeValue(buf []byte, v reflect.Value) []byte {
-	switch v.Kind() {
+// encodeArray appends an element change mask and the changed elements,
+// or leaves buf as it was and reports false when nothing changed.
+func (f *deltaField) encodeArray(buf []byte, base, cur unsafe.Pointer) ([]byte, bool) {
+	start := len(buf)
+	buf = appendZeros(buf, (f.n+7)/8)
+	changed := false
+	if rawKind(f.kind) {
+		// The wire form is the element's memory, so compare and copy
+		// whole words.
+		switch f.size {
+		case 1:
+			buf, changed = diffRaw(buf, start, base, cur, f.n, func(b []byte, v uint8) []byte { return append(b, v) })
+		case 2:
+			buf, changed = diffRaw(buf, start, base, cur, f.n, binary.LittleEndian.AppendUint16)
+		case 4:
+			buf, changed = diffRaw(buf, start, base, cur, f.n, binary.LittleEndian.AppendUint32)
+		default:
+			buf, changed = diffRaw(buf, start, base, cur, f.n, binary.LittleEndian.AppendUint64)
+		}
+		if !changed {
+			return buf[:start], false
+		}
+		return buf, true
+	}
+	for e := range f.n {
+		o := uintptr(e) * f.size
+		c := unsafe.Add(cur, o)
+		if sameScalar(f.kind, f.size, unsafe.Add(base, o), c) {
+			continue
+		}
+		buf[start+e/8] |= 1 << (e % 8)
+		buf = appendScalar(buf, f.kind, c)
+		changed = true
+	}
+	if !changed {
+		return buf[:start], false
+	}
+	return buf, true
+}
+
+// rawKind reports whether a kind's wire form is exactly its memory:
+// every fixed-size kind except int and uint on a 32-bit platform, which
+// are widened to eight bytes. A bool's memory is 0 or 1, as on the wire.
+func rawKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.String:
+		return false
+	case reflect.Int, reflect.Uint:
+		return strconv.IntSize == 64
+	}
+	return true
+}
+
+// diffRaw sets a mask bit and appends the element for every element of
+// two arrays of n words that differs, and reports whether any did.
+func diffRaw[T uint8 | uint16 | uint32 | uint64](buf []byte, maskAt int, base, cur unsafe.Pointer, n int, put func([]byte, T) []byte) ([]byte, bool) {
+	bs, cs := unsafe.Slice((*T)(base), n), unsafe.Slice((*T)(cur), n)
+	changed := false
+	for e, c := range cs {
+		if bs[e] != c {
+			buf[maskAt+e/8] |= 1 << (e % 8)
+			buf = put(buf, c)
+			changed = true
+		}
+	}
+	return buf, changed
+}
+
+func appendZeros(buf []byte, n int) []byte {
+	for range n {
+		buf = append(buf, 0)
+	}
+	return buf
+}
+
+// appendScalar appends the scalar of a kind at p: one byte for bool and
+// the 8-bit kinds, two, four or eight bytes little-endian for the wider
+// numbers (eight for int and uint on every platform), and a length and
+// the bytes for a string.
+func appendScalar(buf []byte, kind reflect.Kind, p unsafe.Pointer) []byte {
+	switch kind {
 	case reflect.Bool:
-		if v.Bool() {
+		if *(*bool)(p) {
 			return append(buf, 1)
 		}
 		return append(buf, 0)
 	case reflect.Int8, reflect.Uint8:
-		return append(buf, byte(bits(v)))
+		return append(buf, *(*uint8)(p))
 	case reflect.Int16, reflect.Uint16:
-		return binary.LittleEndian.AppendUint16(buf, uint16(bits(v)))
+		return binary.LittleEndian.AppendUint16(buf, *(*uint16)(p))
 	case reflect.Int32, reflect.Uint32, reflect.Float32:
-		return binary.LittleEndian.AppendUint32(buf, uint32(bits(v)))
-	case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint64, reflect.Float64:
-		return binary.LittleEndian.AppendUint64(buf, bits(v))
+		return binary.LittleEndian.AppendUint32(buf, *(*uint32)(p))
+	case reflect.Int64, reflect.Uint64, reflect.Float64:
+		return binary.LittleEndian.AppendUint64(buf, *(*uint64)(p))
+	case reflect.Int:
+		return binary.LittleEndian.AppendUint64(buf, uint64(int64(*(*int)(p))))
+	case reflect.Uint:
+		return binary.LittleEndian.AppendUint64(buf, uint64(*(*uint)(p)))
 	case reflect.String:
-		s := v.String()
+		s := *(*string)(p)
 		buf = binary.AppendUvarint(buf, uint64(len(s)))
 		return append(buf, s...)
-	case reflect.Array:
-		for i := range v.Len() {
-			buf = encodeValue(buf, v.Index(i))
-		}
-		return buf
 	}
-	panic("network: unreachable delta kind " + v.Kind().String())
-}
-
-// bits is a value's representation as up to 64 bits.
-func bits(v reflect.Value) uint64 {
-	switch v.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return uint64(v.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return v.Uint()
-	case reflect.Float32:
-		return uint64(math.Float32bits(float32(v.Float())))
-	case reflect.Float64:
-		return math.Float64bits(v.Float())
-	}
-	panic("network: unreachable delta kind " + v.Kind().String())
+	panic("network: unreachable delta kind " + kind.String())
 }
 
 type deltaReader struct {
@@ -221,19 +363,24 @@ func (r *deltaReader) take(n int) []byte {
 	return out
 }
 
-func (dt *deltaType) decode(r *deltaReader, dst reflect.Value) {
+func (dt *deltaType) decode(r *deltaReader, dst unsafe.Pointer) {
 	mask := r.take(dt.maskLen)
 	if mask == nil {
 		return
 	}
-	for i, f := range dt.fields {
+	for i := range dt.fields {
 		if mask[i/8]&(1<<(i%8)) == 0 {
 			continue
 		}
-		if f.nested != nil {
-			f.nested.decode(r, dst.Field(f.index))
-		} else {
-			decodeValue(r, dst.Field(f.index))
+		f := &dt.fields[i]
+		p := unsafe.Add(dst, f.off)
+		switch {
+		case f.nested != nil:
+			f.nested.decode(r, p)
+		case f.array:
+			f.decodeArray(r, p)
+		default:
+			decodeScalar(r, f.kind, p)
 		}
 		if r.err != nil {
 			return
@@ -241,67 +388,136 @@ func (dt *deltaType) decode(r *deltaReader, dst reflect.Value) {
 	}
 }
 
-func decodeValue(r *deltaReader, v reflect.Value) {
-	var raw uint64
-	switch v.Kind() {
+// decodeArray reads an element change mask and the changed elements.
+func (f *deltaField) decodeArray(r *deltaReader, dst unsafe.Pointer) {
+	mask := r.take((f.n + 7) / 8)
+	if mask == nil {
+		return
+	}
+	for i, m := range mask {
+		for m != 0 {
+			e := i*8 + bits.TrailingZeros8(m)
+			m &= m - 1
+			if e >= f.n {
+				r.err = fmt.Errorf("%w: array element %d of %d", ErrDeltaData, e, f.n)
+				return
+			}
+			decodeScalar(r, f.kind, unsafe.Add(dst, uintptr(e)*f.size))
+			if r.err != nil {
+				return
+			}
+		}
+	}
+}
+
+// decodeScalar reads a scalar of a kind as appendScalar wrote it and
+// stores it at p.
+func decodeScalar(r *deltaReader, kind reflect.Kind, p unsafe.Pointer) {
+	switch kind {
 	case reflect.Bool:
 		if b := r.take(1); b != nil {
-			v.SetBool(b[0] != 0)
+			*(*bool)(p) = b[0] != 0
 		}
-		return
+	case reflect.Int8, reflect.Uint8:
+		if b := r.take(1); b != nil {
+			*(*uint8)(p) = b[0]
+		}
+	case reflect.Int16, reflect.Uint16:
+		if b := r.take(2); b != nil {
+			*(*uint16)(p) = binary.LittleEndian.Uint16(b)
+		}
+	case reflect.Int32, reflect.Uint32, reflect.Float32:
+		if b := r.take(4); b != nil {
+			*(*uint32)(p) = binary.LittleEndian.Uint32(b)
+		}
+	case reflect.Int64, reflect.Uint64, reflect.Float64:
+		if b := r.take(8); b != nil {
+			*(*uint64)(p) = binary.LittleEndian.Uint64(b)
+		}
+	case reflect.Int:
+		if b := r.take(8); b != nil {
+			*(*int)(p) = int(int64(binary.LittleEndian.Uint64(b)))
+		}
+	case reflect.Uint:
+		if b := r.take(8); b != nil {
+			*(*uint)(p) = uint(binary.LittleEndian.Uint64(b))
+		}
 	case reflect.String:
 		n, k := binary.Uvarint(r.data)
+		if r.err != nil {
+			return
+		}
 		if k <= 0 || n > uint64(len(r.data)-k) {
 			r.err = fmt.Errorf("%w: bad string length", ErrDeltaData)
 			return
 		}
 		r.data = r.data[k:]
-		v.SetString(string(r.take(int(n))))
-		return
-	case reflect.Array:
-		for i := range v.Len() {
-			decodeValue(r, v.Index(i))
-			if r.err != nil {
-				return
-			}
-		}
-		return
-	case reflect.Int8, reflect.Uint8:
-		if b := r.take(1); b != nil {
-			raw = uint64(b[0])
-		}
-	case reflect.Int16, reflect.Uint16:
-		if b := r.take(2); b != nil {
-			raw = uint64(binary.LittleEndian.Uint16(b))
-		}
-	case reflect.Int32, reflect.Uint32, reflect.Float32:
-		if b := r.take(4); b != nil {
-			raw = uint64(binary.LittleEndian.Uint32(b))
-		}
-	default:
-		if b := r.take(8); b != nil {
-			raw = binary.LittleEndian.Uint64(b)
-		}
+		*(*string)(p) = string(r.take(int(n)))
 	}
-	if r.err != nil {
+}
+
+// snapshotRing holds the newest snapshots sent to or received by one
+// end, oldest first, in storage that is reused once it has grown.
+type snapshotRing[S any] struct {
+	buf     []snapshotEntry[S]
+	head, n int
+}
+
+type snapshotEntry[S any] struct {
+	seq  uint32
+	snap S
+}
+
+// fit sizes the ring for keep entries plus the one being added, keeping
+// the newest entries it already holds.
+func (r *snapshotRing[S]) fit(keep int) {
+	if len(r.buf) == keep+1 {
 		return
 	}
-	switch v.Kind() {
-	case reflect.Int8:
-		v.SetInt(int64(int8(raw)))
-	case reflect.Int16:
-		v.SetInt(int64(int16(raw)))
-	case reflect.Int32:
-		v.SetInt(int64(int32(raw)))
-	case reflect.Int, reflect.Int64:
-		v.SetInt(int64(raw))
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		v.SetUint(raw)
-	case reflect.Float32:
-		v.SetFloat(float64(math.Float32frombits(uint32(raw))))
-	case reflect.Float64:
-		v.SetFloat(math.Float64frombits(raw))
+	buf := make([]snapshotEntry[S], keep+1)
+	n := min(r.n, keep)
+	for i := range n {
+		buf[i] = *r.at(r.n - n + i)
 	}
+	r.buf, r.head, r.n = buf, 0, n
+}
+
+// at returns the i-th oldest entry.
+func (r *snapshotRing[S]) at(i int) *snapshotEntry[S] {
+	return &r.buf[(r.head+i)%len(r.buf)]
+}
+
+// find returns the position of the entry with a sequence, or -1.
+func (r *snapshotRing[S]) find(seq uint32) int {
+	for i := range r.n {
+		if r.at(i).seq == seq {
+			return i
+		}
+	}
+	return -1
+}
+
+// next returns the free slot after the newest entry. fit must have left
+// room for it.
+func (r *snapshotRing[S]) next() *snapshotEntry[S] { return r.at(r.n) }
+
+// commit keeps the entry written to next, then drops the oldest entries
+// beyond keep.
+func (r *snapshotRing[S]) commit(keep int) {
+	r.n++
+	if r.n > keep {
+		r.drop(r.n - keep)
+	}
+}
+
+// drop forgets the k oldest entries.
+func (r *snapshotRing[S]) drop(k int) {
+	var zero S
+	for i := range k {
+		r.at(i).snap = zero // release anything the snapshot refers to
+	}
+	r.head = (r.head + k) % len(r.buf)
+	r.n -= k
 }
 
 // SnapshotBuffer is the server side of delta-compressed snapshots. Each
@@ -316,55 +532,74 @@ type SnapshotBuffer[K comparable, S any] struct {
 	// acknowledgement still finds its baseline; zero means 32.
 	Keep    int
 	clients map[K]*snapshotClient[S]
+	zero    *S     // the baseline before any acknowledgement
+	scratch []byte // Encode's buffer, copied out for the caller
 }
 
 type snapshotClient[S any] struct {
-	sent  []snapshotEntry[S]
+	sent  snapshotRing[S]
 	acked uint32
-}
-
-type snapshotEntry[S any] struct {
-	seq  uint32
-	snap S
 }
 
 // Encode encodes a client's snapshot against the newest one it has
 // acknowledged, or the zero S when it has acknowledged none the buffer
 // still holds, and remembers it under seq (which must be nonzero and
 // increase). It returns the baseline's sequence, 0 for the zero S, and
-// the delta; send both with seq to the client for SnapshotReceiver.
+// the delta; send both with seq to the client for SnapshotReceiver. The
+// delta is a fresh slice; to reuse one buffer for every client and
+// tick, call AppendEncode.
 func (b *SnapshotBuffer[K, S]) Encode(client K, seq uint32, snap S) (base uint32, data []byte, err error) {
+	base, b.scratch, err = b.AppendEncode(b.scratch[:0], client, seq, snap)
+	if err != nil {
+		return 0, nil, err
+	}
+	return base, append([]byte(nil), b.scratch...), nil
+}
+
+// AppendEncode encodes as Encode does and appends the delta to dst,
+// returning the extended slice. To encode without allocating once the
+// buffer has grown, pass the slice the last call returned, truncated to
+// zero length, and send it before the next call.
+func (b *SnapshotBuffer[K, S]) AppendEncode(dst []byte, client K, seq uint32, snap S) (base uint32, data []byte, err error) {
 	if seq == 0 {
-		return 0, nil, fmt.Errorf("%w: snapshot sequence 0 is reserved", ErrDeltaData)
+		return 0, dst, fmt.Errorf("%w: snapshot sequence 0 is reserved", ErrDeltaData)
+	}
+	dt, err := deltaTypeOf(reflect.TypeFor[S]())
+	if err != nil {
+		return 0, dst, err
 	}
 	if b.clients == nil {
 		b.clients = map[K]*snapshotClient[S]{}
+	}
+	if b.zero == nil {
+		b.zero = new(S)
 	}
 	c := b.clients[client]
 	if c == nil {
 		c = &snapshotClient[S]{}
 		b.clients[client] = c
 	}
-	var baseline S
-	for _, e := range c.sent {
-		if e.seq == c.acked && c.acked != 0 {
-			baseline, base = e.snap, e.seq
-			break
+	keep := keepOrDefault(b.Keep)
+	c.sent.fit(keep)
+	baseline := b.zero
+	if c.acked != 0 {
+		if i := c.sent.find(c.acked); i >= 0 {
+			e := c.sent.at(i)
+			baseline, base = &e.snap, e.seq
 		}
 	}
-	data, err = EncodeDelta(&baseline, &snap)
-	if err != nil {
-		return 0, nil, err
-	}
-	c.sent = append(c.sent, snapshotEntry[S]{seq, snap})
-	keep := b.Keep
-	if keep <= 0 {
-		keep = 32
-	}
-	if len(c.sent) > keep {
-		c.sent = c.sent[len(c.sent)-keep:]
-	}
+	slot := c.sent.next()
+	slot.seq, slot.snap = seq, snap
+	data = dt.encode(dst, unsafe.Pointer(baseline), unsafe.Pointer(&slot.snap))
+	c.sent.commit(keep)
 	return base, data, nil
+}
+
+func keepOrDefault(keep int) int {
+	if keep <= 0 {
+		return 32
+	}
+	return keep
 }
 
 // Ack records that a client received the snapshot with sequence seq;
@@ -375,12 +610,9 @@ func (b *SnapshotBuffer[K, S]) Ack(client K, seq uint32) {
 	if c == nil {
 		return
 	}
-	for i, e := range c.sent {
-		if e.seq == seq {
-			c.acked = seq
-			c.sent = c.sent[i:] // nothing older will be a baseline again
-			return
-		}
+	if i := c.sent.find(seq); i >= 0 {
+		c.acked = seq
+		c.sent.drop(i) // nothing older will be a baseline again
 	}
 }
 
@@ -394,7 +626,7 @@ func (b *SnapshotBuffer[K, S]) Forget(client K) { delete(b.clients, client) }
 type SnapshotReceiver[S any] struct {
 	// Keep is how many decoded snapshots to remember; zero means 32.
 	Keep int
-	got  []snapshotEntry[S]
+	got  snapshotRing[S]
 }
 
 // Decode applies a delta to the snapshot with sequence base (0 for the
@@ -403,30 +635,29 @@ type SnapshotReceiver[S any] struct {
 // ErrDeltaData; the fix is to acknowledge nothing until a snapshot
 // against a baseline the receiver has arrives.
 func (r *SnapshotReceiver[S]) Decode(base, seq uint32, data []byte) (S, error) {
-	var baseline S
-	if base != 0 {
-		found := false
-		for _, e := range r.got {
-			if e.seq == base {
-				baseline, found = e.snap, true
-				break
-			}
-		}
-		if !found {
-			return baseline, fmt.Errorf("%w: baseline snapshot %d not held", ErrDeltaData, base)
-		}
+	var zero S
+	dt, err := deltaTypeOf(reflect.TypeFor[S]())
+	if err != nil {
+		return zero, err
 	}
-	var snap S
-	if err := DecodeDelta(&baseline, data, &snap); err != nil {
+	keep := keepOrDefault(r.Keep)
+	r.got.fit(keep)
+	slot := r.got.next()
+	if base == 0 {
+		slot.snap = zero
+	} else {
+		i := r.got.find(base)
+		if i < 0 {
+			return zero, fmt.Errorf("%w: baseline snapshot %d not held", ErrDeltaData, base)
+		}
+		slot.snap = r.got.at(i).snap
+	}
+	slot.seq = seq
+	if err := dt.apply(unsafe.Pointer(&slot.snap), data); err != nil {
+		snap := slot.snap
+		slot.snap = zero
 		return snap, err
 	}
-	r.got = append(r.got, snapshotEntry[S]{seq, snap})
-	keep := r.Keep
-	if keep <= 0 {
-		keep = 32
-	}
-	if len(r.got) > keep {
-		r.got = r.got[len(r.got)-keep:]
-	}
-	return snap, nil
+	r.got.commit(keep)
+	return slot.snap, nil
 }

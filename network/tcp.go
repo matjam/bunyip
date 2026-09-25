@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +22,7 @@ type Conn struct {
 	activity   func()
 	sendInit   sync.Once
 	sendGate   chan struct{}
+	handshook  atomic.Bool // a TLS handshake has completed; sends skip it
 	closed     chan struct{}
 	once       sync.Once
 	ID         int // server-assigned, 1 upward; 0 on the client side
@@ -38,9 +41,71 @@ const DefaultSendTimeout = 5 * time.Second
 // Send encodes and writes one message with DefaultSendTimeout. It is safe from
 // any goroutine. Use SendContext to choose a shorter or longer budget.
 func (c *Conn) Send(msg any) error {
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
-	defer cancel()
-	return c.SendContext(ctx, msg)
+	f, err := c.reg.frame(msg)
+	if err != nil {
+		return err
+	}
+	defer f.release()
+	return c.sendFrame(sendBudget{deadline: time.Now().Add(DefaultSendTimeout)}, f.b)
+}
+
+// sendBudget bounds one send: a context, or for Send and Broadcast a
+// bare deadline, which spares them building a context per message.
+type sendBudget struct {
+	ctx      context.Context // nil for a bare deadline
+	deadline time.Time
+}
+
+// err reports a budget that is already spent.
+func (b sendBudget) err() error {
+	if b.ctx != nil {
+		return sendContextErr(b.ctx)
+	}
+	if !b.deadline.IsZero() && !time.Now().Before(b.deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+// frame is an encoded message with its length header, in a buffer
+// borrowed from a pool.
+type frame struct {
+	b  []byte
+	bp *[]byte
+}
+
+// frameBufs lends frame buffers to sends. A buffer that grew past 64 KB
+// for one large message is not kept.
+var frameBufs = sync.Pool{New: func() any {
+	b := make([]byte, 0, 512)
+	return &b
+}}
+
+// frame encodes msg as [length uint32][type uint16][payload], ready to
+// write with one call.
+func (r *Registry) frame(msg any) (frame, error) {
+	bp := frameBufs.Get().(*[]byte)
+	b, err := r.appendEncoded(append((*bp)[:0], 0, 0, 0, 0), msg)
+	f := frame{b: b, bp: bp}
+	if err != nil {
+		f.release()
+		return frame{}, err
+	}
+	if n := len(b) - 4; n > MaxMessage {
+		f.release()
+		return frame{}, fmt.Errorf("network: message of %d bytes exceeds MaxMessage", n)
+	}
+	binary.BigEndian.PutUint32(b, uint32(len(b)-4))
+	return f, nil
+}
+
+// release returns the frame's buffer to the pool.
+func (f frame) release() {
+	if f.bp == nil || cap(f.b) > 64<<10 {
+		return
+	}
+	*f.bp = f.b[:0]
+	frameBufs.Put(f.bp)
 }
 
 // SendContext encodes and writes one message. Cancellation covers waiting for
@@ -57,23 +122,46 @@ func (c *Conn) SendContext(ctx context.Context, msg any) (err error) {
 	if err := sendContextErr(ctx); err != nil {
 		return err
 	}
-	data, err := c.reg.encode(msg)
+	f, err := c.reg.frame(msg)
 	if err != nil {
 		return err
 	}
-	if len(data) > MaxMessage {
-		return fmt.Errorf("network: message of %d bytes exceeds MaxMessage", len(data))
-	}
+	defer f.release()
+	deadline, _ := ctx.Deadline()
+	return c.sendFrame(sendBudget{ctx: ctx, deadline: deadline}, f.b)
+}
+
+// sendFrame writes one encoded frame within a budget: it waits for the
+// connection's writer, completes a pending TLS handshake, and writes the
+// frame with one call where the transport accepts it whole.
+func (c *Conn) sendFrame(b sendBudget, data []byte) (err error) {
+	ctx := b.ctx
 	c.sendInit.Do(func() { c.sendGate = make(chan struct{}, 1) })
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-c.closed:
-		return net.ErrClosed
 	case c.sendGate <- struct{}{}:
+	default:
+		// Another sender holds the writer; wait within the budget.
+		var expired <-chan time.Time
+		var done <-chan struct{}
+		if ctx != nil {
+			done = ctx.Done()
+		} else {
+			t := time.NewTimer(time.Until(b.deadline))
+			defer t.Stop()
+			expired = t.C
+		}
+		select {
+		case <-done:
+			return ctx.Err()
+		case <-expired:
+			return context.DeadlineExceeded
+		case <-c.closed:
+			return net.ErrClosed
+		case c.sendGate <- struct{}{}:
+		}
 	}
 	defer func() { <-c.sendGate }()
-	if err := sendContextErr(ctx); err != nil {
+	if err := b.err(); err != nil {
 		return err
 	}
 	select {
@@ -84,48 +172,50 @@ func (c *Conn) SendContext(ctx context.Context, msg any) (err error) {
 	// TLS's implicit Write handshake may already be waiting in the reader.
 	// A write deadline cannot interrupt its read or mutex wait; HandshakeContext
 	// cancels that work by closing the underlying transport when necessary.
-	if tlsConn, ok := c.c.(interface{ HandshakeContext(context.Context) error }); ok {
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
+	// Once the handshake is done the check is skipped, so a send with a bare
+	// deadline builds no context.
+	if tlsConn, ok := c.c.(interface{ HandshakeContext(context.Context) error }); ok && !c.handshook.Load() {
+		hctx := ctx
+		if hctx == nil {
+			var cancel context.CancelFunc
+			hctx, cancel = context.WithDeadline(context.Background(), b.deadline)
+			defer cancel()
+		}
+		if err := tlsConn.HandshakeContext(hctx); err != nil {
 			c.Close()
 			return fmt.Errorf("network: TLS handshake: %w", err)
 		}
+		c.handshook.Store(true)
 	}
-	deadline, _ := ctx.Deadline()
-	if err := c.c.SetWriteDeadline(deadline); err != nil {
+	if err := c.c.SetWriteDeadline(b.deadline); err != nil {
 		c.Close()
 		return fmt.Errorf("network: set write deadline: %w", err)
 	}
-	canceled := make(chan struct{})
-	stopCancel := context.AfterFunc(ctx, func() {
-		defer close(canceled)
-		if c.c.SetWriteDeadline(time.Now()) != nil {
-			c.Close()
-		}
-	})
-	defer func() {
-		// Join an already running callback before clearing its deadline. Otherwise
-		// it could expire the next sender's write after this sender releases the gate.
-		if !stopCancel() {
-			<-canceled
-		}
-		if clearErr := c.c.SetWriteDeadline(time.Time{}); clearErr != nil && err == nil {
-			c.Close()
-			err = fmt.Errorf("network: clear write deadline: %w", clearErr)
-		}
-	}()
-	var hdr [4]byte
-	binary.BigEndian.PutUint32(hdr[:], uint32(len(data)))
-	started, err := writeFramePart(ctx, c.c, hdr[:])
-	if err == nil {
-		_, err = writeFramePart(ctx, c.c, data)
+	// A bare deadline is enforced by the write deadline alone. A context
+	// that can be canceled also expires the write deadline when it ends.
+	var stopCancel func() bool
+	var canceled chan struct{}
+	if ctx != nil && ctx.Done() != nil {
+		canceled = make(chan struct{})
+		stopCancel = context.AfterFunc(ctx, func() {
+			defer close(canceled)
+			if c.c.SetWriteDeadline(time.Now()) != nil {
+				c.Close()
+			}
+		})
 	}
+	defer c.endSend(stopCancel, canceled, &err)
+	started, err := writeFrame(b, c.c, data)
 	if err != nil {
 		if started {
 			c.Close()
 		}
-		cause := ctx.Err()
+		var cause error
+		if ctx != nil {
+			cause = ctx.Err()
+		}
 		var timeout net.Error
-		if cause == nil && !deadline.IsZero() && !time.Now().Before(deadline) && errors.As(err, &timeout) && timeout.Timeout() {
+		if cause == nil && !b.deadline.IsZero() && !time.Now().Before(b.deadline) && errors.As(err, &timeout) && timeout.Timeout() {
 			cause = context.DeadlineExceeded
 		}
 		return errors.Join(err, cause)
@@ -133,9 +223,25 @@ func (c *Conn) SendContext(ctx context.Context, msg any) (err error) {
 	return nil
 }
 
-func writeFramePart(ctx context.Context, w io.Writer, p []byte) (started bool, err error) {
+// endSend finishes a send that set a write deadline: it joins the
+// cancellation callback if one is running, then clears the deadline.
+func (c *Conn) endSend(stopCancel func() bool, canceled chan struct{}, err *error) {
+	// Join an already running callback before clearing its deadline. Otherwise
+	// it could expire the next sender's write after this sender releases the gate.
+	if stopCancel != nil && !stopCancel() {
+		<-canceled
+	}
+	if clearErr := c.c.SetWriteDeadline(time.Time{}); clearErr != nil && *err == nil {
+		c.Close()
+		*err = fmt.Errorf("network: clear write deadline: %w", clearErr)
+	}
+}
+
+// writeFrame writes p in as few calls as the transport allows, checking
+// the budget before each one.
+func writeFrame(b sendBudget, w io.Writer, p []byte) (started bool, err error) {
 	for len(p) > 0 {
-		if err := sendContextErr(ctx); err != nil {
+		if err := b.err(); err != nil {
 			return started, err
 		}
 		started = true
@@ -181,11 +287,19 @@ func (c *Conn) Close() error {
 }
 
 // readLoop turns frames into Message events until the connection ends.
+// It reads through a buffer, so a burst of small frames costs one read
+// from the transport, and decodes each frame from storage it reuses: a
+// decoded message is a fresh value, and a binary message's
+// UnmarshalBinary copies what it keeps, as encoding.BinaryUnmarshaler
+// requires.
 func (c *Conn) readLoop() {
+	const keepBuf = 64 << 10 // frames up to this size reuse one buffer
+	r := bufio.NewReaderSize(c.c, 16<<10)
 	var hdr [4]byte
+	var reuse []byte
 	var err error
 	for {
-		if _, err = io.ReadFull(c.c, hdr[:]); err != nil {
+		if _, err = io.ReadFull(r, hdr[:]); err != nil {
 			break
 		}
 		n := binary.BigEndian.Uint32(hdr[:])
@@ -193,8 +307,16 @@ func (c *Conn) readLoop() {
 			err = fmt.Errorf("network: frame of %d bytes exceeds MaxMessage", n)
 			break
 		}
-		buf := make([]byte, n)
-		if _, err = io.ReadFull(c.c, buf); err != nil {
+		var buf []byte
+		if n <= keepBuf {
+			if uint32(cap(reuse)) < n {
+				reuse = make([]byte, max(n, 1024))
+			}
+			buf = reuse[:n]
+		} else {
+			buf = make([]byte, n)
+		}
+		if _, err = io.ReadFull(r, buf); err != nil {
 			break
 		}
 		msg, derr := c.reg.decode(buf)
@@ -357,34 +479,63 @@ func (s *Server) Conns() []*Conn {
 	return out
 }
 
-// Broadcast sends to every connection except those in except. Sends run
-// sequentially with one shared DefaultSendTimeout budget. The returned map
+// Broadcast sends to every connection except those in except. The message
+// is encoded once, and the sends run sequentially with one shared
+// DefaultSendTimeout budget. The returned map
 // contains failed peers only; nil means every selected peer accepted its frame.
 func (s *Server) Broadcast(msg any, except ...*Conn) map[*Conn]error {
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
-	defer cancel()
-	return s.BroadcastContext(ctx, msg, except...)
+	return s.broadcast(sendBudget{deadline: time.Now().Add(DefaultSendTimeout)}, msg, except)
 }
 
 // BroadcastContext sends sequentially with one shared context budget. It returns
 // failed peers only, including peers not reached before cancellation. Nil means
-// every selected peer accepted its frame. Encoding runs synchronously for each
-// peer and a blocking custom marshaler cannot be interrupted. The connection
-// snapshot and iteration order are unspecified; sends may block the caller.
+// every selected peer accepted its frame. The message is encoded once, before
+// the first send, and a blocking custom marshaler cannot be interrupted; an
+// encoding error is reported for every selected peer. The connection snapshot
+// and iteration order are unspecified; sends may block the caller.
 func (s *Server) BroadcastContext(ctx context.Context, msg any, except ...*Conn) map[*Conn]error {
+	deadline, _ := ctx.Deadline()
+	return s.broadcast(sendBudget{ctx: ctx, deadline: deadline}, msg, except)
+}
+
+func (s *Server) broadcast(b sendBudget, msg any, except []*Conn) map[*Conn]error {
 	var failures map[*Conn]error
+	fail := func(c *Conn, err error) {
+		if failures == nil {
+			failures = make(map[*Conn]error)
+		}
+		failures[c] = err
+	}
+	// Every connection of a server shares its registry, so the frame is
+	// encoded once; it is encoded again only for a connection that has
+	// another registry.
+	var f frame
+	var encErr error
+	var encReg *Registry
+	defer func() { f.release() }()
 	for _, c := range s.Conns() {
 		skip := false
 		for _, e := range except {
 			skip = skip || e == c
 		}
-		if !skip {
-			if err := c.SendContext(ctx, msg); err != nil {
-				if failures == nil {
-					failures = make(map[*Conn]error)
-				}
-				failures[c] = err
-			}
+		if skip {
+			continue
+		}
+		if err := b.err(); err != nil {
+			fail(c, err)
+			continue
+		}
+		if encReg != c.reg {
+			f.release()
+			f, encErr = c.reg.frame(msg)
+			encReg = c.reg
+		}
+		if encErr != nil {
+			fail(c, encErr)
+			continue
+		}
+		if err := c.sendFrame(b, f.b); err != nil {
+			fail(c, err)
 		}
 	}
 	return failures

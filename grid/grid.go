@@ -7,8 +7,10 @@
 // over points, so they work on any map representation, not only a Grid.
 // AStar finds one path with four or eight-way movement and a cost per
 // step, including zero and fractional costs. It uses a zero heuristic
-// because the callback provides no positive lower bound on step costs.
-// To guide the search when a lower bound is known, call AStarWithMinCost.
+// because the callback provides no positive lower bound on step costs,
+// so the search is uninformed and expands cells in every direction. For
+// speed, call AStarWithMinCost with the smallest cost any step can
+// have, or set Pathfinder.MinCost once for a map.
 // Dijkstra fills a map of distances from many sources at once. Downhill
 // selects a lower-valued neighbour, useful for uniform-cost movement
 // toward the sources. FOV computes which cells are
@@ -128,8 +130,13 @@ type Cost func(from, to Point) float32
 // Initial searches or buffer growth may allocate. An out-of-bounds
 // endpoint has no path; equal in-bounds endpoints return one point without
 // calling cost.
-// The search uses a zero heuristic to support every nonnegative cost;
-// this can explore more cells than a heuristic with a known cost bound.
+//
+// Without a minimum step cost the search is uninformed: it uses a zero
+// heuristic, which keeps it correct for zero and fractional costs but
+// makes it expand cells in every direction, as Dijkstra does. On a
+// 256 by 256 map that is several times slower than a guided search. For
+// speed, call AStarWithMinCost with the smallest cost any step can have,
+// 1 for a map where every move costs at least 1.
 func AStar(w, h int, start, goal Point, diagonal bool, cost Cost) []Point {
 	return AStarWithMinCost(w, h, start, goal, diagonal, cost, 0)
 }
@@ -173,6 +180,15 @@ func Dijkstra(w, h int, sources []Point, diagonal bool, cost Cost) *Grid[float32
 // NewPathfinder and keep it for as long as the map lasts. A Pathfinder
 // is not safe for concurrent use; give each goroutine its own.
 type Pathfinder struct {
+	// MinCost is the smallest cost any traversable step on the map can
+	// have, diagonals included. To make every AStar call on this
+	// pathfinder a guided search, set it once when the map is made: AStar
+	// then searches as AStarWithMinCost does with this bound. The zero
+	// value leaves AStar uninformed. Overstating it loses the
+	// cheapest-path guarantee; zero, negative, NaN and infinite values
+	// count as zero.
+	MinCost float32
+
 	w, h int
 	gen  uint32
 	seen []uint32 // cells reached this search, stamped with gen
@@ -233,10 +249,14 @@ func (p *Pathfinder) in(q Point) bool {
 // eight-way moves are considered. When there is no path it returns out
 // unchanged and false, so the caller keeps its buffer. Pass out as
 // buf[:0] to search every frame without allocating.
-// A zero heuristic preserves cheapest paths for zero and fractional
-// costs, ordering the search by accumulated cost as in Dijkstra.
+//
+// With MinCost zero, the default, the search is uninformed: a zero
+// heuristic preserves cheapest paths for zero and fractional costs, but
+// orders the search by accumulated cost as in Dijkstra, which expands
+// cells in every direction. For speed, set MinCost to the smallest cost
+// any step can have, or call AStarWithMinCost.
 func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost Cost) ([]Point, bool) {
-	return p.aStar(out, start, goal, diagonal, cost, 0)
+	return p.AStarWithMinCost(out, start, goal, diagonal, cost, p.MinCost)
 }
 
 // AStarWithMinCost appends a path to out as AStar does, using minCost to
@@ -245,8 +265,9 @@ func (p *Pathfinder) AStar(out []Point, start, goal Point, diagonal bool, cost C
 // distance for four-way moves and Chebyshev distance for eight-way moves.
 // The bound is not checked against the map; overstating it loses the
 // cheapest-path guarantee. Zero, negative, NaN and infinite bounds fall
-// back to AStar's zero heuristic. When no path exists, out is unchanged
-// and the result is false. Pass buf[:0] to reuse the output storage.
+// back to the zero heuristic. minCost applies to this call in place of
+// the MinCost field. When no path exists, out is unchanged and the
+// result is false. Pass buf[:0] to reuse the output storage.
 func (p *Pathfinder) AStarWithMinCost(out []Point, start, goal Point, diagonal bool, cost Cost, minCost float32) ([]Point, bool) {
 	if !(minCost > 0 && minCost <= math.MaxFloat32) {
 		minCost = 0

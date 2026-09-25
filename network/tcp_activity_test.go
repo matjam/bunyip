@@ -204,8 +204,10 @@ func TestTCPServerActivityAppliesToExistingConnections(t *testing.T) {
 		}
 		s := newServer(ln, registry())
 		defer s.Close()
-		var first, second int
-		callbacks := []func(){func() { first++ }, func() { second++ }, nil}
+		// Each connection's reader runs the callback on its own goroutine,
+		// so the counts are atomic.
+		var firstN, secondN atomic.Int64
+		callbacks := []func(){func() { firstN.Add(1) }, func() { secondN.Add(1) }, nil}
 		var writers []*Conn
 		for _, fn := range callbacks {
 			s.SetOnActivity(fn)
@@ -219,7 +221,7 @@ func TestTCPServerActivityAppliesToExistingConnections(t *testing.T) {
 			}
 			writers = append(writers, &Conn{c: b, reg: s.reg})
 		}
-		if first != 1 || second != 1 {
+		if first, second := firstN.Load(), secondN.Load(); first != 1 || second != 1 {
 			t.Fatalf("connect callbacks = (%d, %d), want (1, 1)", first, second)
 		}
 		for _, writer := range writers {
@@ -228,21 +230,21 @@ func TestTCPServerActivityAppliesToExistingConnections(t *testing.T) {
 			}
 		}
 		synctest.Wait()
-		if first != 1 || second != 1 {
+		if first, second := firstN.Load(), secondN.Load(); first != 1 || second != 1 {
 			t.Errorf("removed callbacks = (%d, %d), want (1, 1)", first, second)
 		}
-		s.SetOnActivity(func() { first++; s.Poll(); s.SetOnActivity(nil) })
-		if first != 2 {
+		s.SetOnActivity(func() { firstN.Add(1); s.Poll(); s.SetOnActivity(nil) })
+		if first := firstN.Load(); first != 2 {
 			t.Fatalf("pending callback = %d, want 2", first)
 		}
-		s.SetOnActivity(func() { second++ })
+		s.SetOnActivity(func() { secondN.Add(1) })
 		for _, writer := range writers {
 			if err := writer.Send(move{}); err != nil {
 				t.Fatal(err)
 			}
 		}
 		synctest.Wait()
-		if second != 4 {
+		if second := secondN.Load(); second != 4 {
 			t.Fatalf("existing callbacks = %d, want 4", second)
 		}
 		s.SetOnActivity(nil)
