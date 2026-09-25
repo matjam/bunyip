@@ -39,10 +39,9 @@ func (a *App) newEmbedded(cfg Config) (*Window, error) {
 		return nil, err
 	}
 	parent := uint32(p.Handle)
-	g, err := a.parentGeometry(c, parent)
-	if err != nil {
-		return nil, err
-	}
+	// Watch first, then ask for the size: the server answers requests in
+	// order, so the reply is the size after the watch began and every
+	// later change arrives as a ConfigureNotify (parentConfigured).
 	if err := a.watchParent(c, parent); err != nil {
 		return nil, err
 	}
@@ -52,6 +51,12 @@ func (a *App) newEmbedded(cfg Config) (*Window, error) {
 			a.unwatchParent(parent)
 		}
 	}()
+	g, err := a.parentGeometry(c, parent)
+	if err != nil {
+		return nil, err
+	}
+	watch := a.parentWatches[parent]
+	watch.width, watch.height = g.Width, g.Height
 	id := a.x.generateID(a.conn)
 	mask := uint32(xcbEventMaskKeyPress | xcbEventMaskKeyRelease | xcbEventMaskButtonPress | xcbEventMaskButtonRelease | xcbEventMaskEnter | xcbEventMaskLeave | xcbEventMaskMotion | xcbEventMaskExposure | xcbEventMaskVisibility | xcbEventMaskStructure | xcbEventMaskFocus)
 	// Depth and visual inherit the parent's values.
@@ -90,26 +95,41 @@ func (w *Window) SetBounds(x, y, width, height int) error {
 	return nil
 }
 
-func (a *App) syncEmbedded() {
+// parentConfigured handles a ConfigureNotify for a watched host window:
+// the host was moved, resized or restacked. A child that has not been
+// placed with SetBounds is resized to fill it. The size is cached on the
+// watch, so nothing asks the server for the host's geometry per frame.
+func (a *App) parentConfigured(parent uint32, width, height uint16) {
+	watch := a.parentWatches[parent]
+	if watch == nil || (watch.width == width && watch.height == height) {
+		return
+	}
+	watch.width, watch.height = width, height
+	c, err := a.windowControls()
+	if err != nil {
+		return
+	}
 	for _, w := range a.windows {
-		if w.parent == 0 || w.closed {
+		if w.parent != parent || w.closed || w.manualBounds {
 			continue
 		}
-		c, err := a.windowControls()
-		if err != nil {
-			continue
+		v := [4]uint32{0, 0, uint32(max(1, width)), uint32(max(1, height))}
+		if err := a.checked(c, c.configure(a.conn, w.id, 15, &v[0])); err == nil {
+			a.x.flush(a.conn)
 		}
-		g, err := a.parentGeometry(c, w.parent)
-		if err != nil {
+	}
+}
+
+// parentDestroyed handles a DestroyNotify for a watched host window: every
+// child embedded in it has lost its host and is reported closed.
+func (a *App) parentDestroyed(parent uint32) {
+	if a.parentWatches[parent] == nil {
+		return
+	}
+	for _, w := range a.windows {
+		if w.parent == parent && !w.closed && !w.hostLost {
 			w.hostLost = true
 			a.push(Event{Kind: EventClose, Window: w})
-			continue
-		}
-		if !w.manualBounds && (w.width != int(g.Width) || w.height != int(g.Height)) {
-			v := [4]uint32{0, 0, uint32(max(1, g.Width)), uint32(max(1, g.Height))}
-			if err := a.checked(c, c.configure(a.conn, w.id, 15, &v[0])); err == nil {
-				a.x.flush(a.conn)
-			}
 		}
 	}
 }

@@ -4,6 +4,7 @@ package platform
 
 import (
 	"image"
+	"time"
 
 	"github.com/matjam/bunyip/internal/vk"
 )
@@ -14,6 +15,7 @@ type Window struct{}
 
 func NewApp() (*App, error)                                            { return nil, ErrUnsupported }
 func (a *App) Poll(wait bool) []Event                                  { return nil }
+func (a *App) PollTimeout(time.Duration) []Event                       { return nil }
 func (a *App) NewWindow(cfg Config) (*Window, error)                   { return nil, ErrUnsupported }
 func (w *Window) Size() (int, int)                                     { return 0, 0 }
 func (w *Window) PixelSize() (int, int)                                { return 0, 0 }

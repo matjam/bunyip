@@ -15,8 +15,19 @@ func (l *loop) resetClock() {
 
 // advance owns one window's clock. The family polls events once and invokes it
 // only for ready turn-based windows, or on every cycle for real-time windows.
-func (l *loop) advance(now time.Time) error {
+// It updates as the clock says and then draws, unless draw is false: a
+// window nobody can see still keeps its game time but renders nothing.
+// With update false, which only a turn-based window's unasked first frame
+// passes, it draws without an Update and leaves the clock alone, so the
+// first real turn's Delta runs from the start.
+func (l *loop) advance(now time.Time, draw, update bool) error {
 	l.overlay.toggle(l.ctx.Input)
+	if !update && l.cfg.TurnBased {
+		l.beginFrame(now)
+		l.ctx.Time = now.Sub(l.clock.start).Seconds()
+		l.ctx.Alpha = 1
+		return l.drawIf(draw)
+	}
 	clock := &l.clock
 	elapsed := now.Sub(clock.last)
 	clock.last = now
@@ -43,7 +54,7 @@ func (l *loop) advance(now time.Time) error {
 			}
 		}
 		l.ctx.Alpha = 0
-		return l.draw()
+		return l.drawIf(draw)
 	}
 	if l.cfg.TurnBased {
 		l.ctx.Delta = elapsed.Seconds() * l.ctx.timeScale
@@ -68,5 +79,43 @@ func (l *loop) advance(now time.Time) error {
 		}
 		l.ctx.Alpha = float32(clock.accumulator) / float32(step)
 	}
+	return l.drawIf(draw)
+}
+
+func (l *loop) drawIf(draw bool) error {
+	if !draw {
+		return nil
+	}
 	return l.draw()
+}
+
+// shouldDraw reports whether this window renders its next frame: when it
+// can be seen, or when a close request is waiting for a paused game's
+// Draw to see it. A hidden or minimised window skips the whole frame,
+// presenting included, and draws again from the first frame it is seen.
+func (l *loop) shouldDraw() bool {
+	return l.ctx.visible || l.ctx.closeReq
+}
+
+// idleFor reports how long the loop may wait for events before this
+// window needs it back: zero to not wait, negative for as long as it
+// takes. A turn-based window waits for an event unless it is ready. A
+// real-time window that is drawing never waits, since presenting paces
+// it. A hidden real-time window waits for its next update, or for an
+// event when it is paused and has none to run.
+func (l *loop) idleFor(now time.Time) time.Duration {
+	switch {
+	case l.cfg.TurnBased:
+		if l.ready || l.firstFrame {
+			return 0
+		}
+		return -1
+	case l.shouldDraw():
+		return 0
+	case l.paused():
+		return -1
+	case l.cfg.FixedClock:
+		return l.cfg.FixedStep
+	}
+	return max(l.cfg.FixedStep-l.clock.accumulator-now.Sub(l.clock.last), 0)
 }

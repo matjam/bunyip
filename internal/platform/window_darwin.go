@@ -154,7 +154,7 @@ func (w *Window) Close() {
 	c := w.app.c
 	if w.parent != 0 {
 		delete(w.app.views, w.view)
-		w.view.Send(objc.RegisterName("removeFromSuperview"))
+		w.view.Send(selRemoveFromSuperview)
 		w.view.Send(c.sel.release)
 		w.parent.Send(c.sel.release)
 		w.parent = 0

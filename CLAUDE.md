@@ -60,7 +60,14 @@ X11 and `platform.Backend()` says which was chosen.
 **The loop.** `Run` owns the window, renderer, mixer and clock. In
 real-time mode `Update` runs at `Config.FixedStep` and `Draw` once per
 frame; `Context.Delta` is the step and `Context.Alpha` the interpolation
-fraction. Turn-based mode blocks in the OS until events arrive. Input
+fraction. Turn-based mode draws the first frame without an Update
+(`loop.firstFrame`), then blocks in the OS
+until events arrive; only an event, a Wake, a redraw request or a
+controller change runs a turn, and a connected controller bounds the wait
+(`padPollInterval`) because no backend's poll wakes for it. A window that
+cannot be seen does not draw (`loop.shouldDraw`), and `windowFamily.idleFor`
+picks the wait: none, a timeout through `PollTimeout`, or a blocking
+`Poll(true)`. Input
 edges are per update and are latched for the whole frame during `Draw`,
 so an interface built in `Draw` sees every press.
 
@@ -578,6 +585,20 @@ render pass, so text tests draw one frame.
   returns zero, `Swapchain.Handle` stays zero and `BeginFrame`/`EndFrame`
   skip acquire and present. Do not add code that assumes a swapchain
   image is presentable.
+- On macOS the paths that run every frame (Poll, event translation,
+  Gamepads, the embedded-view sync) send messages through
+  `internal/platform/msgsend_darwin.go`, not `objc.ID.Send` or
+  `objc.Send[T]`, which cost about a microsecond and up to 18
+  allocations a send. Integer-only sends go through `purego.SyscallN`
+  with a reused argument slice and allocate nothing; float and struct
+  shapes use functions registered once (`msgSendF64`, `msgSendPoint`,
+  `msgSendRect`, which is `objc_msgSend_stret` on amd64). Selectors are
+  package-level variables, never `objc.RegisterName` inside a function.
+  Anything the loop calls outside Poll that gets autoreleased objects back
+  opens its own pool with `poolPush`/`poolPop`, or it leaks every frame;
+  `TestGamepadsReleaseAutoreleased` measures that. The platform tests run
+  AppKit work on the main thread through `onMain`, and open a window only
+  when `-run` selects the text-input or wake test.
 - Reading the clipboard on X11 waits for another client to answer, for
   up to a second, inside the game's `Update`. Events that arrive during
   the wait are handled as usual but pushed onto `App.queued` rather than

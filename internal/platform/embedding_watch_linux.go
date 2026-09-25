@@ -13,9 +13,15 @@ type embeddedAttributes struct {
 	DoNotPropagate        uint16
 	Pad                   [2]byte
 }
+
+// parentWatch is the StructureNotify subscription on a host window that
+// embedded children share, and the host's size as last reported: from
+// the geometry reply when the first child was made and from every
+// ConfigureNotify since.
 type parentWatch struct {
-	refs     int
-	original uint32
+	refs          int
+	original      uint32
+	width, height uint16
 }
 
 func (a *App) parentMask(c *xControls, parent uint32) (uint32, error) {

@@ -20,7 +20,9 @@ func (a *App) Displays() ([]Display, error) {
 			return nil, err
 		}
 	}
-	screens := objc.ID(controls().NSScreen).Send(objc.RegisterName("screens"))
+	pool := poolPush()
+	defer poolPop(pool)
+	screens := objc.ID(controls().NSScreen).Send(selScreens)
 	n := objc.Send[uint](screens, a.c.sel.count)
 	if n == 0 {
 		return nil, nil
@@ -35,13 +37,13 @@ func (a *App) Displays() ([]Display, error) {
 	for i := uint(0); i < n; i++ {
 		s := screens.Send(a.c.sel.objectAtIndex, i)
 		frame := objc.Send[nsRect](s, a.c.sel.frame)
-		name := s.Send(objc.RegisterName("localizedName"))
-		d := Display{Name: objc.Send[string](name, a.c.sel.UTF8String), Scale: objc.Send[float64](s, objc.RegisterName("backingScaleFactor")), BoundsKnown: true}
+		name := s.Send(selLocalizedName)
+		d := Display{Name: objc.Send[string](name, a.c.sel.UTF8String), Scale: objc.Send[float64](s, a.c.sel.backingScaleFactor), BoundsKnown: true}
 		x, y := int(frame.Origin.X), int(top-frame.Origin.Y-frame.Size.Height)
 		d.Bounds = image.Rect(x, y, x+int(frame.Size.Width), y+int(frame.Size.Height))
-		desc := s.Send(objc.RegisterName("deviceDescription"))
-		number := desc.Send(objc.RegisterName("objectForKey:"), a.c.nsString("NSScreenNumber"))
-		id := objc.Send[uint32](number, objc.RegisterName("unsignedIntValue"))
+		desc := s.Send(selDeviceDescription)
+		number := desc.Send(selObjectForKey, a.c.nsString("NSScreenNumber"))
+		id := objc.Send[uint32](number, selUnsignedIntValue)
 		if current := copyCurrent(id); current != 0 {
 			d.Current = mode(current)
 			release(current)

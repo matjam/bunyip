@@ -204,10 +204,15 @@ continues to measure elapsed wall time during a pause.
   this window's updates while it lacks focus; frames still draw.
 - `ctx.Visible` reports whether the window can be seen. It is false while
   the window is minimised, and while it is wholly covered by other
-  windows on the platforms that report that. `Config.PauseHidden` stops
+  windows on the platforms that report that. While it is false the
+  window does not draw: `Draw` is not called and nothing is presented,
+  and the first frame after the window is seen again draws at once. A
+  hidden real-time window keeps updating at its fixed step, with the loop
+  asleep between updates. `Config.PauseHidden` stops
   updates while it is false, the same way
   `PauseUnfocused` does for focus; setting both pauses while either is
-  true. The shared mixer pauses only when all active windows are paused.
+  true. A hidden, paused window costs nothing until it is seen, except
+  that a close request with `Config.HandleClose` still reaches `Draw`. The shared mixer pauses only when all active windows are paused.
   The loop touches the mixer only when that combined state changes, so
   a game that paused its own mixer keeps it paused. A
   headless run is always visible.
@@ -218,7 +223,9 @@ continues to measure elapsed wall time during a pause.
 - `ctx.RequestRedraw` asks a turn-based loop for another frame without
   waiting for input, which is how an animation that spans turns plays.
   `ctx.Wake` ends the loop's wait early, from a timer, a network reply
-  or a finished asset load.
+  or a finished asset load. A turn-based loop runs a turn only for an
+  event, a `Wake`, a redraw request or a change in a controller's state;
+  anything else that ends its wait runs nothing.
 
 ```go
 func (g *game) Update(ctx *engine.Context) error {
@@ -258,6 +265,13 @@ take `-seconds N` and `-shot file.png`. The headless test harness skips
 `clear` (intentionally uniform output). It checks `assets` for nonblank
 output but excludes it from golden comparisons because it changes its
 own files and run counter.
+
+A headless real-time run is paced to `FixedStep` on the wall clock. Each
+frame is due one step after the previous one was due, so a sleep that
+runs long shortens the next one and the run holds its rate; a run more
+than three steps late starts its schedule again from the current time. A
+headless turn-based run has no input to wait for, so its wait lasts one
+step and ends with a wake, which runs a turn.
 
 ```
 BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png

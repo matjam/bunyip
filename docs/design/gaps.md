@@ -87,7 +87,9 @@ cleanup wait for their workers before releasing dependencies.
 `PauseUnfocused` stops a window's updates while it lacks focus, and
 `PauseHidden` does the same while it cannot be seen. The shared mixer
 pauses when every active window is paused. Every platform layer reports
-visibility and `ctx.Visible` reads it.
+visibility and `ctx.Visible` reads it; a window that cannot be seen does
+not draw. A turn-based loop bounds its wait while a controller is
+connected, since controller input wakes no platform's blocking poll.
 
 ## Input
 

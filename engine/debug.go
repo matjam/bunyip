@@ -1,9 +1,9 @@
 package engine
 
 import (
-	"fmt"
 	"net/http"
 	_ "net/http/pprof" // registers handlers; Config.Pprof starts the listener
+	"strconv"
 	"time"
 
 	"golang.org/x/image/font/gofont/goregular"
@@ -90,7 +90,26 @@ type overlay struct {
 	windowStart time.Time
 	frames      int
 	fps         float64
+
+	// The text on show, rebuilt every overlayRefresh of game time rather
+	// than every frame: numbers that change each frame cannot be read,
+	// and text that changes each frame is laid out again each frame.
+	// lines holds the strings, widths their measured widths and buf the
+	// bytes they are formatted in; shownAt is ctx.Time when they were
+	// made and shown whether there are any.
+	lines   []string
+	widths  []float32
+	buf     []byte
+	shownAt float64
+	shown   bool
+	over    bool // the last line is the over-budget warning
+	// waits is the most GPU stalls in one frame since the text was made,
+	// so a single stalled frame between refreshes is still reported.
+	waits int
 }
+
+// overlayRefresh is how often the overlay's figures change, in seconds.
+const overlayRefresh = 0.25
 
 func (o *overlay) frame(now time.Time) {
 	if o.windowStart.IsZero() {
@@ -111,46 +130,121 @@ func (o *overlay) draw(ctx *Context) error {
 		}
 		o.font = f
 	}
-	s := ctx.Stats
-	lines := []string{
-		fmt.Sprintf("%.0f fps  %.2f ms/frame", s.FPS, s.FrameMS),
-		fmt.Sprintf("update %.2f ms x%d  draw %.2f ms  present %.2f ms", s.UpdateMS, s.Updates, s.DrawMS, s.PresentMS),
-		fmt.Sprintf("voices %d  frame %d", ctx.Audio.Playing(), ctx.Frame),
-		fmt.Sprintf("2D %d draws %d verts  3D %d draws %d instances", s.Draws2D, s.Vertices2D, s.Draws3D, s.Instances),
-	}
-	if s.GPUFrameMS > 0 {
-		lines = append(lines, fmt.Sprintf("gpu %.2f ms", s.GPUFrameMS))
-	}
-	if s.Waits > 0 {
-		lines = append(lines, fmt.Sprintf("GPU STALLS: %d this frame", s.Waits))
-	}
-	for _, sc := range s.Scopes {
-		lines = append(lines, fmt.Sprintf("  %s %.2f ms", sc.Name, sc.MS))
-	}
-	over := false
-	if b := o.budget; b > 0 && s.Draws2D+s.Draws3D > b {
-		over = true
-		lines = append(lines, fmt.Sprintf("OVER DRAW BUDGET: %d draws, budget %d", s.Draws2D+s.Draws3D, b))
+	o.waits = max(o.waits, ctx.Stats.Waits)
+	if o.stale(ctx.Time) {
+		o.format(ctx)
+		o.widths = o.widths[:0]
+		for _, l := range o.lines {
+			lw, _ := o.font.Measure(l, gfx.TextOptions{})
+			o.widths = append(o.widths, lw)
+		}
 	}
 	g := ctx.Gfx
 	g.ScreenSpace()
 	g.SetLayer(1 << 20)
 	const pad, lineH = 6, 16
 	w := float32(0)
-	for _, l := range lines {
-		lw, _ := o.font.Measure(l, gfx.TextOptions{})
+	for _, lw := range o.widths {
 		w = max(w, lw)
 	}
-	g.FillRect(4, 4, w+2*pad, float32(len(lines))*lineH+2*pad, gfx.RGBA(0, 0, 0, 160))
-	for i, l := range lines {
+	g.FillRect(4, 4, w+2*pad, float32(len(o.lines))*lineH+2*pad, gfx.RGBA(0, 0, 0, 160))
+	for i, l := range o.lines {
 		col := gfx.RGB(220, 230, 200)
-		if over && i == len(lines)-1 {
+		if o.over && i == len(o.lines)-1 {
 			col = gfx.RGB(255, 90, 70)
 		}
 		g.DrawText(o.font, l, 4+pad, 4+pad+float32(i)*lineH, col)
 	}
 	g.SetLayer(0)
 	return nil
+}
+
+// stale reports whether the text on show is due to be rebuilt at game
+// time t: when there is none, when overlayRefresh has passed, or when
+// the clock went back (a device loss restarts it).
+func (o *overlay) stale(t float64) bool {
+	return !o.shown || t-o.shownAt >= overlayRefresh || t < o.shownAt
+}
+
+// format rebuilds the overlay's lines from this frame's figures. The
+// numbers are appended with strconv into one reused buffer, so each line
+// costs one string and nothing else.
+func (o *overlay) format(ctx *Context) {
+	s := &ctx.Stats
+	o.shownAt, o.shown = ctx.Time, true
+	o.lines, o.over = o.lines[:0], false
+	b := o.buf[:0]
+	f2 := func(v float64) { b = strconv.AppendFloat(b, v, 'f', 2, 64) }
+	num := func(v int) { b = strconv.AppendInt(b, int64(v), 10) }
+	line := func() {
+		o.lines = append(o.lines, string(b))
+		b = b[:0]
+	}
+
+	b = strconv.AppendFloat(b, s.FPS, 'f', 0, 64)
+	b = append(b, " fps  "...)
+	f2(s.FrameMS)
+	b = append(b, " ms/frame"...)
+	line()
+
+	b = append(b, "update "...)
+	f2(s.UpdateMS)
+	b = append(b, " ms x"...)
+	num(s.Updates)
+	b = append(b, "  draw "...)
+	f2(s.DrawMS)
+	b = append(b, " ms  present "...)
+	f2(s.PresentMS)
+	b = append(b, " ms"...)
+	line()
+
+	b = append(b, "voices "...)
+	num(ctx.Audio.Playing())
+	b = append(b, "  frame "...)
+	b = strconv.AppendUint(b, ctx.Frame, 10)
+	line()
+
+	b = append(b, "2D "...)
+	num(s.Draws2D)
+	b = append(b, " draws "...)
+	num(s.Vertices2D)
+	b = append(b, " verts  3D "...)
+	num(s.Draws3D)
+	b = append(b, " draws "...)
+	num(s.Instances)
+	b = append(b, " instances"...)
+	line()
+
+	if s.GPUFrameMS > 0 {
+		b = append(b, "gpu "...)
+		f2(s.GPUFrameMS)
+		b = append(b, " ms"...)
+		line()
+	}
+	if o.waits > 0 {
+		b = append(b, "GPU STALLS: "...)
+		num(o.waits)
+		b = append(b, " this frame"...)
+		line()
+		o.waits = 0
+	}
+	for _, sc := range s.Scopes {
+		b = append(b, "  "...)
+		b = append(b, sc.Name...)
+		b = append(b, ' ')
+		f2(sc.MS)
+		b = append(b, " ms"...)
+		line()
+	}
+	if budget := o.budget; budget > 0 && s.Draws2D+s.Draws3D > budget {
+		o.over = true
+		b = append(b, "OVER DRAW BUDGET: "...)
+		num(s.Draws2D + s.Draws3D)
+		b = append(b, " draws, budget "...)
+		num(budget)
+		line()
+	}
+	o.buf = b
 }
 
 // destroy frees the overlay's font before the graphics stack goes.

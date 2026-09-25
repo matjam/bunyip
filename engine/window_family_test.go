@@ -26,10 +26,15 @@ func TestWindowFamilyRoutesHeadlessEventsAndPollsOnce(t *testing.T) {
 	if child.loop.eventWindow == f.root.loop.eventWindow {
 		t.Fatal("headless outputs share an event identity")
 	}
-	polls := 0
+	polls, first := 0, true
 	f.app = pauseEvents{poll: func(wait bool) []platform.Event {
 		if !wait {
-			t.Error("idle turn-based windows did not wait")
+			// Only the poll before the windows' first frames runs unasked.
+			if !first {
+				t.Error("idle turn-based windows did not wait")
+			}
+			first = false
+			return nil
 		}
 		polls++
 		switch polls {
@@ -52,7 +57,9 @@ func TestWindowFamilyRoutesHeadlessEventsAndPollsOnce(t *testing.T) {
 	if err := f.run(); err != nil {
 		t.Fatal(err)
 	}
-	if polls != 4 || rootGame.draws != 1 || childGame.draws != 1 || len(rootGame.deltas) != 1 || len(childGame.deltas) != 1 {
+	// Each window draws its first frame without an Update, then takes one
+	// turn for its key.
+	if polls != 4 || rootGame.draws != 2 || childGame.draws != 2 || len(rootGame.deltas) != 1 || len(childGame.deltas) != 1 {
 		t.Fatalf("polls=%d, root=%+v, child=%+v", polls, rootGame, childGame)
 	}
 }
@@ -169,7 +176,7 @@ func TestWindowClockExcludesInitialization(t *testing.T) {
 			polls++
 			time.Sleep(time.Millisecond)
 			if polls == 1 {
-				return nil
+				return []platform.Event{{Kind: platform.EventWake}}
 			}
 			return []platform.Event{{Kind: platform.EventClose}}
 		}}

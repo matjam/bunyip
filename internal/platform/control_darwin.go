@@ -68,6 +68,8 @@ func (w *Window) SetTitle(title string) {
 	if w.parent != 0 {
 		return
 	}
+	pool := poolPush()
+	defer poolPop(pool)
 	w.nsWindow.Send(w.app.c.sel.setTitle, w.app.c.nsString(title))
 }
 
@@ -110,6 +112,10 @@ func (w *Window) SetCursor(shape CursorShape) {
 		w.cursorImage.Send(w.app.c.sel.release)
 		w.cursorImage = 0
 	}
+	// The loop calls this on pointer entry, outside Poll's pool, and the
+	// class accessors return autoreleased cursors.
+	pool := poolPush()
+	defer poolPop(pool)
 	s := controls()
 	sel := s.arrowCursor
 	switch shape {
@@ -136,6 +142,8 @@ func (w *Window) SetCursor(shape CursorShape) {
 
 // nsImage builds an NSImage from a Go image; the caller releases it.
 func (w *Window) nsImage(img image.Image) objc.ID {
+	pool := poolPush() // the colour space name is autoreleased
+	defer poolPop(pool)
 	s := controls()
 	b := img.Bounds()
 	rgba := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
@@ -198,8 +206,10 @@ func (w *Window) SetCursorImage(img image.Image, hotX, hotY int) error {
 // screenHeight is the main screen's height in points, for flipping
 // between AppKit's bottom-up coordinates and top-down ones.
 func (w *Window) screenHeight() float64 {
+	pool := poolPush() // screens is an autoreleased array
+	defer poolPop(pool)
 	s := controls()
-	screens := objc.ID(s.NSScreen).Send(objc.RegisterName("screens"))
+	screens := objc.ID(s.NSScreen).Send(selScreens)
 	if objc.Send[uint](screens, w.app.c.sel.count) == 0 {
 		return 0
 	}
@@ -246,6 +256,8 @@ func (w *Window) SetAlwaysOnTop(on bool) error {
 
 // Clipboard returns the text on the general pasteboard.
 func (a *App) Clipboard() (string, error) {
+	pool := poolPush() // the pasteboard's string is autoreleased
+	defer poolPop(pool)
 	s := controls()
 	pb := objc.ID(s.NSPasteboard).Send(s.generalPasteboard)
 	str := pb.Send(s.stringForType, a.c.nsString("public.utf8-plain-text"))
@@ -261,6 +273,8 @@ func (a *App) Clipboard() (string, error) {
 
 // SetClipboard replaces the general pasteboard with text.
 func (a *App) SetClipboard(text string) error {
+	pool := poolPush() // for the two NSStrings
+	defer poolPop(pool)
 	s := controls()
 	pb := objc.ID(s.NSPasteboard).Send(s.generalPasteboard)
 	pb.Send(s.clearContents)

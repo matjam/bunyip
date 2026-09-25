@@ -179,10 +179,25 @@ func (a *App) NewWindow(cfg Config) (*Window, error) {
 // Poll drains pending events into the returned slice, reused by the next
 // call. With wait set it blocks until at least one event arrives.
 func (a *App) Poll(wait bool) []Event {
-	if a.wl != nil {
-		return a.wl.poll(wait)
+	if wait {
+		return a.pollFor(-1)
 	}
-	return a.x11Poll(wait)
+	return a.pollFor(0)
+}
+
+// PollTimeout is Poll that waits at most timeout for the first event. A
+// timeout of zero or less waits for nothing, as Poll(false) does.
+func (a *App) PollTimeout(timeout time.Duration) []Event {
+	return a.pollFor(max(timeout, 0))
+}
+
+// pollFor polls the live backend, waiting up to timeout for the first
+// event; a negative timeout waits without limit.
+func (a *App) pollFor(timeout time.Duration) []Event {
+	if a.wl != nil {
+		return a.wl.poll(timeout)
+	}
+	return a.x11Poll(timeout)
 }
 
 // startPoll empties the event slice for a fresh poll and puts back what a

@@ -119,13 +119,15 @@ update rate: `ctx.SetTimeScale(0.25)` scales `ctx.Delta` to a quarter,
 so the simulation crawls and can be watched, and `0` freezes it.
 `ctx.Time` stays real time. The console's `timescale` command sets it.
 
-Turn-based games set `Config.TurnBased`. The loop then blocks in the
-operating system until input arrives and runs one `Update` and one
-`Draw` per batch of events while active. The main loop blocks between
-events; audio and game-owned goroutines can still run.
+Turn-based games set `Config.TurnBased`. The loop draws the first frame
+without an `Update`, then blocks in the operating system until input arrives and runs one
+`Update` and one `Draw` per batch of events while active. The main loop
+blocks between events; audio and game-owned goroutines can still run.
 A timer, a network message or a finished asset load can wake it with
 `ctx.Wake`. Call `ctx.RequestRedraw` to ask for another frame while an
-animation is playing.
+animation is playing. Controller input does not wake the operating
+system's wait, so while a controller is connected the loop checks it
+every 10 ms and runs a turn when a button or stick changes.
 
 ## The window
 
@@ -151,7 +153,8 @@ rebinding.
 
 F3 toggles an overlay with the frame time, the update and draw times,
 draw-call counts and any profile scopes the game recorded; `Config.Debug`
-shows it from the start.
+shows it from the start. Its figures change four times a second so they
+can be read; `ctx.Stats` still holds every frame's.
 
 `ctx.Profile` times a section of game code. It returns a scope, and
 `End` closes it and records how long it took, into `ctx.Stats.Scopes`
