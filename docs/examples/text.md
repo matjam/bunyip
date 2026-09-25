@@ -331,7 +331,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	font := flag.String("font", "", "a TTF with Arabic and Hebrew glyphs, used as a fallback")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip text", Width: 900, Height: 640, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip text", Width: 900, Height: 640},
 		&game{seconds: *seconds, shot: *shot, fontPath: *font})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "text:", err)

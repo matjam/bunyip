@@ -195,7 +195,7 @@ func main() {
 	showAO := flag.Bool("showao", false, "display the ambient occlusion buffer")
 	sorted := flag.Bool("sorted", false, "composite translucent draws by sorting them, not order-independently")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip viewer", Width: 960, Height: 640, Resizable: true},
 		&viewer{modelPath: *modelPath, seconds: *seconds, shot: *shot, noAO: *noAO, noShadow: *noShadow, showAO: *showAO, sorted: *sorted})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "viewer:", err)

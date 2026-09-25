@@ -289,6 +289,7 @@ go test -fuzz=Fuzz ./gltf/                  # likewise audio, audio/tracker, til
 go generate ./gfx/shaders/ ./examples/shaders/
 go run ./examples/terrain -seconds 3 -shot /tmp/terrain.png
 BUNYIP_HEADLESS=1 go run ./examples/tetris -seconds 2 -shot /tmp/t.png
+BUNYIP_VALIDATION=1 go run ./examples/lighting                          # with the Vulkan validation layer
 CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update          # rerecord the golden images
 CGO_ENABLED=0 go test ./examples -run TestExamplesRun -update -docs    # and the walkthrough screenshots
 go run ./cmd/bunyip-docs -out site
@@ -307,6 +308,14 @@ must feed a mouse move and run one frame before a press, because hover
 is one frame behind. A glyph first drawn in a frame appears in that
 frame, because the atlas upload is recorded into the frame before the
 render pass, so text tests draw one frame.
+
+The examples leave `Config.Validation` off, so `go run ./examples/<name>`
+measures the engine and not the validation layer, which adds about a
+millisecond of CPU time to a frame. `BUNYIP_VALIDATION=1` turns it on
+for any program run through `engine.Run` (read in `runOnce` beside
+`BUNYIP_HEADLESS` and `BUNYIP_FIXED_CLOCK`), and `examples_test.go` sets
+it for every example it runs, so a Vulkan usage error still shows in the
+test's output.
 
 ## Rules
 

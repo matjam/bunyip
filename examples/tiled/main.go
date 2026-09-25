@@ -239,7 +239,7 @@ func main() {
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	mapFile := flag.String("map", "", "load this .tmx or .tmj map instead of the embedded one")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip tiled", Width: 960, Height: 640, Resizable: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip tiled", Width: 960, Height: 640, Resizable: true},
 		&game{seconds: *seconds, shot: *shot, mapFile: *mapFile})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tiled:", err)

@@ -193,7 +193,7 @@ func main() {
 	headless := flag.Bool("headless", false, "render without a window, for screenshots")
 	drops := flag.Int("drops", 3000, "raindrops in the instanced storm; try 200000")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Validation: true, Headless: *headless},
+	err := engine.Run(engine.Config{Title: "Bunyip particles", Width: 960, Height: 640, Resizable: true, Headless: *headless},
 		&game{seconds: *seconds, shot: *shot, drops: max(*drops, 1)})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "particles:", err)

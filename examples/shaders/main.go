@@ -252,7 +252,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip shaders", Width: 1024, Height: 720, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip shaders", Width: 1024, Height: 720},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shaders:", err)

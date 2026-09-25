@@ -147,7 +147,7 @@ func main() {
 	flag.Parse()
 	err := engine.Run(engine.Config{
 		Title: "Bunyip roguelike", Width: mapW * cellSize, Height: mapH*cellSize + 120,
-		TurnBased: true, Validation: true,
+		TurnBased: true,
 	}, &game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "roguelike:", err)

@@ -77,6 +77,9 @@ func runOnce(cfg Config, game Game) error {
 	if os.Getenv("BUNYIP_FIXED_CLOCK") != "" {
 		cfg.FixedClock = true // the examples test, comparing against stored images
 	}
+	if os.Getenv("BUNYIP_VALIDATION") != "" {
+		cfg.Validation = true // the examples test, and debugging a program that leaves it off
+	}
 	parent, err := cfg.Parent.platform()
 	if err != nil {
 		return err

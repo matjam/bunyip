@@ -28,8 +28,9 @@ go run ./examples/clear -seconds 3 -shot out.png
 
 The flags are `-seconds N` to exit after that many seconds, `-shot
 file.png` to write the frame at half that time, and `-validate` to enable
-the Vulkan validation layers when they are installed, which is on by
-default.
+the Vulkan validation layers when they are installed. `-validate` is off
+by default and on by default when `BUNYIP_VALIDATION` is set, the same
+variable the engine reads for `Config.Validation`.
 
 ## The imports
 
@@ -73,7 +74,7 @@ standard error and a non-zero exit status.
 func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds (0: until closed)")
 	shot := flag.String("shot", "", "write the frame at -seconds/2 (or the first frame) to this PNG")
-	validate := flag.Bool("validate", true, "enable validation layers when installed")
+	validate := flag.Bool("validate", os.Getenv("BUNYIP_VALIDATION") != "", "enable validation layers when installed; setting BUNYIP_VALIDATION turns this on by default")
 	flag.Parse()
 	if err := run(*seconds, *shot, *validate); err != nil {
 		fmt.Fprintln(os.Stderr, "clear:", err)
@@ -242,5 +243,5 @@ func writePNG(path string, img image.Image) error {
   the loop then runs once per event rather than as fast as it can.
 - Print `e.Kind` for every event in `run` to see what the platform layer
   reports as the window is moved, focused and resized.
-- Remove the `-validate` default in `main` and compare the startup log
-  with the validation layers off.
+- Run with `-validate` and compare the startup log with the one from a
+  run without it.

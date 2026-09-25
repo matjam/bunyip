@@ -489,7 +489,7 @@ func main() {
 	bot := flag.Bool("bot", false, "send a greeting once connected (20 numbered lines with -reliable)")
 	reliable := flag.Bool("reliable", false, "send chat over UDP with SendReliable and count lines delivered in order")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip network", Width: 720, Height: 480, TurnBased: true, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip network", Width: 720, Height: 480, TurnBased: true},
 		&game{seconds: *seconds, shot: *shot, listen: *listen, joinTo: *joinTo, name: *name, bot: *bot, reliable: *reliable})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "network:", err)

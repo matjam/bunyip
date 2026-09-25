@@ -203,7 +203,7 @@ func main() {
 	seconds := flag.Float64("seconds", 0, "exit after this many seconds")
 	shot := flag.String("shot", "", "write a screenshot to this PNG")
 	flag.Parse()
-	err := engine.Run(engine.Config{Title: "Bunyip pathfinding", Width: cols * cell, Height: rows*cell + 60, Validation: true},
+	err := engine.Run(engine.Config{Title: "Bunyip pathfinding", Width: cols * cell, Height: rows*cell + 60},
 		&game{seconds: *seconds, shot: *shot})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pathfinding:", err)

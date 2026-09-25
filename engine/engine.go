@@ -150,7 +150,14 @@ type Config struct {
 	Icon        image.Image
 	HandleClose bool
 
-	Validation bool // enable Vulkan validation when installed
+	// Validation turns on the Vulkan validation layer, when it is
+	// installed, and logs its messages. To find a Vulkan usage error
+	// during development, set it or set the environment variable
+	// BUNYIP_VALIDATION (for example BUNYIP_VALIDATION=1), which turns it
+	// on without a code change. The layer checks every Vulkan call, so it
+	// adds about a millisecond of CPU time to a frame; leave it off when
+	// measuring performance. Off by default.
+	Validation bool
 	NoAudio    bool // disable audio output and microphone capture
 	Log        *slog.Logger
 
