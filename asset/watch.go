@@ -24,11 +24,12 @@ type Watcher struct {
 	interval time.Duration
 	stat     func(string) (os.FileInfo, error)
 
-	mu      sync.Mutex // guards files, list, dirty and changed
+	mu      sync.Mutex // guards files, list, dirty, changed and noted
 	files   map[string]*watchEntry
 	list    []*watchEntry // in the order added; only ever appended to
 	dirty   bool          // entries added since the last poll
 	changed []string
+	noted   map[string]bool // the names in changed
 
 	// pollMu serialises polls. The fields below belong to the poll
 	// holding it, and so do the fields of every entry once it is in
@@ -72,7 +73,7 @@ func newWatcher(fs *FS, interval time.Duration, stat func(string) (os.FileInfo, 
 		interval = 500 * time.Millisecond
 	}
 	w := &Watcher{fs: fs, interval: interval, stat: stat, files: map[string]*watchEntry{},
-		dirNow: map[string]dirStamp{}, stop: make(chan struct{})}
+		noted: map[string]bool{}, dirNow: map[string]dirStamp{}, stop: make(chan struct{})}
 	go w.run()
 	return w
 }
@@ -156,12 +157,16 @@ func (w *Watcher) mtime(path string) time.Time {
 }
 
 // Changed returns the names modified since the last call, in the order
-// they were noticed, and clears them. Call it once per frame.
+// they were first noticed, and clears them. A name appears once however
+// many times its file changed, because a save can change a file more
+// than once (truncate, write, set the time) and one reload of the
+// latest contents covers them all. Call it once per frame.
 func (w *Watcher) Changed() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	out := w.changed
 	w.changed = nil
+	clear(w.noted)
 	return out
 }
 
@@ -221,7 +226,10 @@ func (w *Watcher) poll() {
 	}
 	w.mu.Lock()
 	for _, e := range w.scratch {
-		w.changed = append(w.changed, e.name)
+		if !w.noted[e.name] {
+			w.noted[e.name] = true
+			w.changed = append(w.changed, e.name)
+		}
 	}
 	w.mu.Unlock()
 }

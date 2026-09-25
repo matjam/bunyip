@@ -158,7 +158,9 @@ each name to its file once and then stats that file per poll, plus the
 directory in each overlaying source where a new copy would appear, so a
 thousand watched files cost about what a thousand `os.Stat` calls do.
 The poll runs outside the lock `Changed` takes, so the call a game makes
-every frame never waits for it.
+every frame never waits for it. `Changed` names a file once however many
+times it changed since the last call, so a save that truncates, writes
+and then sets the time reloads once.
 
 Models and environments are not reloaded. Swapping a glTF file's
 contents gives back different meshes, a different skeleton and different
