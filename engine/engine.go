@@ -161,6 +161,14 @@ type Config struct {
 	NoAudio    bool // disable audio output and microphone capture
 	Log        *slog.Logger
 
+	// NoPipelineCache keeps the driver's compiled pipelines out of the
+	// user's cache directory. By default the engine loads them from
+	// bunyip/ under os.UserCacheDir at startup and saves them back while
+	// the game runs and when it closes, so a second start skips most of
+	// the shader compilation the first one did. With it set the pipelines
+	// are still cached in memory for the run. Off by default.
+	NoPipelineCache bool
+
 	// Debug shows the frame-timing overlay at start; F3 toggles it either
 	// way. The overlay's figures change four times a second so they can be
 	// read; Context.Stats holds every frame's.

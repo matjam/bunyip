@@ -30,8 +30,10 @@ type Device struct {
 	waits            uint64 // times the device or its queue was waited on
 	frameNo          uint64 // frames begun, for the retire ring
 	retired          []deferred
-	up               uploader   // uploads recorded outside a frame, see upload.go
-	q                *submitter // the goroutine that owns Queue, see submit.go
+	up               uploader       // uploads recorded outside a frame, see upload.go
+	q                *submitter     // the goroutine that owns Queue, see submit.go
+	pipes            pipelineState  // the pipeline cache and shared shader modules, see pipecache.go
+	batch            *PipelineBatch // collects NewPipeline calls while set, see pipeline.go
 	// busy is whether anything has been submitted to the queue since the
 	// device was last waited idle. WaitIdle on a device that is already
 	// idle returns at once and counts no wait.
@@ -178,6 +180,7 @@ func (d *Device) Destroy() {
 		d.q.stop()
 	}
 	d.flushRetired()
+	d.destroyPipelineState()
 	d.destroyUploads()
 	d.alloc.destroy()
 	vk.VkDestroyCommandPool(d.Handle, d.pool, nil)

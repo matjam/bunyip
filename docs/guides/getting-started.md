@@ -206,6 +206,19 @@ performance. The examples leave `Config.Validation` off for that reason,
 so `go run ./examples/<name>` measures the engine; the examples test sets
 `BUNYIP_VALIDATION=1` for every example it runs.
 
+### The pipeline cache
+
+The driver compiles every pipeline the engine builds from its shaders,
+which can take seconds the first time a machine runs a game. The engine
+keeps the result in a file under `bunyip/` in the user's cache
+directory (`os.UserCacheDir`), one per GPU, driver and engine version,
+loads it at startup and saves it back while the game runs and when it
+closes, so later starts skip that work. A file that is damaged or was
+written for other hardware is ignored and replaced. To keep the file
+out of the user's cache directory, set `Config.NoPipelineCache`; the
+pipelines are then cached in memory for the run only. To see the first
+start's cost again, delete the `pipelines-*.vkcache` files there.
+
 ### Profiling
 
 Enable Go's profiling server when starting the game:

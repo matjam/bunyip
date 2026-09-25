@@ -18,6 +18,9 @@ type Config struct {
 	AppName    string
 	Validation bool // enable VK_LAYER_KHRONOS_validation and debug messages when available
 	Log        *slog.Logger
+	// PipelineCacheDir is the directory Renderer.OpenPipelineCache keeps
+	// the pipeline cache file in. Empty keeps the cache in memory.
+	PipelineCacheDir string
 }
 
 // Instance owns the VkInstance and, when validation is on, the debug messenger.

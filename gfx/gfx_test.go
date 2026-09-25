@@ -17,8 +17,8 @@ import (
 // everything as before and remembers the validation layers' errors, so a
 // test fails on a pipeline or descriptor mistake rather than passing
 // while the driver complains. The layers report from whichever thread
-// made the call, the submit goroutine included, so the list is
-// guarded.
+// made the call, the submit goroutine and the pipeline workers included,
+// so the list is guarded.
 type validationWatch struct {
 	slog.Handler
 	mu     *sync.Mutex
@@ -61,6 +61,12 @@ func newHeadless(t *testing.T, w, h int) *Graphics {
 		t.Fatalf("gfx: new graphics: %v", err)
 	}
 	t.Cleanup(func() { g.destroy(); r.Destroy() })
+	// The scene's pipelines build on workers after newGraphics returns.
+	// Tests that swap the Vulkan entry points to inject failures must not
+	// have those builds call them, so the helper waits for the batch.
+	if err := g.waitPipelines(); err != nil {
+		t.Fatalf("gfx: scene pipelines: %v", err)
+	}
 	return g
 }
 

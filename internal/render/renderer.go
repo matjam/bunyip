@@ -29,7 +29,8 @@ type Renderer struct {
 	resize    bool
 	inFrame   bool
 	inPass    bool
-	waited    bool // WaitFrame has waited for the current slot since the last BeginFrame
+	waited    bool   // WaitFrame has waited for the current slot since the last BeginFrame
+	cacheDir  string // where OpenPipelineCache keeps its file, empty for memory only
 	onResize  func(vk.VkExtent2D) error
 	readback  *Buffer
 	depth     *Image
@@ -79,7 +80,21 @@ func NewRenderer(cfg Config, surfaceExts []string, makeSurface SurfaceFunc, exte
 	if err != nil {
 		return nil, err
 	}
-	return newRenderer(inst, makeSurface, extent, vsync)
+	r, err := newRenderer(inst, makeSurface, extent, vsync)
+	if err != nil {
+		return nil, err
+	}
+	r.cacheDir = cfg.PipelineCacheDir
+	return r, nil
+}
+
+// OpenPipelineCache opens the device's pipeline cache: from the file in
+// Config.PipelineCacheDir that matches the device, the driver and key,
+// or in memory when the directory is empty. Call it before the first
+// pipeline is built. key names the set of programs the pipelines come
+// from, so a new set starts a new file and the old one is removed.
+func (r *Renderer) OpenPipelineCache(key []byte) error {
+	return r.Device.OpenPipelineCache(PipelineCacheOptions{Dir: r.cacheDir, Key: key})
 }
 
 // NewOutput creates an independent device, swapchain and frame ring under this
@@ -94,7 +109,12 @@ func (r *Renderer) NewOutput(surfaceExts []string, makeSurface SurfaceFunc, exte
 	if err != nil {
 		return nil, err
 	}
-	return newRenderer(inst, makeSurface, extent, vsync)
+	out, err := newRenderer(inst, makeSurface, extent, vsync)
+	if err != nil {
+		return nil, err
+	}
+	out.cacheDir = r.cacheDir
+	return out, nil
 }
 
 func newRenderer(inst *Instance, makeSurface SurfaceFunc, extent vk.VkExtent2D, vsync bool) (*Renderer, error) {

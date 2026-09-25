@@ -3,6 +3,7 @@ package gfx
 import (
 	"image"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/image/font/gofont/goregular"
@@ -139,23 +140,24 @@ func TestFailedShaderReleasesBuiltPipelines(t *testing.T) {
 	g := newHeadless(t, 32, 32)
 	create, destroy := vk.VkCreateGraphicsPipelines, vk.VkDestroyPipeline
 	t.Cleanup(func() { vk.VkCreateGraphicsPipelines, vk.VkDestroyPipeline = create, destroy })
-	var calls, freed int
+	// The shader's variants build on worker goroutines side by side, so
+	// the counts are atomic.
+	var calls, freed atomic.Int32
 	vk.VkCreateGraphicsPipelines = func(device vk.VkDevice, cache vk.VkPipelineCache, count uint32, info *vk.VkGraphicsPipelineCreateInfo, alloc *vk.VkAllocationCallbacks, out *vk.VkPipeline) vk.VkResult {
-		calls++
-		if calls == 2 {
+		if calls.Add(1) == 2 {
 			return vk.VK_ERROR_OUT_OF_DEVICE_MEMORY
 		}
 		return create(device, cache, count, info, alloc, out)
 	}
 	vk.VkDestroyPipeline = func(device vk.VkDevice, pipeline vk.VkPipeline, alloc *vk.VkAllocationCallbacks) {
-		freed++
+		freed.Add(1)
 		destroy(device, pipeline, alloc)
 	}
 	if _, err := g.NewMeshShader(shaders.PBRFrag); err == nil {
 		t.Fatal("expected second pipeline creation to fail")
 	}
-	if calls != 2 || freed != 1 {
-		t.Fatalf("created %d pipeline variants, freed %d; want 2 attempts and 1 release", calls, freed)
+	if calls.Load() != 2 || freed.Load() != 1 {
+		t.Fatalf("created %d pipeline variants, freed %d; want 2 attempts and 1 release", calls.Load(), freed.Load())
 	}
 }
 
