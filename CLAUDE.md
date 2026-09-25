@@ -197,15 +197,21 @@ storage buffers at bindings 2 to 4 (`Device.NewFrameSets`, sized by
 without a wait). The queue's own sets are bound and the mesh pass's
 layout is what the pipelines are built against, so both are made the
 same way. Set 2 is the shadow atlas depth texture at binding 0 and its
-comparison sampler at binding 1.
+comparison sampler at binding 1, then the atmosphere's four lookup
+tables (transmittance, sky view, aerial perspective, reflection) at 2 to
+5 and the linear clamping sampler they are read through at 6, both
+samplers immutable (`meshPass.atlasBindings`). Until a frame has an
+atmosphere the tables' bindings name the black texture; the procedural
+sky pipeline binds the same set as its set 2.
 Set 3 is joint matrices. Set 4 is a game shader's uniform block. Set 5 is
 one model's morph target deltas, bound by every mesh draw because the
 vertex prelude names the buffer whether or not the draw reads it; six
 bound sets is inside every desktop driver's and MoltenVK's limit, which
 `initMeshPass` checks. Metal allows sixteen samplers a stage,
-which the four plus the shadow atlas's stay well under, and 31 sampled
+which the four plus set 2's two stay well under, and 31 sampled
 images a stage on Intel Macs under MoltenVK (128 on Apple silicon),
-which is the budget the seventeen images and the atlas spend from: a new
+which is the budget the seventeen images, the atlas and the four
+atmosphere tables (22 in all) spend from: a new
 material texture costs an image and no sampler. The shadow maps still
 share one atlas image and one comparison sampler.
 
@@ -226,8 +232,11 @@ in seven WGSL files: `prelude_mesh.wgsl`, `vert_common.wgsl`,
 Changing a field before the end means changing all of them and
 regenerating every shader; appending at the end only needs the files that
 read the new field. The global illumination fields (the probe volumes,
-the grid's shape, the reflection settings) are the tail, read by
-`prelude_mesh.wgsl` and `ssr.frag.wgsl`. The lights themselves are not in the
+the grid's shape, the reflection settings) come next, read by
+`prelude_mesh.wgsl` and `ssr.frag.wgsl`, and the atmosphere's fields are
+the tail: `atmos`, `betaR` and `betaM`, then `atmosView` and
+`atmosLimb`, which `atmosTables.plan` fills and only `prelude_mesh.wgsl`
+and `skyparam.frag.wgsl` declare. The lights themselves are not in the
 block: they live in set 1's storage buffers, and the block carries the
 shadow projections and the cluster grid's mapping.
 
@@ -509,15 +518,32 @@ test's output.
   its draws on the sorted path. The pass needs the device's
   `independentBlend`, because its two attachments blend differently; a
   device without it also keeps sorting.
-- The atmospheric sky is written three times: `Sky.scatter` and
-  `Sky.radiance` in `gfx/sky.go`, and the block between `// ATMOSPHERE.`
-  and `// END ATMOSPHERE.` in `gfx/shaders/prelude_mesh.wgsl` and in
-  `gfx/shaders/skyparam.frag.wgsl`, which are the same text. The ambient
-  harmonics are projected from the Go side and the pixels come from the
-  shaders, so a change to one is a change to all three.
-  `TestAtmosphereBlocksMatch` compares the two shaders and
-  `TestAtmosphereMatchesGo` renders the sky and checks it against
-  `Sky.radiance`.
+- The atmospheric sky is written twice, once as a model and once as
+  lookup tables. The model is `Sky.scatterTerms`, `Sky.opticalDepth`,
+  `Sky.scatter` and `Sky.radiance` in `gfx/sky.go`, which the ambient
+  harmonics and the drawn sun's tint (`Sky.sunTint`) come from, and
+  `scatterTerms` and `opticalDepth` in `gfx/shaders/atmoslut.frag.wgsl`,
+  which integrate the same steps into four tables (`gfx/atmosphere.go`):
+  the transmittance to the top of the air, the sky view, the aerial
+  perspective and the reflection table. The block between
+  `// ATMOSPHERE MAPPING.` and its end, where a table keeps a ray, is the
+  same text in `atmoslut.frag.wgsl`, `prelude_mesh.wgsl` and
+  `skyparam.frag.wgsl`; the block between `// ATMOSPHERE LOOKUP.` and its
+  end, which reads the tables, is the same text in the last two.
+  `TestAtmosphereBlocksMatch` compares the blocks,
+  `TestAtmosphereTablesMatchGo` reads the tables back and checks texels
+  against the Go model, and `TestAtmosphereMatchesGo` renders the sky
+  and checks it against `Sky.radiance`, so a change to the model is a
+  change to both files. The tables are built by `buildAtmosphere` in
+  `renderScene` after `writeUniforms`, before any pass reads them, and
+  only when `atmosTables.plan` finds their inputs changed: the air, the
+  sun by more than `atmosSunStep`, the altitude by more than
+  `atmosAltitudeStep` of the air's height. Between rebuilds `plan`
+  writes the altitude the tables were built for, and the azimuth of
+  their sun (`atmosView`), into the frame block, so the lookups always
+  match the tables. One set of tables
+  serves every output, so outputs with different atmospheres in one
+  frame rebuild them in turn, which the passes' barriers order.
 - The instance stream is fifteen `vec4f`s at locations 5 to 16 and 19 to
   21, so a skinned mesh's joints and weights sit at 17 and 18
   (`vert_skin.wgsl` and `skinVertexLayout`). The twelfth carries the

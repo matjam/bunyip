@@ -693,12 +693,22 @@ so a scene a hundred units across under a `Height` of 60 is looking
 through a hundred kilometres of air and washes out, while the same scene
 under 3000 has crisp distance and a sky that still works. Pick it by how
 far away things should start taking the air's colour, not by the size of
-a real planet. The model is integrated per pixel, eight samples along
-the view ray and four towards the sun at each; there is no table to
-precompute, load or keep in step, and the same function runs on the CPU
-in Go to project the ambient light onto spherical harmonics. Those
-harmonics are reprojected when the sun or the altitude moves far enough
-to matter, not every frame.
+a real planet. The model is integrated on the GPU into small lookup
+tables, eight samples along each view ray and four towards the sun at
+each, and the sky and the lit meshes read the tables, so an atmosphere
+costs a few texture reads a pixel: under a millisecond of an M2's frame
+at 2560 by 1440. The engine builds the tables itself on the first frame
+with an atmosphere, and builds them again when the air's settings
+change, when the sun moves by more than about a twentieth of its radius,
+or when `Altitude` moves by more than a thousandth of `Height`. A frame
+that rebuilds them costs a few tenths of a millisecond more, so a sun
+that moves every frame or a camera that climbs every frame pays that
+each frame, and a still scene pays nothing. Between rebuilds the sky is
+drawn for the altitude the tables were built at, which is never more
+than that thousandth away. The same model runs on the CPU in Go to
+project the ambient light onto spherical harmonics, which are
+reprojected when the sun or the altitude moves far enough to matter,
+not every frame.
 
 `Light.Fog` fades geometry into a colour with distance, the cheapest way
 to give a scene depth and hide the far plane. Linear fog ramps from
