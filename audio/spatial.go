@@ -21,7 +21,7 @@ func (m *Mixer) SetListener(l Listener) {
 	if l.Up.Len() == 0 {
 		l.Up = lin.Vec3{Y: 1}
 	}
-	m.mu.Lock()
+	m.lock()
 	m.listener = l
 	if len(m.zones) > 0 {
 		m.updateReverb()
@@ -37,7 +37,7 @@ func (m *Mixer) SetListener2D(x, y float32) {
 
 // Listener returns the current listener.
 func (m *Mixer) Listener() Listener {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	return m.listener
 }
@@ -65,14 +65,20 @@ type SpatialSettings struct {
 // and every parameter is interpolated across it, so switching mode or
 // moving the listener while sounds play does not click.
 func (m *Mixer) SetSpatial(s SpatialSettings) {
-	m.mu.Lock()
+	m.lock()
 	m.spatial = s
+	m.binaural.Store(s.Binaural)
+	// Positional voices already playing get their head-model state here,
+	// on the caller's goroutine, rather than on the mixer's thread.
+	for _, v := range m.voices {
+		v.needBinaural()
+	}
 	m.mu.Unlock()
 }
 
 // Spatial reports the spatial settings, as given to SetSpatial.
 func (m *Mixer) Spatial() SpatialSettings {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	return m.spatial
 }
@@ -85,7 +91,7 @@ func (m *Mixer) Spatial() SpatialSettings {
 // against the speed of sound (see SetSpeedOfSound). Streams have no
 // pitch, so Doppler leaves them alone.
 func (m *Mixer) SetDoppler(factor float32) {
-	m.mu.Lock()
+	m.lock()
 	m.doppler = max(factor, 0)
 	m.mu.Unlock()
 }
@@ -94,7 +100,7 @@ func (m *Mixer) SetDoppler(factor float32) {
 // world units per second. The default is 343, right for metres; a game
 // in pixels or larger units raises it to keep the effect subtle.
 func (m *Mixer) SetSpeedOfSound(c float32) {
-	m.mu.Lock()
+	m.lock()
 	if c > 0 {
 		m.speedOfSound = c
 	}

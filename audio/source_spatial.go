@@ -96,7 +96,7 @@ func (c Cone) gain(direction, toward lin.Vec3) float32 {
 // right, +Y up, -Z forward. Position, direction and velocity use this basis;
 // listener translation/velocity are added. This enables positional audio.
 func (v *Voice) SetRelativeToListener(relative bool) {
-	v.set(func() { v.relative = relative; v.positional = true })
+	v.set(func() { v.relative = relative; v.makePositional() })
 }
 
 // SetDirection enables positional audio and sets a nonzero finite direction.
@@ -105,7 +105,7 @@ func (v *Voice) SetDirection(direction lin.Vec3) error {
 	if !finiteVec(direction) || direction.Len() == 0 || !finite(direction.Len()) {
 		return errors.New("audio: direction must be finite and nonzero")
 	}
-	v.set(func() { v.direction = direction.Norm(); v.positional = true })
+	v.set(func() { v.direction = direction.Norm(); v.makePositional() })
 	return nil
 }
 
@@ -116,7 +116,7 @@ func (v *Voice) SetCone(cone Cone) error {
 	if err != nil {
 		return err
 	}
-	v.set(func() { v.cone = c; v.positional = true })
+	v.set(func() { v.cone = c; v.makePositional() })
 	return nil
 }
 
@@ -127,7 +127,7 @@ func (v *Voice) SetAttenuation(attenuation Attenuation) error {
 	if err != nil {
 		return err
 	}
-	v.set(func() { v.attenuation = a; v.positional = true })
+	v.set(func() { v.attenuation = a; v.makePositional() })
 	return nil
 }
 
@@ -136,25 +136,25 @@ func (v *Voice) SetDistanceRange(minDistance, maxDistance float32) error {
 	if !finite(minDistance) || !finite(maxDistance) || minDistance <= 0 || maxDistance <= minDistance {
 		return errors.New("audio: invalid distance range")
 	}
-	v.set(func() { v.minDist, v.maxDist = minDistance, maxDistance; v.positional = true })
+	v.set(func() { v.minDist, v.maxDist = minDistance, maxDistance; v.makePositional() })
 	return nil
 }
 
 // RelativeToListener reports whether source coordinates follow the listener.
-func (v *Voice) RelativeToListener() bool { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.relative }
+func (v *Voice) RelativeToListener() bool { v.m.lock(); defer v.m.mu.Unlock(); return v.relative }
 
 // Direction returns the normalized cone direction in the selected coordinate space.
-func (v *Voice) Direction() lin.Vec3 { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.direction }
+func (v *Voice) Direction() lin.Vec3 { v.m.lock(); defer v.m.mu.Unlock(); return v.direction }
 
 // Cone returns the effective cone; the default has full-circle angles and unity gain.
-func (v *Voice) Cone() Cone { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.cone }
+func (v *Voice) Cone() Cone { v.m.lock(); defer v.m.mu.Unlock(); return v.cone }
 
 // Attenuation returns the effective distance model and rolloff.
-func (v *Voice) Attenuation() Attenuation { v.m.mu.Lock(); defer v.m.mu.Unlock(); return v.attenuation }
+func (v *Voice) Attenuation() Attenuation { v.m.lock(); defer v.m.mu.Unlock(); return v.attenuation }
 
 // DistanceRange returns the full-volume and silence distances.
 func (v *Voice) DistanceRange() (minDistance, maxDistance float32) {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.minDist, v.maxDist
 }

@@ -27,7 +27,7 @@ func (s PlaybackState) String() string {
 // State reports the effective state. A pause is reported immediately,
 // including the block that fades out; Stop reports stopped during its ramp.
 func (v *Voice) State() PlaybackState {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	if v.done || v.stop {
 		return PlaybackStopped

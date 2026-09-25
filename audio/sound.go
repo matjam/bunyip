@@ -16,6 +16,9 @@ type PCM struct {
 type Sound struct {
 	samples []float32
 	rate    int
+	// mono is set when both channels hold the same samples, so the mixer
+	// reads and filters one channel and uses it for both.
+	mono bool
 }
 
 // Frames is the sound's length in frames.
@@ -44,7 +47,18 @@ func (m *Mixer) NewSound(p PCM) (*Sound, error) {
 	if p.Rate != m.rate {
 		stereo = resample(stereo, p.Rate, m.rate)
 	}
-	return &Sound{samples: stereo, rate: m.rate}, nil
+	return &Sound{samples: stereo, rate: m.rate, mono: p.Channels == 1 || sameChannels(stereo)}, nil
+}
+
+// sameChannels reports whether every frame's two samples are identical
+// bit for bit, as in a mono recording saved as stereo.
+func sameChannels(stereo []float32) bool {
+	for i := 0; i+1 < len(stereo); i += 2 {
+		if math.Float32bits(stereo[i]) != math.Float32bits(stereo[i+1]) {
+			return false
+		}
+	}
+	return true
 }
 
 // resample converts interleaved stereo from one rate to another with

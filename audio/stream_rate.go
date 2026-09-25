@@ -76,14 +76,97 @@ func (sn *voiceMix) readStream(dst []float32) (int, bool) {
 	if s, ok := sn.stream.(streamLookahead); ok {
 		defer func() { s.streamLookahead(r.revision, r.sourceLookahead()) }()
 	}
+	if sn.step == 1 && (r.phase == 0 || r.phase == 1) {
+		return sn.copyStream(dst)
+	}
+	return sn.resampleStream(dst)
+}
+
+// start reads the first two frames, or reports false when the stream has
+// none.
+func (r *streamRate) start(s Stream) bool {
 	if !r.started {
 		var ok bool
-		r.a, ok, r.aReal = r.frame(sn.stream)
+		r.a, ok, r.aReal = r.frame(s)
 		if !ok {
-			return 0, false
+			return false
 		}
-		r.b, r.next, r.bReal = r.frame(sn.stream)
+		r.b, r.next, r.bReal = r.frame(s)
 		r.started = true
+	}
+	return true
+}
+
+// copyStream is resampleStream at a step of exactly 1 from a whole phase,
+// where every output frame is a source frame. Instead of taking one frame
+// at a time from the lookahead buffer, it copies runs straight out of it,
+// leaving the state exactly where resampleStream would. Each sample is
+// still written as a + (b-a)*0, the resampler's interpolation at phase
+// zero, so a negative zero or a nonfinite sample comes out bit for bit
+// the same.
+func (sn *voiceMix) copyStream(dst []float32) (int, bool) {
+	r := &sn.v.streamRate
+	if !r.start(sn.stream) {
+		return 0, false
+	}
+	frames := len(dst) / 2
+	i := 0
+	for i < frames {
+		if r.phase < 1 || r.read == r.count || !r.next {
+			// The first frame of a stream, a refill of the buffer, or the
+			// end: one frame the resampler's way.
+			if r.phase >= 1 {
+				if !r.next {
+					return i, false
+				}
+				r.a, r.aReal = r.b, r.bReal
+				r.b, r.next, r.bReal = r.frame(sn.stream)
+				r.phase--
+			}
+			b := r.b
+			if !r.next {
+				b = r.a
+			}
+			dst[i*2] = r.a[0] + (b[0]-r.a[0])*0
+			dst[i*2+1] = r.a[1] + (b[1]-r.a[1])*0
+			r.phase++
+			sn.pos++
+			i++
+			continue
+		}
+		// a has been played and b is next, with k frames buffered after
+		// it: emit b and the k-1 frames after it, each followed by the
+		// next, and leave the last two as a and b.
+		k := min(frames-i, r.count-r.read)
+		prev := r.b
+		for j := range k {
+			at := (r.read + j) * 2
+			f0, f1 := r.buf[at], r.buf[at+1]
+			dst[(i+j)*2] = prev[0] + (f0-prev[0])*0
+			dst[(i+j)*2+1] = prev[1] + (f1-prev[1])*0
+			if j < k-1 {
+				prev = [2]float32{f0, f1}
+			}
+			sn.pos++
+		}
+		if k > 1 {
+			r.a, r.aReal = prev, r.read+k-2 < r.realCount
+		} else {
+			r.a, r.aReal = r.b, r.bReal
+		}
+		last := (r.read + k - 1) * 2
+		r.b, r.bReal = [2]float32{r.buf[last], r.buf[last+1]}, r.read+k-1 < r.realCount
+		r.read += k
+		i += k
+	}
+	return frames, true
+}
+
+// resampleStream interpolates the stream at the block's step.
+func (sn *voiceMix) resampleStream(dst []float32) (int, bool) {
+	r := &sn.v.streamRate
+	if !r.start(sn.stream) {
+		return 0, false
 	}
 	step := float64(sn.step)
 	for i := range len(dst) / 2 {

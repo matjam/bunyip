@@ -30,6 +30,27 @@ func (f *lowpass) process(x float32) float32 {
 	return y
 }
 
+// flush zeroes state whose magnitude has fallen below 1e-15. A filter
+// running on silence decays into the subnormal range and stays there,
+// because the smallest subnormal times a coefficient rounds back to
+// itself, and on amd64 every operation on a subnormal is a microcode
+// assist of about a hundred cycles. The player calls it once per span, so
+// the state never carries a subnormal from one span to the next. A value
+// below 1e-15 is 300 dB down, so flushing it changes nothing audible.
+func (f *lowpass) flush() {
+	f.x1, f.x2 = flushTiny(f.x1), flushTiny(f.x2)
+	f.y1, f.y2 = flushTiny(f.y1), flushTiny(f.y2)
+}
+
+// flushTiny returns zero for a value whose magnitude is below 1e-15 and
+// the value itself otherwise.
+func flushTiny(x float32) float32 {
+	if x < 1e-15 && x > -1e-15 {
+		return 0
+	}
+	return x
+}
+
 // itCutoffHz converts Impulse Tracker's 0..127 cutoff to a frequency.
 func itCutoffHz(cutoff int) float64 {
 	return 110 * math.Pow(2, 0.25+float64(cutoff)/24)
@@ -43,15 +64,23 @@ func (p *Player) render(out []float32) {
 	for i := range p.chans {
 		ch := &p.chans[i]
 		p.renderVoice(out, frames, &ch.voice, ch, ch.outPeriod, ch.outVolume, ch.outPan, global)
+		if ch.voice.filterOn {
+			ch.voice.filter.flush()
+		}
 	}
 	for _, v := range p.bg {
 		p.renderVoice(out, frames, v, nil, v.period, v.volume, v.pan, global)
+		if v.filterOn {
+			v.filter.flush()
+		}
 	}
 	if p.amigaFilter && p.AmigaFilter {
 		for f := range frames {
 			out[f*2] = p.filterL.process(out[f*2])
 			out[f*2+1] = p.filterR.process(out[f*2+1])
 		}
+		p.filterL.flush()
+		p.filterR.flush()
 	}
 }
 

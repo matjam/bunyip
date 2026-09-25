@@ -14,7 +14,9 @@
 // ramps across a block so nothing clicks; stopping a voice ramps it to
 // silence over about a millisecond first. A setter copies its value in
 // under a short lock and the mixer applies it at the start of the next
-// block, so setters do not wait for a whole block. Stream.Read runs
+// block, so setters do not wait for a whole block. While the mixer waits
+// for that lock, setters yield to it, so a game calling setters in a
+// tight loop does not hold a block back. Stream.Read runs
 // without the settings lock but with the playback lock held; it may
 // call setters or start voices, but must not call Voice.Seek.
 // Voice.Seek waits for the block in flight, because it moves the
@@ -40,6 +42,7 @@ package audio
 import (
 	"errors"
 	"math"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -65,7 +68,8 @@ type Mixer struct {
 	output         *outputSession // deviceMu
 	activeOutput   *outputSession // mixMu: only this endpoint may advance playback
 	mu             sync.Mutex
-	mixMu          sync.Mutex // held across a block; guards playback position
+	mixMu          sync.Mutex  // held across a block; guards playback position
+	mixWaiting     atomic.Bool // the block is waiting for mu; see lock
 	rate           int
 	voices         []*Voice
 	master         float32
@@ -77,13 +81,19 @@ type Mixer struct {
 	sendBuf        []float32
 	listener       Listener
 	finished       []func() // OnDone callbacks to run once the lock is released
+	// spareFinished is the other slice of callbacks: whoever takes
+	// finished hands its slice back here once the callbacks have run, so
+	// queueing a callback does not allocate.
+	spareFinished []func()
 
 	// The block being mixed. Only the mixer's thread touches these, under
 	// mixMu, and they are reused from block to block so mixing allocates
 	// nothing.
-	snap      []voiceMix
-	revBuses  []busReverb
-	blkReverb *reverb
+	snap        []voiceMix
+	revBuses    []busReverb
+	blkReverb   *reverb
+	blkListener Listener // the listener the block's head models are worked out for
+	blkRadius   float32  // the head radius, likewise
 
 	reverb     *reverb        // the shared reverb, nil when off
 	baseReverb ReverbSettings // what SetReverb was given
@@ -94,10 +104,35 @@ type Mixer struct {
 	doppler      float32 // Doppler factor, 0 off
 	speedOfSound float32
 	spatial      SpatialSettings // how positional voices reach the ears
+	// binaural mirrors spatial.Binaural so Play can make a new voice's
+	// head-model state before it takes the lock.
+	binaural atomic.Bool
 
 	buses                    map[string]*Bus
 	busList                  []*Bus // the same buses in creation order, to walk without the map
 	music, effects, dialogue *Bus
+}
+
+// lock takes the settings lock for any caller but the mixer's own block.
+// sync.Mutex lets a goroutine that keeps locking barge ahead of a waiter,
+// so a game calling setters in a tight loop could hold the mixer's thread
+// off the lock for milliseconds, until the mutex's starvation mode handed
+// it over. While the mixer is waiting, lock yields instead of queueing,
+// so the mixer takes the lock as soon as the current holder releases it.
+func (m *Mixer) lock() {
+	for m.mixWaiting.Load() {
+		runtime.Gosched()
+	}
+	m.mu.Lock()
+}
+
+// lockMix takes the settings lock for the mixer's block, asking other
+// callers of lock to stand aside until it has it. Callers hold mixMu, so
+// only one block waits at a time.
+func (m *Mixer) lockMix() {
+	m.mixWaiting.Store(true)
+	m.mu.Lock()
+	m.mixWaiting.Store(false)
 }
 
 // NewMixer makes a mixer for a positive output sample rate, with unity
@@ -107,6 +142,10 @@ func NewMixer(rate int) *Mixer {
 	m := &Mixer{rate: rate, master: 1, maxVoices: 64, stopFrames: max(rate/1000, 1),
 		buses: map[string]*Bus{}, speedOfSound: 343,
 		listener: Listener{Forward: lin.Vec3{Z: -1}, Up: lin.Vec3{Y: 1}}}
+	// Room for a full mixer plus as many stolen voices ramping out, so
+	// the block's copy of the voices does not grow on the mixer's thread
+	// unless SetMaxVoices raises the limit.
+	m.snap = make([]voiceMix, 0, 2*m.maxVoices)
 	m.music = m.NewBus("music")
 	m.effects = m.NewBus("effects")
 	m.dialogue = m.NewBus("dialogue")
@@ -118,7 +157,7 @@ func (m *Mixer) Rate() int { return m.rate }
 
 // SetMasterVolume scales every voice; 1 is unity.
 func (m *Mixer) SetMasterVolume(v float32) {
-	m.mu.Lock()
+	m.lock()
 	m.master = v
 	m.mu.Unlock()
 }
@@ -129,7 +168,7 @@ func (m *Mixer) SetMasterVolume(v float32) {
 // leaves the count at once and ramps out over the next millisecond, so
 // the mixer may briefly render one more voice than the cap.
 func (m *Mixer) SetMaxVoices(n int) {
-	m.mu.Lock()
+	m.lock()
 	m.maxVoices = max(n, 1)
 	m.mu.Unlock()
 }
@@ -214,6 +253,12 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 	if opts.LowPass > 0 {
 		v.lp, v.lpc = &lowPass{}, newBiquad(opts.LowPass, m.rate)
 	}
+	if positional && m.binaural.Load() {
+		// Made here, on the caller's goroutine, so the mixer's thread
+		// never allocates it. add covers binaural being turned on between
+		// this and the voice joining the mix.
+		v.bin = newBinaural(m.rate)
+	}
 	v.setOcclusion(opts.Occlusion)
 	if opts.FadeIn > 0 {
 		total := int(opts.FadeIn * float32(m.rate))
@@ -228,7 +273,8 @@ func (m *Mixer) newVoice(opts PlayOptions) *Voice {
 // keeps ramping out for a millisecond, so the new voice starts on the
 // same block and the old one does not click.
 func (m *Mixer) add(v *Voice) *Voice {
-	m.mu.Lock()
+	m.lock()
+	v.needBinaural()
 	active, ramping, victim := 0, 0, -1
 	for i, o := range m.voices {
 		if o.stop || o.done {
@@ -260,20 +306,37 @@ func (m *Mixer) add(v *Voice) *Voice {
 	}
 	done := m.takeFinished()
 	m.mu.Unlock()
-	run(done)
+	m.run(done)
 	return v
+}
+
+// needBinaural gives a positional voice its head-model state when the
+// mixer renders binaurally and the voice has none yet, so the state is
+// made on the goroutine that made the voice positional and never on the
+// mixer's thread. Callers hold the lock.
+func (v *Voice) needBinaural() {
+	if v.positional && v.bin == nil && v.m.spatial.Binaural {
+		v.bin = newBinaural(v.m.rate)
+	}
+}
+
+// makePositional turns positional audio on for the voice. Callers hold
+// the lock.
+func (v *Voice) makePositional() {
+	v.positional = true
+	v.needBinaural()
 }
 
 // StopAll silences every voice. Each one frees its slot at once and
 // ramps out over the next millisecond, so nothing clicks.
 func (m *Mixer) StopAll() {
-	m.mu.Lock()
+	m.lock()
 	for _, v := range m.voices {
 		m.beginStop(v)
 	}
 	done := m.takeFinished()
 	m.mu.Unlock()
-	run(done)
+	m.run(done)
 }
 
 // finish ends a voice under the lock, queueing its OnDone callback.
@@ -298,22 +361,40 @@ func (m *Mixer) beginStop(v *Voice) {
 }
 
 // takeFinished hands over the queued callbacks, to run once unlocked.
+// The caller owns the returned slice until it passes it to run, which
+// gives it back, and the spare slice takes its place meanwhile, so the
+// mixer's thread can queue callbacks without allocating. Callers hold the
+// lock.
 func (m *Mixer) takeFinished() []func() {
+	if len(m.finished) == 0 {
+		return nil
+	}
 	done := m.finished
-	m.finished = nil
+	m.finished, m.spareFinished = m.spareFinished, nil
 	return done
 }
 
-func run(fns []func()) {
+// run calls the callbacks takeFinished handed over, with the lock
+// released, and then returns the slice for reuse.
+func (m *Mixer) run(fns []func()) {
+	if len(fns) == 0 {
+		return
+	}
 	for _, fn := range fns {
 		fn()
 	}
+	clear(fns) // drop the callbacks so the slice keeps nothing alive
+	m.lock()
+	if m.spareFinished == nil {
+		m.spareFinished = fns[:0]
+	}
+	m.mu.Unlock()
 }
 
 // Playing counts active voices. A voice that has been stopped is not
 // counted while its last millisecond ramps out.
 func (m *Mixer) Playing() int {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	n := 0
 	for _, v := range m.voices {
@@ -355,6 +436,13 @@ type voiceMix struct {
 	bin *binaural // head-model state, nil unless the voice is spatialised
 	ear earParams // the head model this block ramps to
 
+	// A binaural voice's head model is worked out by placeHeads after the
+	// lock is released, from these.
+	place   bool     // placeHeads sets ear, tl and tr
+	headPos lin.Vec3 // the source, in the listener's world
+	gain    float32  // the gain before the ears' level difference
+	fresh   bool     // the voice's first block: start at the target gains
+
 	curL, curR float32 // gains at the start of the block
 	tl, tr     float32 // gains to ramp to by the end of it
 
@@ -379,6 +467,7 @@ func (m *Mixer) mixLocked(out []float32) {
 	clear(out)
 	frames := len(out) / 2
 	send := m.snapshot(out)
+	m.placeHeads()
 	scratch := m.scratch[:len(out)]
 	for i := range m.snap {
 		m.snap[i].render(scratch, out, frames)
@@ -404,13 +493,32 @@ func (m *Mixer) mixLocked(out []float32) {
 	// The callbacks run with the lock released, as promised, so one that
 	// seeks a voice does not deadlock the audio thread.
 	m.mixMu.Unlock()
-	run(fns)
+	m.run(fns)
+}
+
+// placeHeads works out the head model of every binaural voice in the
+// block and the ear gains it ramps to. The snapshot copies the positions
+// under the settings lock and this runs after the lock is released,
+// because the model's trigonometry would otherwise triple how long a
+// setter can wait. Callers hold mixMu.
+func (m *Mixer) placeHeads() {
+	for i := range m.snap {
+		sn := &m.snap[i]
+		if !sn.place {
+			continue
+		}
+		sn.ear = m.blkListener.headModel(sn.headPos, m.blkRadius, m.rate)
+		sn.tl, sn.tr = sn.gain*sn.ear.gainL, sn.gain*sn.ear.gainR
+		if sn.fresh {
+			sn.curL, sn.curR = sn.tl, sn.tr
+		}
+	}
 }
 
 // snapshot copies the block's voices and their settled gains out from
 // under the lock and returns the shared reverb send. Callers hold mixMu.
 func (m *Mixer) snapshot(out []float32) []float32 {
-	m.mu.Lock()
+	m.lockMix()
 	defer m.mu.Unlock()
 	if len(m.scratch) < len(out) {
 		m.scratch = make([]float32, len(out))
@@ -425,6 +533,7 @@ func (m *Mixer) snapshot(out []float32) []float32 {
 		m.pending = false
 	}
 	m.blkReverb = m.reverb
+	m.blkListener, m.blkRadius = m.listener, m.spatial.headRadius()
 	soloVoices, soloBuses := false, false
 	for _, v := range m.voices {
 		soloVoices = soloVoices || v.solo
@@ -527,15 +636,15 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 		pan = p
 	}
 	switch {
-	case v.positional && m.spatial.Binaural:
+	case v.positional && m.spatial.Binaural && v.bin != nil:
 		// The head model replaces the pan law: it decides each ear's
-		// gain, and the mixer ramps to those the same way.
-		if v.bin == nil {
-			v.bin = newBinaural(m.rate)
-		}
+		// gain, and the mixer ramps to those the same way. placeHeads
+		// works it out once the lock is released. The state was made when
+		// the voice became positional or binaural was turned on; a voice
+		// without it pans for a block rather than allocate here.
 		sn.bin = v.bin
-		sn.ear = m.listener.headModel(position, m.spatial.headRadius(), m.rate)
-		sn.tl, sn.tr = gain*sn.ear.gainL, gain*sn.ear.gainR
+		sn.place, sn.headPos, sn.gain, sn.fresh = true, position, gain, !v.started
+		return sn, true
 	default:
 		if v.bin != nil {
 			v.bin.started = false // back to panning; the model starts fresh
@@ -553,7 +662,7 @@ func (m *Mixer) snapVoice(v *Voice, send []float32, frames int, soloVoices, solo
 // apply writes each voice's block back, retires the ones that ended and
 // hands over their callbacks. Callers hold mixMu.
 func (m *Mixer) apply() []func() {
-	m.mu.Lock()
+	m.lockMix()
 	ended := false
 	for i := range m.snap {
 		sn := &m.snap[i]
@@ -668,7 +777,7 @@ func (f *fade) value() float32 {
 }
 
 func (v *Voice) set(fn func()) {
-	v.m.mu.Lock()
+	v.m.lock()
 	fn()
 	v.m.mu.Unlock()
 }
@@ -706,7 +815,7 @@ func (v *Voice) SetMute(mute bool) { v.set(func() { v.mute = mute }) }
 
 // Muted reports whether the voice is muted.
 func (v *Voice) Muted() bool {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.mute
 }
@@ -718,13 +827,13 @@ func (v *Voice) SetSolo(solo bool) { v.set(func() { v.solo = solo }) }
 
 // Soloed reports whether the voice is soloed.
 func (v *Voice) Soloed() bool {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.solo
 }
 
 // SetPosition moves a positional voice.
-func (v *Voice) SetPosition(p lin.Vec3) { v.set(func() { v.position = p; v.positional = true }) }
+func (v *Voice) SetPosition(p lin.Vec3) { v.set(func() { v.position = p; v.makePositional() }) }
 
 // SetVelocity sets a positional voice's velocity in world units per
 // second, for Doppler. It only changes the pitch; the game moves the
@@ -739,7 +848,7 @@ func (v *Voice) SetOcclusion(o float32) { v.set(func() { v.setOcclusion(o) }) }
 
 // Occlusion reports the voice's occlusion amount.
 func (v *Voice) Occlusion() float32 {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return v.occlusion
 }
@@ -801,7 +910,7 @@ func (v *Voice) FadeOut(seconds float32) {
 // reports false as soon as it is stopped, while its last millisecond
 // ramps out.
 func (v *Voice) Playing() bool {
-	v.m.mu.Lock()
+	v.m.lock()
 	defer v.m.mu.Unlock()
 	return !v.done && !v.stop
 }
@@ -870,7 +979,7 @@ func (v *Voice) Seek(seconds float64) error {
 // fn may start another voice, but it must return quickly and must not
 // block. Only the last fn registered runs.
 func (v *Voice) OnDone(fn func()) {
-	v.m.mu.Lock()
+	v.m.lock()
 	done := v.done
 	if !done {
 		v.onDone = fn
@@ -893,9 +1002,13 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	}
 	var n int
 	var more bool
-	if sn.stream != nil {
+	mono := sn.snd != nil && sn.snd.mono
+	switch {
+	case sn.stream != nil:
 		n, more = sn.readStream(scratch[:frames*2])
-	} else {
+	case mono:
+		n, more = sn.readSoundMono(scratch[:frames])
+	default:
 		n, more = sn.readSound(scratch[:frames*2])
 	}
 	sn.frames, sn.more = n, more
@@ -905,15 +1018,34 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 	if n == 0 {
 		return
 	}
+	if sn.bin != nil && !mono {
+		// The head model is fed one signal, so a stereo source collapses
+		// here, before the filters, which then run once instead of twice.
+		for i := range n {
+			scratch[i] = (scratch[i*2] + scratch[i*2+1]) * 0.5
+		}
+		mono = true
+	}
+	if mono {
+		buf := scratch[:n]
+		if sn.lp != nil {
+			sn.lp.processMono(sn.lpc, buf)
+		}
+		if sn.occ != nil {
+			sn.occ.processMono(sn.occc, buf)
+		}
+		if sn.bin != nil {
+			sn.renderBinaural(buf, out)
+		} else {
+			sn.renderMono(buf, out)
+		}
+		return
+	}
 	if sn.lp != nil {
 		sn.lp.process(sn.lpc, scratch[:n*2])
 	}
 	if sn.occ != nil {
 		sn.occ.process(sn.occc, scratch[:n*2])
-	}
-	if sn.bin != nil {
-		sn.renderBinaural(scratch, out, n)
-		return
 	}
 	dl := (sn.tl - sn.curL) / float32(n)
 	dr := (sn.tr - sn.curR) / float32(n)
@@ -924,6 +1056,28 @@ func (sn *voiceMix) render(scratch, out []float32, frames int) {
 		r += dr
 		sl := scratch[i*2] * l
 		sr := scratch[i*2+1] * r
+		out[i*2] += sl
+		out[i*2+1] += sr
+		if rev > 0 {
+			send[i*2] += sl * rev
+			send[i*2+1] += sr * rev
+		}
+	}
+}
+
+// renderMono accumulates one mono block into both channels of out and
+// the reverb send, ramping the gains as render does for stereo.
+func (sn *voiceMix) renderMono(buf, out []float32) {
+	n := len(buf)
+	dl := (sn.tl - sn.curL) / float32(n)
+	dr := (sn.tr - sn.curR) / float32(n)
+	l, r := sn.curL, sn.curR
+	send, rev := sn.send, sn.reverb
+	for i, x := range buf {
+		l += dl
+		r += dr
+		sl := x * l
+		sr := x * r
 		out[i*2] += sl
 		out[i*2+1] += sr
 		if rev > 0 {
@@ -977,10 +1131,49 @@ func (sn *voiceMix) readSound(dst []float32) (int, bool) {
 				k = j
 			}
 		}
-		dst[i*2] = s.samples[j*2]*(1-t) + s.samples[k*2]*t
-		dst[i*2+1] = s.samples[j*2+1]*(1-t) + s.samples[k*2+1]*t
+		// The conversions pin which product arm64 fuses into the add, so
+		// readSoundMono can match this bit for bit.
+		dst[i*2] = s.samples[j*2]*(1-t) + float32(s.samples[k*2]*t)
+		dst[i*2+1] = s.samples[j*2+1]*(1-t) + float32(s.samples[k*2+1]*t)
 		pos += step
 	}
 	sn.pos = pos
 	return frames, true
+}
+
+// readSoundMono is readSound for a mono sound: it reads the left channel
+// into len(dst) consecutive samples, since the right one is the same.
+func (sn *voiceMix) readSoundMono(dst []float32) (int, bool) {
+	s := sn.snd
+	if s == nil || len(s.samples) < 2 {
+		return 0, false
+	}
+	total := len(s.samples) / 2
+	pos, step, loop := sn.pos, float64(sn.step), sn.loop
+	for i := range dst {
+		if pos >= float64(total) {
+			if !loop {
+				sn.pos = pos
+				return i, false
+			}
+			pos = math.Mod(pos, float64(total))
+		}
+		j := min(int(pos), total-1)
+		t := float32(pos - float64(j))
+		k := j + 1
+		if k >= total {
+			if loop {
+				k = 0
+			} else {
+				k = j
+			}
+		}
+		// The conversion rounds the second product before the add, so
+		// arm64 fuses the same multiply as it does in readSound and a mono
+		// sound mixes bit for bit as it did when both channels were read.
+		dst[i] = s.samples[j*2]*(1-t) + float32(s.samples[k*2]*t)
+		pos += step
+	}
+	sn.pos = pos
+	return len(dst), true
 }

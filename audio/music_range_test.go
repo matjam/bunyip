@@ -145,7 +145,7 @@ func TestMusicLoopToggleAfterUnderrun(t *testing.T) {
 	for _, frames := range []int{1, 2, 20, 511, 512, 513} {
 		m := NewMixer(1000)
 		// No worker: two real frames followed by deterministic underrun silence.
-		mu := &Music{dec: &memoryDecoder{pcm: PCM{Rate: 1000, Channels: 2}}, rate: 1000,
+		mu := &Music{dec: &memoryDecoder{pcm: PCM{Rate: 1000, Channels: 2}}, rate: 1000, decRate: 1000,
 			ring: []float32{0.25, 0.25, 0.5, 0.5}, count: 4, seek: -1, length: 1000}
 		mu.cond = sync.NewCond(&mu.mu)
 		m.PlayStream(mu, PlayOptions{})
@@ -158,7 +158,7 @@ func TestMusicLoopToggleAfterUnderrun(t *testing.T) {
 }
 
 func TestMusicLoopRangeFrameRoundTrip(t *testing.T) {
-	mu := &Music{dec: &memoryDecoder{pcm: PCM{Rate: 44100, Channels: 2}}, length: 44100}
+	mu := &Music{dec: &memoryDecoder{pcm: PCM{Rate: 44100, Channels: 2}}, decRate: 44100, length: 44100}
 	mu.cond = sync.NewCond(&mu.mu)
 	for frame := int64(1); frame < 1000; frame++ {
 		a := time.Duration(math.Ceil(float64(frame) / 44100 * float64(time.Second)))

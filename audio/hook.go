@@ -13,7 +13,7 @@ func (d driver) OpenOutput() error { return d.m.SetOutputDevice("") }
 func (d driver) CloseOutput()      { d.m.CloseOutput() }
 
 func (d driver) SetDevice(open bool) {
-	d.m.mu.Lock()
+	d.m.lock()
 	d.m.noDevice = !open
 	d.m.mu.Unlock()
 }

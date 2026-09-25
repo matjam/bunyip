@@ -45,7 +45,7 @@ func (m *Mixer) OutputDevices() ([]DeviceInfo, error) { return m.devices(listOut
 func (m *Mixer) InputDevices() ([]DeviceInfo, error) { return m.devices(listInputs) }
 
 func (m *Mixer) devices(list func() ([]audioout.DeviceInfo, error)) ([]DeviceInfo, error) {
-	m.mu.Lock()
+	m.lock()
 	disabled := m.noDevice
 	m.mu.Unlock()
 	if disabled {
@@ -72,7 +72,7 @@ func (m *Mixer) devices(list func() ([]audioout.DeviceInfo, error)) ([]DeviceInf
 func (m *Mixer) SetOutputDevice(id string) error {
 	m.beginDeviceChange()
 	defer m.endDeviceChange()
-	m.mu.Lock()
+	m.lock()
 	disabled := m.noDevice
 	m.mu.Unlock()
 	if disabled {

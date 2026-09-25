@@ -147,7 +147,7 @@ func (d tinyMusicDecoder) SeekFrame(frame int64) error {
 
 func startTinyMusic(t *testing.T, dec decoder, loop bool) *Music {
 	t.Helper()
-	music := &Music{dec: dec, loop: loop, rate: 48000, seek: -1, ring: make([]float32, 2),
+	music := &Music{dec: dec, loop: loop, rate: 48000, decRate: dec.Rate(), seek: -1, ring: make([]float32, 2),
 		rs: resampler{step: float64(dec.Rate()) / 48000}}
 	music.cond = sync.NewCond(&music.mu)
 	done := make(chan struct{})

@@ -74,7 +74,7 @@ func TestMusicCloseJoinsDecoder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		entered, release := make(chan struct{}), make(chan struct{})
 		dec := tinyMusicDecoder{decoder: &memoryDecoder{pcm: PCM{Rate: 48000, Channels: 2}}, read: func([]float32) (int, error) { close(entered); <-release; return 0, io.EOF }}
-		music := &Music{dec: dec, rate: 48000, seek: -1, ring: make([]float32, 2)}
+		music := &Music{dec: dec, rate: 48000, decRate: 48000, seek: -1, ring: make([]float32, 2)}
 		owned := &ownedMusicReader{}
 		music.owned = owned
 		music.cond = sync.NewCond(&music.mu)

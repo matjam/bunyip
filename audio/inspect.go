@@ -39,7 +39,7 @@ type VoiceInfo struct {
 // the settings lock; positions are read afterward from the last mixed
 // block and need not represent the exact same instant.
 func (m *Mixer) Voices() []VoiceInfo {
-	m.mu.Lock()
+	m.lock()
 	voices := append([]*Voice(nil), m.voices...)
 	out := make([]VoiceInfo, 0, len(voices))
 	for _, v := range voices {
@@ -67,7 +67,7 @@ func (m *Mixer) Voices() []VoiceInfo {
 // with music, effects and dialogue, for a mixing panel that shows them
 // all.
 func (m *Mixer) Buses() []*Bus {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	return append([]*Bus(nil), m.busList...)
 }

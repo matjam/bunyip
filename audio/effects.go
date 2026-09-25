@@ -6,6 +6,29 @@ import (
 	"github.com/matjam/bunyip/lin"
 )
 
+// flushTiny returns zero for a value whose magnitude is below 1e-15 and
+// the value itself otherwise. Filter and reverb state that decays on
+// silence would otherwise reach the subnormal range and stay there,
+// because the smallest subnormal times a coefficient rounds back to
+// itself. amd64 takes a microcode assist of about a hundred cycles for
+// every operation on a subnormal and Go never sets flush-to-zero, so a
+// decayed tail would cost more than the signal did. A value below 1e-15
+// is 300 dB down, so flushing it changes nothing audible, and a signal
+// above it passes through bit for bit.
+func flushTiny(x float32) float32 {
+	if x < 1e-15 && x > -1e-15 {
+		return 0
+	}
+	return x
+}
+
+// flushSlice flushes every value in s with flushTiny.
+func flushSlice(s []float32) {
+	for i, v := range s {
+		s[i] = flushTiny(v)
+	}
+}
+
 // biquad holds a second-order Butterworth low-pass filter's coefficients.
 // It is separate from the filter's state because the two are reached from
 // different threads: the game loop sets coefficients under the mixer's
@@ -63,7 +86,26 @@ func (f *lowPass) process(c biquad, buf []float32) {
 		r1 = b2*x - a2*y
 		buf[i+1] = y
 	}
-	f.l0, f.l1, f.r0, f.r1 = l0, l1, r0, r1
+	f.l0, f.l1, f.r0, f.r1 = flushTiny(l0), flushTiny(l1), flushTiny(r0), flushTiny(r1)
+}
+
+// processMono filters a block of mono samples in place with the left
+// channel's state, then copies that state to the right channel. The
+// mixer uses it for a mono sound, whose two channels would be filtered
+// to the same values, and for the downmix a binaural voice feeds the head
+// model; either way both channels continue from the same state if the
+// voice later filters in stereo.
+func (f *lowPass) processMono(c biquad, buf []float32) {
+	b0, b1, b2, a1, a2 := c.b0, c.b1, c.b2, c.a1, c.a2
+	l0, l1 := f.l0, f.l1
+	for i, x := range buf {
+		y := b0*x + l0
+		l0 = b1*x - a1*y + l1
+		l1 = b2*x - a2*y
+		buf[i] = y
+	}
+	l0, l1 = flushTiny(l0), flushTiny(l1)
+	f.l0, f.l1, f.r0, f.r1 = l0, l1, l0, l1
 }
 
 // ReverbSettings describe a reverb, which voices feed through their Reverb
@@ -110,7 +152,7 @@ func (s ReverbSettings) lerp(o ReverbSettings, t float32) ReverbSettings {
 // their signal to it (unless their bus has a reverb of its own); the tail
 // is mixed on top of the dry output. The zero value turns it off.
 func (m *Mixer) SetReverb(s ReverbSettings) {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	m.baseReverb = s
 	m.updateReverb()
@@ -120,7 +162,7 @@ func (m *Mixer) SetReverb(s ReverbSettings) {
 // to SetReverb, or the zone the listener is in blended by how far inside
 // it stands. Wet is 0 when the reverb is off.
 func (m *Mixer) Reverb() ReverbSettings {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	return m.applied
 }
@@ -144,7 +186,7 @@ type ReverbZone struct {
 // against the listener whenever it moves, so a game sets them once per
 // level and moves the listener each frame. Pass nil to clear them.
 func (m *Mixer) SetReverbZones(zones []ReverbZone) {
-	m.mu.Lock()
+	m.lock()
 	defer m.mu.Unlock()
 	m.zones = append(m.zones[:0], zones...)
 	m.updateReverb()
@@ -214,7 +256,7 @@ func (m *Mixer) updateReverb() {
 // while the music stays dry, or the reverse. The zero value removes it.
 // The settings reach the reverb at the start of the next mixed block.
 func (b *Bus) SetReverb(s ReverbSettings) {
-	b.m.mu.Lock()
+	b.m.lock()
 	defer b.m.mu.Unlock()
 	if s.Wet <= 0 {
 		b.reverb = nil
@@ -240,7 +282,10 @@ func occlusionCutoff(o float32) float32 {
 
 // reverb is Freeverb (Jezar at Dreampoint, public domain): eight parallel
 // feedback combs with damping into four series allpasses, per channel,
-// the right channel's delays offset for stereo width.
+// the right channel's delays offset for stereo width. As in Freeverb,
+// every value stored in a comb or an allpass is flushed to zero once it
+// falls below 1e-15 (flushTiny), so a tail that has died away holds
+// zeros rather than subnormals.
 type reverb struct {
 	combL, combR [8]comb
 	apL, apR     [4]allpass
@@ -252,12 +297,17 @@ type comb struct {
 	idx            int
 	filt           float32
 	feedback, damp float32
+	undamp         float32 // 1 - damp, kept so process stays small enough to inline
 }
 
+// process runs one sample through the comb. It sits at the inliner's
+// budget: reverb.process calls it sixteen times a frame, and a call there
+// costs time and, on arm64, changes which multiplies and adds are fused.
+// TestGoldenMixBitIdentical fails if it stops being inlined.
 func (c *comb) process(in float32) float32 {
 	out := c.buf[c.idx]
-	c.filt = out*(1-c.damp) + c.filt*c.damp
-	c.buf[c.idx] = in + c.filt*c.feedback
+	c.filt = flushTiny(out*c.undamp + c.filt*c.damp)
+	c.buf[c.idx] = flushTiny(in + c.filt*c.feedback)
 	c.idx++
 	if c.idx == len(c.buf) {
 		c.idx = 0
@@ -272,7 +322,7 @@ type allpass struct {
 
 func (a *allpass) process(in float32) float32 {
 	b := a.buf[a.idx]
-	a.buf[a.idx] = in + b*0.5
+	a.buf[a.idx] = flushTiny(in + b*0.5)
 	a.idx++
 	if a.idx == len(a.buf) {
 		a.idx = 0
@@ -307,8 +357,8 @@ func (r *reverb) set(s ReverbSettings) {
 	damp := clamp01(s.Damping) * 0.4
 	width := clamp01(s.Width)
 	for i := range r.combL {
-		r.combL[i].feedback, r.combL[i].damp = feedback, damp
-		r.combR[i].feedback, r.combR[i].damp = feedback, damp
+		r.combL[i].feedback, r.combL[i].damp, r.combL[i].undamp = feedback, damp, 1-damp
+		r.combR[i].feedback, r.combR[i].damp, r.combR[i].undamp = feedback, damp, 1-damp
 	}
 	const scaleWet = 3
 	wet := max(s.Wet, 0)
