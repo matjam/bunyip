@@ -592,7 +592,8 @@ g.tilemap.Advance(ctx.Delta) // in Update
 To keep a map of plain terrain ids and let the tiles pick themselves,
 use the [autotile](../pkg/grid/autotile.html) package. A
 `Mapper` turns terrain ids into frame indices: `Apply` fills a whole
-tilemap and `Cell` patches the neighbourhood of one edited cell. Five
+tilemap, `Cell` patches the neighbourhood of one edited cell, and
+`Region` patches everything an edited rectangle can affect. Five
 rule kinds cover the usual tilesets: `Edge16` matches the four edge
 neighbours with 16 tiles (walls, pipes, fences), `Edge64` is its
 hexagonal counterpart matching the six sides of a hexagon with 64
@@ -611,6 +612,19 @@ grassMap := gfx.NewTilemap(gfx.NewSheet(tex, 16, 16), w, h)
 grass := &autotile.Mapper{Rules: autotile.Blob47(1, frames)}
 grass.Apply(w, h, terrainAt, grassMap.Set)   // the whole map once
 grass.Cell(x, y, w, h, terrainAt, grassMap.Set) // after one edit
+```
+
+To re-tile after a brush stroke, a fill or a pasted block, call
+`Region` once with the rectangle of edited cells rather than `Cell` for
+each of them. It takes the rectangle's top-left cell, its width and
+height in cells, and the map size, and sets the same frames that calling
+`Cell` for every edited cell would set. A cell next to several edited
+cells is computed once, and each affected cell goes to the setter once,
+in row-major order. The rectangle may extend past the map's edges.
+
+```go
+// A 5 by 3 block pasted with its top-left cell at (px, py).
+grass.Region(px, py, 5, 3, w, h, terrainAt, grassMap.Set)
 ```
 
 `Mapper.Layout` is the shape of the grid, and the zero value is a
