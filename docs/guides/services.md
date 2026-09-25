@@ -629,7 +629,10 @@ that must arrive. Every packet acknowledges what came the other way,
 and `Stats` reports a link's round trip, loss and pending count. Peers
 exchange hello and keep-alive packets, so a `Peer` raises `Connected` and
 `Disconnected` for UDP addresses (after `SetTimeout` of silence, a
-goodbye, or a restart), and `Peers` lists who is there.
+goodbye, or a restart), and `Peers` lists who is there. After a
+goodbye in either direction, packets the other side sent before the
+goodbye are ignored, so the address stays disconnected until it starts
+a new session or this side sends to it again.
 
 ```go
 peer, err := network.ListenUDP(":7778", reg)

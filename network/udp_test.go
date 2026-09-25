@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -188,6 +189,99 @@ func TestUDPGoodbye(t *testing.T) {
 	}
 	if _, ok := a.Stats(c.Addr()); ok {
 		t.Fatal("disconnected link still has stats")
+	}
+}
+
+// sessionTo returns the session p uses on its link to addr.
+func sessionTo(t *testing.T, p *Peer, addr *Addr) uint32 {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	l := p.links[keyOf(addr)]
+	if l == nil {
+		t.Fatalf("no link to %v", addr)
+	}
+	return l.session
+}
+
+// straggler builds a header-only packet from session, as a keepalive or
+// an acknowledgement that was in flight when a link closed. ack is the
+// newest of our packets it acknowledges, zero for none.
+func straggler(session, seq, ack uint32, flags uint8) []byte {
+	pkt := make([]byte, headerSize)
+	pkt[0] = flags
+	binary.BigEndian.PutUint32(pkt[1:], session)
+	binary.BigEndian.PutUint32(pkt[5:], seq)
+	binary.BigEndian.PutUint32(pkt[9:], ack)
+	return pkt
+}
+
+// TestUDPGoodbyeIgnoresStragglers delivers packets that the other side
+// sent before a goodbye, in either direction, after the goodbye. They
+// must not bring the link back; a new session from the same address
+// must.
+func TestUDPGoodbyeIgnoresStragglers(t *testing.T) {
+	a, b := udpPair(t)
+	b.SetLoss(1) // b's own packets never reach a; the test delivers them
+	from := b.Addr().AddrPort()
+	a.Send(b.Addr(), move{1, 1})
+	wait(t, "b's link to a", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.links[keyOf(a.Addr())] != nil
+	})
+	bs := sessionTo(t, b, a.Addr())
+
+	// This side says goodbye before anything from b has arrived; b's
+	// acknowledgement of a's first packet arrives afterwards.
+	a.Disconnect(b.Addr())
+	a.receive(straggler(bs, 1, 1, 0), from, time.Now())
+	assertClosed(t, a, b.Addr(), "Disconnect before b was heard")
+
+	// Two later sessions from the same address, as a restarted b would
+	// start, avoiding zero, which is no session.
+	var later []uint32
+	for s := bs + 1; len(later) < 2; s++ {
+		if s != 0 {
+			later = append(later, s)
+		}
+	}
+
+	// A new session from the same address is a new connection.
+	a.receive(straggler(later[0], 1, 0, 0), from, time.Now())
+	if st, ok := a.Stats(b.Addr()); !ok || !st.Connected {
+		t.Fatal("a new session from a goodbye's address did not connect")
+	}
+	waitFor(t, a, "Connected from the new session", func(ev Event) bool { return ev.Kind == Connected })
+
+	// This side says goodbye to a session it has heard from; a packet
+	// from that session sent before it read the goodbye arrives
+	// afterwards, acknowledging nothing.
+	a.Disconnect(b.Addr())
+	a.receive(straggler(later[0], 2, 0, 0), from, time.Now())
+	assertClosed(t, a, b.Addr(), "Disconnect after b was heard")
+
+	// The other side says goodbye; a packet it sent before the goodbye
+	// arrives after it, reordered.
+	a.receive(straggler(later[1], 1, 0, 0), from, time.Now())
+	waitFor(t, a, "Connected from the new session", func(ev Event) bool { return ev.Kind == Connected })
+	a.receive(straggler(later[1], 3, 0, flagBye), from, time.Now())
+	waitFor(t, a, "goodbye from b", func(ev Event) bool { return ev.Kind == Disconnected && ev.Err == nil })
+	a.receive(straggler(later[1], 2, 0, flagNeedAck), from, time.Now())
+	assertClosed(t, a, b.Addr(), "after b's goodbye")
+}
+
+// assertClosed checks that p has no link to addr and reported no new
+// connection.
+func assertClosed(t *testing.T, p *Peer, addr *Addr, when string) {
+	t.Helper()
+	if _, ok := p.Stats(addr); ok {
+		t.Fatalf("%s: a packet sent before the goodbye reopened the link", when)
+	}
+	for _, ev := range p.Poll() {
+		if ev.Kind == Connected {
+			t.Fatalf("%s: a packet sent before the goodbye reported Connected", when)
+		}
 	}
 }
 
