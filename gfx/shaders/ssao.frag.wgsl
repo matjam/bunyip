@@ -1,7 +1,9 @@
 var<private> fragCoordValue: vec4f;
 
-// Screen-space ambient occlusion from the scene depth: view positions are
-// reconstructed with the inverse projection, normals from neighbouring depths, and a rotated hemisphere kernel tests nearby depth.
+// Screen-space ambient occlusion from the half-resolution scene depth
+// (depthhalf.frag), at the same resolution: view positions are
+// reconstructed with the inverse projection, normals from neighbouring
+// depths, and a rotated hemisphere kernel tests nearby depth.
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthTexSampler: sampler;
 struct PC {
@@ -21,10 +23,10 @@ fn viewPos(uv: vec2f) -> vec3f {
     return p.xyz / p.w;
 }
 
-// viewPosAt reconstructs the position of an exact depth texel. This pass
-// runs at half resolution, so its pixel centres fall on full-resolution
-// texel boundaries; sampling there rounds unpredictably and tilts the
-// finite-difference normal, which false-occludes flat floors in streaks.
+// viewPosAt reconstructs the position of an exact depth texel. Loading
+// the texel rather than sampling keeps the finite-difference normal from
+// tilting where a coordinate rounds unpredictably, which false-occludes
+// flat floors in streaks.
 fn viewPosAt(pixel: vec2i, size: vec2i) -> vec3f {
     let px = clamp(pixel, vec2i(0), size - vec2i(1));
     var d: f32 = textureLoad(depthTex, px, 0).r;
@@ -50,8 +52,10 @@ fn effect() {
     var px2: vec3f = p - viewPosAt(c - vec2i(1, 0), size);
     var py1: vec3f = viewPosAt(c + vec2i(0, 1), size) - p;
     var py2: vec3f = p - viewPosAt(c - vec2i(0, 1), size);
-    var dx: vec3f = select(px2, px1, length(px1) < length(px2));
-    var dy: vec3f = select(py2, py1, length(py1) < length(py2));
+    // At the edge of the image one neighbour is the pixel itself, whose
+    // zero difference would make no normal at all.
+    var dx: vec3f = select(px2, px1, (length(px1) < length(px2) && length(px1) > 0.0) || length(px2) <= 0.0);
+    var dy: vec3f = select(py2, py1, (length(py1) < length(py2) && length(py1) > 0.0) || length(py2) <= 0.0);
     var n: vec3f = normalize(cross(dx, dy));
     if (dot(n, -p) < 0.0) { n = -n; } // face the camera regardless of winding
     var radius: f32 = pc.proj[3][3];

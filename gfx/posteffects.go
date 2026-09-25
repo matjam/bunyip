@@ -11,9 +11,10 @@ import (
 // The optional post images are made the first time a setting asks for
 // them and live as long as the target set, so a game that never turns
 // temporal anti-aliasing or depth of field on pays nothing for them. The
-// chain works the same way whatever is on: each pass reads the HDR image
-// and writes the scratch one, which is then copied back over the HDR
-// image, so every pass has exactly one input set to keep.
+// chain works the same way whatever is on: each pass reads the scene
+// image cur names and writes a spare one, which becomes cur, so nothing
+// is copied between passes. The descriptor sets that name a scene image
+// are made the first time a pass reads that image, one per image.
 
 // needVelocity makes the motion vector image and the pass description
 // that pairs it with the scene depth.
@@ -34,7 +35,9 @@ func (t *sceneTargets) needVelocity(g *Graphics) error {
 	return nil
 }
 
-// needPong makes the scratch HDR image every chain pass writes into.
+// needPong makes the second full-size scene image. A probe bake reads
+// the finished scene back from whichever image holds it, so it can be a
+// transfer source like hdr's colour.
 func (t *sceneTargets) needPong(g *Graphics) error {
 	if t.pong != nil {
 		return nil
@@ -47,9 +50,35 @@ func (t *sceneTargets) needPong(g *Graphics) error {
 	return nil
 }
 
-// needTemporal makes the history image and the temporal pass's set.
+// needHalfDepth makes the half-size depth image renderScene fills for
+// the passes that read depth at half size.
+func (t *sceneTargets) needHalfDepth(g *Graphics) error {
+	if t.half != nil {
+		return nil
+	}
+	half, err := g.r.Device.NewTarget(halfExtent(t.extent), halfDepthFormat, vk.VK_FORMAT_UNDEFINED)
+	if err != nil {
+		return err
+	}
+	set, err := g.post.singles.Allocate(half.Color.View, g.nearest)
+	if err != nil {
+		half.Destroy()
+		return err
+	}
+	t.half, t.halfSet = half, set
+	return nil
+}
+
+// halfExtent is an extent halved, never below one texel.
+func halfExtent(e vk.VkExtent2D) vk.VkExtent2D {
+	return vk.VkExtent2D{Width: max(e.Width/2, 1), Height: max(e.Height/2, 1)}
+}
+
+// needTemporal makes the two history images the temporal pass
+// alternates between. Each is cleared, because the pass binds the one it
+// reads before any frame has written it.
 func (t *sceneTargets) needTemporal(g *Graphics) error {
-	if t.taaSet != 0 {
+	if t.hist[1] != nil {
 		return nil
 	}
 	if err := t.needVelocity(g); err != nil {
@@ -58,7 +87,10 @@ func (t *sceneTargets) needTemporal(g *Graphics) error {
 	if err := t.needPong(g); err != nil {
 		return err
 	}
-	if t.hist == nil {
+	for i := range t.hist {
+		if t.hist[i] != nil {
+			continue
+		}
 		hist, err := g.r.Device.NewTargetSampled(t.extent, hdrFormat, vk.VK_FORMAT_UNDEFINED)
 		if err != nil {
 			return err
@@ -67,62 +99,35 @@ func (t *sceneTargets) needTemporal(g *Graphics) error {
 			hist.Destroy()
 			return err
 		}
-		t.hist = hist
+		t.hist[i] = hist
 	}
-	set, err := g.post.quads.AllocateMany([]render.SamplerBinding{
-		{View: t.hdr.Color.View, Sampler: g.linear},
-		{View: t.hist.Color.View, Sampler: g.linear},
-		{View: t.vel.Color.View, Sampler: g.linear},
-		{View: t.hdr.Depth.View, Sampler: g.nearest},
-	})
-	if err != nil {
-		return err
-	}
-	t.taaSet = set
 	return nil
 }
 
-// needMotionBlur makes the motion blur pass's set.
+// needMotionBlur makes what the motion blur pass needs.
 func (t *sceneTargets) needMotionBlur(g *Graphics) error {
-	if t.mbSet != 0 {
-		return nil
-	}
 	if err := t.needVelocity(g); err != nil {
 		return err
 	}
-	if err := t.needPong(g); err != nil {
-		return err
-	}
-	set, err := g.post.triples.AllocateMany([]render.SamplerBinding{
-		{View: t.hdr.Color.View, Sampler: g.linear},
-		{View: t.vel.Color.View, Sampler: g.linear},
-		{View: t.hdr.Depth.View, Sampler: g.nearest},
-	})
-	if err != nil {
-		return err
-	}
-	t.mbSet = set
-	return nil
+	return t.needPong(g)
 }
 
-// needDOF makes the depth of field pass's set. The third binding of the
-// layout is the depth image again; the program does not read it.
+// needDOF makes the half-size image the depth of field gather writes.
 func (t *sceneTargets) needDOF(g *Graphics) error {
-	if t.dofSet != 0 {
-		return nil
-	}
 	if err := t.needPong(g); err != nil {
 		return err
 	}
-	set, err := g.post.triples.AllocateMany([]render.SamplerBinding{
-		{View: t.hdr.Color.View, Sampler: g.linear},
-		{View: t.hdr.Depth.View, Sampler: g.nearest},
-		{View: t.hdr.Depth.View, Sampler: g.nearest},
-	})
+	if err := t.needHalfDepth(g); err != nil {
+		return err
+	}
+	if t.dofHalf != nil {
+		return nil
+	}
+	half, err := g.r.Device.NewTarget(halfExtent(t.extent), hdrFormat, vk.VK_FORMAT_UNDEFINED)
 	if err != nil {
 		return err
 	}
-	t.dofSet = set
+	t.dofHalf = half
 	return nil
 }
 
@@ -131,8 +136,7 @@ func (t *sceneTargets) needRays(g *Graphics) error {
 	if t.rays != nil {
 		return nil
 	}
-	half := vk.VkExtent2D{Width: max(t.extent.Width/2, 1), Height: max(t.extent.Height/2, 1)}
-	rays, err := g.r.Device.NewTargetSampled(half, hdrFormat, vk.VK_FORMAT_UNDEFINED)
+	rays, err := g.r.Device.NewTargetSampled(halfExtent(t.extent), hdrFormat, vk.VK_FORMAT_UNDEFINED)
 	if err != nil {
 		return err
 	}
@@ -163,37 +167,33 @@ func (t *sceneTargets) needLDR2(g *Graphics) error {
 	return nil
 }
 
-// finalSet returns the composite's descriptor set for a combination of
-// bloom and light shafts, making it on first use. A missing input is
-// bound to the shared black texture, which contributes nothing. It makes
-// no image of its own, because the composite calls it from inside a
-// render pass, where a clear or a barrier would be illegal; the caller
-// asks for the shafts image with needRays before it asks for a set that
-// names one.
+// finalSet returns the composite's descriptor set for the image holding
+// the scene and a combination of bloom and light shafts, making it on
+// first use. A missing input is bound to the shared black texture, which
+// contributes nothing. It makes no image of its own, because the
+// composite calls it from inside a render pass, where a clear or a
+// barrier would be illegal; the caller asks for the shafts image with
+// needRays before it asks for a set that names one.
 func (t *sceneTargets) finalSet(g *Graphics, bloom, rays bool) (vk.VkDescriptorSet, error) {
-	i := finalIndex(bloom, rays)
-	if t.finals[i] != 0 {
-		return t.finals[i], nil
+	rays = rays && t.rays != nil
+	k := setKey{kind: setFinal, img: t.cur, a: bloom, b: rays}
+	if set := t.cachedSet(k); set != 0 {
+		return set, nil
 	}
 	black := g.meshes.black.img.View
 	glow, shafts := black, black
 	if bloom {
 		glow = t.bloomA.Color.View
 	}
-	if rays && t.rays != nil {
+	if rays {
 		shafts = t.rays.Color.View
 	}
-	set, err := g.post.quads.AllocateMany([]render.SamplerBinding{
-		{View: t.hdr.Color.View, Sampler: g.linear},
+	return t.makeSet(k, g.post.quads, []render.SamplerBinding{
+		{View: t.image(t.cur).View, Sampler: g.linear},
 		{View: glow, Sampler: g.linear},
 		{View: t.aoB.Color.View, Sampler: g.linear},
 		{View: shafts, Sampler: g.linear},
 	})
-	if err != nil {
-		return 0, err
-	}
-	t.finals[i] = set
-	return set, nil
 }
 
 // final2DSet is finalSet for a 2D frame, whose scene image is the LDR
@@ -225,24 +225,30 @@ func (t *sceneTargets) final2DSet(g *Graphics, bloom bool) (vk.VkDescriptorSet, 
 	return set, nil
 }
 
-// chainPass runs one fullscreen pass from the HDR image into the scratch
-// image and copies the result back, so the next pass and the composite
-// find their input where they expect it.
-func (g *Graphics) chainPass(cb vk.VkCommandBuffer, t *sceneTargets, pipe *render.Pipeline, set vk.VkDescriptorSet, push depthPush) {
+// depthPass runs one fullscreen pass with a depthPush block into target.
+func (g *Graphics) depthPass(cb vk.VkCommandBuffer, target *render.Target, pipe *render.Pipeline, set vk.VkDescriptorSet, push depthPush) {
 	p := &g.post
 	p.depth, p.set = push, set
-	render.BeginTargetPass(cb, render.PassDesc{Target: t.pong})
+	render.BeginTargetPass(cb, render.PassDesc{Target: target})
 	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Handle)
 	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.Layout, 0, 1, &p.set, 0, nil)
 	vk.CmdPushConstants(cb, pipe.Layout, meshStages, 0, uint32(unsafe.Sizeof(p.depth)), unsafe.Pointer(&p.depth))
 	vk.CmdDraw(cb, 3, 1, 0, 0)
-	render.EndTargetPass(cb, t.pong)
-	render.CopyColorForSampling(cb, t.pong.Color, t.hdr.Color)
+	render.EndTargetPass(cb, target)
 }
 
-// renderTemporal blends this frame with the resolved frames before it and
-// leaves the result in the HDR image and in the history for the next one.
-func (g *Graphics) renderTemporal(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) {
+// chainPass runs one fullscreen pass from the image holding the scene
+// into a spare one, which then holds it.
+func (g *Graphics) chainPass(cb vk.VkCommandBuffer, t *sceneTargets, pipe *render.Pipeline, set vk.VkDescriptorSet, push depthPush) {
+	dst := t.spare()
+	g.depthPass(cb, t.target(dst), pipe, set, push)
+	t.cur = dst
+}
+
+// renderTemporal blends this frame with the resolved frames before it.
+// It reads the history image the last frame wrote and writes the other,
+// which then holds the scene and is what the next frame reads.
+func (g *Graphics) renderTemporal(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) error {
 	s := g.post.settings
 	blend := s.TemporalBlend
 	if blend <= 0 {
@@ -252,29 +258,60 @@ func (g *Graphics) renderTemporal(cb vk.VkCommandBuffer, q *drawQueue, t *sceneT
 	if t.histValid && q.hasPrevVP {
 		valid = 1
 	}
-	g.chainPass(cb, t, g.post.taa, t.taaSet, depthPush{
+	next := t.histNext
+	prev := 1 - next
+	k := setKey{kind: setTemporal, img: t.cur, a: prev == 1}
+	set := t.cachedSet(k)
+	if set == 0 {
+		var err error
+		if set, err = t.makeSet(k, g.post.quads, []render.SamplerBinding{
+			{View: t.image(t.cur).View, Sampler: g.linear},
+			{View: t.hist[prev].Color.View, Sampler: g.linear},
+			{View: t.vel.Color.View, Sampler: g.linear},
+			{View: t.hdr.Depth.View, Sampler: g.nearest},
+		}); err != nil {
+			return err
+		}
+	}
+	g.depthPass(cb, t.hist[next], g.post.taa, set, depthPush{
 		matrix: q.prevViewProj.Mul(q.invViewProjJ),
 		a:      [4]float32{1 / float32(t.extent.Width), 1 / float32(t.extent.Height), blend, valid},
 	})
-	render.CopyColorForSampling(cb, t.pong.Color, t.hist.Color)
+	t.cur = imgHist0 + sceneImage(next)
+	t.histNext = prev
 	t.histValid = true
+	return nil
 }
 
 // renderMotionBlur smears each pixel back along the way it moved.
-func (g *Graphics) renderMotionBlur(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) {
+func (g *Graphics) renderMotionBlur(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) error {
 	s := g.post.settings
 	taps := s.MotionSamples
 	if taps <= 0 {
 		taps = 8
 	}
-	g.chainPass(cb, t, g.post.motionBlur, t.mbSet, depthPush{
+	k := setKey{kind: setMotion, img: t.cur}
+	set := t.cachedSet(k)
+	if set == 0 {
+		var err error
+		if set, err = t.makeSet(k, g.post.triples, []render.SamplerBinding{
+			{View: t.image(t.cur).View, Sampler: g.linear},
+			{View: t.vel.Color.View, Sampler: g.linear},
+			{View: t.hdr.Depth.View, Sampler: g.nearest},
+		}); err != nil {
+			return err
+		}
+	}
+	g.chainPass(cb, t, g.post.motionBlur, set, depthPush{
 		matrix: q.prevViewProj.Mul(q.invViewProjJ),
 		a:      [4]float32{1 / float32(t.extent.Width), 1 / float32(t.extent.Height), s.MotionBlur, float32(taps)},
 	})
+	return nil
 }
 
-// renderDOF blurs what is not at the focus distance.
-func (g *Graphics) renderDOF(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) {
+// renderDOF blurs what is not at the focus distance: a gather at half
+// size, then a full-size pass that mixes it with the sharp image.
+func (g *Graphics) renderDOF(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) error {
 	s := g.post.settings
 	rng := s.FocusRange
 	if rng <= 0 {
@@ -291,11 +328,41 @@ func (g *Graphics) renderDOF(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarget
 	if taps <= 0 {
 		taps = 16
 	}
-	g.chainPass(cb, t, g.post.dof, t.dofSet, depthPush{
-		matrix: q.projJ.Inverse(),
-		a:      [4]float32{1 / float32(t.extent.Width), 1 / float32(t.extent.Height), s.FocusDistance, rng},
-		b:      [4]float32{radius, float32(taps)},
+	gk := setKey{kind: setDOF, img: t.cur}
+	gather := t.cachedSet(gk)
+	var err error
+	if gather == 0 {
+		if gather, err = t.makeSet(gk, g.post.pairs, []render.SamplerBinding{
+			{View: t.image(t.cur).View, Sampler: g.linear},
+			{View: t.half.Color.View, Sampler: g.nearest},
+		}); err != nil {
+			return err
+		}
+	}
+	ck := setKey{kind: setDOFCombine, img: t.cur}
+	combine := t.cachedSet(ck)
+	if combine == 0 {
+		if combine, err = t.makeSet(ck, g.post.quads, []render.SamplerBinding{
+			{View: t.image(t.cur).View, Sampler: g.linear},
+			{View: t.dofHalf.Color.View, Sampler: g.linear},
+			{View: t.hdr.Depth.View, Sampler: g.nearest},
+			{View: t.half.Color.View, Sampler: g.nearest},
+		}); err != nil {
+			return err
+		}
+	}
+	invProj := q.projJ.Inverse()
+	half := t.dofHalf.Extent
+	g.depthPass(cb, t.dofHalf, g.post.dof, gather, depthPush{
+		matrix: invProj,
+		a:      [4]float32{1 / float32(half.Width), 1 / float32(half.Height), s.FocusDistance, rng},
+		b:      [4]float32{radius * float32(half.Height) / float32(t.extent.Height), float32(taps)},
 	})
+	g.chainPass(cb, t, g.post.dofCombine, combine, depthPush{
+		matrix: invProj,
+		a:      [4]float32{1 / float32(t.extent.Width), 1 / float32(t.extent.Height), s.FocusDistance, rng},
+	})
+	return nil
 }
 
 // sunScreen is where the directional light's source lies in texture
@@ -322,7 +389,7 @@ func sunScreen(q *drawQueue) (lin.Vec2, bool) {
 }
 
 // renderRays draws the light shafts into the half-size rays image, which
-// the composite adds to the scene.
+// the composite adds to the scene. It walks the half-size depth.
 func (g *Graphics) renderRays(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets, sun lin.Vec2) {
 	p := &g.post
 	s := p.settings
@@ -348,7 +415,7 @@ func (g *Graphics) renderRays(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarge
 		c = White
 	}
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.rays})
-	p.fullscreen(cb, p.godRays, t.depthSet, postPush{
+	p.fullscreen(cb, p.godRays, t.halfSet, postPush{
 		a: [4]float32{sun.X, sun.Y, s.GodRays, decay},
 		b: [4]float32{float32(taps), density, 1 / float32(taps)},
 		c: [4]float32{c.R, c.G, c.B, 0},
@@ -356,9 +423,27 @@ func (g *Graphics) renderRays(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarge
 	render.EndTargetPass(cb, t.rays)
 }
 
+// wantsHalfDepth reports whether a presented frame's post effects read
+// the half-size depth: ambient occlusion, the light shafts and depth of
+// field do. The reflection trace asks for it on its own.
+func (g *Graphics) wantsHalfDepth() bool {
+	s := g.post.settings
+	return s.AmbientOcclusion > 0 || s.GodRays > 0 || s.FocusDistance > 0
+}
+
+// buildHalfDepth fills the half-size depth from the scene depth: each
+// texel keeps the nearest of the four under it.
+func (g *Graphics) buildHalfDepth(cb vk.VkCommandBuffer, t *sceneTargets) {
+	g.timestamps.Begin(cb, "half depth")
+	render.BeginTargetPass(cb, render.PassDesc{Target: t.half})
+	g.post.fullscreen(cb, g.post.depthHalf, t.depthSet, postPush{})
+	render.EndTargetPass(cb, t.half)
+	g.timestamps.End(cb)
+}
+
 // postChain runs the effects that read the scene and its depth, in the
 // order a camera works in: resolve first, then the shutter, then the
-// lens. Each leaves its result in the HDR image.
+// lens. Each leaves its result in the image cur names.
 func (g *Graphics) postChain(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) error {
 	s := g.post.settings
 	temporal := s.TemporalAA
@@ -368,16 +453,22 @@ func (g *Graphics) postChain(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarget
 			return err
 		}
 		g.timestamps.Begin(cb, "temporal")
-		g.renderTemporal(cb, q, t)
+		err := g.renderTemporal(cb, q, t)
 		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
 	}
 	if motion {
 		if err := t.needMotionBlur(g); err != nil {
 			return err
 		}
 		g.timestamps.Begin(cb, "motionblur")
-		g.renderMotionBlur(cb, q, t)
+		err := g.renderMotionBlur(cb, q, t)
 		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
 	}
 	if !temporal {
 		// Turning it off and on again must not reproject a frame from
@@ -389,8 +480,11 @@ func (g *Graphics) postChain(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarget
 			return err
 		}
 		g.timestamps.Begin(cb, "depthoffield")
-		g.renderDOF(cb, q, t)
+		err := g.renderDOF(cb, q, t)
 		g.timestamps.End(cb)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

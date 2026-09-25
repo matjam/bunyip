@@ -61,8 +61,9 @@ type PostSettings struct {
 	// ReflectionDistance is how far a reflection ray travels in world
 	// units; zero means 30.
 	ReflectionDistance float32
-	// ReflectionSteps is how many samples a reflection ray takes along the
-	// way; zero means 32. More is sharper and slower.
+	// ReflectionSteps is the most samples a reflection ray takes along the
+	// way; zero means 32. A ray that crosses fewer half-resolution pixels
+	// on screen takes one a pixel. More is sharper and slower.
 	ReflectionSteps int
 	// LUT grades the final colours through a lookup table: a strip of n
 	// slices of n by n, n by n squared pixels wide, as NeutralLUT lays it
@@ -203,16 +204,20 @@ type postPass struct {
 	// These three draw into the scene's own colour attachment or a render
 	// texture's, so each is built per output through pipeCache. The rest
 	// write fixed single-sample images of their own.
-	composite    *pipeCache // the screen, or a render texture's format and samples
-	oit          *pipeCache // resolves the order-independent transparency targets
-	reflect      *pipeCache // screen-space reflections, see ssr.go
+	composite    *pipeCache       // the screen, or a render texture's format and samples
+	oit          *pipeCache       // resolves the order-independent transparency targets
+	reflectBlend *pipeCache       // blends the reflection trace in the scene pass, see ssr.go
+	reflect      *render.Pipeline // the half-size reflection trace
+	reflectApply *render.Pipeline // the trace applied into a new scene image
+	depthHalf    *render.Pipeline // the half-size depth every depth-reading effect shares
 	bright       *render.Pipeline
 	blur         *render.Pipeline
 	fxaa         *render.Pipeline
 	ssao         *render.Pipeline
 	aoBlur       *render.Pipeline
 	taa          *render.Pipeline
-	dof          *render.Pipeline
+	dof          *render.Pipeline // the half-size gather
+	dofCombine   *render.Pipeline // the full-size mix with the sharp image
 	motionBlur   *render.Pipeline
 	godRays      *render.Pipeline
 	velocity     *render.Pipeline
@@ -237,10 +242,18 @@ type postPass struct {
 // bloom ping-pong at half size, and the LDR image FXAA reads. Only the
 // HDR target is ever multisampled; it resolves into its own colour and
 // depth images, which is what every later pass reads.
+//
+// The scene moves between full-size images as the frame goes on: the
+// scene pass resolves into hdr's colour, and every later pass that
+// rewrites the whole picture (the reflections, the temporal resolve,
+// motion blur, depth of field) reads the image cur names and writes
+// another, which becomes cur. Nothing is copied back, so the composite
+// and bloom read whichever image cur names when they run.
 type sceneTargets struct {
 	extent    vk.VkExtent2D
 	samples   vk.VkSampleCountFlagBits // the HDR pass's sample count, one for none
 	hdr       *render.Target
+	hdrFlat   render.Target // hdr's single-sample colour alone, for the passes after the scene's
 	bloomA    *render.Target
 	bloomB    *render.Target
 	ldr       *render.Target
@@ -250,52 +263,137 @@ type sceneTargets struct {
 	accum     *render.Target // weighted translucent colour, made on first use
 	reveal    *render.Target // what those fragments leave showing
 	oitSet    vk.VkDescriptorSet
-	hdrSet    vk.VkDescriptorSet
 	depthSet  vk.VkDescriptorSet
 	bloomASet vk.VkDescriptorSet
 	bloomBSet vk.VkDescriptorSet
 	ldrSet    vk.VkDescriptorSet
 	aoASet    vk.VkDescriptorSet
+	// cur is the image holding the scene so far this frame.
+	cur sceneImage
 	// The optional images, made when a setting first asks for them and
 	// kept until the target set is rebuilt. vel holds this frame's motion
 	// vectors, velPass pairs it with the scene depth so the pass can test
-	// against it, hist is the last resolved frame, pong is the scratch
-	// image every chain pass writes before it is copied back over hdr,
-	// rays is the light shafts at half size and ldr2 the second
-	// swapchain-format image a 2D frame needs to composite and then
-	// anti-alias.
-	vel     *render.Target
-	velPass render.Target
-	hist    *render.Target
-	pong    *render.Target
-	rays    *render.Target
-	ldr2    *render.Target
-	ldr2Set vk.VkDescriptorSet
-	taaSet  vk.VkDescriptorSet // scene, history, velocity, depth
-	mbSet   vk.VkDescriptorSet // scene, velocity, depth
-	dofSet  vk.VkDescriptorSet // scene, depth
-	// finals holds the composite's set for each combination of bloom and
-	// god rays, and finals2D the same for a 2D frame, whose scene image
-	// is ldr. A missing input is bound to black.
-	finals    [4]vk.VkDescriptorSet
+	// against it, hist are the resolved frames the temporal pass
+	// alternates between (histNext is the one this frame writes), pong is
+	// the second full-size scene image, half the nearest scene depth at
+	// half size, refl the reflection trace at half size, dofHalf the
+	// depth of field gather at half size, rays the light shafts at half
+	// size and ldr2 the second swapchain-format image a 2D frame needs to
+	// composite and then anti-alias.
+	vel      *render.Target
+	velPass  render.Target
+	hist     [2]*render.Target
+	histNext int
+	pong     *render.Target
+	half     *render.Target
+	halfSet  vk.VkDescriptorSet
+	refl     *render.Target
+	reflSet  vk.VkDescriptorSet // the trace alone, for blending it
+	traceSet vk.VkDescriptorSet // the scene and the half-size depth, for tracing
+	applySet vk.VkDescriptorSet // the scene, the trace and both depths, for applying it
+	dofHalf  *render.Target
+	rays     *render.Target
+	ldr2     *render.Target
+	ldr2Set  vk.VkDescriptorSet
+	// sets holds the descriptor sets that name a scene image, made the
+	// first time a pass reads that image, and finals2D the composite's
+	// set for a 2D frame, whose scene image is ldr, with and without
+	// bloom. A missing input is bound to black.
+	sets      map[setKey]pooledSet
 	finals2D  [2]vk.VkDescriptorSet
-	histValid bool // the history image holds a resolved frame
-	// reflectSet is the screen-space reflection pass's input: the copy of
-	// the opaque scene, the scene depth, and the copy again in the third
-	// slot the triple layout wants.
-	reflectSet vk.VkDescriptorSet
+	histValid bool // the history image the temporal pass reads holds a resolved frame
 }
 
-// index into sceneTargets.finals.
-func finalIndex(bloom, rays bool) int {
-	i := 0
-	if bloom {
-		i |= 1
+// sceneImage names one of the full-size images the scene moves between.
+type sceneImage uint8
+
+const (
+	imgHDR   sceneImage = iota // hdr's colour, where the scene pass resolves
+	imgPong                    // pong's colour
+	imgHist0                   // the temporal pass's two outputs, which it
+	imgHist1                   // alternates between from frame to frame
+)
+
+// setKind is which pass's layout a cached descriptor set is for.
+type setKind uint8
+
+const (
+	setScene      setKind = iota // the image alone, for bloom
+	setFinal                     // the composite: image, bloom, occlusion, shafts
+	setTemporal                  // image, history, velocity, depth
+	setMotion                    // image, velocity, depth
+	setDOF                       // image, half-size depth
+	setDOFCombine                // image, gather, depth, half-size depth
+)
+
+// setKey names a cached set: the layout, the scene image it reads, and
+// two choices of the layout's other inputs (bloom and shafts for the
+// composite, which history image for the temporal pass).
+type setKey struct {
+	kind setKind
+	img  sceneImage
+	a, b bool
+}
+
+// pooledSet is a cached set and the pool it goes back to.
+type pooledSet struct {
+	set  vk.VkDescriptorSet
+	pool *render.DescriptorSets
+}
+
+// target is the single-sample colour target over a scene image.
+func (t *sceneTargets) target(i sceneImage) *render.Target {
+	switch i {
+	case imgHDR:
+		return &t.hdrFlat
+	case imgPong:
+		return t.pong
+	default:
+		return t.hist[i-imgHist0]
 	}
-	if rays {
-		i |= 2
+}
+
+// image is a scene image's colour.
+func (t *sceneTargets) image(i sceneImage) *render.Image { return t.target(i).Color }
+
+// sceneImage is the image holding the finished scene, once renderScene
+// and the post chain have run.
+func (t *sceneTargets) sceneImage() *render.Image { return t.image(t.cur) }
+
+// spare is a full-size image a pass can write the scene into: whichever
+// of hdr and pong does not hold it. The history images are never spare,
+// because the next frame reads the one this frame wrote. It needs pong.
+func (t *sceneTargets) spare() sceneImage {
+	if t.cur == imgHDR {
+		return imgPong
 	}
-	return i
+	return imgHDR
+}
+
+// cachedSet returns the set under k, or zero when it has not been made.
+func (t *sceneTargets) cachedSet(k setKey) vk.VkDescriptorSet { return t.sets[k].set }
+
+// makeSet allocates a set from pool with the bindings and caches it under k.
+func (t *sceneTargets) makeSet(k setKey, pool *render.DescriptorSets, bind []render.SamplerBinding) (vk.VkDescriptorSet, error) {
+	set, err := pool.AllocateMany(bind)
+	if err != nil {
+		return 0, err
+	}
+	if t.sets == nil {
+		t.sets = map[setKey]pooledSet{}
+	}
+	t.sets[k] = pooledSet{set: set, pool: pool}
+	return set, nil
+}
+
+// sceneSet is the single-sampler set over the image holding the scene,
+// which bloom's bright pass reads.
+func (t *sceneTargets) sceneSet(g *Graphics) (vk.VkDescriptorSet, error) {
+	k := setKey{kind: setScene, img: t.cur}
+	if set := t.cachedSet(k); set != 0 {
+		return set, nil
+	}
+	return t.makeSet(k, g.post.singles, []render.SamplerBinding{{View: t.image(t.cur).View, Sampler: g.linear}})
 }
 
 type postPush struct {
@@ -320,6 +418,11 @@ type ssaoPush struct {
 }
 
 const aoFormat = vk.VK_FORMAT_R8_UNORM
+
+// halfDepthFormat holds the half-size depth: the stored depth value
+// itself, so every reader reconstructs positions the way it did from the
+// depth-stencil image.
+const halfDepthFormat = vk.VK_FORMAT_R32_SFLOAT
 
 // revealFormat holds the product of one minus each translucent
 // fragment's alpha. It is a half float rather than a byte because the
@@ -420,7 +523,19 @@ func (g *Graphics) initPost() error {
 	triple := []vk.VkDescriptorSetLayout{p.triples.Layout}
 	if p.dof, err = dev.NewPipeline(render.PipelineDesc{
 		Vert: shaders.PostVert, Frag: shaders.DOFFrag, ColorFormat: hdrFormat,
-		PushConstantSize: depth, SetLayouts: triple,
+		PushConstantSize: depth, SetLayouts: []vk.VkDescriptorSetLayout{p.pairs.Layout},
+	}); err != nil {
+		return err
+	}
+	if p.dofCombine, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.PostVert, Frag: shaders.DOFCombineFrag, ColorFormat: hdrFormat,
+		PushConstantSize: depth, SetLayouts: []vk.VkDescriptorSetLayout{p.quads.Layout},
+	}); err != nil {
+		return err
+	}
+	if p.depthHalf, err = dev.NewPipeline(render.PipelineDesc{
+		Vert: shaders.PostVert, Frag: shaders.DepthHalfFrag, ColorFormat: halfDepthFormat,
+		PushConstantSize: push, SetLayouts: single,
 	}); err != nil {
 		return err
 	}
@@ -470,6 +585,7 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D, samples vk.VkSampleCoun
 	}); err != nil {
 		return fail(err)
 	}
+	t.hdrFlat = render.Target{Color: t.hdr.Color, Extent: extent}
 	half := vk.VkExtent2D{Width: max(extent.Width/2, 1), Height: max(extent.Height/2, 1)}
 	if t.bloomA, err = dev.NewTarget(half, hdrFormat, vk.VK_FORMAT_UNDEFINED); err != nil {
 		return fail(err)
@@ -487,7 +603,8 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D, samples vk.VkSampleCoun
 		return fail(err)
 	}
 	// Transmissive materials read the opaque scene through this copy; six
-	// levels give enough blur for the roughest glass.
+	// levels give enough blur for the roughest glass. It is only filled
+	// on a frame that draws something transmissive.
 	sceneUsage := vk.VkImageUsageFlags(vk.VK_IMAGE_USAGE_SAMPLED_BIT | vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
 	if t.scene, err = dev.NewImageMips(extent, hdrFormat, sceneUsage, vk.VK_IMAGE_ASPECT_COLOR_BIT, min(render.MipLevels(extent), 6)); err != nil {
 		return fail(err)
@@ -499,9 +616,6 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D, samples vk.VkSampleCoun
 		render.ClearColorForSampling(cb, t.aoB.Color)
 		render.ClearColorForSampling(cb, t.scene)
 	}); err != nil {
-		return fail(err)
-	}
-	if t.hdrSet, err = p.singles.Allocate(t.hdr.Color.View, g.linear); err != nil {
 		return fail(err)
 	}
 	if t.depthSet, err = p.singles.Allocate(t.hdr.Depth.View, g.nearest); err != nil {
@@ -525,9 +639,7 @@ func (g *Graphics) newSceneTargets(extent vk.VkExtent2D, samples vk.VkSampleCoun
 	if _, err := t.finalSet(g, false, false); err != nil {
 		return fail(err)
 	}
-	if t.reflectSet, err = p.triples.AllocateMany([]render.SamplerBinding{
-		{View: t.scene.View, Sampler: g.linear}, {View: t.hdr.Depth.View, Sampler: g.nearest}, {View: t.scene.View, Sampler: g.linear},
-	}); err != nil {
+	if _, err := t.sceneSet(g); err != nil {
 		return fail(err)
 	}
 	return t, nil
@@ -566,7 +678,7 @@ func (g *Graphics) orderIndependent(t *sceneTargets) error {
 
 func (t *sceneTargets) destroy(g *Graphics) {
 	p := &g.post
-	for _, set := range []vk.VkDescriptorSet{t.hdrSet, t.depthSet, t.bloomASet, t.bloomBSet, t.ldrSet, t.aoASet, t.ldr2Set} {
+	for _, set := range []vk.VkDescriptorSet{t.depthSet, t.bloomASet, t.bloomBSet, t.ldrSet, t.aoASet, t.ldr2Set, t.halfSet, t.reflSet} {
 		if set != 0 {
 			p.singles.Free(set)
 		}
@@ -574,18 +686,19 @@ func (t *sceneTargets) destroy(g *Graphics) {
 	if t.oitSet != 0 {
 		p.pairs.Free(t.oitSet)
 	}
-	for _, set := range []vk.VkDescriptorSet{t.mbSet, t.dofSet, t.reflectSet} {
-		if set != 0 {
-			p.triples.Free(set)
-		}
+	if t.traceSet != 0 {
+		p.triples.Free(t.traceSet)
 	}
-	for _, set := range append(append([]vk.VkDescriptorSet{t.taaSet}, t.finals[:]...), t.finals2D[:]...) {
+	for _, set := range append([]vk.VkDescriptorSet{t.applySet}, t.finals2D[:]...) {
 		if set != 0 {
 			p.quads.Free(set)
 		}
 	}
+	for _, s := range t.sets {
+		s.pool.Free(s.set)
+	}
 	for _, tg := range []*render.Target{t.hdr, t.bloomA, t.bloomB, t.ldr, t.aoA, t.aoB,
-		t.accum, t.reveal, t.vel, t.hist, t.pong, t.rays, t.ldr2} {
+		t.accum, t.reveal, t.vel, t.hist[0], t.hist[1], t.pong, t.half, t.refl, t.dofHalf, t.rays, t.ldr2} {
 		if tg != nil {
 			tg.Destroy()
 		}
@@ -623,8 +736,8 @@ func (g *Graphics) renderBloom(cb vk.VkCommandBuffer, t *sceneTargets, src vk.Vk
 	render.EndTargetPass(cb, t.bloomA)
 }
 
-// renderAO computes half-resolution ambient occlusion from the scene depth
-// and blurs it into aoB.
+// renderAO computes half-resolution ambient occlusion from the
+// half-resolution depth renderScene built and blurs it into aoB.
 func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) {
 	p := &g.post
 	// The jittered projection, because the depth buffer was rasterised
@@ -638,7 +751,7 @@ func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets
 	p.ao.proj[15] = radius // see ssao.frag
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.aoA})
 	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Handle)
-	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Layout, 0, 1, &t.depthSet, 0, nil)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Layout, 0, 1, &t.halfSet, 0, nil)
 	vk.CmdPushConstants(cb, p.ssao.Layout, meshStages, 0, uint32(unsafe.Sizeof(p.ao)), unsafe.Pointer(&p.ao))
 	vk.CmdDraw(cb, 3, 1, 0, 0)
 	render.EndTargetPass(cb, t.aoA)
@@ -708,10 +821,10 @@ func (p *postPass) destroy(g *Graphics) {
 		p.main.destroy(g)
 	}
 	p.composite.destroy()
-	p.reflect.destroy()
+	p.reflectBlend.destroy()
 	p.oit.destroy()
 	for _, pipe := range []*render.Pipeline{p.bright, p.blur, p.fxaa, p.ssao, p.aoBlur,
-		p.taa, p.dof, p.motionBlur, p.godRays, p.velocity, p.velocitySkin} {
+		p.taa, p.dof, p.dofCombine, p.depthHalf, p.reflect, p.reflectApply, p.motionBlur, p.godRays, p.velocity, p.velocitySkin} {
 		if pipe != nil {
 			pipe.Destroy()
 		}

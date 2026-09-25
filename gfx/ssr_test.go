@@ -82,3 +82,79 @@ func TestScreenSpaceReflections(t *testing.T) {
 		}
 	}
 }
+
+// TestScreenSpaceReflectionPaths renders the mirror floor and the green
+// box through each way the reflections reach the scene: applied after an
+// uninterrupted scene pass, blended into the pass that resumes it for a
+// translucent draw, and both again multisampled, with decals and
+// particles drawn over the result. Every path must put the box's
+// reflection under it, and the validation layers must stay quiet.
+func TestScreenSpaceReflectionPaths(t *testing.T) {
+	g := newHeadless(t, 128, 128)
+	cv, ci := CubeMesh()
+	cube, err := g.NewMesh(cv, ci)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cube.Destroy()
+	pv, pi := PlaneMesh(1)
+	plane, err := g.NewMesh(pv, pi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plane.Destroy()
+	tex, err := g.NewTexture(image.NewRGBA(image.Rect(0, 0, 4, 4)), TextureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tex.Destroy()
+	scene := func(glass bool) func() {
+		return func() {
+			g.SetCamera(Camera{Position: lin.V3(0, 1.6, 5), Target: lin.V3(0, 0.6, 0)})
+			g.SetLight(Light{Direction: lin.V3(0, -1, 0), Color: Color{}, Ambient: Color{}, Sky: Sky{Vacuum: 1}})
+			g.DrawMesh(plane, Material{BaseColor: White, Metallic: 1, Roughness: 0.05}, lin.Scale(lin.V3(20, 1, 20)))
+			g.DrawMesh(cube, Material{BaseColor: Color{0, 1, 0, 1}, Unlit: true},
+				lin.Translate(lin.V3(0, 1.2, 0)).Mul(lin.Scale(lin.V3(0.6, 0.6, 0.6))))
+			if glass {
+				// A faint blended box off to one side, away from the
+				// reflection, so the pass has translucent draws after it.
+				g.DrawMesh(cube, Material{BaseColor: Color{1, 0, 0, 0.2}, Blend: true, Unlit: true},
+					lin.Translate(lin.V3(-2.5, 0.5, 0)).Mul(lin.Scale(lin.V3(0.3, 0.3, 0.3))))
+			}
+			// A transparent decal and a transparent particle exercise the
+			// pass over the finished scene without changing it.
+			g.DrawDecal(tex, lin.Translate(lin.V3(2.5, 0, 0)), White)
+			g.DrawParticles3D(nil, []ParticleQuad{{Pos: lin.V3(2.5, 0.5, 0), Size: lin.V2(0.1, 0.1)}}, Particles3D{})
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		glass   bool
+		samples int
+	}{
+		{"applied", false, 1},
+		{"blended", true, 1},
+		{"applied multisampled", false, 4},
+		{"blended multisampled", true, 4},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.samples > g.MaxSamples() {
+				t.Skipf("the device takes at most %d samples", g.MaxSamples())
+			}
+			base := PostSettings{Exposure: 1, Saturation: 1, Contrast: 1, NoAntiAlias: true, Samples: c.samples}
+			on := base
+			on.Reflections = 1
+			renderPost(t, g, base, scene(c.glass)) // the sample count takes effect on the next frame
+			off := renderPost(t, g, base, scene(c.glass))
+			renderPost(t, g, on, scene(c.glass))
+			lit := renderPost(t, g, on, scene(c.glass))
+			best := 0
+			for y := 64; y < 128; y++ {
+				best = max(best, int(lit.RGBAAt(64, y).G)-int(off.RGBAAt(64, y).G))
+			}
+			if best < 20 {
+				t.Errorf("the mirror floor gained at most %d green, want the box reflected in it", best)
+			}
+		})
+	}
+}

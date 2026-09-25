@@ -1,7 +1,8 @@
 // God rays: the sky is the light source, so anything the depth buffer
 // says is geometry blocks it. Each pixel walks towards the sun's place on
 // screen, gathering the unoccluded steps and fading them as it goes, and
-// what comes out is the shafts between an occluder's edges.
+// what comes out is the shafts between an occluder's edges. The pass runs
+// at half resolution and reads the half-resolution depth.
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthTexSampler: sampler;
 
