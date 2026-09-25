@@ -85,19 +85,24 @@ func BenchmarkDrawTextBlock_880(b *testing.B) {
 	}
 }
 
-// BenchmarkLayoutBlock_880 lays the paragraph out every iteration,
-// skipping the glyph cache, so that the cost of the shaping, wrapping,
-// alignment and rune-index work is visible on its own.
-func BenchmarkLayoutBlock_880(b *testing.B) {
+// BenchmarkLayout_880 lays the paragraph out from cold every iteration
+// through Font.Layout, the path drawing and measuring use, so that the
+// cost of shaping, wrapping and alignment is visible on its own.
+func BenchmarkLayout_880(b *testing.B) {
 	g := benchHeadless(b, 640, 480)
 	g.SetView(640, 480)
 	f := benchFont(b, g, 16)
 	opts := TextOptions{Width: 560}
-	f.layoutBlock(benchParagraph, opts)
+	if _, err := f.Layout(benchParagraph, opts); err != nil {
+		b.Fatal(err)
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		f.layoutBlock(benchParagraph, opts)
+		f.dropLayouts()
+		if _, err := f.Layout(benchParagraph, opts); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

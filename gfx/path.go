@@ -820,32 +820,35 @@ func (s *stroker) join(prev, cur, next lin.Vec2, hw float32) {
 	}
 }
 
+// shapePath returns the emptied path the shape helpers build their shape
+// in, so drawing a circle or a line every frame allocates nothing once
+// the path has grown to fit.
+func (g *Graphics) shapePath() *Path {
+	g.pathShape.Reset()
+	return &g.pathShape
+}
+
 // FillCircle fills a circle.
 func (g *Graphics) FillCircle(cx, cy, r float32, c Color) {
-	var p Path
-	g.FillPath(p.Circle(cx, cy, r), c, FillOptions{})
+	g.FillPath(g.shapePath().Circle(cx, cy, r), c, FillOptions{})
 }
 
 // StrokeCircle outlines a circle with a line width.
 func (g *Graphics) StrokeCircle(cx, cy, r, width float32, c Color) {
-	var p Path
-	g.StrokePath(p.Circle(cx, cy, r), c, StrokeOptions{Width: width})
+	g.StrokePath(g.shapePath().Circle(cx, cy, r), c, StrokeOptions{Width: width})
 }
 
 // StrokeRect outlines a rectangle with a line width.
 func (g *Graphics) StrokeRect(x, y, w, h, width float32, c Color) {
-	var p Path
-	g.StrokePath(p.Rect(x, y, w, h), c, StrokeOptions{Width: width})
+	g.StrokePath(g.shapePath().Rect(x, y, w, h), c, StrokeOptions{Width: width})
 }
 
 // StrokeLine draws a line segment with a width and butt caps.
 func (g *Graphics) StrokeLine(x0, y0, x1, y1, width float32, c Color) {
-	var p Path
-	g.StrokePath(p.MoveTo(x0, y0).LineTo(x1, y1), c, StrokeOptions{Width: width})
+	g.StrokePath(g.shapePath().MoveTo(x0, y0).LineTo(x1, y1), c, StrokeOptions{Width: width})
 }
 
 // FillPolygon fills a polygon through the points.
 func (g *Graphics) FillPolygon(points []lin.Vec2, c Color) {
-	var p Path
-	g.FillPath(p.Polygon(points...), c, FillOptions{})
+	g.FillPath(g.shapePath().Polygon(points...), c, FillOptions{})
 }

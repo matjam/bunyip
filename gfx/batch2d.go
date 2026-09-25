@@ -44,9 +44,11 @@ type state2D struct {
 	frame       lin.Vec4
 }
 
-// item2D is a submitted run of vertices with its sort keys.
+// item2D is a submitted run of vertices with its sort keys. Its state is
+// an index into the stream's state table, so that the run is small to
+// copy and sort and two runs with the same index compare in one step.
 type item2D struct {
-	state        state2D
+	state        int32
 	first, count int32
 	layer        int32
 	key          float32 // order within the layer; equal keys keep submission order
@@ -75,8 +77,12 @@ type draw2D struct {
 // stream2D collects a queue's 2D vertices for a frame and turns them into
 // draw runs in layer order.
 type stream2D struct {
-	verts   []vertex2D // as submitted
-	items   []item2D
+	verts  []vertex2D // as submitted
+	items  []item2D
+	states []state2D // the states items refer to, in the order first used
+	// last is the state the previous sprite resolved to, reused while the
+	// texture, the filter and the queue's drawing state stay the same.
+	last    stateCache
 	ordered []vertex2D // in draw order, aliasing verts when the order already matches
 	// orderedBuf owns the reordered copy. ordered points at it only when
 	// the items had to be reordered, so a frame that draws in submission
@@ -111,10 +117,10 @@ func (s *stream2D) proj(m lin.Mat4) *lin.Mat4 {
 		// Growing would move earlier entries that items already point to.
 		grown := make([]lin.Mat4, len(s.projs), max(2*cap(s.projs), 8))
 		copy(grown, s.projs)
-		for i := range s.items {
+		for i := range s.states {
 			for j := range s.projs {
-				if s.items[i].state.proj == &s.projs[j] {
-					s.items[i].state.proj = &grown[j]
+				if s.states[i].proj == &s.projs[j] {
+					s.states[i].proj = &grown[j]
 				}
 			}
 		}
@@ -124,12 +130,56 @@ func (s *stream2D) proj(m lin.Mat4) *lin.Mat4 {
 	return &s.projs[len(s.projs)-1]
 }
 
+// stateCache is the state the last sprite of a stream resolved to and
+// what it was resolved from. A sprite with the same texture and filter,
+// drawn while nothing else that feeds the state has changed, reuses it
+// without building, comparing or checking anything again. Everything
+// that changes the queue's drawing state clears it with invalidate.
+type stateCache struct {
+	ok      bool
+	tex     *Texture
+	filter  Filter
+	set     vk.VkDescriptorSet // the texture's own set when the state was made
+	images  uint64             // Graphics.imageVersion when the state was made
+	time    float32            // the shader clock when the state was made
+	chosen  *Shader            // the queue's shader when the state was made, nil for the default
+	shader  *Shader            // the shader the state draws with
+	uniform int32              // the arena offset of its uniforms in the state
+	index   int32              // the state's index in the stream's table
+}
+
+// invalidate forgets the cached state, so the next sprite resolves its
+// state from the queue again.
+func (s *stream2D) invalidate() { s.last.ok = false }
+
+// stateIndex returns the index of a state in the table, adding it unless
+// it equals the state added last.
+func (s *stream2D) stateIndex(st state2D) int32 {
+	if n := len(s.states); n > 0 && s.states[n-1] == st {
+		return int32(n - 1)
+	}
+	s.states = append(s.states, st)
+	return int32(len(s.states) - 1)
+}
+
+// sameState reports whether two state indices describe the same state.
+func (s *stream2D) sameState(a, b int32) bool {
+	return a == b || s.states[a] == s.states[b]
+}
+
 // add appends vertices under a state, merging with the previous item
 // when nothing changed.
 func (s *stream2D) add(st state2D, layer int32, key float32, verts []vertex2D) {
-	seq := s.nextSequence()
 	first := int32(len(s.verts))
 	s.verts = append(s.verts, verts...)
+	s.addRun(s.stateIndex(st), layer, key, first, int32(len(verts)))
+}
+
+// addRun records count vertices already appended at first under the
+// state with index st, merging with the previous item when nothing
+// changed.
+func (s *stream2D) addRun(st, layer int32, key float32, first, count int32) {
+	seq := s.nextSequence()
 	// A run that would merge across an instanced particle batch has to
 	// start afresh instead, or the batch could not be recorded between
 	// the two halves and would draw under both.
@@ -137,18 +187,30 @@ func (s *stream2D) add(st state2D, layer int32, key float32, verts []vertex2D) {
 	s.breakRun = false
 	if n := len(s.items); !breaks && n > 0 {
 		last := &s.items[n-1]
-		if last.geometry == nil && last.state == st && last.layer == layer && last.key == key && last.first+last.count == first {
-			last.count += int32(len(verts))
+		if last.geometry == nil && last.layer == layer && last.key == key && last.first+last.count == first && s.sameState(last.state, st) {
+			last.count += count
 			return
 		}
 	}
-	s.items = append(s.items, item2D{state: st, first: first, count: int32(len(verts)), layer: layer, key: key, breaks: breaks, seq: seq})
+	s.items = append(s.items, item2D{state: st, first: first, count: count, layer: layer, key: key, breaks: breaks, seq: seq})
 	if layer != 0 {
 		s.sorted = false
 	}
 	if key != 0 {
 		s.sorted, s.keyed = false, true
 	}
+}
+
+// quad appends an axis-aligned or rotated quad's two triangles under the
+// state with index st: corners p in drawing order, texture coordinates
+// uv at the same corners and one premultiplied colour.
+func (s *stream2D) quad(st, layer int32, key float32, p, uv *[4]lin.Vec2, c [4]float32) {
+	first := int32(len(s.verts))
+	s.verts = append(s.verts,
+		vertex2D{p[0], uv[0], c}, vertex2D{p[1], uv[1], c}, vertex2D{p[2], uv[2], c},
+		vertex2D{p[0], uv[0], c}, vertex2D{p[2], uv[2], c}, vertex2D{p[3], uv[3], c},
+	)
+	s.addRun(st, layer, key, first, 6)
 }
 
 func (s *stream2D) nextSequence() int32 {
@@ -160,10 +222,11 @@ func (s *stream2D) nextSequence() int32 {
 func (s *stream2D) barrier() {
 	s.group++
 	s.breakRun = true
+	s.last.ok = false // the group is part of the state
 }
 
 func (s *stream2D) addGeometry(st state2D, layer int32, key float32, data *geometry2DData) {
-	s.items = append(s.items, item2D{state: st, first: int32(len(s.verts)), layer: layer, key: key, seq: s.nextSequence(), geometry: data, breaks: s.breakRun})
+	s.items = append(s.items, item2D{state: s.stateIndex(st), first: int32(len(s.verts)), layer: layer, key: key, seq: s.nextSequence(), geometry: data, breaks: s.breakRun})
 	s.breakRun = false
 	if layer != 0 {
 		s.sorted = false
@@ -176,6 +239,8 @@ func (s *stream2D) addGeometry(st state2D, layer int32, key float32, data *geome
 func (s *stream2D) reset() {
 	s.verts = s.verts[:0]
 	s.items = s.items[:0]
+	s.states = s.states[:0]
+	s.last.ok = false
 	s.ordered = nil // drop any alias of verts before verts is appended to again
 	s.orderedBuf = s.orderedBuf[:0]
 	s.draws = s.draws[:0]
@@ -199,7 +264,7 @@ const maxLayerSpread = 1 << 16
 func (s *stream2D) sortItems() {
 	if s.group != 0 {
 		slices.SortStableFunc(s.items, func(x, y item2D) int {
-			if c := cmp.Compare(x.state.group, y.state.group); c != 0 {
+			if c := cmp.Compare(s.states[x.state].group, s.states[y.state].group); c != 0 {
 				return c
 			}
 			if c := cmp.Compare(x.layer, y.layer); c != 0 {
@@ -282,16 +347,21 @@ func (s *stream2D) build() {
 		}
 		at += s.items[i].count
 	}
+	// last is the state index of the newest draw, so a run that continues
+	// it is found by comparing indices before comparing whole states.
+	last := int32(-1)
 	if inOrder && int(at) == len(s.verts) {
 		s.ordered = s.verts
 		for i := range s.items {
 			it := &s.items[i]
 			if it.geometry != nil {
-				s.draws = append(s.draws, draw2D{state: it.state, count: it.geometry.count, layer: it.layer, seq: it.seq, geometry: it.geometry})
-			} else if n := len(s.draws); n > 0 && s.draws[n-1].geometry == nil && !it.breaks && s.draws[n-1].state == it.state {
+				s.draws = append(s.draws, draw2D{state: s.states[it.state], count: it.geometry.count, layer: it.layer, seq: it.seq, geometry: it.geometry})
+				last = -1
+			} else if n := len(s.draws); n > 0 && last >= 0 && !it.breaks && s.sameState(last, it.state) {
 				s.draws[n-1].count += uint32(it.count)
 			} else {
-				s.draws = append(s.draws, draw2D{state: it.state, first: uint32(it.first), count: uint32(it.count), layer: it.layer, seq: it.seq})
+				s.draws = append(s.draws, draw2D{state: s.states[it.state], first: uint32(it.first), count: uint32(it.count), layer: it.layer, seq: it.seq})
+				last = it.state
 			}
 		}
 		return
@@ -300,13 +370,15 @@ func (s *stream2D) build() {
 	for i := range s.items {
 		it := &s.items[i]
 		if it.geometry != nil {
-			s.draws = append(s.draws, draw2D{state: it.state, count: it.geometry.count, layer: it.layer, seq: it.seq, geometry: it.geometry})
+			s.draws = append(s.draws, draw2D{state: s.states[it.state], count: it.geometry.count, layer: it.layer, seq: it.seq, geometry: it.geometry})
+			last = -1
 			continue
 		}
-		if n := len(s.draws); n > 0 && s.draws[n-1].geometry == nil && !it.breaks && s.draws[n-1].state == it.state {
+		if n := len(s.draws); n > 0 && last >= 0 && !it.breaks && s.sameState(last, it.state) {
 			s.draws[n-1].count += uint32(it.count)
 		} else {
-			s.draws = append(s.draws, draw2D{state: it.state, first: uint32(len(s.orderedBuf)), count: uint32(it.count), layer: it.layer, seq: it.seq})
+			s.draws = append(s.draws, draw2D{state: s.states[it.state], first: uint32(len(s.orderedBuf)), count: uint32(it.count), layer: it.layer, seq: it.seq})
+			last = it.state
 		}
 		s.orderedBuf = append(s.orderedBuf, s.verts[it.first:it.first+it.count]...)
 	}
@@ -360,18 +432,42 @@ func (g *Graphics) emit(tex *Texture, verts []vertex2D) { g.emitFiltered(tex, ve
 
 // emitFiltered is emit with a per-draw filtering override.
 func (g *Graphics) emitFiltered(tex *Texture, verts []vertex2D, filter Filter) {
-	g.requireTextureOwner(tex)
-	g.requireShaderOwner(g.cur.shader)
 	if len(verts) == 0 {
+		g.requireTextureOwner(tex)
+		g.requireShaderOwner(g.cur.shader)
 		return
 	}
+	st := g.spriteState(tex, filter)
 	q := g.cur
 	if !q.xform.IsIdentity() {
 		for i := range verts {
 			verts[i].pos = q.xform.Apply(verts[i].pos)
 		}
 	}
-	q.stream.add(g.state2D(tex, filter), q.layer, q.sortKey, verts)
+	first := int32(len(q.stream.verts))
+	q.stream.verts = append(q.stream.verts, verts...)
+	q.stream.addRun(st, q.layer, q.sortKey, first, int32(len(verts)))
+}
+
+// spriteState returns the stream's index for the state a draw with this
+// texture and filter takes. While the texture, the filter and the queue's
+// drawing state stay the same it returns the previous draw's index
+// without building the state or checking ownership again; otherwise it
+// checks the texture and the shader belong to this Graphics and builds
+// the state.
+func (g *Graphics) spriteState(tex *Texture, filter Filter) int32 {
+	q := g.cur
+	if tex == nil {
+		tex = g.white
+	}
+	c := &q.stream.last
+	if c.ok && c.tex == tex && c.filter == filter && c.chosen == q.shader && c.set == tex.set && c.images == g.imageVersion && c.time == g.time && c.shader.placedAt(c.uniform) {
+		return c.index
+	}
+	st := g.state2D(tex, filter)
+	index := q.stream.stateIndex(st)
+	*c = stateCache{ok: true, tex: tex, filter: filter, chosen: q.shader, set: tex.set, images: g.imageVersion, time: g.time, shader: st.shader, uniform: st.uniform, index: index}
+	return index
 }
 
 // state2D snapshots shared drawing state for streamed and persistent geometry.

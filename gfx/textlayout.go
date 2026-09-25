@@ -1,9 +1,10 @@
 package gfx
 
 import (
-	"encoding/json"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"math"
 	"slices"
 	"strings"
@@ -85,6 +86,16 @@ type TextLayout struct {
 	fonts             []*Font
 	bounds, inkBounds lin.Rect
 	rotation          lin.Affine
+	// measure is the size Font.Measure reports: the widest line's advance
+	// by the line height times the spacing for every line, before
+	// rotation, swapped for vertical text.
+	measure lin.Vec2
+	// quads bounds every quad drawing queues, atlas padding included, in
+	// layout coordinates after rotation, for culling a whole layout.
+	quads    lin.Rect
+	hasQuads bool
+	outlined bool      // some glyph has an outline to draw
+	runs     []RichRun // the styled runs of a rich layout, to tell hash collisions apart
 }
 
 // Text returns the original text (RichText.Plain for a styled layout).
@@ -148,30 +159,105 @@ func (l *TextLayout) HitTest(point lin.Vec2) TextCaret {
 	return l.carets[best].position
 }
 
+// textLayoutKey identifies a cached layout. A plain layout is keyed by
+// its text; a rich one by a hash of its runs, with the runs kept in the
+// layout to tell two runs with the same hash apart.
 type textLayoutKey struct {
-	text, rich string
-	fonts      RichFonts
-	options    TextOptions
+	text    string
+	rich    uint64 // zero for plain text
+	fonts   RichFonts
+	options TextOptions
 }
 
 // Layout shapes and wraps text once for drawing, measurement and caret
 // queries. Indices always address the original UTF-8 string, including
 // paragraphs and wrapping with generated hyphens. Invalid options, exhausted
 // atlas capacity and GPU allocation/upload failures are returned to the caller.
+// A layout of the same text and options made recently is returned from
+// the font's cache without laying the text out again or allocating.
 func (f *Font) Layout(text string, opts TextOptions) (*TextLayout, error) {
-	return (RichFonts{Regular: f}).buildLayout(RichText{Runs: []RichRun{{Text: text}}}, opts, "")
+	if f != nil && !f.destroyed {
+		if opts == (TextOptions{}) {
+			// Labels drawn and measured with no options, most of an
+			// interface, are cached by their text alone.
+			if l, ok := f.plain.get(text, f.frame()); ok {
+				return l, nil
+			}
+		} else {
+			key := textLayoutKey{text: text, fonts: RichFonts{Regular: f}, options: opts.resolved()}
+			if l, ok := f.layouts.get(key, f.frame()); ok {
+				return l, nil
+			}
+		}
+	}
+	return (RichFonts{Regular: f}).buildLayout(RichText{Runs: []RichRun{{Text: text}}}, opts, 0)
+}
+
+// dropLayouts empties the font's layout caches.
+func (f *Font) dropLayouts() {
+	f.plain.drop()
+	f.layouts.drop()
 }
 
 // Layout constructs the same reusable result as Font.Layout, preserving
 // styles and links. Text indices address RichText.Plain, never markup tags.
 // Regular is required; missing style faces fall back to it. Fonts must be
 // live and belong to the same Graphics. The result borrows their atlases.
+// A layout of the same runs and options made recently is returned from the
+// regular font's cache; finding it hashes the runs, so keep the returned
+// layout and draw it with DrawTextLayout to skip even that.
 func (rf RichFonts) Layout(text RichText, opts TextOptions) (*TextLayout, error) {
-	key, err := json.Marshal(text.Runs)
-	if err != nil {
-		return nil, fmt.Errorf("gfx: text styles: %w", err)
+	h := richHash(text.Runs)
+	if f := rf.Regular; f != nil && !f.destroyed {
+		key := textLayoutKey{rich: h, fonts: rf, options: opts.resolved()}
+		if l, ok := f.layouts.get(key, f.frame()); ok && slices.Equal(l.runs, text.Runs) && fontsLive(l.fonts) {
+			return l, nil
+		}
 	}
-	return rf.buildLayout(text, opts, string(key))
+	return rf.buildLayout(text, opts, h)
+}
+
+// fontsLive reports whether none of the fonts has been destroyed.
+func fontsLive(fonts []*Font) bool {
+	for _, f := range fonts {
+		if f.destroyed {
+			return false
+		}
+	}
+	return true
+}
+
+// richSeed seeds the hash rich layouts are cached under.
+var richSeed = maphash.MakeSeed()
+
+// richHash hashes styled runs, text and style alike, for the layout
+// cache. It is never zero, which marks a plain layout's key.
+func richHash(runs []RichRun) uint64 {
+	var h maphash.Hash
+	h.SetSeed(richSeed)
+	var b [4]byte
+	word := func(v uint32) {
+		binary.LittleEndian.PutUint32(b[:], v)
+		h.Write(b[:])
+	}
+	for i := range runs {
+		r := &runs[i]
+		word(uint32(len(r.Text)))
+		h.WriteString(r.Text)
+		word(uint32(len(r.Link)))
+		h.WriteString(r.Link)
+		for _, v := range [...]float32{r.Color.R, r.Color.G, r.Color.B, r.Color.A, r.OutlineWidth, r.OutlineColor.R, r.OutlineColor.G, r.OutlineColor.B, r.OutlineColor.A} {
+			word(math.Float32bits(v))
+		}
+		var flags uint32
+		for bit, on := range [...]bool{r.Bold, r.Italic, r.Underline, r.Strikethrough} {
+			if on {
+				flags |= 1 << bit
+			}
+		}
+		word(flags)
+	}
+	return h.Sum64() | 1
 }
 
 func validateTextOptions(o TextOptions) error {
@@ -192,7 +278,9 @@ type layoutSpan struct {
 	style      RichRun
 }
 
-func (rf RichFonts) buildLayout(text RichText, opts TextOptions, richKey string) (*TextLayout, error) {
+// buildLayout lays text out and stores the result in the regular font's
+// cache. rich is the hash of the runs for styled text, zero for plain.
+func (rf RichFonts) buildLayout(text RichText, opts TextOptions, rich uint64) (*TextLayout, error) {
 	if err := validateTextOptions(opts); err != nil {
 		return nil, err
 	}
@@ -241,11 +329,12 @@ func (rf RichFonts) buildLayout(text RichText, opts TextOptions, richKey string)
 	if err != nil {
 		return nil, err
 	}
-	key := textLayoutKey{text: plain, rich: richKey, fonts: rf, options: opts}
-	if l, ok := rf.Regular.layouts.get(key); ok {
-		return l, nil
-	}
+	key := textLayoutKey{text: plain, fonts: rf, options: opts}
 	l := &TextLayout{text: plain, options: opts, fonts: fonts, rotation: lin.Rotate2(opts.Angle)}
+	if rich != 0 {
+		key = textLayoutKey{rich: rich, fonts: rf, options: opts}
+		l.runs = slices.Clone(text.Runs)
+	}
 	for _, f := range fonts {
 		f.glyphErr = nil
 	}
@@ -266,11 +355,16 @@ func (rf RichFonts) buildLayout(text RichText, opts TextOptions, richKey string)
 			}
 		}
 	}
-	rf.Regular.layouts.limit = textBlockGlyphs
-	rf.Regular.layouts.weigh = func(l *TextLayout) int { return len(l.glyphs) + len(l.carets) + 1 }
-	rf.Regular.layouts.put(key, l)
+	if rich == 0 && rf == (RichFonts{Regular: rf.Regular}) && opts == (TextOptions{}) {
+		rf.Regular.plain.put(plain, l, rf.Regular.frame())
+	} else {
+		rf.Regular.layouts.put(key, l, rf.Regular.frame())
+	}
 	return l, nil
 }
+
+// weighLayout is the room a layout takes in the cache.
+func weighLayout(l *TextLayout) int { return len(l.glyphs) + len(l.carets) + 1 }
 
 func validateTextArithmetic(regular *Font, fonts []*Font, spans []layoutSpan, o TextOptions, text string) (float32, error) {
 	fail := func() (float32, error) {
@@ -434,8 +528,10 @@ func (b *layoutBuilder) paragraph(text string, start int) layoutParagraph {
 	if opts.Hyphenate != nil && opts.Width > 0 {
 		width = max(width-b.regular.hyphenAdvance()*b.regular.sizeScale(opts.Size), 1/b.unit)
 	}
-	var wrapper shaping.LineWrapper
-	wrapped, _ := wrapper.WrapParagraphF(shaping.WrapConfig{Direction: input.Direction, DisableTrailingWhitespaceTrim: true}, fixed.Int26_6(min(width*b.unit*64, 1<<30)), p.runes, shaping.NewSliceIterator(outputs))
+	// The font's wrapper keeps its working storage between paragraphs. It
+	// reuses that storage for the lines it returns, so each line is
+	// copied out below before the next paragraph is wrapped.
+	wrapped, _ := b.regular.wrapper.WrapParagraphF(shaping.WrapConfig{Direction: input.Direction, DisableTrailingWhitespaceTrim: true}, fixed.Int26_6(min(width*b.unit*64, 1<<30)), p.runes, shaping.NewSliceIterator(outputs))
 	for _, line := range wrapped {
 		line = copyOutputs(line)
 		if opts.Width > 0 {
@@ -467,6 +563,18 @@ func (b *layoutBuilder) paragraph(text string, start int) layoutParagraph {
 	return p
 }
 
+// spanRect returns r with any negative width or height turned around, so
+// it spans the same points with a positive size.
+func spanRect(r lin.Rect) lin.Rect {
+	if r.W < 0 {
+		r.X, r.W = r.X+r.W, -r.W
+	}
+	if r.H < 0 {
+		r.Y, r.H = r.Y+r.H, -r.H
+	}
+	return r
+}
+
 func unionTextRect(current lin.Rect, has *bool, next lin.Rect) lin.Rect {
 	if !*has {
 		*has = true
@@ -484,13 +592,27 @@ func (b *layoutBuilder) build() error {
 		start += len(text) + 1
 	}
 	width := b.layout.options.Width
+	widest, lines := float32(0), 0
 	for _, p := range paragraphs {
 		for _, line := range p.lines {
-			width = max(width, b.lineAdvance(p, line))
+			advance := b.lineAdvance(p, line)
+			width = max(width, advance)
+			widest = max(widest, advance)
 		}
+		lines += len(p.lines)
 	}
 	if b.layout.options.Width > 0 {
 		width = b.layout.options.Width
+	}
+	o := b.layout.options
+	spacing := o.LineSpacing
+	if spacing == 0 {
+		spacing = 1
+	}
+	if extent := float32(lines) * b.regular.LineHeight * b.regular.sizeScale(o.Size) * spacing; o.Direction == DirectionTTB {
+		b.layout.measure = lin.V2(extent, widest)
+	} else {
+		b.layout.measure = lin.V2(widest, extent)
 	}
 	top := float32(0)
 	for _, p := range paragraphs {
@@ -504,6 +626,9 @@ func (b *layoutBuilder) build() error {
 	l.bounds = l.rotation.TransformRect(l.bounds)
 	if b.inkSet {
 		l.inkBounds = l.rotation.TransformRect(l.inkBounds)
+	}
+	if l.hasQuads {
+		l.quads = l.rotation.TransformRect(l.quads)
 	}
 	for i := range l.lines {
 		l.lines[i].Bounds = l.rotation.TransformRect(l.lines[i].Bounds)
@@ -671,8 +796,13 @@ func (b *layoutBuilder) appendLine(p layoutParagraph, line shaping.Line, last bo
 						item.outline = outlined
 						item.outlinePos = pos.Sub(gl.bearing.Mul(k)).Add(outlined.image.bearing.Mul(k))
 						item.outlineSize = outlined.image.size.Mul(k)
+						if outlined.page != nil {
+							l.outlined = true
+							l.quads = unionTextRect(l.quads, &l.hasQuads, spanRect(lin.R(item.outlinePos.X, item.outlinePos.Y, item.outlineSize.X, item.outlineSize.Y)))
+						}
 					}
 					l.glyphs = append(l.glyphs, item)
+					l.quads = unionTextRect(l.quads, &l.hasQuads, spanRect(lin.R(pos.X, pos.Y, item.size.X, item.size.Y)))
 					ink := f.glyphInk(face, sg.GlyphID, gl)
 					ink = lin.Translate2(pos.X-gl.bearing.X*k, pos.Y-gl.bearing.Y*k).Mul(lin.Scale2(k, k)).TransformRect(ink)
 					if style.OutlineWidth > 0 {
@@ -754,6 +884,7 @@ func (b *layoutBuilder) decorate(style RichRun, f *Font, k float32, from, to lin
 		}
 		b.layout.decorations = append(b.layout.decorations, layoutDecoration{rect: r, style: style})
 		b.layout.inkBounds = unionTextRect(b.layout.inkBounds, &b.inkSet, r)
+		b.layout.quads = unionTextRect(b.layout.quads, &b.layout.hasQuads, spanRect(r))
 	}
 	if style.Link != "" {
 		r := lin.R(from.X, line.Y, to.X-from.X, line.H)
@@ -789,46 +920,114 @@ func (g *Graphics) DrawTextLayout(l *TextLayout, x, y float32, tint Color) {
 	if tint == (Color{}) {
 		tint = White
 	}
-	draw := func() {
-		for _, item := range l.glyphs {
-			c := item.style.Color
-			if c == (Color{}) {
-				c = White
+	q := g.cur
+	if l.hasQuads {
+		// A layout wholly outside the view is dropped in one test. The
+		// bounds are widened by a unit so rounding in them cannot drop a
+		// glyph that touches the view.
+		r := l.quads
+		x0, y0, x1, y1 := x+r.X-1, y+r.Y-1, x+r.X+r.W+1, y+r.Y+r.H+1
+		p := [4]lin.Vec2{{X: x0, Y: y0}, {X: x1, Y: y0}, {X: x1, Y: y1}, {X: x0, Y: y1}}
+		if !q.xform.IsIdentity() {
+			for i := range p {
+				p[i] = q.xform.Apply(p[i])
 			}
-			c = c.Mul(tint)
-			if item.outline.page != nil {
-				outlineColor := item.style.OutlineColor
-				if outlineColor == (Color{}) {
-					outlineColor = c
-				} else {
-					outlineColor = outlineColor.Mul(tint)
-				}
-				page := item.outline.page
-				threshold := float32(0.5) - item.style.OutlineWidth*float32(sdfEmPixels)/(item.font.Size*item.font.sizeScale(l.options.Size)*float32(page.spread)*2)
-				g.recordDrawError(g.textOutlineShader.SetUniforms(outlineUniforms{Color: outlineColor.Premultiplied().Vec4(), Parameters: lin.V4(threshold, 0, 0, 0)}))
-				g.Shaded(g.textOutlineShader, func() {
-					g.Draw(page.texture, Sprite{Pos: lin.V2(x+item.outlinePos.X, y+item.outlinePos.Y), Size: item.outlineSize, UV0: item.outline.image.uv0, UV1: item.outline.image.uv1, Color: White})
-				})
-			}
-			if item.glyph.color {
-				c = Color{R: 1, G: 1, B: 1, A: c.A}
-			}
-			g.Draw(item.font.atlas, Sprite{Pos: lin.V2(x+item.pos.X, y+item.pos.Y), Size: item.size, UV0: item.glyph.uv0, UV1: item.glyph.uv1, Color: c})
 		}
-		for _, item := range l.decorations {
-			c := item.style.Color
-			if c == (Color{}) {
-				c = White
-			}
-			r := item.rect
-			g.FillRect(x+r.X, y+r.Y, r.W, r.H, c.Mul(tint))
+		if !quadVisible(&p, q.viewRect()) {
+			g.stats.Culled2D += len(l.glyphs) + len(l.decorations)
+			return
 		}
 	}
 	if l.options.Angle != 0 {
-		g.Transformed(lin.Translate2(x, y).Mul(l.rotation).Mul(lin.Translate2(-x, -y)), draw)
-	} else {
-		draw()
+		previous, stack := q.xform, q.xforms
+		g.PushTransform(lin.Translate2(x, y).Mul(l.rotation).Mul(lin.Translate2(-x, -y)))
+		defer func() { q.xform, q.xforms = previous, stack }()
 	}
+	if l.outlined {
+		g.drawOutlines(l, x, y, tint)
+	}
+	for i := range l.glyphs {
+		item := &l.glyphs[i]
+		c := item.style.Color
+		if c == (Color{}) {
+			c = White
+		}
+		c = c.Mul(tint)
+		if item.glyph.color {
+			c = Color{R: 1, G: 1, B: 1, A: c.A}
+		}
+		g.textQuad(item.font.atlas, lin.V2(x+item.pos.X, y+item.pos.Y), item.size, item.glyph.uv0, item.glyph.uv1, c)
+	}
+	for _, item := range l.decorations {
+		c := item.style.Color
+		if c == (Color{}) {
+			c = White
+		}
+		r := item.rect
+		g.FillRect(x+r.X, y+r.Y, r.W, r.H, c.Mul(tint))
+	}
+}
+
+// drawOutlines queues the outlines of a layout's glyphs, all of them
+// before any glyph, so the outlines of neighbouring glyphs sit under
+// every glyph rather than over the one before. Glyphs whose outlines
+// share a colour and thickness share one uniform block, so a layout's
+// outlines become one draw.
+func (g *Graphics) drawOutlines(l *TextLayout, x, y float32, tint Color) {
+	q := g.cur
+	previous := q.shader
+	g.SetShader(g.textOutlineShader)
+	defer g.restoreShader(q, previous)
+	for i := range l.glyphs {
+		item := &l.glyphs[i]
+		page := item.outline.page
+		if page == nil {
+			continue
+		}
+		c := item.style.Color
+		if c == (Color{}) {
+			c = White
+		}
+		c = c.Mul(tint)
+		outlineColor := item.style.OutlineColor
+		if outlineColor == (Color{}) {
+			outlineColor = c
+		} else {
+			outlineColor = outlineColor.Mul(tint)
+		}
+		threshold := float32(0.5) - item.style.OutlineWidth*float32(sdfEmPixels)/(item.font.Size*item.font.sizeScale(l.options.Size)*float32(page.spread)*2)
+		u := outlineUniforms{Color: outlineColor.Premultiplied().Vec4(), Parameters: lin.V4(threshold, 0, 0, 0)}
+		if !g.outlinePacked || u != g.outlineLast {
+			err := g.textOutlineShader.SetUniforms(u)
+			g.recordDrawError(err)
+			g.outlineLast, g.outlinePacked = u, err == nil
+		}
+		g.textQuad(page.texture, lin.V2(x+item.outlinePos.X, y+item.outlinePos.Y), item.outlineSize, item.outline.image.uv0, item.outline.image.uv1, White)
+	}
+}
+
+// restoreShader puts back the 2D shader a scope replaced.
+func (g *Graphics) restoreShader(q *drawQueue, s *Shader) { q.shader = s }
+
+// textQuad queues one glyph or outline quad: the vertices Draw makes for
+// an unrotated sprite at pos and size, without culling it on its own,
+// since DrawTextLayout has tested the whole layout.
+func (g *Graphics) textQuad(tex *Texture, pos, size, uv0, uv1 lin.Vec2, c Color) {
+	q := g.cur
+	if uv1 == (lin.Vec2{}) {
+		uv1 = lin.V2(1, 1)
+	}
+	if c == (Color{}) {
+		c = White
+	}
+	p := [4]lin.Vec2{pos, {X: pos.X + size.X, Y: pos.Y}, {X: pos.X + size.X, Y: pos.Y + size.Y}, {X: pos.X, Y: pos.Y + size.Y}}
+	if !q.xform.IsIdentity() {
+		for i := range p {
+			p[i] = q.xform.Apply(p[i])
+		}
+	}
+	uv := [4]lin.Vec2{uv0, {X: uv1.X, Y: uv0.Y}, uv1, {X: uv0.X, Y: uv1.Y}}
+	q.stream.quad(g.spriteState(tex, FilterDefault), q.layer, q.sortKey, &p, &uv, c.premultiplied())
 }
 
 func (g *Graphics) recordDrawError(err error) {

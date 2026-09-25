@@ -115,9 +115,13 @@ type Options struct {
 type Console struct {
 	opts Options
 
-	mu    sync.Mutex // guards the output buffer and the log level
+	mu sync.Mutex // guards the output buffer and the log level
+	// lines is a ring of the output kept: it grows to Options.Lines, and
+	// from then on each new line overwrites the oldest, which is at head.
 	lines []line
+	head  int
 	level slog.Level
+	shown []line // the lines Draw is drawing, copied out under the lock
 
 	// The command line and its history.
 	text    string
@@ -231,14 +235,21 @@ func (c *Console) Print(text string) {
 // Printf adds a formatted line of output, as fmt.Sprintf writes it.
 func (c *Console) Printf(format string, args ...any) { c.Print(fmt.Sprintf(format, args...)) }
 
-// push appends a line, dropping the oldest once the buffer is full. The
-// caller holds the lock.
+// push appends a line, dropping the oldest once the buffer is full by
+// writing over it, so a full buffer costs the same per line as an empty
+// one. The caller holds the lock.
 func (c *Console) push(l line) {
-	c.lines = append(c.lines, l)
-	if n := len(c.lines) - c.opts.Lines; n > 0 {
-		c.lines = append(c.lines[:0], c.lines[n:]...)
+	if len(c.lines) < c.opts.Lines {
+		c.lines = append(c.lines, l)
+		return
 	}
+	c.lines[c.head] = l
+	c.head = (c.head + 1) % len(c.lines)
 }
+
+// lineAt returns the output line i places from the oldest. The caller
+// holds the lock.
+func (c *Console) lineAt(i int) line { return c.lines[(c.head+i)%len(c.lines)] }
 
 // Lines returns the output kept, oldest first, for tests and for a game
 // that shows the log somewhere of its own.
@@ -249,8 +260,8 @@ func (c *Console) Lines() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]string, len(c.lines))
-	for i, l := range c.lines {
-		out[i] = l.text
+	for i := range out {
+		out[i] = c.lineAt(i).text
 	}
 	return out
 }
@@ -261,7 +272,7 @@ func (c *Console) Clear() {
 		return
 	}
 	c.mu.Lock()
-	c.lines = c.lines[:0]
+	c.lines, c.head = c.lines[:0], 0
 	c.scroll = 0
 	c.mu.Unlock()
 }
@@ -386,16 +397,30 @@ func (c *Console) drawDropDown(f Frame) {
 	inputY := rect.Y + rect.H - lineH - pad - 2
 	// The output runs upwards from just above the command line, oldest
 	// first, so the newest is always in view.
+	// The lines that can show are copied out under the lock, newest
+	// first: every line is at least a line high, so no more than fit
+	// above the command line are needed.
 	c.mu.Lock()
-	lines := c.lines
-	scroll := min(c.scroll, max(len(lines)-1, 0))
+	total := len(c.lines)
+	scroll := min(c.scroll, max(total-1, 0))
 	c.scroll = scroll
+	room := total
+	if lineH > 0 {
+		room = max(int((inputY-pad)/lineH)+2, 0)
+	}
+	c.shown = c.shown[:0]
+	for i := total - 1 - scroll; i >= 0 && len(c.shown) < room; i-- {
+		c.shown = append(c.shown, c.lineAt(i))
+	}
+	shown := c.shown
 	c.mu.Unlock()
 	g.Clip(lin.R(rect.X, rect.Y, rect.W, inputY-pad), func() {
 		y := inputY - pad - lineH
 		opts := gfx.TextOptions{Width: rect.W - 2*pad}
-		for i := len(lines) - 1 - scroll; i >= 0 && y > -lineH; i-- {
-			l := lines[i]
+		for _, l := range shown {
+			if y <= -lineH {
+				break
+			}
 			_, th2 := c.font.Measure(l.text, opts)
 			y -= th2 - lineH
 			g.DrawTextBlock(c.font, l.text, rect.X+pad, y, opts, c.lineColor(l))

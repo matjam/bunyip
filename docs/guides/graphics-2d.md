@@ -431,11 +431,15 @@ and `Advance`, called once per update, runs the shake and lets it settle.
 the other way for a marker pinned to an entity, and `VisibleRect`
 returns the world rectangle on screen. Sprites wholly outside that
 rectangle are dropped before they reach the vertex stream, and
-`FrameStats.Culled2D` counts them. The test is the sprite's own four
-corners against the view, so a long thin rotated sprite is culled as
-soon as its quad clears the view, and it holds under `Transformed` as
-well: a sprite the transform stack pushes off screen costs nothing.
-`ScreenSpace` returns to view coordinates for the HUD.
+`FrameStats.Culled2D` counts them. Without a camera the same happens
+against the view itself. The test is the sprite's own four corners
+against the view, so a long thin rotated sprite is culled as soon as its
+quad clears the view, and it holds under `Transformed` as well: a sprite
+the transform stack pushes off screen costs nothing. `DrawTilemap` takes
+the view back through the transform stack into the map's own units and
+only visits the tiles inside it, with or without a camera, and a text
+layout wholly off screen is dropped in one test. `ScreenSpace` returns to
+view coordinates for the HUD.
 
 Use `WithCamera2D` and `Layered` when the state belongs to a block of
 drawing. Each restores the previous state when its closure returns,
@@ -722,10 +726,17 @@ in, an `Align` (`AlignLeft`, `AlignCenter`, `AlignRight`,
 `Baseline`, a `Hyphenate` hyphenator, an `AutoHyphenate` that picks one
 for the `Language`, a `Direction` and a `Language`. `Font.Measure` sizes text without
 drawing it. `Font.Layout` returns an immutable `*TextLayout` for repeated
-drawing and queries. A font caches layouts and measurements by text and
-options, so repeating a plain label reuses its shaping. A
-glyph drawn for the first time is rasterised and uploaded during that
-frame, so new text shows up in the frame that asks for it.
+drawing and queries. A font caches layouts by text and options, and
+drawing, `Measure` and `Layout` share that cache, so a label measured and
+drawn is shaped once and repeating it every frame costs a lookup with no
+allocation. Text asked for once, such as a counter that changes every
+frame, is laid out and drawn but only kept once it is asked for again, so
+it does not push out what is drawn every frame. The cache grows to hold
+everything a frame draws, however much that is, and falls back once
+frames draw less. A glyph drawn for the first time is rasterised and
+uploaded during that frame, so new text shows up in the frame that asks
+for it. To skip even the lookup, keep the `*TextLayout` and draw it with
+`DrawTextLayout`.
 
 `Layout` can allocate or upload atlas pages and returns an error. Immediate
 draw helpers report those failures through frame submission and `engine.Run`.
@@ -787,7 +798,9 @@ layout remain valid afterward, but new draws require live fonts from the same
 
 `Underline`, `Strikethrough` and `OutlineWidth` are available in `TextOptions`
 and rich runs. Outline width is in view units; a zero `OutlineColor` follows
-the effective text colour. Bitmap and SDF fonts lazily build coverage pages
+the effective text colour. A layout's outlines are drawn beneath all of its
+glyphs, so a neighbour's outline never covers a letter, and outlines that
+share a colour and width are one draw call. Bitmap and SDF fonts lazily build coverage pages
 with reusable distance ranges, so modest width animation reuses pages.
 `FontOptions.OutlinePages` sets the per-font page budget (zero means 16).
 Oversized outlines or glyphs return descriptive errors; they are never clipped
@@ -821,7 +834,13 @@ Google's emoji), COLR layers, or an SVG document per glyph. COLR version
 1 paints are drawn too, with their gradients, transforms and
 compositing, so a font like Noto Color Emoji comes out right. A colour
 glyph preserves its RGB and uses the effective text alpha. Give the emoji font as a
-`Fallbacks` entry and emoji appear in ordinary strings. What is not
+`Fallbacks` entry and emoji appear in ordinary strings. A collection
+(`.ttc`) contributes its first face, and only that face is read. Fonts
+made from the same bytes share one parse of them while any of those fonts
+is alive, so an emoji collection behind several sizes of a font is read
+once, and the parsed tables are copies, so the file's bytes need not be
+kept after `NewFont` returns. A font's glyph atlas is held as one byte a
+texel until its first colour glyph. What is not
 drawn is listed in `docs/design/gaps.md`: the variable paint tables'
 deltas in COLR, and strokes, clipping and filters in SVG.
 
@@ -1057,7 +1076,9 @@ g.smoke.Draw3D(gr, 1.5) // fade over the last 1.5 units
 `SetLights2D` places an ambient colour and up to eight `Light2D` point
 lights above the sprite plane for the frame, and `DrawLit` draws a
 sprite lit by them through a tangent-space normal map uploaded with
-`TextureOptions{Data: true}`.
+`TextureOptions{Data: true}`. Eight is the most the lit shader holds:
+lights past the eighth are dropped and `FrameStats.Lights2DDropped`
+counts them, so pass the lights nearest the action first.
 
 Set `Shadows` on a light and it is blocked by the occluders the frame
 adds with `AddOccluder2D`, which takes a closed polygon in the same
@@ -1072,7 +1093,9 @@ directions around the light, each holding the distance to the nearest
 occluder edge, uploaded as one small texture the lit shader reads. The
 cost is the occluder edges times the shadowed lights, so a few hundred
 edges are free; only edges within a light's radius are visited. Add the
-walls near the player, not the whole level.
+walls near the player, not the whole level. A frame whose shadowed
+lights and occluders are the same as the frame before keeps the maps it
+already has, so a still scene pays for its shadows once.
 
 ```go
 gr.SetLights2D(gfx.RGB(30, 30, 45),

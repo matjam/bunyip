@@ -22,6 +22,7 @@ func (g *Graphics) WithCamera2D(cam Camera2D, draw func()) {
 	defer func() {
 		q.cam2D, q.hasCam2D = previous, hadCamera
 		q.spriteProj, q.visible = projection, visible
+		q.stream.invalidate()
 	}()
 	draw()
 }
@@ -44,7 +45,7 @@ func (g *Graphics) Blended(b Blend, draw func()) {
 	q := g.cur
 	previous, custom := q.blend, q.customBlend
 	g.SetBlend(b)
-	defer func() { q.blend, q.customBlend = previous, custom }()
+	defer func() { q.blend, q.customBlend = previous, custom; q.stream.invalidate() }()
 	draw()
 }
 
@@ -76,6 +77,7 @@ func (g *Graphics) ColorMatrixed(m ColorMatrix, draw func()) {
 	g.SetColorMatrix(&m)
 	defer func() {
 		q.colorMatrix = previous
+		q.stream.invalidate()
 		if g.cur == q && previous != nil {
 			g.recordDrawError(g.matrixShader.SetUniforms(previous))
 		}
@@ -89,6 +91,6 @@ func (g *Graphics) Clip(r lin.Rect, draw func()) {
 	q := g.cur
 	previous := q.clips
 	g.PushClip(r)
-	defer func() { q.clips = previous }()
+	defer func() { q.clips = previous; q.stream.invalidate() }()
 	draw()
 }

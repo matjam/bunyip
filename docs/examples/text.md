@@ -51,8 +51,8 @@ type game struct {
 	bold     *gfx.Font
 	heading  *gfx.Font
 	sdf      *gfx.Font
-	world    []byte
-	emoji    []byte
+	hasWorld bool // a world font was found
+	hasEmoji bool // an emoji font was found
 	shotDone bool
 }
 ```
@@ -60,9 +60,13 @@ type game struct {
 ## Init: loading the fonts
 
 The two optional font files are read with `os.ReadFile` and a failure is
-ignored, leaving the slice nil, which is what the drawing code tests
-later. The main faces come from `gofont`, which is compiled into the
-binary, so the program always has something to draw with.
+ignored, leaving the slice nil. The slices are local: a font copies the
+tables it uses from the bytes it is given, so they are not kept once the
+font is made, which matters for an emoji collection of a couple of
+hundred megabytes. What the drawing code tests later is whether each was
+found, kept in `hasWorld` and `hasEmoji`. The main faces come from
+`gofont`, which is compiled into the binary, so the program always has
+something to draw with.
 
 `FontOptions.Fallbacks` is a list of font files consulted in order for
 any rune the main font does not cover. The world font goes first and the
@@ -76,8 +80,8 @@ Those four files are not one kind of font. Apple's holds bitmap strikes,
 Noto's holds either strikes or COLR layers depending on the build, and
 Segoe's holds COLR. The engine draws all of them in colour, along with
 faces whose glyphs are SVG documents, so the example does not care which
-one it found; the `g.emoji != nil` test below is about whether any font
-was found at all, not about what sort it is.
+one it found; the `g.hasEmoji` test below is about whether any font was
+found at all, not about what sort it is.
 
 `NewFont` rasterises glyphs into an atlas as they are first used.
 `NewSDFFont` stores a signed distance field instead, which costs more to
@@ -90,8 +94,11 @@ func (g *game) Init(ctx *engine.Context) error {
 	if g.fontPath == "" {
 		g.fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf"
 	}
+	// The font files are only needed while the font is made: it copies
+	// what it uses, so the bytes are not kept.
+	var world, emoji []byte
 	if data, err := os.ReadFile(g.fontPath); err == nil {
-		g.world = data
+		world = data
 	}
 	// An emoji font as a further fallback draws emoji in colour, whether
 	// it holds bitmap strikes, COLR layers or SVG documents.
@@ -102,18 +109,19 @@ func (g *game) Init(ctx *engine.Context) error {
 		"C:\\Windows\\Fonts\\seguiemj.ttf",
 	} {
 		if data, err := os.ReadFile(path); err == nil {
-			g.emoji = data
+			emoji = data
 			break
 		}
 	}
 	var err error
 	opts := gfx.FontOptions{}
-	if g.world != nil {
-		opts.Fallbacks = append(opts.Fallbacks, g.world)
+	if world != nil {
+		opts.Fallbacks = append(opts.Fallbacks, world)
 	}
-	if g.emoji != nil {
-		opts.Fallbacks = append(opts.Fallbacks, g.emoji)
+	if emoji != nil {
+		opts.Fallbacks = append(opts.Fallbacks, emoji)
 	}
+	g.hasWorld, g.hasEmoji = world != nil, emoji != nil
 	if g.body, err = ctx.Gfx.NewFont(goregular.TTF, 18, opts); err != nil {
 		return err
 	}
@@ -191,7 +199,7 @@ func (g *game) Draw(ctx *engine.Context) error {
 	gr.DrawText(g.body, "Kerning from the font: AVATAR Type Wavy. Ligatures where the font has them: office, waffle.", 40, y, white)
 	y += 40
 
-	if g.world == nil {
+	if !g.hasWorld {
 		gr.DrawText(g.body, "No world font found; pass -font path/to/font.ttf for Arabic and Hebrew.", 40, y, dim)
 		y += 40
 	} else {
@@ -290,7 +298,7 @@ glyphs beside them and draw in the same batch.
 		gr.StrokeRect(l.Rect.X-2, l.Rect.Y-2, l.Rect.W+4, l.Rect.H+4, 1, gfx.RGB(90, 160, 255))
 	}
 	y += 30
-	if g.emoji != nil {
+	if g.hasEmoji {
 		gr.DrawText(g.body, "Colour glyphs from the system emoji font: \U0001F600 \U0001F389 \U0001F680", 40, y, white)
 	} else {
 		gr.DrawText(g.body, "No emoji font found; a fallback with strikes, COLR layers or SVG glyphs draws emoji in colour.", 40, y, dim)

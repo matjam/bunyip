@@ -146,10 +146,10 @@ func TestLayoutWrapsByUnicodeRules(t *testing.T) {
 	}
 }
 
-// TestTextCacheMatchesFreshLayout checks that the glyphs a repeated draw
-// takes from the block cache are the ones a fresh layout would produce,
+// TestTextCacheMatchesFreshLayout checks that the layout a repeated draw
+// takes from the layout cache is the one a fresh layout would produce,
 // for every alignment and for sized, spaced and multi-paragraph text, so
-// that caching a block cannot move what is drawn.
+// that caching a layout cannot move what is drawn or what Measure says.
 func TestTextCacheMatchesFreshLayout(t *testing.T) {
 	g := newHeadless(t, 256, 256)
 	f, err := g.NewFont(goregular.TTF, 16, FontOptions{})
@@ -172,40 +172,110 @@ func TestTextCacheMatchesFreshLayout(t *testing.T) {
 		{"vertical", TextOptions{Direction: DirectionTTB}},
 		{"hyphenated", TextOptions{Width: 60, Align: AlignJustify, Hyphenate: EnglishHyphenator()}},
 	}
+	layout := func(t *testing.T, opts TextOptions) *TextLayout {
+		t.Helper()
+		l, err := f.Layout(text, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cached := f.blockGlyphs(text, c.opts) // computes, then caches
-			if again := f.blockGlyphs(text, c.opts); &again[0] != &cached[0] {
-				t.Fatalf("second call laid the block out again instead of using the cache")
+			f.dropLayouts()
+			first := layout(t, c.opts)  // laid out; its key is noted
+			cached := layout(t, c.opts) // laid out again and kept
+			if again := layout(t, c.opts); again != cached {
+				t.Fatalf("third call laid the text out again instead of using the cache")
 			}
-			fresh := slices.Clone(f.layoutBlock(text, c.opts))
-			if !slices.Equal(fresh, cached) {
-				t.Errorf("cached glyphs differ from a fresh layout: %d vs %d glyphs", len(cached), len(fresh))
-				for i := range min(len(fresh), len(cached)) {
-					if fresh[i] != cached[i] {
-						t.Fatalf("glyph %d: cached %+v, fresh %+v", i, cached[i], fresh[i])
+			f.dropLayouts()
+			fresh := layout(t, c.opts)
+			for _, l := range []*TextLayout{first, fresh} {
+				if !slices.Equal(l.glyphs, cached.glyphs) {
+					t.Errorf("cached glyphs differ from a fresh layout: %d vs %d glyphs", len(cached.glyphs), len(l.glyphs))
+					for i := range min(len(l.glyphs), len(cached.glyphs)) {
+						if l.glyphs[i] != cached.glyphs[i] {
+							t.Fatalf("glyph %d: cached %+v, fresh %+v", i, cached.glyphs[i], l.glyphs[i])
+						}
 					}
 				}
+				if !slices.Equal(l.carets, cached.carets) || !slices.Equal(l.lines, cached.lines) || l.measure != cached.measure || l.quads != cached.quads {
+					t.Errorf("cached carets, lines or sizes differ from a fresh layout")
+				}
+			}
+			if w, h := f.Measure(text, c.opts); w != cached.measure.X || h != cached.measure.Y {
+				t.Errorf("Measure %vx%v, layout measured %v", w, h, cached.measure)
 			}
 		})
 	}
 }
 
 // TestTextCacheEvictionKeepsHotEntries checks that a string drawn every
-// frame survives many one-off strings passing through the cache, which
-// clearing the whole map at a limit did not.
+// frame survives many one-off strings passing through the cache, one a
+// frame, which clearing the whole map at a limit did not, and that the
+// one-off strings are dropped rather than kept for ever.
 func TestTextCacheEvictionKeepsHotEntries(t *testing.T) {
 	var c genCache[int, int]
-	c.put(-1, -1)
+	c.put(-1, -1, 0)
 	for i := range textCacheEntries * 4 {
-		c.put(i, i)
-		if v, ok := c.get(-1); !ok || v != -1 {
+		now := uint64(i + 1)
+		c.put(i, i, now)
+		if v, ok := c.get(-1, now); !ok || v != -1 {
 			t.Fatalf("the hot entry was evicted after %d one-off entries", i+1)
 		}
 	}
-	// The one-off entries are dropped rather than kept for ever.
 	if n := len(c.cur) + len(c.prev); n > 2*textCacheEntries+2 {
 		t.Errorf("cache holds %d entries for a limit of %d", n, textCacheEntries)
+	}
+}
+
+// TestTextCacheKeepsAFrameLargerThanAGeneration checks that a frame that
+// uses more entries than a generation holds keeps all of them: the cache
+// grows rather than retiring, mid-frame, entries the frame has just used,
+// so the next frames find everything. It shrinks back once frames use
+// less.
+func TestTextCacheKeepsAFrameLargerThanAGeneration(t *testing.T) {
+	var c genCache[int, int]
+	const n = textCacheEntries*2 + 100
+	for frame := uint64(1); frame <= 6; frame++ {
+		misses := 0
+		for i := range n {
+			if _, ok := c.get(i, frame); !ok {
+				misses++
+				c.put(i, i, frame)
+			}
+		}
+		if frame > 1 && misses != 0 {
+			t.Fatalf("frame %d missed %d of %d entries used every frame", frame, misses, n)
+		}
+	}
+	// Later frames use a handful of new strings each; the large working
+	// set is retired and the limit falls back to the starting room.
+	for frame := uint64(7); frame <= 20; frame++ {
+		for i := range textCacheEntries {
+			c.put(int(frame)*1_000_000+i, i, frame)
+		}
+	}
+	if c.limit > 2*textCacheEntries {
+		t.Errorf("limit stayed at %d after the large frames ended", c.limit)
+	}
+	if n := len(c.cur) + len(c.prev); n > 4*textCacheEntries {
+		t.Errorf("cache holds %d entries after the large frames ended", n)
+	}
+}
+
+// TestTextCacheAdmitsOnSecondUse checks that with admission on, a key put
+// once is noted but not stored, and the second put stores it.
+func TestTextCacheAdmitsOnSecondUse(t *testing.T) {
+	c := genCache[string, int]{admit: true}
+	c.put("counter 1", 1, 1)
+	if _, ok := c.get("counter 1", 1); ok {
+		t.Fatal("a key put once was stored")
+	}
+	c.put("label", 2, 1)
+	c.put("label", 2, 2)
+	if v, ok := c.get("label", 2); !ok || v != 2 {
+		t.Fatal("a key put twice was not stored")
 	}
 }
 

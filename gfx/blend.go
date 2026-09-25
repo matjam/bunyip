@@ -94,7 +94,8 @@ func (g *Graphics) CustomBlended(options BlendOptions, draw func()) {
 	options.validate()
 	q := g.cur
 	blend, custom := q.blend, q.customBlend
-	defer func() { q.blend, q.customBlend = blend, custom }()
+	defer func() { q.blend, q.customBlend = blend, custom; q.stream.invalidate() }()
 	q.customBlend = customBlend{options: options, set: true}
+	q.stream.invalidate()
 	draw()
 }

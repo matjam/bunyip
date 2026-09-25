@@ -6,55 +6,89 @@ import (
 	"github.com/go-text/typesetting/shaping"
 )
 
-// textCacheEntries is how many entries a text cache holds in its current
-// generation before that generation is retired.
+// textCacheEntries is the room a text cache's generation starts with.
 const textCacheEntries = 2048
 
-// textBlockGlyphs is the room a generation of the glyph cache holds,
-// counted in glyphs rather than entries because a block is anything from
-// a two-word label to a paragraph. Two generations of it are about seven
-// megabytes.
+// textBlockGlyphs is the room a generation of the layout cache starts
+// with, counted in glyphs and carets rather than entries because a layout
+// is anything from a two-word label to a paragraph.
 const textBlockGlyphs = 64 * 1024
 
 // genCache is a map that evicts a generation at a time. Entries go into
 // the current generation; when it fills, it becomes the previous one and
 // a fresh generation starts, and a hit in the previous generation is
 // promoted back into the current. Text drawn every frame therefore stays
-// resident however many one-off strings pass through, which clearing the
-// whole map did not: a counter that changes every frame used to evict
-// every label with it.
+// resident however many one-off strings pass through.
+//
+// Generations are stamped with the frame they began in. A generation is
+// only retired once it has been filling for two whole frames, so it holds
+// everything the last frame used; a frame that uses more than a
+// generation holds grows the limit instead of retiring what it has just
+// used. The limit falls back to its starting room at the next retirement,
+// so a burst of text does not keep the cache large.
+//
+// With admit set, an entry is only stored the second time its key is
+// put, so a string seen once (a counter that changes every frame) is
+// never stored and cannot push out what is drawn every frame.
 type genCache[K comparable, V any] struct {
 	cur, prev map[K]V
 	// weigh reports the room a value takes, for a cache whose values vary
 	// in size; nil counts every entry as one.
 	weigh  func(V) int
-	limit  int // room in a generation; zero means textCacheEntries
-	filled int // room the current generation has taken
+	base   int    // room a generation starts with; zero means textCacheEntries
+	limit  int    // room the current generation may take before retiring
+	filled int    // room the current generation has taken
+	born   uint64 // frame the current generation began in
+	admit  bool
+	seen   *genCache[K, struct{}] // keys put once, when admit is set
 }
 
 // get returns an entry, promoting it out of the previous generation so
-// that using it keeps it.
-func (c *genCache[K, V]) get(k K) (V, bool) {
+// that using it keeps it. now is the current frame number.
+func (c *genCache[K, V]) get(k K, now uint64) (V, bool) {
 	if v, ok := c.cur[k]; ok {
 		return v, true
 	}
 	v, ok := c.prev[k]
 	if ok {
-		c.put(k, v)
+		c.store(k, v, now)
 	}
 	return v, ok
 }
 
-// put stores an entry, retiring the current generation when it is full.
-func (c *genCache[K, V]) put(k K, v V) {
-	limit := c.limit
-	if limit <= 0 {
-		limit = textCacheEntries
+// put stores an entry, or with admit set notes its key the first time.
+func (c *genCache[K, V]) put(k K, v V, now uint64) {
+	if c.admit {
+		if c.seen == nil {
+			c.seen = &genCache[K, struct{}]{}
+		}
+		if _, ok := c.seen.get(k, now); !ok {
+			c.seen.store(k, struct{}{}, now)
+			return
+		}
 	}
-	if c.cur == nil {
-		c.cur = make(map[K]V)
-	} else if c.filled >= limit {
-		c.prev, c.cur, c.filled = c.cur, make(map[K]V), 0
+	c.store(k, v, now)
+}
+
+// store puts an entry into the current generation, retiring it first
+// when it is full and old enough, or growing its limit when it is not.
+func (c *genCache[K, V]) store(k K, v V, now uint64) {
+	base := c.base
+	if base <= 0 {
+		base = textCacheEntries
+	}
+	switch {
+	case c.cur == nil:
+		c.cur, c.limit, c.born = make(map[K]V), base, now
+	case c.filled >= c.limit:
+		if now > c.born+1 {
+			// Everything used since the generation began, which covers the
+			// whole of the last frame, moves to the previous generation.
+			c.prev, c.cur, c.filled = c.cur, make(map[K]V), 0
+			c.limit, c.born = base, now
+		} else {
+			c.limit *= 2
+		}
 	}
 	room := 1
 	if c.weigh != nil {
@@ -62,6 +96,14 @@ func (c *genCache[K, V]) put(k K, v V) {
 	}
 	c.cur[k] = v
 	c.filled += room
+}
+
+// drop empties the cache.
+func (c *genCache[K, V]) drop() {
+	c.cur, c.prev, c.filled, c.limit = nil, nil, 0, 0
+	if c.seen != nil {
+		c.seen.drop()
+	}
 }
 
 // runeIndex maps rune indices in one string to byte indices. Shaped
@@ -108,49 +150,9 @@ func (ri *runeIndex) at(i int) int {
 	return int(ri.offs[i])
 }
 
-// isSpace reports whether the rune at a rune index is a plain space.
-func (ri *runeIndex) isSpace(i int) bool {
-	b := ri.at(i)
-	return b < len(ri.text) && ri.text[b] == ' '
-}
-
-// textScratch is the working storage text layout reuses between calls, so
-// that drawing a block of text allocates nothing once its glyphs are
-// cached. It is used within a single layout call and never escapes.
+// textScratch is the working storage Shape reuses between calls. It is
+// used within a single call and never escapes.
 type textScratch struct {
-	lines   []shaping.Line
-	paras   []string // the shaped text behind each line
-	last    []bool   // whether a line ends its paragraph
-	glyphs  []Glyph
 	ordered []*shaping.Output
 	index   runeIndex
-}
-
-// blockKey identifies a laid-out block of text in the glyph cache. It
-// leaves out what does not move a glyph relative to the block's origin:
-// the position, the colour and the angle.
-type blockKey struct {
-	text          string
-	lang          string
-	hyph          *Hyphenator
-	width         float32
-	size          float32
-	lineSpacing   float32
-	letterSpacing float32
-	dir           Direction
-	align         Align
-	baseline      bool
-}
-
-// measureKey identifies a measured block of text. Alignment and the
-// baseline flag do not change its size, so they are left out.
-type measureKey struct {
-	text          string
-	lang          string
-	hyph          *Hyphenator
-	width         float32
-	size          float32
-	lineSpacing   float32
-	letterSpacing float32
-	dir           Direction
 }

@@ -9,6 +9,7 @@ type panel struct {
 	rect   Rect
 	cursor float32 // next widget's Y
 	row    *row
+	spare  row // the storage row points at, so laying out a row allocates nothing
 }
 
 type row struct {
@@ -51,7 +52,8 @@ func (c *Context) Row(n int, body func()) {
 		return
 	}
 	inner := p.rect.W - 2*c.Theme.Padding
-	p.row = &row{x: p.rect.X + c.Theme.Padding, y: p.cursor, count: n, width: (inner - float32(n-1)*c.Theme.Spacing) / float32(n)}
+	p.spare = row{x: p.rect.X + c.Theme.Padding, y: p.cursor, count: n, width: (inner - float32(n-1)*c.Theme.Spacing) / float32(n)}
+	p.row = &p.spare
 	body()
 	c.endRow(p)
 }

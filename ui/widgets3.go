@@ -305,22 +305,39 @@ func (c *Context) IconButton(icon gfx.Region, label string) bool {
 // RichLabel draws markup (see gfx.ParseRich) wrapped to the width
 // available, in the theme's regular, bold and italic fonts, and returns
 // the name of a link clicked this frame, or "". The markup is parsed
-// and measured once and kept for as long as the interface keeps drawing
+// and laid out once and kept for as long as the interface keeps drawing
 // it, so the same label every frame costs a map lookup.
 func (c *Context) RichLabel(markup string) string {
 	e := c.richText(markup)
 	fonts := gfx.RichFonts{Regular: c.Theme.Font, Bold: c.Theme.BoldFont, Italic: c.Theme.ItalicFont, BoldItalic: c.Theme.BoldItalicFont}
 	opts := gfx.TextOptions{Width: c.nextWidth()}
 	if !e.sized || e.fonts != fonts || e.opts != opts {
-		e.w, e.h = fonts.MeasureRich(e.rt, opts)
+		// The layout is kept with the markup, so later frames draw it
+		// without looking it up; a layout that fails is reported when it
+		// is drawn through DrawRichText below.
+		e.layout, _ = fonts.Layout(e.rt, opts)
+		if e.layout != nil {
+			b := e.layout.Bounds()
+			e.w, e.h, e.links = b.W, b.H, e.layout.Links()
+		} else {
+			e.w, e.h = fonts.MeasureRich(e.rt, opts)
+			e.links = nil
+		}
 		e.fonts, e.opts, e.sized = fonts, opts, true
 	}
 	h := e.h
 	r := c.next(h)
-	links := c.g.DrawRichText(fonts, e.rt, r.X, r.Y+(r.H-h)/2, opts, c.Theme.Text)
+	x, y := r.X, r.Y+(r.H-h)/2
+	links := e.links
+	if e.layout != nil {
+		c.g.DrawTextLayout(e.layout, x, y, c.Theme.Text)
+	} else {
+		links = c.g.DrawRichText(fonts, e.rt, x, y, opts, c.Theme.Text)
+		x, y = 0, 0 // those rectangles are already placed
+	}
 	clicked := ""
 	for _, l := range links {
-		if l.Rect.Contains(lin.V2(c.mouseX, c.mouseY)) {
+		if l.Rect.Contains(lin.V2(c.mouseX-x, c.mouseY-y)) {
 			c.nextHot = 0
 			if c.released {
 				clicked = l.Name

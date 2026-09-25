@@ -31,21 +31,24 @@ var richMarkup = []string{
 }
 
 // BenchmarkRichLabels draws fifty rich labels in one frame, the cost of
-// turning markup into runs, measuring it and drawing it.
+// turning markup into runs, measuring it and drawing it. Like every
+// benchmark here it runs without the validation layers, which would
+// otherwise dominate the frame.
 func BenchmarkRichLabels(b *testing.B) {
-	c := newContext(b)
+	c := benchContext(b)
 	in := newFeeder()
+	body := func() {
+		c.Panel("Rich", Rect{X: 0, Y: 0, W: 600, H: 700}, func() {
+			for j := range 50 {
+				c.RichLabel(richMarkup[j%len(richMarkup)])
+			}
+		})
+	}
+	benchFrame(b, c, in, body)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := range b.N {
-		_ = i
-		benchFrame(b, c, in, func() {
-			c.Panel("Rich", Rect{X: 0, Y: 0, W: 300, H: 240}, func() {
-				for j := range 50 {
-					c.RichLabel(richMarkup[j%len(richMarkup)])
-				}
-			})
-		})
+	for b.Loop() {
+		benchFrame(b, c, in, body)
 	}
 }
 
@@ -124,7 +127,7 @@ func TestCaptionsMatchFmt(t *testing.T) {
 // BenchmarkMixedWidgets builds a frame of two hundred widgets whose
 // captions carry numbers, the shape of a debug or settings panel.
 func BenchmarkMixedWidgets(b *testing.B) {
-	c := newContext(b)
+	c := benchContext(b)
 	in := newFeeder()
 	var (
 		f    = float32(0.4)

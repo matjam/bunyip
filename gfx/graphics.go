@@ -61,6 +61,7 @@ type Graphics struct {
 	pathSubs   []subpath  // flattened sub-paths, reused by FillPath and StrokePath
 	pathFill   filler     // likewise the scanline filler
 	pathStroke stroker    // and the stroke expander
+	pathShape  Path       // the path FillCircle and the other shape helpers build in
 	linePipe   *pipeCache // debug lines over the 3D scene, per sample count
 	// sceneOut is the attachment set of the HDR pass being recorded: the
 	// pipelines drawn into it are built per sample count, and one queue
@@ -77,6 +78,14 @@ type Graphics struct {
 	res               resources     // the live resources a debug view lists
 	owned             resourceOwner // resources released before renderer internals
 	destroyed         bool          // teardown has begun; the device is idle
+
+	// outlineLast is what textOutlineShader's uniforms hold when
+	// outlinePacked is set, so text outlines only pack them on a change.
+	outlineLast   outlineUniforms
+	outlinePacked bool
+	// imageVersion counts the Shader.SetImage calls that changed an
+	// image, which changes the descriptor set a cached 2D state binds.
+	imageVersion uint64
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
@@ -95,6 +104,7 @@ func (g *Graphics) SetViewport(r lin.Rect) error {
 		return nil
 	}
 	g.viewport = vp
+	g.main.stream.invalidate() // the pixel scale is part of the 2D state
 	return g.rebuildMain()
 }
 
@@ -369,11 +379,16 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 }
 
 // Draw queues a sprite. A nil texture draws with a 1x1 white texture, so a
-// coloured rectangle is a tinted sprite.
+// coloured rectangle is a tinted sprite. A sprite wholly outside the view,
+// or outside the 2D camera's view under a camera, is dropped and counted
+// in FrameStats.Culled2D.
 func (g *Graphics) Draw(tex *Texture, s Sprite) {
-	g.requireTextureOwner(tex)
+	q := g.cur
 	if tex == nil {
 		tex = g.white
+	} else if last := &q.stream.last; !last.ok || last.tex != tex {
+		// A texture the cached state was made from has been checked.
+		g.requireTextureOwner(tex)
 	}
 	if s.UV1 == (lin.Vec2{}) {
 		s.UV1 = lin.V2(1, 1)
@@ -381,7 +396,13 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.Color == (Color{}) {
 		s.Color = White
 	}
-	if q := g.cur; q.hasCam2D && !spriteVisible(s, q.xform, q.visible) {
+	p := s.Corners()
+	if !q.xform.IsIdentity() {
+		for i := range p {
+			p[i] = q.xform.Apply(p[i])
+		}
+	}
+	if !quadVisible(&p, q.viewRect()) {
 		g.stats.Culled2D++
 		return
 	}
@@ -391,8 +412,21 @@ func (g *Graphics) Draw(tex *Texture, s Sprite) {
 	if s.FlipY {
 		s.UV0.Y, s.UV1.Y = s.UV1.Y, s.UV0.Y
 	}
-	g.scratch = spriteVertices(s, g.scratch[:0])
-	g.emitFiltered(tex, g.scratch, s.Filter)
+	uv := [4]lin.Vec2{s.UV0, {X: s.UV1.X, Y: s.UV0.Y}, s.UV1, {X: s.UV0.X, Y: s.UV1.Y}}
+	st := g.spriteState(tex, s.Filter)
+	q.stream.quad(st, q.layer, q.sortKey, &p, &uv, s.Color.premultiplied())
+}
+
+// viewRect is the rectangle 2D drawing can reach in the coordinates
+// sprites are placed in once the transform stack has been applied: the
+// 2D camera's view in world units under a camera, the view otherwise.
+// Anything wholly outside it cannot reach a pixel, because the
+// projection maps exactly the view onto the output.
+func (q *drawQueue) viewRect() lin.Rect {
+	if q.hasCam2D {
+		return q.visible
+	}
+	return lin.R(0, 0, q.viewW, q.viewH)
 }
 
 // spriteVisible reports whether any of a sprite can lie inside a
@@ -407,6 +441,12 @@ func spriteVisible(s Sprite, xform lin.Affine, view lin.Rect) bool {
 			p[i] = xform.Apply(p[i])
 		}
 	}
+	return quadVisible(&p, view)
+}
+
+// quadVisible reports whether a quad, given by its four corners in
+// drawing order, can lie inside a view rectangle.
+func quadVisible(p *[4]lin.Vec2, view lin.Rect) bool {
 	// The view's own axes first: they reject everything well clear of it.
 	lo, hi := p[0], p[0]
 	for _, c := range p[1:] {
@@ -415,6 +455,10 @@ func spriteVisible(s Sprite, xform lin.Affine, view lin.Rect) bool {
 	}
 	if hi.X < view.X || lo.X > view.X+view.W || hi.Y < view.Y || lo.Y > view.Y+view.H {
 		return false
+	}
+	// An axis-aligned quad is its own bounding box, so that test was exact.
+	if p[1].Y == p[0].Y && p[3].X == p[0].X || p[1].X == p[0].X && p[3].Y == p[0].Y {
+		return true
 	}
 	// Then the quad's two edge normals, which separate a rotated or
 	// sheared sprite that the axis-aligned test alone keeps.
@@ -518,9 +562,14 @@ type FrameStats struct {
 	// the maps its bounds reach, so this falls as lights and casters
 	// spread out.
 	ShadowDraws int
-	// Culled2D counts sprites outside the 2D camera's view that were
-	// dropped before reaching the vertex stream.
+	// Culled2D counts sprites and glyphs outside the view, or outside the
+	// 2D camera's view under a camera, that were dropped before reaching
+	// the vertex stream.
 	Culled2D int
+	// Lights2DDropped counts the lights passed to SetLights2D past the
+	// eighth, which lit sprites are not lit by; a nonzero count means the
+	// game should pass its nearest lights first.
+	Lights2DDropped int
 	// LightsDropped counts point and spot lights added past MaxLights,
 	// which a frame keeps none of; a nonzero count means the scene should
 	// add its nearest lights first.
@@ -584,6 +633,7 @@ func (g *Graphics) PushClip(r lin.Rect) {
 		r = intersectClip(q.clips[n-1], r)
 	}
 	q.clips = append(q.clips, r)
+	q.stream.invalidate()
 }
 
 // PopClip restores the clip rectangle in force before the matching PushClip.
@@ -592,6 +642,7 @@ func (g *Graphics) PopClip() {
 	if len(q.clips) > 0 {
 		q.clips = q.clips[:len(q.clips)-1]
 	}
+	q.stream.invalidate()
 }
 
 // intersectClip narrows a clip by another; a disjoint pair clips

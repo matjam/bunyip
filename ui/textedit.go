@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/matjam/bunyip/gfx"
 	"github.com/matjam/bunyip/input"
@@ -344,20 +345,63 @@ func wrapRunes(f *gfx.Font, text string, width float32) [][2]int {
 	return out
 }
 
-// caretX is the x offset of a rune offset within a line of text.
+// caretX is the x offset of a rune offset within a line of text: where
+// the line's layout, the one DrawText draws, puts the caret. An offset
+// inside a cluster (a letter and its combining marks, an emoji sequence)
+// snaps to the cluster's nearer edge.
 func (c *Context) caretX(text string, i int) float32 {
+	l, err := c.Theme.Font.Layout(text, gfx.TextOptions{})
+	if err != nil {
+		return c.measuredCaretX(text, i)
+	}
+	return l.Caret(gfx.TextCaret{Index: byteOffset(text, i)}).X
+}
+
+// indexAt finds the rune offset nearest an x offset within a line. It
+// asks the line's layout, so it costs one hit test rather than a
+// measurement of every prefix.
+func (c *Context) indexAt(text string, x float32) int {
+	l, err := c.Theme.Font.Layout(text, gfx.TextOptions{})
+	if err != nil {
+		return c.measuredIndexAt(text, x)
+	}
+	// Each caret is a rectangle one unit wide from its offset, so testing
+	// half a unit to the right splits the gap between two carets at its
+	// middle, as the nearest offset does.
+	b := l.Bounds()
+	at := l.HitTest(lin.V2(x+0.5, b.Y+b.H/2))
+	return utf8.RuneCountInString(text[:min(max(at.Index, 0), len(text))])
+}
+
+// byteOffset is the byte index of a rune offset in text, clamped to its
+// ends.
+func byteOffset(text string, i int) int {
+	if i <= 0 {
+		return 0
+	}
+	n := 0
+	for b := range text {
+		if n == i {
+			return b
+		}
+		n++
+	}
+	return len(text)
+}
+
+// measuredCaretX and measuredIndexAt measure prefixes, for a line the
+// font cannot lay out.
+func (c *Context) measuredCaretX(text string, i int) float32 {
 	runes := []rune(text)
 	i = max(0, min(i, len(runes)))
 	w, _ := c.Theme.Font.Measure(string(runes[:i]), gfx.TextOptions{})
 	return w
 }
 
-// indexAt finds the rune offset nearest an x offset within a line.
-func (c *Context) indexAt(text string, x float32) int {
-	runes := []rune(text)
+func (c *Context) measuredIndexAt(text string, x float32) int {
 	best, bestD := 0, float32(1e9)
-	for i := 0; i <= len(runes); i++ {
-		if d := abs32(c.caretX(text, i) - x); d < bestD {
+	for i := 0; i <= utf8.RuneCountInString(text); i++ {
+		if d := abs32(c.measuredCaretX(text, i) - x); d < bestD {
 			best, bestD = i, d
 		}
 	}

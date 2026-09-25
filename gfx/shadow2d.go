@@ -3,6 +3,7 @@ package gfx
 import (
 	"image"
 	"math"
+	"slices"
 
 	"github.com/matjam/bunyip/lin"
 )
@@ -41,9 +42,30 @@ func (g *Graphics) AddOccluder2D(points ...lin.Vec2) {
 	q.occluderRuns = append(q.occluderRuns, int32(len(points)))
 }
 
+// shadowInputs is what a queue's shadow strip was last built from: the
+// shadowed lights and the occluders. A frame that adds the same ones
+// keeps the strip already on the GPU instead of building it again.
+type shadowInputs struct {
+	valid    bool
+	lights   [maxLights2D]lin.Vec4 // position and radius of each shadowed light
+	shadowed [maxLights2D]bool
+	points   []lin.Vec2
+	runs     []int32
+}
+
+// same reports whether a queue's lights and occluders are the ones the
+// strip was last built from.
+func (s *shadowInputs) same(q *drawQueue, lights [maxLights2D]lin.Vec4, shadowed [maxLights2D]bool) bool {
+	return s.valid && s.lights == lights && s.shadowed == shadowed &&
+		slices.Equal(s.points, q.occluders) && slices.Equal(s.runs, q.occluderRuns)
+}
+
 // buildShadows2D fills and uploads the queue's shadow strip. It runs
 // once a frame, before any pass is recorded, so every lit draw in the
 // frame samples the same maps whatever order the occluders arrived in.
+// When the shadowed lights and the occluders are the ones the strip was
+// last built from, the strip already holds the right rows and nothing
+// is built or uploaded.
 func (g *Graphics) buildShadows2D(q *drawQueue) error {
 	if !q.shadows || q.shadowTex == nil {
 		return nil
@@ -51,20 +73,38 @@ func (g *Graphics) buildShadows2D(q *drawQueue) error {
 	if q.shadowPix == nil {
 		q.shadowPix = make([]byte, shadowAngles2D*maxLights2D*4)
 		q.shadowDist = make([]float32, shadowAngles2D)
+		q.shadowImg = &image.RGBA{Pix: q.shadowPix, Stride: shadowAngles2D * 4,
+			Rect: image.Rect(0, 0, shadowAngles2D, maxLights2D)}
 	}
+	var lights [maxLights2D]lin.Vec4
+	var shadowed [maxLights2D]bool
 	count := int(q.lights.Ambient.W)
 	for i := range min(count, maxLights2D) {
-		if q.lights.Shadow[i].X == 0 {
+		if q.lights.Shadow[i].X != 0 {
+			lights[i], shadowed[i] = q.lights.Pos[i], true
+		}
+	}
+	if q.shadowFrom.same(q, lights, shadowed) {
+		return nil
+	}
+	for i := range maxLights2D {
+		if !shadowed[i] {
 			continue // an unshadowed light never reads its row
 		}
-		light := lin.V2(q.lights.Pos[i].X, q.lights.Pos[i].Y)
-		radius := max(q.lights.Pos[i].W, 1e-3)
+		light := lin.V2(lights[i].X, lights[i].Y)
+		radius := max(lights[i].W, 1e-3)
 		shadowRow(q.shadowPix[i*shadowAngles2D*4:(i+1)*shadowAngles2D*4], q.shadowDist,
 			light, radius, q.occluders, q.occluderRuns)
 	}
-	img := &image.RGBA{Pix: q.shadowPix, Stride: shadowAngles2D * 4,
-		Rect: image.Rect(0, 0, shadowAngles2D, maxLights2D)}
-	return q.shadowTex.Write(0, 0, img)
+	s := &q.shadowFrom
+	s.valid = false
+	if err := q.shadowTex.Write(0, 0, q.shadowImg); err != nil {
+		return err
+	}
+	s.valid, s.lights, s.shadowed = true, lights, shadowed
+	s.points = append(s.points[:0], q.occluders...)
+	s.runs = append(s.runs[:0], q.occluderRuns...)
+	return nil
 }
 
 // shadowRow fills one light's row: the distance to the nearest occluder
@@ -133,13 +173,21 @@ func shadowSegment(dist []float32, light lin.Vec2, radius float32, a, b lin.Vec2
 	last := first + span/(2*math.Pi)*n
 	for k := int(math.Ceil(float64(first))); k <= int(math.Floor(float64(last))); k++ {
 		i := ((k % n) + n) % n
-		angle := 2 * math.Pi * ((float64(i)+0.5)/n - 0.5)
-		d := lin.V2(float32(math.Cos(angle)), float32(math.Sin(angle)))
-		if t, ok := raySegment(light, d, a, b); ok && t < dist[i] {
+		if t, ok := raySegment(light, shadowDirections[i], a, b); ok && t < dist[i] {
 			dist[i] = t
 		}
 	}
 }
+
+// shadowDirections is the unit direction at the centre of each texel of a
+// light's row, the angle the shader looks the row up at.
+var shadowDirections = func() (d [shadowAngles2D]lin.Vec2) {
+	for i := range d {
+		angle := 2 * math.Pi * ((float64(i)+0.5)/shadowAngles2D - 0.5)
+		d[i] = lin.V2(float32(math.Cos(angle)), float32(math.Sin(angle)))
+	}
+	return d
+}()
 
 // raySegment returns how far along a unit direction from an origin a
 // segment lies, and whether it is hit at all.

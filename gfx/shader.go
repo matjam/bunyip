@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
 	"reflect"
@@ -80,6 +81,7 @@ func (b Blend) factors() *render.BlendFactors {
 // queue. It is reset to BlendAlpha at the start of each frame.
 func (g *Graphics) SetBlend(b Blend) {
 	g.cur.blend, g.cur.customBlend = b, customBlend{}
+	g.cur.stream.invalidate()
 }
 
 // Blend returns the current built-in 2D blend mode. CustomBlended temporarily
@@ -133,6 +135,7 @@ type Shader struct {
 	mesh    bool
 	images  [4]*Texture
 	block   []byte // the latest uniform values
+	packed  []byte // scratch SetUniforms packs into before comparing with block
 	dirty   bool   // block changed since it was last placed in the arena
 	offset  uint32 // arena offset of the block for this frame
 	frame   uint64 // frame the offset belongs to
@@ -356,13 +359,19 @@ func (s *Shader) SetUniforms(v any) error {
 		return fmt.Errorf("gfx: shader uniforms: %w", err)
 	}
 	size := uniformAlign(plan.size, 16)
-	if cap(s.block) < size {
-		s.block = make([]byte, size)
+	if cap(s.packed) < size {
+		s.packed = make([]byte, size)
 	} else {
-		s.block = s.block[:size]
-		clear(s.block)
+		s.packed = s.packed[:size]
+		clear(s.packed)
 	}
-	plan.pack(s.block, rv)
+	plan.pack(s.packed, rv)
+	if s.block != nil && bytes.Equal(s.packed, s.block) {
+		// The same values again: draws keep sharing the block this frame
+		// already holds, so they can still merge into one draw call.
+		return nil
+	}
+	s.block, s.packed = s.packed, s.block
 	s.dirty = true
 	return nil
 }
@@ -375,7 +384,10 @@ func (s *Shader) SetImage(slot int, t *Texture) {
 		panic(fmt.Sprintf("gfx: image slot %d; want 0..3", slot))
 	}
 	s.g.requireTextureOwner(t)
-	s.images[slot] = t
+	if s.images[slot] != t {
+		s.images[slot] = t
+		s.g.imageVersion++
+	}
 }
 
 // uniformOffset places the shader's block in this frame's arena when it
@@ -395,6 +407,16 @@ func (s *Shader) uniformOffset() int32 {
 		s.offset, s.frame, s.dirty = off, g.frameNo, false
 	}
 	return int32(s.offset)
+}
+
+// placedAt reports whether the shader's uniforms for this frame are
+// already in the arena at offset, as uniformOffset would return it, so a
+// cached 2D state holding that offset is still current.
+func (s *Shader) placedAt(offset int32) bool {
+	if len(s.block) == 0 {
+		return offset == -1
+	}
+	return !s.dirty && s.frame == s.g.frameNo && int32(s.offset) == offset
 }
 
 // Reload replaces the shader's program with newly compiled SPIR-V from
@@ -445,7 +467,7 @@ func (g *Graphics) SetShader(s *Shader) {
 	if s != nil && s.mesh {
 		panic("gfx: SetShader wants a sprite shader; use Material.Shader for meshes")
 	}
-	g.cur.shader = s
+	g.cur.shader = s // the cached 2D state compares the shader itself
 }
 
 // setTime tells the graphics context the game clock, which shaders read

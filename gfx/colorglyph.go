@@ -321,11 +321,12 @@ func (f *Font) addCanvas(c *colorCanvas, ox, oy int) (glyph, bool) {
 		f.glyphErr = fmt.Errorf("gfx: glyph atlas is full (%d by %d); increase FontOptions.AtlasSize", f.packer.width, f.packer.height)
 		return glyph{empty: true}, true // atlas full; drawn as nothing
 	}
+	pix := f.colorPix()
 	for yy := range c.h {
 		for xx := range c.w {
 			i := (yy*c.w + xx) * 4
 			p := c.pix[i : i+4 : i+4]
-			f.pix.SetRGBA(x+xx, y+yy, rgbaBytes(p[0], p[1], p[2], p[3]))
+			pix.SetRGBA(x+xx, y+yy, rgbaBytes(p[0], p[1], p[2], p[3]))
 		}
 	}
 	side := float32(f.packer.width)
