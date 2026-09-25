@@ -24,6 +24,16 @@
 // substep count, one by default, for the reason Fluid2Spec.Substeps
 // gives.
 //
+// A cloth's distance constraints are solved in twelve batches, each a
+// set of links that share no particle (edges across and down, the two
+// diagonals and the bends, split by row or column parity), in that
+// order. A large cloth splits each batch across goroutines, a large
+// fluid splits each of its passes, and many soft bodies are stepped on
+// several goroutines at once. The pieces are cut the same way on every
+// machine and each writes only its own particles, so the result is the
+// same whatever GOMAXPROCS is, and the same as a small scene stepped on
+// one goroutine.
+//
 // Particle positions are world space. A cloth or a soft body carries no
 // transform, and is drawn by keeping a gfx.Mesh in step with it:
 //
@@ -31,8 +41,10 @@
 //	ctx.Gfx.DrawMesh(mesh, material, lin.Identity())
 //
 // Particles collide with the static and kinematic phys colliders in the
-// same world, through phys.SignedDistance3 and phys.SignedDistance2, and
-// with the ground plane Settings.Ground turns on. The shapes that carry a
+// same world, placed once an update with phys.PlaceShape3 and
+// phys.PlaceShape2, and with the ground plane Settings.Ground turns on.
+// Each component measures its particles only against the colliders
+// within reach of the box around them. The shapes that carry a
 // signed distance are Sphere, Box3, Capsule and compounds of those in 3D,
 // and Circle, Box2, Polygon2 and Capsule2 in 2D; other shapes, and the
 // colliders of dynamic bodies, are ignored. Soft bodies do not push rigid
@@ -98,22 +110,108 @@ func (s *Settings) groundFriction() float32 {
 	return s.GroundFriction
 }
 
-// solid3 is one 3D collider gathered for the step.
+// solid3 is one 3D collider gathered for the step, placed once so every
+// particle measures against the same rotation and bounds.
 type solid3 struct {
-	shape    phys.Shape3
-	pos      lin.Vec3
-	rot      lin.Quat
+	placed   phys.PlacedShape3
+	lo, hi   lin.Vec3
 	layer    uint32
 	friction float32
 }
 
-// solid2 is one 2D collider gathered for the step.
+// solid2 is one 2D collider gathered for the step, placed once with its
+// world polygon and edge normals.
 type solid2 struct {
-	shape    phys.Shape2
-	pos      lin.Vec2
-	rot      float32
+	placed   phys.PlacedShape2
+	lo, hi   lin.Vec2
 	layer    uint32
 	friction float32
+}
+
+// reach3 is the solids a component's particles can touch while they stay
+// inside a box: those whose bounds, grown by the particle radius and a
+// margin for rounding, meet it. A component fills it before it projects
+// its particles, and a particle that has left the box is measured
+// against every solid, so the result is the same as measuring every
+// particle against every solid.
+type reach3 struct {
+	lo, hi lin.Vec3
+	near   []int32
+}
+
+// reach2 is reach3 for fluids.
+type reach2 struct {
+	lo, hi lin.Vec2
+	near   []int32
+}
+
+// slack is how much further than the particle radius a solid is still
+// counted as within reach, so float rounding in a signed distance can
+// never put a skipped solid inside the radius. It grows with the size
+// of the coordinates, where rounding does.
+func slack(radius, magnitude float32) float32 {
+	return radius + 1e-3*abs32(radius) + 1e-4*(1+magnitude)
+}
+
+func abs32(v float32) float32 { return float32(math.Abs(float64(v))) }
+
+func mag3(v lin.Vec3) float32 { return max(abs32(v.X), abs32(v.Y), abs32(v.Z)) }
+
+func mag2(v lin.Vec2) float32 { return max(abs32(v.X), abs32(v.Y)) }
+
+// reach3 fills r with the solids within reach of particles of the given
+// radius inside the box lo, hi.
+func (s *state) reach3(r *reach3, lo, hi lin.Vec3, radius float32) {
+	r.lo, r.hi = lo, hi
+	r.near = r.near[:0]
+	m := max(mag3(lo), mag3(hi))
+	for i := range s.solids3 {
+		so := &s.solids3[i]
+		g := slack(radius, max(m, mag3(so.lo), mag3(so.hi)))
+		if so.lo.X-g > hi.X || lo.X > so.hi.X+g || so.lo.Y-g > hi.Y || lo.Y > so.hi.Y+g || so.lo.Z-g > hi.Z || lo.Z > so.hi.Z+g {
+			continue
+		}
+		r.near = append(r.near, int32(i))
+	}
+}
+
+func (s *state) reach2(r *reach2, lo, hi lin.Vec2, radius float32) {
+	r.lo, r.hi = lo, hi
+	r.near = r.near[:0]
+	m := max(mag2(lo), mag2(hi))
+	for i := range s.solids2 {
+		so := &s.solids2[i]
+		g := slack(radius, max(m, mag2(so.lo), mag2(so.hi)))
+		if so.lo.X-g > hi.X || lo.X > so.hi.X+g || so.lo.Y-g > hi.Y || lo.Y > so.hi.Y+g {
+			continue
+		}
+		r.near = append(r.near, int32(i))
+	}
+}
+
+// bounds3 is the box around the particles with inv above zero, the ones
+// a step projects, grown by pad; ok is false when there are none.
+func bounds3(pos []lin.Vec3, inv []float32, pad float32) (lo, hi lin.Vec3, ok bool) {
+	for i, p := range pos {
+		if inv[i] == 0 {
+			continue
+		}
+		if !ok {
+			lo, hi, ok = p, p, true
+			continue
+		}
+		lo, hi = lo.Min(p), hi.Max(p)
+	}
+	d := lin.V3(pad, pad, pad)
+	return lo.Sub(d), hi.Add(d), ok
+}
+
+func inside3(p, lo, hi lin.Vec3) bool {
+	return p.X >= lo.X && p.X <= hi.X && p.Y >= lo.Y && p.Y <= hi.Y && p.Z >= lo.Z && p.Z <= hi.Z
+}
+
+func inside2(p, lo, hi lin.Vec2) bool {
+	return p.X >= lo.X && p.X <= hi.X && p.Y >= lo.Y && p.Y <= hi.Y
 }
 
 // state is the system's own resource: the queries it walks and the
@@ -124,8 +222,9 @@ type state struct {
 	fluids  *ecs.Query1[Fluid2]
 	solids3 []solid3
 	solids2 []solid2
-	grads   []lin.Vec3 // volume-constraint gradients
-	rows    []lin.Vec3 // shape-matching scratch
+	// The soft bodies this update and their particle count.
+	bodyList []*SoftBody3
+	bodyWork int
 }
 
 func stateOf(w *ecs.World) *state {
@@ -182,7 +281,26 @@ func System(w *ecs.World, dt float64) {
 	iterations := settings.iterations()
 	for range settings.substeps() {
 		s.cloths.Each(func(_ ecs.Entity, c *Cloth) { c.step(s, settings, gravity3, h, iterations) })
-		s.bodies.Each(func(_ ecs.Entity, b *SoftBody3) { b.step(s, settings, gravity3, h, iterations) })
+	}
+	// Soft bodies never touch each other or the cloths, so each takes all
+	// its substeps on its own, and many of them are stepped on several
+	// goroutines at once with the same result.
+	s.bodyList, s.bodyWork = s.bodyList[:0], 0
+	s.bodies.Each(func(_ ecs.Entity, b *SoftBody3) {
+		s.bodyList = append(s.bodyList, b)
+		s.bodyWork += len(b.pos)
+	})
+	if len(s.bodyList) >= 2 && s.bodyWork >= parallelMin {
+		// The closure gets copies made here, so a small scene, which takes
+		// the other branch, moves nothing to the heap.
+		st, set, g, hh, it := s, settings, gravity3, h, iterations
+		parallelEach(len(st.bodyList), st.bodyWork, func(i int) {
+			st.bodyList[i].steps(st, set, g, hh, it)
+		})
+	} else {
+		for _, b := range s.bodyList {
+			b.steps(s, settings, gravity3, h, iterations)
+		}
 	}
 	// A fluid keeps its own substep count: its density solve is a
 	// whole-step pressure solve, and splitting it finer leaves the same
@@ -212,15 +330,17 @@ func (s *state) gather3(w *ecs.World) {
 				friction = b.Friction
 			}
 		}
-		if _, _, ok := phys.SignedDistance3(c.Shape, t.Position, t.Rotation, t.Position); !ok {
-			return
-		}
 		rot := t.Rotation
 		if rot == (lin.Quat{}) {
 			rot = lin.QuatIdentity()
 		}
 		pos := t.Position.Add(rot.Rotate(c.Offset))
-		s.solids3 = append(s.solids3, solid3{shape: c.Shape, pos: pos, rot: rot, layer: c.Layer, friction: friction})
+		placed := phys.PlaceShape3(c.Shape, pos, rot)
+		if _, _, ok := placed.SignedDistance(pos); !ok {
+			return
+		}
+		lo, hi := placed.Bounds()
+		s.solids3 = append(s.solids3, solid3{placed: placed, lo: lo, hi: hi, layer: c.Layer, friction: friction})
 	})
 }
 
@@ -240,11 +360,13 @@ func (s *state) gather2(w *ecs.World) {
 				friction = b.Friction
 			}
 		}
-		if _, _, ok := phys.SignedDistance2(c.Shape, t.Position, t.Rotation, t.Position); !ok {
+		pos := t.Position.Add(c.Offset.Rotate(t.Rotation))
+		placed := phys.PlaceShape2(c.Shape, pos, t.Rotation)
+		if _, _, ok := placed.SignedDistance(pos); !ok {
 			return
 		}
-		pos := t.Position.Add(c.Offset.Rotate(t.Rotation))
-		s.solids2 = append(s.solids2, solid2{shape: c.Shape, pos: pos, rot: t.Rotation, layer: c.Layer, friction: friction})
+		lo, hi := placed.Bounds()
+		s.solids2 = append(s.solids2, solid2{placed: placed, lo: lo, hi: hi, layer: c.Layer, friction: friction})
 	})
 }
 
@@ -256,13 +378,26 @@ func collides(mask, layer uint32) bool { return mask == 0 || layer == 0 || mask&
 // project3 pushes one particle out of the gathered solids and the ground
 // plane, keeping radius of clearance, and applies friction by holding
 // back the sideways part of the motion since prev.
-func (s *state) project3(pos *lin.Vec3, prev lin.Vec3, radius, friction float32, mask uint32, settings *Settings) {
-	for i := range s.solids3 {
+// While the particle is inside the reach box, the solids out of reach
+// are skipped; once a push takes it outside, the rest are tried in
+// order, as they always were.
+func (s *state) project3(r *reach3, pos *lin.Vec3, prev lin.Vec3, radius, friction float32, mask uint32, settings *Settings) {
+	ni := 0
+	for i := 0; i < len(s.solids3); i++ {
+		if inside3(*pos, r.lo, r.hi) {
+			for ni < len(r.near) && int(r.near[ni]) < i {
+				ni++
+			}
+			if ni == len(r.near) {
+				break
+			}
+			i = int(r.near[ni])
+		}
 		so := &s.solids3[i]
 		if !collides(mask, so.layer) {
 			continue
 		}
-		d, n, ok := phys.SignedDistance3(so.shape, so.pos, so.rot, *pos)
+		d, n, ok := so.placed.SignedDistance(*pos)
 		if !ok || d >= radius {
 			continue
 		}
@@ -293,13 +428,23 @@ func frictionSlide3(pos *lin.Vec3, prev, n lin.Vec3, depth, friction float32) {
 	*pos = pos.Sub(tangent.Mul(min(1, friction*depth/l)))
 }
 
-func (s *state) project2(pos *lin.Vec2, prev lin.Vec2, radius, friction float32, mask uint32) {
-	for i := range s.solids2 {
+func (s *state) project2(r *reach2, pos *lin.Vec2, prev lin.Vec2, radius, friction float32, mask uint32) {
+	ni := 0
+	for i := 0; i < len(s.solids2); i++ {
+		if inside2(*pos, r.lo, r.hi) {
+			for ni < len(r.near) && int(r.near[ni]) < i {
+				ni++
+			}
+			if ni == len(r.near) {
+				break
+			}
+			i = int(r.near[ni])
+		}
 		so := &s.solids2[i]
 		if !collides(mask, so.layer) {
 			continue
 		}
-		d, n, ok := phys.SignedDistance2(so.shape, so.pos, so.rot, *pos)
+		d, n, ok := so.placed.SignedDistance(*pos)
 		if !ok || d >= radius {
 			continue
 		}

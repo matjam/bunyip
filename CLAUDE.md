@@ -577,10 +577,45 @@ test's output.
   bounds and an owned geometry snapshot. Exact comparisons detect hull
   and compound edits even when their outer bounds stay unchanged;
   unchanged queries reuse the placed parts without allocating.
-- Each physics substep ends with a relax pass over the contacts that
-  solves them again with the position-correction bias dropped. The bias
-  leaves the bodies separating at about the sleep threshold, so without
-  the pass a stack never rests. Restitution is held in its own field
+- `phys/index3.go` and `index2.go` keep every collider placed (through
+  `placement3` and `placement2`, the one place that computes it) in the
+  order the collider query walks, between steps and queries. A walk
+  compares each collider with the key it was placed from and places
+  again only what changed; the step walks once an update and each query
+  once, since the ECS reports no writes. Queries take candidates from an
+  AABB tree (`phys/tree.go`) and test them sorted by row, which is walk
+  order, so results match a walk over every collider bit for bit. The
+  step sweeps the moving rows against each other and against a sorted
+  list of still rows (`sweepPairs` in `phys/axis.go`) in the order one
+  sweep over all of them gives. `index_test.go` checks both against the
+  old brute-force walk.
+- `phys/soft` splits large passes across goroutines with `parallel` in
+  `phys/soft/parallel.go`: fixed chunks of 1024, each writing only its
+  own particles, so results do not depend on `GOMAXPROCS`
+  (`TestParallelMatchesOneThread`). A cloth's links are stored in twelve
+  batches that share no particle (`orderLinks`); changing how links are
+  made means keeping `TestClothBatchesAreIndependent` passing. Call
+  sites take a pass in one call below `parallelMin` or
+  `linkParallelMin`, so the closure for the goroutines is only made
+  when it is used.
+- Go on arm64 fuses a multiply and an add into one instruction where
+  the compiler chooses, and the choice depends on the surrounding code,
+  so moving float arithmetic into another function can change the last
+  bits of a physics result on arm64 even when the arithmetic is the
+  same. On amd64 without `GOAMD64=v3`, and on arm64 built with
+  `-gcflags=all=-d=fmahash=n`, results are exact functions of the
+  arithmetic; compare physics dumps there to prove a refactor keeps
+  results bit for bit.
+- The last physics substep of an update ends with a relax pass over the
+  contacts (and in 3D the joints, through `jointSolver3.unbias`) that
+  solves them again with the position-correction bias dropped, and the
+  sleep test follows it, counting the whole update's time; in 3D it
+  measures turning by the speed of the collider's farthest point
+  (`extent3`). A capsule lying along a box face gets its two end
+  contacts from `capsuleBox` rather than the GJK path, whose third
+  contact wandered along the capsule and kept ragdolls rolling. The bias leaves the bodies separating at about the sleep
+  threshold, so without the pass a stack never rests; running it once
+  an update rather than every substep costs a quarter as much. Restitution is held in its own field
   (`solverContact.restBias`) and stays in the relax pass, so bounces
   survive it.
 - Input edges are fed into two sets at once: the per-update set that

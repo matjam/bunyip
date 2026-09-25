@@ -192,23 +192,49 @@ type jointSide2 struct {
 }
 
 func sideOf2(w *ecs.World, e ecs.Entity) (jointSide2, bool) {
-	s := jointSide2{e: e}
 	if e == ecs.None {
-		return s, true
+		return makeSide2(e, nil, nil), true
 	}
 	t, ok := w.Get[gfx.Transform2](e)
 	if !ok {
-		return s, false
+		return makeSide2(e, nil, nil), false
+	}
+	b, _ := w.Get[Body2](e)
+	return makeSide2(e, t, b), true
+}
+
+// side is sideOf2 for the step, which finds the entity's transform and
+// body among the bodies and colliders it has already gathered instead
+// of looking each up in the world.
+func (st *state2) side(w *ecs.World, e ecs.Entity) (jointSide2, bool) {
+	if e == ecs.None {
+		return makeSide2(e, nil, nil), true
+	}
+	if i, ok := st.bodyAt.get(e); ok && st.all[i].e == e {
+		return makeSide2(e, st.all[i].t, st.all[i].b), true
+	}
+	if k, ok := st.cols.row(e); ok {
+		return makeSide2(e, st.cols.rows[k].t, nil), true
+	}
+	return sideOf2(w, e)
+}
+
+// makeSide2 fills a joint side from an entity's transform and body; a
+// nil transform is the world.
+func makeSide2(e ecs.Entity, t *gfx.Transform2, b *Body2) jointSide2 {
+	s := jointSide2{e: e}
+	if t == nil {
+		return s
 	}
 	s.t, s.pos, s.rot = t, t.Position, t.Rotation
-	if b, ok := w.Get[Body2](e); ok {
+	if b != nil {
 		s.body = b
 		if !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
 			s.b = b
 			s.invMass, s.invI = b.invMass, b.invInertia
 		}
 	}
-	return s, true
+	return s
 }
 
 // wakeAcross2 wakes a sleeping body joined to one that is awake, so a
@@ -298,8 +324,8 @@ func gatherJoints2(w *ecs.World, s *state2) []jointSolver2 {
 	s.springSolvers = s.springSolvers[:0]
 	s.fixedSolvers = s.fixedSolvers[:0]
 	sides := func(ea, eb ecs.Entity) (jointSide2, jointSide2, bool) {
-		a, oka := sideOf2(w, ea)
-		b, okb := sideOf2(w, eb)
+		a, oka := s.side(w, ea)
+		b, okb := s.side(w, eb)
 		wakeAcross2(&a, &b)
 		return a, b, oka && okb && (a.b != nil || b.b != nil)
 	}

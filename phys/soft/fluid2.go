@@ -88,6 +88,9 @@ type Fluid2 struct {
 	cells    []cell2
 	nbrStart []int32
 	nbr      []int32
+	chunkNbr [][]int32 // each chunk's neighbour lists, for a large fluid
+	// reach is the colliders within reach of the particles this substep.
+	reach reach2
 }
 
 // cell2 is a particle's cell in the spatial hash.
@@ -254,55 +257,85 @@ func (f *Fluid2) step(s *state, settings *Settings, gravity lin.Vec2, h float32,
 		f.pos[i] = f.pos[i].Add(f.vel[i].Mul(h))
 	}
 	f.neighbours()
-	eps := f.Relaxation / (f.radius * f.radius)
-	wq := poly6(0.2*f.radius, f.radius)
+	f.gatherReach(s)
+	// Each pass below writes only its own particles and reads what the
+	// passes before it wrote, so large fluids split every pass across
+	// goroutines and get the same result as one goroutine would.
+	big := n >= parallelMin
 	for range iterations {
-		f.densities()
-		for i := range f.pos {
-			c := f.dens[i]/f.rest - 1
-			var sumSq, sx, sy float32
-			for _, j := range f.neighboursOf(i) {
-				d := f.pos[i].Sub(f.pos[int(j)])
-				r := d.Len()
-				g := spikyGrad(r, f.radius)
-				if g == 0 {
-					continue
-				}
-				gx, gy := d.X/r*g/f.rest, d.Y/r*g/f.rest
-				sx, sy = sx+gx, sy+gy
-				sumSq += gx*gx + gy*gy
-			}
-			sumSq += sx*sx + sy*sy
-			f.lambda[i] = -c / (sumSq + eps)
-		}
-		for i := range f.pos {
-			var d lin.Vec2
-			for _, jj := range f.neighboursOf(i) {
-				j := int(jj)
-				diff := f.pos[i].Sub(f.pos[j])
-				r := diff.Len()
-				g := spikyGrad(r, f.radius)
-				if g == 0 {
-					continue
-				}
-				corr := float32(0)
-				if wq > 0 && f.SurfaceTension > 0 {
-					q := poly6(r, f.radius) / wq
-					corr = -f.SurfaceTension * q * q * q * q
-				}
-				d = d.Add(diff.Mul((f.lambda[i] + f.lambda[j] + corr) * g / (r * f.rest)))
-			}
-			f.delta[i] = d
-		}
-		for i := range f.pos {
-			f.pos[i] = f.pos[i].Add(f.delta[i])
-			f.bound(s, i, settings)
+		if big {
+			parallel(n, f.densities)
+			parallel(n, f.lambdas)
+			parallel(n, f.deltas)
+			fl, st, set := f, s, settings
+			parallel(n, func(lo, hi int) { fl.apply(st, set, lo, hi) })
+		} else {
+			f.densities(0, n)
+			f.lambdas(0, n)
+			f.deltas(0, n)
+			f.apply(s, settings, 0, n)
 		}
 	}
 	for i := range f.pos {
 		f.vel[i] = f.pos[i].Sub(f.prev[i]).Mul(1 / h)
 	}
 	f.viscosity(h)
+}
+
+// lambdas solves each particle's density constraint multiplier.
+func (f *Fluid2) lambdas(lo, hi int) {
+	eps := f.Relaxation / (f.radius * f.radius)
+	for i := lo; i < hi; i++ {
+		c := f.dens[i]/f.rest - 1
+		var sumSq, sx, sy float32
+		for _, j := range f.neighboursOf(i) {
+			d := f.pos[i].Sub(f.pos[int(j)])
+			r := d.Len()
+			g := spikyGrad(r, f.radius)
+			if g == 0 {
+				continue
+			}
+			gx, gy := d.X/r*g/f.rest, d.Y/r*g/f.rest
+			sx, sy = sx+gx, sy+gy
+			sumSq += gx*gx + gy*gy
+		}
+		sumSq += sx*sx + sy*sy
+		f.lambda[i] = -c / (sumSq + eps)
+	}
+}
+
+// deltas works out each particle's position correction from the
+// multipliers.
+func (f *Fluid2) deltas(lo, hi int) {
+	wq := poly6(0.2*f.radius, f.radius)
+	for i := lo; i < hi; i++ {
+		var d lin.Vec2
+		for _, jj := range f.neighboursOf(i) {
+			j := int(jj)
+			diff := f.pos[i].Sub(f.pos[j])
+			r := diff.Len()
+			g := spikyGrad(r, f.radius)
+			if g == 0 {
+				continue
+			}
+			corr := float32(0)
+			if wq > 0 && f.SurfaceTension > 0 {
+				q := poly6(r, f.radius) / wq
+				corr = -f.SurfaceTension * q * q * q * q
+			}
+			d = d.Add(diff.Mul((f.lambda[i] + f.lambda[j] + corr) * g / (r * f.rest)))
+		}
+		f.delta[i] = d
+	}
+}
+
+// apply moves each particle by its correction and keeps it in the tank
+// and out of the colliders.
+func (f *Fluid2) apply(s *state, settings *Settings, lo, hi int) {
+	for i := lo; i < hi; i++ {
+		f.pos[i] = f.pos[i].Add(f.delta[i])
+		f.bound(s, i, settings)
+	}
 }
 
 // bound keeps one particle inside the tank and out of the colliders.
@@ -327,7 +360,19 @@ func (f *Fluid2) bound(s *state, i int, settings *Settings) {
 		}
 		f.pos[i] = p
 	}
-	s.project2(&f.pos[i], f.prev[i], r, f.Friction, f.Mask)
+	s.project2(&f.reach, &f.pos[i], f.prev[i], r, f.Friction, f.Mask)
+}
+
+// gatherReach picks the solids the particles can reach this substep:
+// those near the box around them, grown by a spacing so the small moves
+// the density solve makes rarely take a particle out of it.
+func (f *Fluid2) gatherReach(s *state) {
+	lo, hi := f.pos[0], f.pos[0]
+	for _, p := range f.pos[1:] {
+		lo, hi = lo.Min(p), hi.Max(p)
+	}
+	d := lin.V2(f.spacing, f.spacing)
+	s.reach2(&f.reach, lo.Sub(d), hi.Add(d), f.spacing/2)
 }
 
 // substeps is how many solves the fluid takes per update, at least one.
@@ -341,7 +386,21 @@ func (f *Fluid2) viscosity(h float32) {
 		return
 	}
 	rate := min(f.Viscosity*h, 1)
+	if n := len(f.pos); n >= parallelMin {
+		fl, r := f, rate
+		parallel(n, func(lo, hi int) { fl.pull(r, lo, hi) })
+	} else {
+		f.pull(rate, 0, n)
+	}
 	for i := range f.pos {
+		f.vel[i] = f.vel[i].Add(f.delta[i])
+	}
+}
+
+// pull works out how far each particle's velocity moves toward its
+// neighbours'.
+func (f *Fluid2) pull(rate float32, lo, hi int) {
+	for i := lo; i < hi; i++ {
 		var sum lin.Vec2
 		for _, jj := range f.neighboursOf(i) {
 			j := int(jj)
@@ -350,15 +409,12 @@ func (f *Fluid2) viscosity(h float32) {
 		}
 		f.delta[i] = sum.Mul(rate / f.rest)
 	}
-	for i := range f.pos {
-		f.vel[i] = f.vel[i].Add(f.delta[i])
-	}
 }
 
-// densities measures the density around every particle.
-func (f *Fluid2) densities() {
+// densities measures the density around each particle in [lo, hi).
+func (f *Fluid2) densities(lo, hi int) {
 	self := poly6(0, f.radius)
-	for i := range f.pos {
+	for i := lo; i < hi; i++ {
 		rho := self
 		for _, j := range f.neighboursOf(i) {
 			rho += poly6(f.pos[i].Sub(f.pos[int(j)]).Len(), f.radius)
@@ -429,9 +485,39 @@ func (f *Fluid2) neighbours() {
 		f.nbrStart = make([]int32, n+1)
 	}
 	f.nbrStart = f.nbrStart[:n+1]
+	if n < parallelMin {
+		f.nbr = f.gather(mask, 0, n, f.nbr)
+		f.nbrStart[n] = int32(len(f.nbr))
+		return
+	}
+	// A large fluid gathers each chunk's lists into a buffer of its own,
+	// then joins them in chunk order: the lists come out as one pass over
+	// every particle would make them.
+	chunks := (n + chunkSize - 1) / chunkSize
+	for len(f.chunkNbr) < chunks {
+		f.chunkNbr = append(f.chunkNbr, nil)
+	}
+	fl, m := f, mask
+	parallel(n, func(lo, hi int) {
+		c := lo / chunkSize
+		fl.chunkNbr[c] = fl.gather(m, lo, hi, fl.chunkNbr[c][:0])
+	})
+	for c := range chunks {
+		base := int32(len(f.nbr))
+		for i := c * chunkSize; i < min(n, (c+1)*chunkSize); i++ {
+			f.nbrStart[i] += base
+		}
+		f.nbr = append(f.nbr, f.chunkNbr[c]...)
+	}
+	f.nbrStart[n] = int32(len(f.nbr))
+}
+
+// gather appends the neighbours of particles lo to hi to dst, setting
+// each one's start to where its list begins in dst.
+func (f *Fluid2) gather(mask uint32, lo, hi int, dst []int32) []int32 {
 	h2 := f.radius * f.radius
-	for i := range f.pos {
-		f.nbrStart[i] = int32(len(f.nbr))
+	for i := lo; i < hi; i++ {
+		f.nbrStart[i] = int32(len(dst))
 		c := f.cells[i]
 		for dy := int32(-1); dy <= 1; dy++ {
 			for dx := int32(-1); dx <= 1; dx++ {
@@ -446,11 +532,11 @@ func (f *Fluid2) neighbours() {
 					}
 					d := f.pos[i].Sub(f.pos[j])
 					if d.Dot(d) < h2 {
-						f.nbr = append(f.nbr, j)
+						dst = append(dst, j)
 					}
 				}
 			}
 		}
 	}
-	f.nbrStart[n] = int32(len(f.nbr))
+	return dst
 }

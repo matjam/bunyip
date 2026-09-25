@@ -238,25 +238,52 @@ type jointSide3 struct {
 }
 
 func sideOf3(w *ecs.World, e ecs.Entity) (jointSide3, bool) {
-	s := jointSide3{e: e, rot: mat3FromQuat(lin.QuatIdentity())}
 	if e == ecs.None {
-		return s, true
+		return makeSide3(e, nil, nil), true
 	}
 	t, ok := w.Get[gfx.Transform](e)
 	if !ok {
-		return s, false
+		return makeSide3(e, nil, nil), false
+	}
+	b, _ := w.Get[Body3](e)
+	return makeSide3(e, t, b), true
+}
+
+// side is sideOf3 for the step, which finds the entity's transform and
+// body among the bodies and colliders it has already gathered instead
+// of looking each up in the world. Only an entity with neither is looked
+// up.
+func (st *state3) side(w *ecs.World, e ecs.Entity) (jointSide3, bool) {
+	if e == ecs.None {
+		return makeSide3(e, nil, nil), true
+	}
+	if i, ok := st.bodyAt.get(e); ok && st.all[i].e == e {
+		return makeSide3(e, st.all[i].t, st.all[i].b), true
+	}
+	if k, ok := st.cols.row(e); ok {
+		return makeSide3(e, st.cols.rows[k].t, nil), true
+	}
+	return sideOf3(w, e)
+}
+
+// makeSide3 fills a joint side from an entity's transform and body; a
+// nil transform is the world.
+func makeSide3(e ecs.Entity, t *gfx.Transform, b *Body3) jointSide3 {
+	s := jointSide3{e: e, rot: mat3FromQuat(lin.QuatIdentity())}
+	if t == nil {
+		return s
 	}
 	s.t = t
 	s.pos = t.Position
 	s.rot = mat3FromQuat(t.Rotation)
-	if b, ok := w.Get[Body3](e); ok {
+	if b != nil {
 		s.body = b
 		if !b.Sleeping && !b.asleep && !b.Kinematic && b.Mass > 0 {
 			s.b = b
 			s.invMass, s.invI = b.invMass, b.invInertia
 		}
 	}
-	return s, true
+	return s
 }
 
 // wakeAcross3 wakes a sleeping body joined to one that is awake, so a
@@ -315,7 +342,33 @@ type jointSolver3 interface {
 	prepare(h float32)
 	solve()
 	sides() (ecs.Entity, ecs.Entity)
+	// unbias drops the position correction for the relax pass, after
+	// which solve only holds the relative motion the joint allows.
+	unbias()
 }
+
+func (s *distanceSolver3) unbias() { s.bias = 0 }
+
+func (s *hingeSolver3) unbias() {
+	s.point.bias, s.bias = lin.Vec3{}, [2]float32{}
+	s.lower.unbias()
+	s.upper.unbias()
+}
+
+func (s *ballSolver3) unbias() {
+	s.point.bias = lin.Vec3{}
+	s.cone.unbias()
+	s.twist.unbias()
+}
+
+func (s *prismaticSolver3) unbias() {
+	s.ang.bias, s.bias = lin.Vec3{}, [2]float32{}
+	s.lower.bias, s.upper.bias = 0, 0
+}
+
+func (s *springSolver3) unbias() {}
+
+func (s *fixedSolver3) unbias() { s.point.bias, s.ang.bias = lin.Vec3{}, lin.Vec3{} }
 
 // jointItem3 is one prepared joint waiting to be put in entity order.
 // kind and at name the solver slice and the row in it, because the
@@ -348,8 +401,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 	s.springSolvers = s.springSolvers[:0]
 	s.fixedSolvers = s.fixedSolvers[:0]
 	s.distance.Each(func(e ecs.Entity, j *DistanceJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointDistance3, int32(len(s.distanceSolvers))})
@@ -357,8 +410,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.hinge.Each(func(e ecs.Entity, j *HingeJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointHinge3, int32(len(s.hingeSolvers))})
@@ -366,8 +419,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.ball.Each(func(e ecs.Entity, j *BallJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointBall3, int32(len(s.ballSolvers))})
@@ -375,8 +428,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.prismatic.Each(func(e ecs.Entity, j *PrismaticJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointPrismatic3, int32(len(s.prismaticSolvers))})
@@ -384,8 +437,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.spring.Each(func(e ecs.Entity, j *SpringJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointSpring3, int32(len(s.springSolvers))})
@@ -393,8 +446,8 @@ func gatherJoints3(w *ecs.World, s *state3) []jointSolver3 {
 		}
 	})
 	s.fixed.Each(func(e ecs.Entity, j *FixedJoint3) {
-		a, oka := sideOf3(w, j.A)
-		b, okb := sideOf3(w, j.B)
+		a, oka := s.side(w, j.A)
+		b, okb := s.side(w, j.B)
 		wakeAcross3(&a, &b)
 		if oka && okb && (a.b != nil || b.b != nil) {
 			s.items = append(s.items, jointItem3{e.ID(), jointFixed3, int32(len(s.fixedSolvers))})
@@ -524,17 +577,41 @@ type angularLimit3 struct {
 	impulse float32
 	sign    float32
 	active  bool
+	past    bool // the angle is past the limit rather than short of it
 }
 
-// prepare sets the limit up with position error c (positive past an
-// upper limit, negative past a lower one).
+// limitMargin is how close, in radians, a joint angle comes to a limit
+// before the limit takes part in the solve. Inside the margin the limit
+// only stops the joint closing the gap faster than it can in one
+// substep, so a joint resting at its limit meets a constraint that is
+// there every substep instead of one that switches on and off.
+const limitMargin = 0.1
+
+// prepare sets the limit up with position error c: past an upper limit
+// it is positive and past a lower one negative, and short of the limit
+// it is the gap still left, which the joint may close but not cross in
+// this substep.
 func (l *angularLimit3) prepare(a, b *jointSide3, axis lin.Vec3, c, sign, h float32) {
 	k := axis.Dot(a.invI.add(b.invI).mulVec(axis))
 	l.active = k > 1e-12
 	if !l.active {
 		return
 	}
-	l.axis, l.mass, l.bias, l.sign, l.impulse = axis, 1/k, jointBaumgarte/h*c, sign, 0
+	l.axis, l.mass, l.sign, l.impulse = axis, 1/k, sign, 0
+	l.past = c*sign <= 0
+	if l.past {
+		l.bias = jointBaumgarte / h * c
+	} else {
+		l.bias = c / h
+	}
+}
+
+// unbias drops the correction of a limit that has been passed and keeps
+// the bound on how fast one not yet reached may be approached.
+func (l *angularLimit3) unbias() {
+	if l.past {
+		l.bias = 0
+	}
 }
 
 func (l *angularLimit3) solve(a, b *jointSide3) {
@@ -812,10 +889,10 @@ func (s *hingeSolver3) prepare(h float32) {
 	s.motor.prepare(&s.a, &s.b, wa, j.MotorSpeed, j.MaxMotorTorque*h)
 	s.lower.active, s.upper.active = false, false
 	if j.MinAngle != 0 || j.MaxAngle != 0 {
-		if angle <= j.MinAngle {
+		if angle <= j.MinAngle+limitMargin {
 			s.lower.prepare(&s.a, &s.b, wa, angle-j.MinAngle, 1, h)
 		}
-		if angle >= j.MaxAngle {
+		if angle >= j.MaxAngle-limitMargin {
 			s.upper.prepare(&s.a, &s.b, wa, angle-j.MaxAngle, -1, h)
 		}
 	}
@@ -855,7 +932,7 @@ func (s *ballSolver3) prepare(h float32) {
 	wa := s.a.rot.mulVec(j.AxisA).Norm()
 	wb := s.b.rot.mulVec(axisB).Norm()
 	s.cone.active, s.twist.active = false, false
-	if cone := coneAngle(wa, wb); j.ConeAngle > 0 && cone > j.ConeAngle {
+	if cone := coneAngle(wa, wb); j.ConeAngle > 0 && cone > j.ConeAngle-limitMargin {
 		// Turning B about wa × wb swings it further from the centre.
 		n := wa.Cross(wb).Norm()
 		if n == (lin.Vec3{}) {
@@ -864,10 +941,11 @@ func (s *ballSolver3) prepare(h float32) {
 		s.cone.prepare(&s.a, &s.b, n, cone-j.ConeAngle, -1, h)
 	}
 	if j.TwistAngle > 0 {
+		// The side the twist leans to holds the one twist limit.
 		switch twist := twistAngle(qa, qb, axisB, j.rel); {
-		case twist > j.TwistAngle:
+		case twist >= 0 && twist > j.TwistAngle-limitMargin:
 			s.twist.prepare(&s.a, &s.b, wb, twist-j.TwistAngle, -1, h)
-		case twist < -j.TwistAngle:
+		case twist < 0 && twist < -j.TwistAngle+limitMargin:
 			s.twist.prepare(&s.a, &s.b, wb, twist+j.TwistAngle, 1, h)
 		}
 	}

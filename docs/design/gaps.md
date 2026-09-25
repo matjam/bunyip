@@ -443,8 +443,16 @@ geometry and between two moving bodies), sleeping, and character
 controllers are in; the physics-lab example draws colliders and
 contacts with the 3D debug lines. Cloth, volumetric soft bodies and 2D
 fluids are in `phys/soft`, on the same colliders, with the softbody
-example. Casts, sweeps and character moves take their candidates from
-the sorted sweep and allocate nothing once their buffers have grown.
+example. Collider placements are kept between steps; queries search a
+tree of their bounds and the step sweeps the moving colliders against a
+sorted list of the still ones. Casts, sweeps and character moves
+allocate nothing once their buffers have grown.
+
+- Each query walks every collider component once to notice transforms
+  and shapes the game changed since the last step, because the entity
+  system does not report writes. That walk is cheap per collider but
+  still grows with the level; a change signal from the entity system
+  would let queries skip it.
 
 - Soft bodies do not push rigid bodies back: a cloth or a jelly reads
   the static and kinematic colliders and never writes an impulse to a

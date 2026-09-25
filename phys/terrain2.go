@@ -65,26 +65,23 @@ func (c Chain2) bounds(pos lin.Vec2, rot float32) (lin.Vec2, lin.Vec2) {
 
 func (c Chain2) inertia(float32) float32 { return 0 }
 
-// segments returns the chain's edges in the world.
-func (c Chain2) segments(pos lin.Vec2, rot float32) [][2]lin.Vec2 {
+// segmentCount is how many edges the chain has.
+func (c Chain2) segmentCount() int {
 	n := len(c.Points)
-	if n < 2 {
-		return nil
+	switch {
+	case n < 2:
+		return 0
+	case c.Loop:
+		return n
 	}
-	cs, sn := cosSin(rot)
-	world := make([]lin.Vec2, n)
-	for i, p := range c.Points {
-		world[i] = rotate2(p, cs, sn).Add(pos)
-	}
-	count := n - 1
-	if c.Loop {
-		count = n
-	}
-	out := make([][2]lin.Vec2, count)
-	for i := range count {
-		out[i] = [2]lin.Vec2{world[i], world[(i+1)%n]}
-	}
-	return out
+	return n - 1
+}
+
+// segment returns edge i in the world, placed by pos and the cosine and
+// sine of the rotation. Placing one edge at a time allocates nothing.
+func (c Chain2) segment(i int, pos lin.Vec2, cs, sn float32) (lin.Vec2, lin.Vec2) {
+	n := len(c.Points)
+	return rotate2(c.Points[i], cs, sn).Add(pos), rotate2(c.Points[(i+1)%n], cs, sn).Add(pos)
 }
 
 // edgeThickness is half the thickness edges are given when clipped
@@ -132,12 +129,14 @@ func prims2(out []prim2, pts *[]lin.Vec2, s Shape2, pos lin.Vec2, rot float32, l
 		cs, sn := cosSin(rot)
 		return append(out, prim2{kind: primSegment, a: rotate2(sh.A, cs, sn).Add(pos), b: rotate2(sh.B, cs, sn).Add(pos)})
 	case Chain2:
-		for _, seg := range sh.segments(pos, rot) {
-			slo, shi := seg[0].Min(seg[1]), seg[0].Max(seg[1])
+		cs, sn := cosSin(rot)
+		for i := range sh.segmentCount() {
+			a, b := sh.segment(i, pos, cs, sn)
+			slo, shi := a.Min(b), a.Max(b)
 			if slo.X > hi.X || lo.X > shi.X || slo.Y > hi.Y || lo.Y > shi.Y {
 				continue
 			}
-			out = append(out, prim2{kind: primSegment, a: seg[0], b: seg[1]})
+			out = append(out, prim2{kind: primSegment, a: a, b: b})
 		}
 		return out
 	}
@@ -337,7 +336,7 @@ func raySegment(r Ray2, a, b lin.Vec2) (float32, lin.Vec2, bool) {
 }
 
 // rayCapsule2 casts a ray at a capsule: its two ends and its sides.
-func rayCapsule2(r Ray2, a, b lin.Vec2, radius float32) (float32, lin.Vec2, bool) {
+func rayCapsule2(sc *scratch2, r Ray2, a, b lin.Vec2, radius float32) (float32, lin.Vec2, bool) {
 	best, found := float32(math.Inf(1)), false
 	var bestN lin.Vec2
 	consider := func(t float32, n lin.Vec2, ok bool) {
@@ -345,8 +344,8 @@ func rayCapsule2(r Ray2, a, b lin.Vec2, radius float32) (float32, lin.Vec2, bool
 			best, bestN, found = t, n, true
 		}
 	}
-	consider(rayShape2(r, Circle{radius}, a, 0))
-	consider(rayShape2(r, Circle{radius}, b, 0))
+	consider(rayShape2(sc, r, Circle{radius}, a, 0))
+	consider(rayShape2(sc, r, Circle{radius}, b, 0))
 	side := b.Sub(a).Norm().Perp().Mul(radius)
 	consider(raySegment(r, a.Add(side), b.Add(side)))
 	consider(raySegment(r, a.Sub(side), b.Sub(side)))
@@ -354,13 +353,14 @@ func rayCapsule2(r Ray2, a, b lin.Vec2, radius float32) (float32, lin.Vec2, bool
 }
 
 // closestPoint2 finds the point of a placed shape nearest p and the
-// distance to it, zero when p is inside.
-func closestPoint2(s Shape2, pos lin.Vec2, rot float32, p lin.Vec2) (lin.Vec2, float32) {
+// distance to it, zero when p is inside. The shape is split into the
+// scratch's primsA and ptsA.
+func closestPoint2(sc *scratch2, s Shape2, pos lin.Vec2, rot float32, p lin.Vec2) (lin.Vec2, float32) {
 	best := float32(math.Inf(1))
 	var bestP lin.Vec2
 	r := lin.V2(best, best)
-	var pts []lin.Vec2
-	for _, pr := range prims2(nil, &pts, s, pos, rot, r.Neg(), r) {
+	sc.primsA = prims2(sc.primsA[:0], &sc.ptsA, s, pos, rot, r.Neg(), r)
+	for _, pr := range sc.primsA {
 		var q lin.Vec2
 		var d float32
 		switch pr.kind {

@@ -141,8 +141,25 @@ func collide3(sc *scratch3, out []contact3, sa Shape3, pa lin.Vec3, ra mat3, sb 
 		case Box3:
 			return sphereBox(out, a, pa, obb{pb, rb, b.Half})
 		}
+	case Capsule:
+		if b, ok := sb.(Box3); ok {
+			start := len(out)
+			if o, ok := capsuleBox(out, a, pa, ra, obb{pb, rb, b.Half}); ok {
+				return o
+			}
+			out = out[:start]
+		}
 	case Box3:
 		switch b := sb.(type) {
+		case Capsule:
+			start := len(out)
+			if o, ok := capsuleBox(out, b, pb, rb, obb{pa, ra, a.Half}); ok {
+				for i := start; i < len(o); i++ {
+					o[i].normal = o[i].normal.Neg()
+				}
+				return o
+			}
+			out = out[:start]
 		case Sphere:
 			start := len(out)
 			out = sphereBox(out, b, pb, obb{pa, ra, a.Half})
@@ -155,6 +172,54 @@ func collide3(sc *scratch3, out []contact3, sa Shape3, pa lin.Vec3, ra mat3, sb 
 		}
 	}
 	return convexPair(sc, out, sa, pa, ra, sb, pb, rb)
+}
+
+// capsuleBox handles a capsule lying along a box face: when both of its
+// end spheres touch the box through the same face, those two contacts
+// are its manifold, which is what the capsule rests on. It reports false
+// otherwise, and the caller falls back to the support-function path.
+// Normals point from the capsule to the box.
+//
+// The support-function path finds one more contact for a capsule lying
+// flat: the closest points of its axis and the face, which could be
+// anywhere along a segment parallel to the face, so from one substep to
+// the next that contact wandered along the capsule and its impulse moved
+// the torque the capsule rests under. Lying still on a floor, a capsule
+// joined to others then rolled on, a few millimetres a second, and a
+// ragdoll never slept.
+func capsuleBox(out []contact3, c Capsule, pos lin.Vec3, rot mat3, box obb) ([]contact3, bool) {
+	a, b := c.segment(pos, rot)
+	// Both cap centres must lie over the same face, outside the box and
+	// within that face's outline. The region over a face is convex, so
+	// the whole axis between them lies over the face too, no nearer to it
+	// than the nearer end, and the two end contacts are the manifold.
+	inv := box.rot.transpose()
+	fa, sa := faceRegion(inv.mulVec(a.Sub(box.center)), box.half)
+	fb, sb := faceRegion(inv.mulVec(b.Sub(box.center)), box.half)
+	if fa < 0 || fa != fb || sa != sb {
+		return out, false
+	}
+	start := len(out)
+	out = sphereBox(out, Sphere{Radius: c.Radius}, a, box)
+	out = sphereBox(out, Sphere{Radius: c.Radius}, b, box)
+	return out, len(out) == start+2
+}
+
+// faceRegion reports which face of a box, by axis and side, a local
+// point lies over: outside the box along exactly one axis. It returns -1
+// for a point inside or past an edge or corner.
+func faceRegion(p, half lin.Vec3) (axis int, positive bool) {
+	axis = -1
+	for i, v := range [3]float32{p.X, p.Y, p.Z} {
+		h := [3]float32{half.X, half.Y, half.Z}[i]
+		if v > h || v < -h {
+			if axis >= 0 {
+				return -1, false
+			}
+			axis, positive = i, v > 0
+		}
+	}
+	return axis, positive
 }
 
 func sphereSphere(out []contact3, a Sphere, pa lin.Vec3, b Sphere, pb lin.Vec3) []contact3 {
@@ -423,7 +488,9 @@ type Ray3 struct {
 	Origin, Dir lin.Vec3 // Dir need not be unit length
 }
 
-func rayShape3(r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.Vec3, ok bool) {
+// rayShape3 intersects a ray with a placed shape. A capsule or hull is
+// placed in the scratch's convA, so casting at one allocates nothing.
+func rayShape3(sc *scratch3, r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.Vec3, ok bool) {
 	switch sh := s.(type) {
 	case Sphere:
 		m := r.Origin.Sub(pos)
@@ -494,14 +561,15 @@ func rayShape3(r Ray3, s Shape3, pos lin.Vec3, rot mat3) (t float32, normal lin.
 				continue
 			}
 			pp, pr := p.place(pos, rot)
-			if t, n, ok := rayShape3(r, p.Shape, pp, pr); ok && t < best {
+			if t, n, ok := rayShape3(sc, r, p.Shape, pp, pr); ok && t < best {
 				best, bestN, found = t, n, true
 			}
 		}
 		return best, bestN, found
 	}
-	if c, _, ok := placeConvex(nil, s, pos, rot); ok {
-		return rayConvex(r, &c)
+	sc.convA, sc.hullA, ok = placeConvex(sc.hullA, s, pos, rot)
+	if ok {
+		return rayConvex(r, &sc.convA)
 	}
 	return 0, lin.Vec3{}, false
 }

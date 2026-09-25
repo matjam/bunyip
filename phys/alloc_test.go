@@ -83,6 +83,93 @@ func TestQueriesAllocNothing(t *testing.T) {
 			w := ccd3(100)
 			return func() { w.Update(step) }
 		}},
+		{"RaycastAll3IntoCapsulesAndHulls", func() func() {
+			w := ecs.NewWorld()
+			w.SetResource(Settings3{})
+			w.AddSystem("phys", System3)
+			for i := range 50 {
+				var s Shape3 = Capsule{Radius: 0.3, HalfHeight: 0.5}
+				if i%2 == 1 {
+					s = octahedron(0.5)
+				}
+				w.SpawnWith(gfx.At(float32(i)*2, 0, 0), Collider3{Shape: s})
+			}
+			w.Update(step)
+			var hits []Hit3
+			return func() {
+				hits = RaycastAll3Into(hits[:0], w, Ray3{Origin: lin.V3(-5, 0, 0), Dir: lin.V3(110, 0, 0)}, 0)
+			}
+		}},
+		{"ShapeCast3Mesh", func() func() {
+			w := ecs.NewWorld()
+			w.SetResource(Settings3{})
+			w.AddSystem("phys", System3)
+			w.SpawnWith(gfx.Transform{}, Collider3{Shape: flatMesh(20, 0, 20)})
+			w.Update(step)
+			return func() {
+				ShapeCast3(w, Capsule{Radius: 0.35, HalfHeight: 0.45}, lin.V3(3, 1.2, 2), lin.Quat{}, lin.V3(0, -0.5, 0), 0)
+			}
+		}},
+		{"CharacterMove3Mesh", func() func() {
+			w := ecs.NewWorld()
+			w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
+			w.AddSystem("phys", System3)
+			w.SpawnWith(gfx.Transform{}, Collider3{Shape: flatMesh(20, 0, 20)})
+			e := w.SpawnWith(gfx.At(0, 0.9, 0), Collider3{Shape: Capsule{Radius: 0.35, HalfHeight: 0.45}})
+			w.Update(step)
+			c := CharacterController3{Radius: 0.35, HalfHeight: 0.45, StepHeight: 0.35}
+			tr, _ := w.Get[gfx.Transform](e)
+			return func() {
+				tr.Position = lin.V3(0, 0.9, 0)
+				c.Move(w, e, lin.V3(2, -6, 1), step)
+			}
+		}},
+		{"CCDStepMesh", func() func() {
+			w := ecs.NewWorld()
+			w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0)})
+			w.AddSystem("phys", System3)
+			w.SpawnWith(gfx.Transform{}, Collider3{Shape: flatMesh(20, 0, 20)})
+			body := Dynamic3(1)
+			body.CCD = true
+			e := w.SpawnWith(gfx.At(0, 5, 0), body, Collider3{Shape: Capsule{Radius: 0.2, HalfHeight: 0.3}})
+			w.Update(step)
+			tr, _ := w.Get[gfx.Transform](e)
+			b, _ := w.Get[Body3](e)
+			return func() {
+				tr.Position, b.Vel = lin.V3(0, 5, 0), lin.V3(0, -300, 0)
+				w.Update(step)
+			}
+		}},
+		{"Raycast2ChainAndPolygon", func() func() {
+			w := ecs.NewWorld()
+			w.SetResource(Settings2{})
+			w.AddSystem("phys", System2)
+			w.SpawnWith(gfx.At2(0, 0), Collider2{Shape: Chain2{Points: []lin.Vec2{{X: -20, Y: 0}, {X: 0, Y: -1}, {X: 20, Y: 0}}}})
+			hexagon := Polygon2{Points: []lin.Vec2{{X: 1, Y: 0}, {X: 0.5, Y: 0.8}, {X: -0.5, Y: 0.8}, {X: -1, Y: 0}, {X: -0.5, Y: -0.8}, {X: 0.5, Y: -0.8}}}
+			for i := range 10 {
+				w.SpawnWith(gfx.At2(float32(i)*3-15, 3), Collider2{Shape: hexagon})
+			}
+			w.Update(step)
+			var hits []Hit2
+			return func() {
+				hits = RaycastAll2Into(hits[:0], w, Ray2{Origin: lin.V2(-18, 3), Dir: lin.V2(36, 0)}, 0)
+				Raycast2(w, Ray2{Origin: lin.V2(1, 5), Dir: lin.V2(0, -10)}, 0)
+				Nearest2(w, lin.V2(1, 1), 3, 0)
+			}
+		}},
+		{"Step2Chain", func() func() {
+			w := ecs.NewWorld()
+			w.SetResource(Settings2{Gravity: lin.V2(0, -10)})
+			w.AddSystem("phys", System2)
+			w.SpawnWith(gfx.At2(0, 0), Collider2{Shape: Chain2{Points: []lin.Vec2{{X: -20, Y: 0}, {X: 0, Y: -1}, {X: 20, Y: 0}}}})
+			e := w.SpawnWith(gfx.At2(0, 2), Dynamic2(1), Collider2{Shape: Circle{Radius: 0.5}})
+			w.Update(step)
+			tr, _ := w.Get[gfx.Transform2](e)
+			return func() {
+				tr.Position = lin.V2(0, -0.2)
+				w.Update(step)
+			}
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

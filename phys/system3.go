@@ -18,8 +18,10 @@ type Settings3 struct {
 	// before they sleep and drop out of the simulation until touched;
 	// zero means bodies never sleep. Half a second suits most games.
 	SleepTime float32
-	// SleepThreshold is the speed (units and radians per second) below
-	// which a body counts as resting; zero means 0.05.
+	// SleepThreshold is the speed, in units per second, below which a
+	// body counts as resting: both its own speed and the speed its turning
+	// gives the point of its collider farthest from its centre must be
+	// slower. Zero means 0.05.
 	SleepThreshold float32
 }
 
@@ -116,15 +118,18 @@ type Trigger3 struct {
 	Trigger, Other ecs.Entity
 }
 
+// entry3 is one collider placed in the world: a row of the collider
+// index, which the step and the queries share.
 type entry3 struct {
 	e      ecs.Entity
 	t      *gfx.Transform
-	b      *Body3
+	b      *Body3 // the body during a step; nil for a collider without one
 	c      *Collider3
 	pos    lin.Vec3
 	rot    mat3
 	lo, hi lin.Vec3
-	bi     int // index into the step's dynamic bodies, -1 otherwise
+	bi     int  // index into the step's dynamic bodies, -1 otherwise
+	shaped bool // the collider has a shape; rows without one are skipped
 }
 
 // bodyRec3 is one dynamic body seen this step.
@@ -143,15 +148,24 @@ type state3 struct {
 	prismatic *ecs.Query1[PrismaticJoint3]
 	spring    *ecs.Query1[SpringJoint3]
 	fixed     *ecs.Query1[FixedJoint3]
-	entries   []entry3
-	dynamic   []bodyRec3
-	index     slotMap
-	parent    []int
+	// cols is every collider placed in the world, kept between steps.
+	cols index3
+	// dynamic is the step's dynamic bodies and index maps each to its
+	// place there; all is every body and bodyAt maps each to its place.
+	dynamic []bodyRec3
+	index   slotMap
+	all     []bodyRec3
+	bodyAt  slotMap
+	// bodyRows are the collider rows of this step's bodies and moveSet
+	// those with the triggers that have no body: the rows the sweep
+	// moves.
+	bodyRows []int32
+	moveSet  []int32
+	parent   []int
 	// Scratch kept between steps so a step allocates nothing: ss serves
 	// the step and qs the queries, which the game may call while the
 	// step's buffers still hold contacts.
 	ss, qs scratch3
-	sweep  sweepState
 	// The colliders' convex parts in world space, and the buffers the
 	// sweeps and the queries gather their candidates into.
 	shapes    shapeCache3
@@ -224,8 +238,12 @@ func System3(w *ecs.World, dt float64) {
 	s := stateOf3(w)
 	h := float32(dt) / float32(substeps)
 	s.reported.reset()
-	for range substeps {
-		s.step(w, settings, h, iterations)
+	// Only the step moves colliders between its substeps, and it places
+	// the bodies it moves again itself, so the walk over every collider
+	// happens once an update.
+	s.cols.refresh(s.colliders)
+	for i := range substeps {
+		s.step(w, settings, h, iterations, i == substeps-1, float32(dt))
 	}
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform, b *Body3) {
 		b.force, b.torque = lin.Vec3{}, lin.Vec3{}
@@ -244,12 +262,27 @@ func active3(b *Body3) bool {
 	return b.invMass > 0
 }
 
-func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations int) {
-	// Integrate velocities.
+func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations int, last bool, dt float32) {
+	// Integrate velocities, and link each body's collider row to it.
+	x := &s.cols
 	s.dynamic = s.dynamic[:0]
+	s.all = s.all[:0]
+	s.bodyRows = s.bodyRows[:0]
 	s.index.reset()
+	s.bodyAt.reset()
 	s.bodies.Each(func(e ecs.Entity, t *gfx.Transform, b *Body3) {
 		b.fraction = 1
+		s.bodyAt.set(e, len(s.all))
+		s.all = append(s.all, bodyRec3{e: e, t: t, b: b})
+		row, hasRow := x.row(e)
+		var r *entry3
+		if hasRow {
+			r = &x.rows[row]
+			r.b, r.bi = b, -1
+			if r.shaped {
+				s.bodyRows = append(s.bodyRows, int32(row))
+			}
+		}
 		if b.Sleeping {
 			b.invMass, b.invInertia = 0, mat3{}
 			return
@@ -257,6 +290,9 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		if b.Kinematic || b.Mass <= 0 {
 			b.invMass, b.invInertia = 0, mat3{}
 			return
+		}
+		if r != nil {
+			r.bi = len(s.dynamic)
 		}
 		s.index.set(e, len(s.dynamic))
 		s.dynamic = append(s.dynamic, bodyRec3{e: e, t: t, b: b})
@@ -272,8 +308,8 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		b.invMass = 1 / b.Mass
 		b.invInertia = mat3{}
 		if !b.LockRotation {
-			if c, ok := w.Get[Collider3](e); ok && c.Shape != nil {
-				i := c.Shape.inertia(b.Mass)
+			if r != nil && r.c.Shape != nil {
+				i := r.c.Shape.inertia(b.Mass)
 				r := mat3FromQuat(t.Rotation)
 				local := diag3(inv(i.X), inv(i.Y), inv(i.Z))
 				b.invInertia = r.mul(local).mul(r.transpose())
@@ -293,29 +329,21 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 			b.AngVel = b.AngVel.Mul(max(0, 1-b.AngularDamping*h))
 		}
 	})
-	// Gather colliders with bounds. The furthest a moving body travels
-	// and whether any of them sweeps are noted here, where each body is
-	// already in hand, rather than in a pass of their own.
-	s.entries = s.entries[:0]
+	// Place the bodies' colliders where the bodies now are; the still
+	// colliders keep the placement the update's walk gave them. The
+	// furthest a moving body travels and whether any of them sweeps are
+	// noted here, where each body is already in hand.
 	s.motion, s.anyCCD = 0, false
-	s.colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
-		if c.Shape == nil {
-			return
-		}
-		b, _ := w.Get[Body3](e)
-		if b != nil && b.invMass > 0 {
+	for _, k := range s.bodyRows {
+		x.replace(int(k))
+		if b := x.rows[k].b; b.invMass > 0 {
 			s.motion = max(s.motion, abs32(b.Vel.X)*h)
 			s.anyCCD = s.anyCCD || b.CCD
 		}
-		rot := mat3FromQuat(t.Rotation)
-		pos := t.Position.Add(rot.mulVec(c.Offset))
-		lo, hi := c.Shape.bounds(pos, rot)
-		bi := -1
-		if i, ok := s.index.get(e); ok {
-			bi = i
-		}
-		s.entries = append(s.entries, entry3{e: e, t: t, b: b, c: c, pos: pos, rot: rot, lo: lo, hi: hi, bi: bi})
-	})
+	}
+	x.gather()
+	s.moveSet = append(append(s.moveSet[:0], s.bodyRows...), x.triggers...)
+	x.sortMoving(s.moveSet)
 	// Islands: bodies joined by contacts or joints sleep together.
 	s.parent = s.parent[:0]
 	for i := range s.dynamic {
@@ -324,12 +352,8 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 	// Broadphase and contact generation.
 	s.arbiters = s.arbiters[:0]
 	s.events = s.events[:0]
-	en := s.entries
-	slo, shi := s.sweep.begin(len(en))
-	for i := range en {
-		slo[i], shi[i] = en[i].lo.X, en[i].hi.X
-	}
-	s.sweep.pairs(func(i, j int) {
+	en := x.rows
+	sweepPairs(x.keyX, x.endX, x.moving.order, x.statics.order, func(i, j int) {
 		a, b := &en[i], &en[j]
 		if a.lo.Y > b.hi.Y || b.lo.Y > a.hi.Y || a.lo.Z > b.hi.Z || b.lo.Z > a.hi.Z {
 			return
@@ -405,12 +429,14 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 		w.Emit(p.ev)
 	}
 	// Continuous collision: clamp fast bodies to their first static hit.
-	for i := range en {
+	// Each clamp only lowers a fraction, so the order the bodies are
+	// swept in does not change the result.
+	for _, k := range s.bodyRows {
 		if !s.anyCCD {
 			break
 		}
-		e := &en[i]
-		if e.b == nil || !e.b.CCD || e.b.invMass == 0 {
+		e := &en[k]
+		if !e.b.CCD || e.b.invMass == 0 {
 			continue
 		}
 		s.sweepDynamic(e, h)
@@ -445,13 +471,27 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 	// Relax: the positions have taken the correction the bias asked for,
 	// so take the speed it added back out. Without this a resting stack
 	// keeps the separating speed the bias gave it and never rests below
-	// the sleep threshold.
+	// the sleep threshold. Only the speed the update ends with is read,
+	// by the sleep test and by the game, so the pass runs once, after the
+	// last substep, and the sleep test with it.
+	if !last {
+		return
+	}
+	// Joints relax with the contacts: a joint's correction left in a limb
+	// lying on the floor would otherwise keep it moving just as a
+	// contact's would.
+	for _, j := range joints {
+		j.unbias()
+	}
 	for range relaxIterations {
+		for _, j := range joints {
+			j.solve()
+		}
 		for i := range s.arbiters {
 			s.arbiters[i].solve(false)
 		}
 	}
-	s.sleep(settings, h)
+	s.sleep(settings, dt)
 }
 
 // integrateQuat turns q by angular velocity w for time h.
@@ -492,7 +532,15 @@ func (s *state3) sleep(settings *Settings3, h float32) {
 	for i, r := range s.dynamic {
 		b := r.b
 		if !b.asleep {
-			if b.Vel.Len() < thr && b.AngVel.Len() < thr {
+			// Turning is measured by the speed it gives the body's farthest
+			// point, so a thin limb rolling a few millimetres a second rests
+			// while a long plank turning as slowly does not.
+			spin := b.AngVel.Len()
+			if k, ok := s.cols.row(r.e); ok && s.cols.rows[k].shaped {
+				c := s.cols.rows[k].c
+				spin *= extent3(c.Shape) + c.Offset.Len()
+			}
+			if b.Vel.Len() < thr && spin < thr {
 				b.sleepTime += h
 			} else {
 				b.sleepTime = 0
@@ -514,10 +562,38 @@ func (s *state3) sleep(settings *Settings3, h float32) {
 	}
 }
 
+// extent3 is the distance from a shape's origin to its farthest point.
+func extent3(s Shape3) float32 {
+	switch sh := s.(type) {
+	case Sphere:
+		return sh.Radius
+	case Box3:
+		return sh.Half.Len()
+	case Capsule:
+		return sh.HalfHeight + sh.Radius
+	case ConvexHull:
+		var e float32
+		for _, p := range sh.Points {
+			e = max(e, p.Len())
+		}
+		return e
+	case Compound3:
+		var e float32
+		for _, p := range sh.Parts {
+			if p.Shape != nil {
+				e = max(e, p.Offset.Len()+extent3(p.Shape))
+			}
+		}
+		return e
+	}
+	return 0
+}
+
 // sweepStatic sweeps a body's collider along delta against colliders
 // that cannot move this step and returns the fraction at which it first
-// touches one. Candidates come from the broadphase's sorted axis, so the
-// cost is the colliders near the sweep rather than every collider.
+// touches one. Candidates come from the broadphase's sorted lists, so
+// the cost is the colliders near the sweep rather than every collider.
+// The nearest hit wins whatever order they are tried in.
 func (s *state3) sweepStatic(e *entry3, delta lin.Vec3) (float32, bool) {
 	parts := s.shapes.parts(e.e, e.c.Shape, e.pos, e.rot, e.lo, e.hi)
 	if len(parts) == 0 {
@@ -525,9 +601,11 @@ func (s *state3) sweepStatic(e *entry3, delta lin.Vec3) (float32, bool) {
 	}
 	slo, shi := e.lo.Min(e.lo.Add(delta)), e.hi.Max(e.hi.Add(delta))
 	best, found := float32(1), false
-	s.cands = s.sweep.overlapping(s.cands[:0], slo.X, shi.X)
+	x := &s.cols
+	s.cands = x.statics.overlapping(s.cands[:0], x.keyX, x.endX, slo.X, shi.X)
+	s.cands = x.moving.overlapping(s.cands, x.keyX, x.endX, slo.X, shi.X)
 	for _, ci := range s.cands {
-		o := &s.entries[ci]
+		o := &x.rows[ci]
 		if o == e || o.c.Trigger || active3(o.b) || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
@@ -553,9 +631,10 @@ func (s *state3) sweepDynamic(e *entry3, h float32) {
 	slo := min(e.lo.X, e.lo.X+e.b.Vel.X*h) - s.motion
 	shi := max(e.hi.X, e.hi.X+e.b.Vel.X*h) + s.motion
 	var parts []convexPart
-	s.cands = s.sweep.overlapping(s.cands[:0], slo, shi)
+	x := &s.cols
+	s.cands = x.moving.overlapping(s.cands[:0], x.keyX, x.endX, slo, shi)
 	for _, ci := range s.cands {
-		o := &s.entries[ci]
+		o := &x.rows[ci]
 		if o == e || o.b == nil || o.b.invMass == 0 || o.c.Trigger || !e.c.Layers.collides(o.c.Layers) {
 			continue
 		}
@@ -586,7 +665,7 @@ func (s *state3) sweepDynamic(e *entry3, h float32) {
 // collider, taking that collider's pieces from the cache.
 func (s *state3) sweepAgainst(parts []convexPart, o *entry3, delta lin.Vec3) (float32, bool) {
 	if m, ok := o.c.Shape.(MeshShape); ok {
-		return sweepMeshParts(parts, m, o.pos, o.rot, delta)
+		return sweepMeshParts(&s.ss, parts, m, o.pos, o.rot, delta)
 	}
 	return sweepAgainstParts(parts, s.shapes.parts(o.e, o.c.Shape, o.pos, o.rot, o.lo, o.hi), delta)
 }
@@ -612,10 +691,10 @@ func spheresMeet(dd, dv, vv, radius float32) bool {
 }
 
 // sweepMeshParts sweeps convex pieces against a placed triangle mesh.
-func sweepMeshParts(parts []convexPart, m MeshShape, pos lin.Vec3, rot mat3, delta lin.Vec3) (float32, bool) {
+func sweepMeshParts(sc *scratch3, parts []convexPart, m MeshShape, pos lin.Vec3, rot mat3, delta lin.Vec3) (float32, bool) {
 	best, found := float32(math.Inf(1)), false
 	for i := range parts {
-		if t, _, _, hit := sweepMesh(m, pos, rot, &parts[i].conv, parts[i].lo, parts[i].hi, delta); hit && t < best {
+		if t, _, _, hit := sweepMesh(sc, m, pos, rot, &parts[i].conv, parts[i].lo, parts[i].hi, delta); hit && t < best {
 			best, found = t, true
 		}
 	}
@@ -805,23 +884,31 @@ func Raycast3(w *ecs.World, r Ray3, mask uint32) (Hit3, bool) {
 }
 
 func raycast3(w *ecs.World, r Ray3, mask uint32, exclude ecs.Entity) (Hit3, bool) {
+	st := stateOf3(w)
+	st.cols.update(st.colliders)
+	return st.raycast(r, mask, exclude)
+}
+
+// raycast is raycast3 on an index already brought up to date. The tree
+// gives the colliders whose bounds the ray may reach and they are tried
+// in walk order, so ties go to the collider a walk would reach first.
+func (st *state3) raycast(r Ray3, mask uint32, exclude ecs.Entity) (Hit3, bool) {
 	best := Hit3{Distance: float32(math.Inf(1))}
 	found := false
-	stateOf3(w).colliders.Each(func(e ecs.Entity, t *gfx.Transform, c *Collider3) {
-		if c.Shape == nil || c.Trigger || e == exclude || !(Layers{Mask: mask}).collides(c.Layers) {
-			return
+	x := &st.cols
+	for _, k := range x.rayCandidates(r) {
+		p := &x.rows[k]
+		if p.c.Trigger || p.e == exclude || !(Layers{Mask: mask}).collides(p.c.Layers) {
+			continue
 		}
-		rot := mat3FromQuat(t.Rotation)
-		pos := t.Position.Add(rot.mulVec(c.Offset))
-		lo, hi := c.Shape.bounds(pos, rot)
-		if !raySlab3(r, lo, hi, min(best.Distance, 1)) {
-			return
+		if !raySlab3(r, p.lo, p.hi, min(best.Distance, 1)) {
+			continue
 		}
-		if tt, n, ok := rayShape3(r, c.Shape, pos, rot); ok && tt < best.Distance {
-			best = Hit3{Entity: e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
+		if tt, n, ok := rayShape3(&st.qs, r, p.c.Shape, p.pos, p.rot); ok && tt < best.Distance {
+			best = Hit3{Entity: p.e, Point: r.Origin.Add(r.Dir.Mul(tt)), Normal: n, Distance: tt}
 			found = true
 		}
-	})
+	}
 	return best, found
 }
 

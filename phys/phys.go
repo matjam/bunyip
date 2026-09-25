@@ -28,7 +28,8 @@
 // Shapes in 3D are Sphere, Box3, Capsule, ConvexHull, Compound3 (parts
 // placed on one body) and MeshShape (a static triangle mesh for terrain
 // and levels, with a triangle tree built by NewMeshShape). Sphere and
-// box pairs have exact tests; every other pair collides through support
+// box pairs have exact tests, as does a capsule lying along a box face;
+// every other pair collides through support
 // functions (GJK for distance, EPA for penetration) with face manifolds
 // clipped the same way as the box test's. Shapes in 2D are Circle, Box2,
 // Polygon2, Capsule2, and for terrain Edge2 and Chain2.
@@ -46,10 +47,15 @@
 // an Into form (RaycastAll2Into, RaycastAll3Into, OverlapShape2Into,
 // OverlapShape3Into) that appends to a slice the caller reuses, so a
 // game can reuse result and scratch storage after their buffers grow.
-// Shape sweeps gather nearby candidates and cache placed convex parts;
-// world queries still visit collider components to check current bounds.
-// In-place hull and compound edits invalidate cached geometry even when
-// bounds stay unchanged. MeshShape geometry must remain immutable.
+// Each collider's placement (its rotation, position and bounds) is kept
+// between steps and queries, and queries search a tree of those bounds,
+// so a ray or a sweep tests only the colliders near it, in the order a
+// walk over every collider would, with the same results. A query still
+// walks the collider components once to notice transforms and shapes the
+// game changed since the last step and places again only those; a
+// character controller's move walks once for all its sweeps. In-place
+// hull and compound edits are noticed even when bounds stay unchanged.
+// MeshShape geometry must remain immutable.
 //
 // Joints are components on their own entities that name the bodies they
 // connect: DistanceJoint2 and DistanceJoint3 (rods and ropes),
@@ -78,8 +84,6 @@
 package phys
 
 import (
-	"slices"
-
 	"github.com/matjam/bunyip/ecs"
 )
 
@@ -89,8 +93,8 @@ const (
 	baumgarte = 0.2   // fraction of the remaining penetration corrected per step
 	// Bounces slower than this are absorbed, so resting contacts settle.
 	restitutionThreshold = 1.0
-	// Passes over the contacts after the positions have moved that take
-	// the speed the position correction added back out.
+	// Passes over the contacts after the last substep's positions have
+	// moved that take the speed the position correction added back out.
 	relaxIterations = 2
 )
 
@@ -127,131 +131,6 @@ func keyOf(a, b ecs.Entity) pairKey {
 		return pairKey{a, b}
 	}
 	return pairKey{b, a}
-}
-
-// sweepState keeps the sort-and-sweep order and its keys between steps.
-// The order barely changes from one step to the next, so re-sorting what
-// was kept costs about one pass instead of the quadratic insertion sort
-// a fresh identity permutation costs.
-type sweepState struct {
-	order []int
-	keys  []float32
-	ends  []float32
-	// The longest interval, so a search that walks back from the last
-	// interval starting inside its target knows when to stop. It is
-	// measured on the first search of a step and not at all when a step
-	// makes none, which is every step with no body sweeping.
-	span    float32
-	spanned bool
-}
-
-// overlapping appends the index of every interval reaching into
-// [lo, hi] on the sweep axis to dst, so a query pays for the candidates
-// it finds rather than for every collider. The order is sorted by
-// interval start, so the walk begins at the last interval starting at or
-// before hi and stops one span before lo, which nothing can reach
-// across. It is only valid after pairs has sorted the order.
-func (s *sweepState) overlapping(dst []int32, lo, hi float32) []int32 {
-	n := len(s.keys)
-	if n == 0 || len(s.order) != n {
-		return dst
-	}
-	if !s.spanned {
-		for i := range n {
-			s.span = max(s.span, s.ends[i]-s.keys[i])
-		}
-		s.spanned = true
-	}
-	// The first position whose interval starts past hi.
-	first, last := 0, n
-	for first < last {
-		mid := int(uint(first+last) >> 1)
-		if s.keys[s.order[mid]] > hi {
-			last = mid
-		} else {
-			first = mid + 1
-		}
-	}
-	for x := first - 1; x >= 0; x-- {
-		i := s.order[x]
-		if s.keys[i] < lo-s.span {
-			break
-		}
-		if s.ends[i] >= lo {
-			dst = append(dst, int32(i))
-		}
-	}
-	return dst
-}
-
-// begin sizes the interval buffers for n bodies and returns them for
-// the caller to fill with each body's start and end on the sweep axis.
-func (s *sweepState) begin(n int) (lo, hi []float32) {
-	s.keys = slices.Grow(s.keys[:0], n)[:n]
-	s.ends = slices.Grow(s.ends[:0], n)[:n]
-	return s.keys, s.ends
-}
-
-// pairs runs a sort-and-sweep over the intervals passed to begin and
-// calls fn for every overlapping pair. The caller checks the other axes.
-func (s *sweepState) pairs(fn func(i, j int)) {
-	n := len(s.keys)
-	if len(s.order) != n {
-		s.order = s.order[:0]
-		for i := range n {
-			s.order = append(s.order, i)
-		}
-	}
-	s.span, s.spanned = 0, false
-	s.sort()
-	for x := range n {
-		i := s.order[x]
-		end := s.ends[i]
-		for y := x + 1; y < n; y++ {
-			j := s.order[y]
-			if s.keys[j] > end {
-				break
-			}
-			fn(i, j)
-		}
-	}
-}
-
-// less orders by interval start and then by index, so one sorted order
-// exists whatever permutation the sort starts from.
-func (s *sweepState) less(a, b int) bool {
-	ka, kb := s.keys[a], s.keys[b]
-	return ka < kb || (ka == kb && a < b)
-}
-
-// sort insertion-sorts the kept order. A step that moved everything, or
-// a set that changed a lot, spends the move budget and finishes with a
-// general sort instead.
-func (s *sweepState) sort() {
-	a := s.order
-	budget := 4*len(a) + 64
-	for i := 1; i < len(a); i++ {
-		v := a[i]
-		j := i - 1
-		for j >= 0 && s.less(v, a[j]) {
-			a[j+1] = a[j]
-			j--
-			budget--
-		}
-		a[j+1] = v
-		if budget < 0 {
-			slices.SortFunc(a, func(x, y int) int {
-				switch {
-				case s.less(x, y):
-					return -1
-				case s.less(y, x):
-					return 1
-				}
-				return 0
-			})
-			return
-		}
-	}
 }
 
 // slotMap maps an entity to an int by its slot in the world, with a

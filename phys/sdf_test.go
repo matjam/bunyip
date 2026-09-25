@@ -112,6 +112,77 @@ func TestSignedDistance2(t *testing.T) {
 	}
 }
 
+// TestPlacedShapesMatchSignedDistance checks that a shape placed once
+// measures every point exactly as SignedDistance3 and SignedDistance2
+// do, bit for bit, including through a copy of the placed value, and
+// that no point outside the bounds is closer to the shape than to them.
+func TestPlacedShapesMatchSignedDistance(t *testing.T) {
+	r := indexRand(9)
+	shapes3 := []Shape3{Sphere{Radius: 0.8}, Box3{Half: lin.V3(1, 0.5, 1.5)}, Capsule{Radius: 0.4, HalfHeight: 0.9},
+		Compound3{Parts: []Part3{{Shape: Sphere{Radius: 0.5}, Offset: lin.V3(1, 0, 0)}, {Shape: Box3{Half: lin.V3(0.3, 0.3, 0.3)}, Rotation: r.quat()}}},
+		octahedron(1), nil}
+	for i := range 4000 {
+		s := shapes3[i%len(shapes3)]
+		pos, rot := lin.V3(r.in(-5, 5), r.in(-5, 5), r.in(-5, 5)), r.quat()
+		if i%9 == 0 {
+			rot = lin.Quat{}
+		}
+		placed := PlaceShape3(s, pos, rot)
+		copied := placed
+		point := pos.Add(lin.V3(r.in(-4, 4), r.in(-4, 4), r.in(-4, 4)))
+		d, n, ok := SignedDistance3(s, pos, rot, point)
+		for _, p := range []*PlacedShape3{&placed, &copied} {
+			pd, pn, pok := p.SignedDistance(point)
+			if pok != ok || !sameBits(pd, d) || !sameBits3(pn, n) {
+				t.Fatalf("%T: placed %v %v %v, direct %v %v %v", s, pd, pn, pok, d, n, ok)
+			}
+		}
+		if lo, hi := placed.Bounds(); ok {
+			gap := point.Sub(point.Max(lo).Min(hi)).Len()
+			if gap > 0 && d < gap-1e-4 {
+				t.Fatalf("%T: a point %v outside the bounds is %v from the shape", s, gap, d)
+			}
+		}
+	}
+	shapes2 := []Shape2{Circle{Radius: 0.8}, Box2{HalfW: 1, HalfH: 0.5}, Capsule2{Radius: 0.3, HalfHeight: 0.7},
+		Polygon2{Points: []lin.Vec2{{X: -1, Y: -0.5}, {X: 1, Y: -0.5}, {X: 1.5, Y: 0.5}, {X: -0.5, Y: 0.8}}},
+		Polygon2{Points: func() []lin.Vec2 {
+			var pts []lin.Vec2
+			for k := range 20 {
+				a := float64(k) * 2 * math.Pi / 20
+				pts = append(pts, lin.V2(float32(math.Cos(a)), float32(math.Sin(a))))
+			}
+			return pts
+		}()},
+		Polygon2{Points: []lin.Vec2{{X: 0, Y: 0}, {X: 1, Y: 0}}}, Edge2{B: lin.V2(1, 0)}, nil}
+	for i := range 4000 {
+		s := shapes2[i%len(shapes2)]
+		pos, rot := lin.V2(r.in(-5, 5), r.in(-5, 5)), r.in(-3, 3)
+		placed := PlaceShape2(s, pos, rot)
+		copied := placed
+		point := pos.Add(lin.V2(r.in(-4, 4), r.in(-4, 4)))
+		d, n, ok := SignedDistance2(s, pos, rot, point)
+		for _, p := range []*PlacedShape2{&placed, &copied} {
+			pd, pn, pok := p.SignedDistance(point)
+			if pok != ok || !sameBits(pd, d) || !sameBits2(pn, n) {
+				t.Fatalf("%T: placed %v %v %v, direct %v %v %v", s, pd, pn, pok, d, n, ok)
+			}
+		}
+		if lo, hi := placed.Bounds(); ok {
+			gap := point.Sub(point.Max(lo).Min(hi)).Len()
+			if gap > 0 && d < gap-1e-4 {
+				t.Fatalf("%T: a point %v outside the bounds is %v from the shape", s, gap, d)
+			}
+		}
+	}
+	if n := testing.AllocsPerRun(100, func() {
+		p := PlaceShape2(shapes2[3], lin.V2(1, 2), 0.5)
+		p.SignedDistance(lin.V2(3, 3))
+	}); n != 0 {
+		t.Errorf("placing and measuring a small polygon allocates %v times", n)
+	}
+}
+
 func TestSignedDistance2Gradient(t *testing.T) {
 	shapes := []Shape2{Circle{Radius: 0.8}, Box2{HalfW: 1, HalfH: 0.5},
 		Polygon2{Points: []lin.Vec2{{X: -1, Y: -0.5}, {X: 1, Y: -0.5}, {X: 1.5, Y: 0.5}, {X: -0.5, Y: 0.8}}},

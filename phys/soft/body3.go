@@ -95,6 +95,8 @@ type SoftBody3 struct {
 	verts   []gfx.Vertex
 	indices []uint32
 	owner   []int32 // particle behind each render vertex
+	reach   reach3
+	grads   []lin.Vec3 // volume-constraint gradients
 }
 
 // NewSoftBody3 builds a soft body from a closed mesh. Vertices closer
@@ -273,6 +275,14 @@ func (b *SoftBody3) volume() float32 {
 	return v / 6
 }
 
+// steps runs an update's substeps. A body reads only the shared
+// colliders, so separate bodies may take their steps at the same time.
+func (b *SoftBody3) steps(s *state, settings *Settings, gravity lin.Vec3, h float32, iterations int) {
+	for range settings.substeps() {
+		b.step(s, settings, gravity, h, iterations)
+	}
+}
+
 // step runs one substep of the solver.
 func (b *SoftBody3) step(s *state, settings *Settings, gravity lin.Vec3, h float32, iterations int) {
 	if len(b.pos) == 0 {
@@ -299,11 +309,14 @@ func (b *SoftBody3) step(s *state, settings *Settings, gravity lin.Vec3, h float
 		b.solveVolume(s, h, len(b.links))
 	}
 	b.matchShape()
+	if lo, hi, ok := bounds3(b.pos, b.inv, b.Radius); ok {
+		s.reach3(&b.reach, lo, hi, b.Radius)
+	}
 	for i := range b.pos {
 		if b.inv[i] == 0 {
 			continue
 		}
-		s.project3(&b.pos[i], b.prev[i], b.Radius, b.Friction, b.Mask, settings)
+		s.project3(&b.reach, &b.pos[i], b.prev[i], b.Radius, b.Friction, b.Mask, settings)
 		b.vel[i] = b.pos[i].Sub(b.prev[i]).Mul(1 / h)
 	}
 }
@@ -314,10 +327,10 @@ func (b *SoftBody3) solveVolume(s *state, h float32, slot int) {
 	if len(b.tris) == 0 || b.restVol == 0 {
 		return
 	}
-	if cap(s.grads) < len(b.pos) {
-		s.grads = make([]lin.Vec3, len(b.pos))
+	if cap(b.grads) < len(b.pos) {
+		b.grads = make([]lin.Vec3, len(b.pos))
 	}
-	grads := s.grads[:len(b.pos)]
+	grads := b.grads[:len(b.pos)]
 	clear(grads)
 	for _, t := range b.tris {
 		p0, p1, p2 := b.pos[t[0]], b.pos[t[1]], b.pos[t[2]]
