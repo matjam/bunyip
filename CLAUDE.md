@@ -104,10 +104,12 @@ trace, the depth of field gather, rays, the second LDR image) are made
 by the `need*` methods the first time a setting asks for them and freed
 with the target set, so a game that turns none of them on pays nothing.
 The composite reads four samplers (scene, bloom, occlusion, rays) plus
-the LUT. Ambient occlusion, the light shafts, the reflection trace and
-the depth of field gather read `t.half`, the nearest of each 2x2 of the
-scene depth as an R32F image, built once after the scene pass
-(`buildHalfDepth`). Depth of field gathers at half size and mixes with
+the LUT. The reflection trace and the depth of field gather read
+`t.half`, the nearest of each 2x2 of the scene depth as an R32F image,
+built after the scene pass only on frames with reflections or depth of
+field (`buildHalfDepth`). Ambient occlusion and the light shafts read
+the full depth (`t.depthSet`): at half size they saved nothing and
+changed their output. Depth of field gathers at half size and mixes with
 the sharp image at full size (`dofcombine.frag`), weighting the four
 gather texels by depth.
 

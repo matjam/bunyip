@@ -389,7 +389,7 @@ func sunScreen(q *drawQueue) (lin.Vec2, bool) {
 }
 
 // renderRays draws the light shafts into the half-size rays image, which
-// the composite adds to the scene. It walks the half-size depth.
+// the composite adds to the scene.
 func (g *Graphics) renderRays(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets, sun lin.Vec2) {
 	p := &g.post
 	s := p.settings
@@ -415,7 +415,7 @@ func (g *Graphics) renderRays(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarge
 		c = White
 	}
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.rays})
-	p.fullscreen(cb, p.godRays, t.halfSet, postPush{
+	p.fullscreen(cb, p.godRays, t.depthSet, postPush{
 		a: [4]float32{sun.X, sun.Y, s.GodRays, decay},
 		b: [4]float32{float32(taps), density, 1 / float32(taps)},
 		c: [4]float32{c.R, c.G, c.B, 0},
@@ -423,12 +423,13 @@ func (g *Graphics) renderRays(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTarge
 	render.EndTargetPass(cb, t.rays)
 }
 
-// wantsHalfDepth reports whether a presented frame's post effects read
-// the half-size depth: ambient occlusion, the light shafts and depth of
-// field do. The reflection trace asks for it on its own.
+// wantsHalfDepth reports whether a presented frame's post chain reads
+// the half-size depth, which only depth of field does. The reflection
+// trace asks for it on its own. Ambient occlusion and the light shafts
+// read the full depth: at half size the saving was no more than the cost
+// of building the image, and their output changed.
 func (g *Graphics) wantsHalfDepth() bool {
-	s := g.post.settings
-	return s.AmbientOcclusion > 0 || s.GodRays > 0 || s.FocusDistance > 0
+	return g.post.settings.FocusDistance > 0
 }
 
 // buildHalfDepth fills the half-size depth from the scene depth: each

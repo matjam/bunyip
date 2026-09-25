@@ -1,9 +1,9 @@
 var<private> fragCoordValue: vec4f;
 
 // Half-resolution depth: each texel keeps the nearest of the four scene
-// depth texels under it, as a single float. Ambient occlusion, the
-// screen-space reflection trace, the light shafts and the depth of field
-// gather read this image rather than the full-size depth-stencil one, at
+// depth texels under it, as a single float. The screen-space reflection
+// trace and the depth of field gather read this image rather than the
+// full-size depth-stencil one, at
 // a quarter of the texels and without its packed format.
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthTexSampler: sampler;

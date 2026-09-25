@@ -736,8 +736,8 @@ func (g *Graphics) renderBloom(cb vk.VkCommandBuffer, t *sceneTargets, src vk.Vk
 	render.EndTargetPass(cb, t.bloomA)
 }
 
-// renderAO computes half-resolution ambient occlusion from the
-// half-resolution depth renderScene built and blurs it into aoB.
+// renderAO computes half-resolution ambient occlusion from the scene depth
+// and blurs it into aoB.
 func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets) {
 	p := &g.post
 	// The jittered projection, because the depth buffer was rasterised
@@ -751,7 +751,7 @@ func (g *Graphics) renderAO(cb vk.VkCommandBuffer, q *drawQueue, t *sceneTargets
 	p.ao.proj[15] = radius // see ssao.frag
 	render.BeginTargetPass(cb, render.PassDesc{Target: t.aoA})
 	vk.CmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Handle)
-	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Layout, 0, 1, &t.halfSet, 0, nil)
+	vk.CmdBindDescriptorSets(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, p.ssao.Layout, 0, 1, &t.depthSet, 0, nil)
 	vk.CmdPushConstants(cb, p.ssao.Layout, meshStages, 0, uint32(unsafe.Sizeof(p.ao)), unsafe.Pointer(&p.ao))
 	vk.CmdDraw(cb, 3, 1, 0, 0)
 	render.EndTargetPass(cb, t.aoA)
