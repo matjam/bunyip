@@ -328,7 +328,9 @@ func (g *Graphics) LoadModel(doc *gltf.Document) (*Model, error) {
 					for i := range verts {
 						verts[i] = vertex(i)
 					}
-					mesh, err = g.NewMesh(verts, p.Indices)
+					// The vertices were built for this upload, so the mesh
+					// keeps only the compact copy picking reads.
+					mesh, err = g.NewMeshWith(verts, p.Indices, MeshOptions{Keep: KeepPositions})
 					if mm != nil {
 						mm.base = verts
 					}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -124,8 +125,13 @@ func runOnce(cfg Config, game Game) error {
 	}
 	defer win.Close()
 	pw, ph := win.PixelSize()
-	r, err := render.NewRenderer(render.Config{AppName: cfg.Title, Validation: cfg.Validation, Log: cfg.Log},
-		surfaceExts, makeSurface, vk.VkExtent2D{Width: uint32(pw), Height: uint32(ph)}, !cfg.NoVSync)
+	rcfg := render.Config{AppName: cfg.Title, Validation: cfg.Validation, Log: cfg.Log}
+	if !cfg.NoPipelineCache {
+		if dir, err := os.UserCacheDir(); err == nil {
+			rcfg.PipelineCacheDir = filepath.Join(dir, "bunyip")
+		}
+	}
+	r, err := render.NewRenderer(rcfg, surfaceExts, makeSurface, vk.VkExtent2D{Width: uint32(pw), Height: uint32(ph)}, !cfg.NoVSync)
 	if err != nil {
 		return err
 	}

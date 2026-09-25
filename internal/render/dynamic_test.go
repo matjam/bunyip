@@ -79,6 +79,9 @@ func TestArenaAddErrors(t *testing.T) {
 // same size allocates nothing, so a frame of many uniform blocks costs
 // time linear in its size.
 func TestArenaAddAmortised(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's instrumentation allocates; counted in the ordinary run")
+	}
 	const blocks, align = 1000, 256
 	block := make([]byte, 64)
 	fill := func(a *Arena) {

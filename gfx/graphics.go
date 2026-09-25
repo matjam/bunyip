@@ -86,6 +86,16 @@ type Graphics struct {
 	// imageVersion counts the Shader.SetImage calls that changed an
 	// image, which changes the descriptor set a cached 2D state binds.
 	imageVersion uint64
+	// pending is the 3D scene's and post chain's pipelines, which
+	// newGraphics starts building on workers; waitPipelines waits for
+	// them before anything records with one.
+	pending *render.PipelineBatch
+	// prewarmed is the scene sample count whose pipeline variants
+	// startSampleVariants last began building.
+	prewarmed vk.VkSampleCountFlagBits
+	// geometry is the mesh buffers Update replaced, kept for the next
+	// update to write into; see geometry_pool.go.
+	geometry geometryPool
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
@@ -131,6 +141,9 @@ func (g *Graphics) rebuildMain() error {
 	samples := g.sceneSamples()
 	if g.post.main != nil && g.post.main.extent == ext && g.post.main.samples == samples {
 		return nil
+	}
+	if g.post.main != nil && g.post.main.samples != samples {
+		g.startSampleVariants(samples)
 	}
 	if old := g.post.main; old != nil {
 		g.post.main = nil
@@ -271,6 +284,11 @@ func newGraphics(r *render.Renderer) (_ *Graphics, err error) {
 			g.destroy()
 		}
 	}()
+	// Pipelines are built through the device's cache, loaded from the
+	// last run's file when there is one.
+	if err := r.OpenPipelineCache(engineShaderKey()); err != nil {
+		return nil, err
+	}
 	g.staging = r.Device.NewStaging()
 	// A device without timestamp queries leaves this nil, and every call
 	// on it does nothing, so the frame records no timings and FrameStats
@@ -302,21 +320,20 @@ func newGraphics(r *render.Renderer) (_ *Graphics, err error) {
 	g.sdfShader = &Shader{g: g, frag: shaders.SDFFrag, pipes: map[pipeKey]*render.Pipeline{}}
 	g.matrixShader = &Shader{g: g, frag: shaders.MatrixFrag, pipes: map[pipeKey]*render.Pipeline{}}
 	g.litShader = &Shader{g: g, frag: shaders.LitFrag, pipes: map[pipeKey]*render.Pipeline{}}
+	// The 2D pipelines every game draws with are built now: the first
+	// frame needs them.
 	for _, s := range []*Shader{g.spriteShader, g.sdfShader, g.matrixShader, g.litShader} {
 		if _, err := s.pipeline(pipeKey{}); err != nil {
 			return nil, err
 		}
 	}
-	if err := g.initMeshPass(); err != nil {
-		return nil, err
-	}
-	if err := g.initPost(); err != nil {
-		return nil, err
-	}
-	if err := g.initReflections(); err != nil {
-		return nil, err
-	}
-	if err := g.initLines(); err != nil {
+	// The 3D scene's and the post chain's pipelines build on workers
+	// while the game sets up; the first frame that records one of them
+	// waits for the batch, and a 2D game never does.
+	g.pending = r.Device.BeginPipelineBatch()
+	err = g.initScene()
+	r.Device.EndPipelineBatch()
+	if err != nil {
 		return nil, err
 	}
 	ext := r.Swapchain.Extent
@@ -325,6 +342,21 @@ func newGraphics(r *render.Renderer) (_ *Graphics, err error) {
 	}
 	g.cur = g.main
 	return g, nil
+}
+
+// initScene sets up the mesh pass, the post chain, the reflections and
+// the debug lines.
+func (g *Graphics) initScene() error {
+	if err := g.initMeshPass(); err != nil {
+		return err
+	}
+	if err := g.initPost(); err != nil {
+		return err
+	}
+	if err := g.initReflections(); err != nil {
+		return err
+	}
+	return g.initLines()
 }
 
 // spriteVert is the vertex program shared by every 2D pipeline.
@@ -345,6 +377,16 @@ func (g *Graphics) SetView(width, height float32) {
 // View returns the current 2D coordinate space size.
 func (g *Graphics) View() (float32, float32) { return g.cur.viewW, g.cur.viewH }
 
+// waitFrame blocks until the next frame's slot is free on the GPU. The
+// engine calls it before polling for input; begin waits itself when it
+// has not been called.
+func (g *Graphics) waitFrame() error {
+	if g.destroyed || g.frame != nil {
+		return nil
+	}
+	return g.r.WaitFrame()
+}
+
 // begin starts a frame cleared to clear. ok is false when the swapchain
 // was rebuilt and the frame should be skipped.
 func (g *Graphics) begin(clear Color) (ok bool, err error) {
@@ -359,6 +401,7 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	// frame in this slot staged or retired is finished with.
 	g.staging.Begin(g.frame.Slot)
 	g.freeRetired(g.frame.Slot)
+	g.geometry.begin(g.frame.Slot, g.frameNo)
 	g.waitBase = g.r.Device.Waits()
 	// Resetting the slot's queries publishes the timings the frame that
 	// used this slot recorded, which have landed because BeginFrame
@@ -375,6 +418,11 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	g.main.clear = clear
 	g.cur = g.main
 	g.subFrames = g.subFrames[:0]
+	// A sample count set since the last frame gets its pipeline variants
+	// started now, so they build while the game draws.
+	if m := g.post.main; m != nil && m.samples != g.sceneSamples() {
+		g.startSampleVariants(g.sceneSamples())
+	}
 	return true, nil
 }
 
@@ -714,6 +762,9 @@ func (g *Graphics) end(capture bool) (*image.RGBA, error) {
 	img, err := g.r.EndFrame(fr, capture)
 	g.stats.Waits = int(g.r.Device.Waits() - g.waitBase)
 	g.lastStats = g.stats
+	// Pipelines built since the cache was last written go to its file
+	// every few seconds, on a goroutine; most frames this only checks.
+	g.r.Device.SavePipelineCacheSoon()
 	return img, err
 }
 
@@ -729,6 +780,13 @@ func (g *Graphics) renderQueue(fr *render.Frame, q *drawQueue, t *sceneTargets, 
 	// composite writes an opaque image, and a render texture's alpha is
 	// what a game draws it back with.
 	flat := !has3D && s.Post2D && target == nil && len(q.stream.items) > 0
+	if has3D || flat {
+		// The scene and the composite record with pipelines newGraphics
+		// left building on workers.
+		if err := g.waitPipelines(); err != nil {
+			return err
+		}
+	}
 	bloom := (has3D || flat) && s.Bloom > 0
 	ao := has3D && s.AmbientOcclusion > 0
 	rays := false
@@ -994,6 +1052,9 @@ func (g *Graphics) destroy() {
 		return
 	}
 	_ = g.r.Device.WaitIdle()
+	// Nothing may be freed while a worker still builds a pipeline that
+	// refers to it.
+	_ = g.waitPipelines()
 	g.destroyed = true
 	g.frame = nil
 	// Resources can free cached descriptors and retire child resources,
@@ -1014,6 +1075,7 @@ func (g *Graphics) destroy() {
 	g.particles.destroy()
 	g.post.destroy(g)
 	g.meshes.destroy(g)
+	g.geometry.destroy()
 	if g.white != nil {
 		g.white.Destroy()
 	}

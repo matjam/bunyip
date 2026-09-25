@@ -187,7 +187,8 @@ func TestStaticBatchLeaves(t *testing.T) {
 func BenchmarkStaticBatch(b *testing.B) {
 	g := &Graphics{}
 	cv, ci := CubeMesh()
-	cube := &Mesh{verts: cv, indices: ci, IndexCount: uint32(len(ci))}
+	cube := &Mesh{IndexCount: uint32(len(ci)), vertexCount: len(cv)}
+	cube.geom.set(KeepVertices, cv, ci)
 	for _, v := range cv {
 		cube.Min, cube.Max = cube.Min.Min(v.Pos), cube.Max.Max(v.Pos)
 	}

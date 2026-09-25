@@ -180,6 +180,12 @@ func (f *windowFamily) run() error {
 		// poll that returns empty, from a timeout or an event the platform
 		// did not translate, runs nothing that is not otherwise due.
 		idle := f.idleFor(now)
+		// The wait for each window's frame slot on the GPU comes before the
+		// poll, so the events a frame's updates and draw read arrive after
+		// the wait instead of going stale during it.
+		if err := f.waitFrames(); err != nil {
+			return err
+		}
 		switch {
 		case idle == 0:
 			f.dispatch(f.app.Poll(false))
@@ -219,6 +225,24 @@ func (f *windowFamily) run() error {
 			f.pace()
 		} else {
 			f.nextFrame = time.Time{}
+		}
+	}
+	return nil
+}
+
+// waitFrames waits, for every window that can draw, until the GPU has
+// finished with the frame slot its next frame records into. A window
+// whose graphics driver cannot wait apart from Begin waits there instead.
+func (f *windowFamily) waitFrames() error {
+	for _, w := range f.windows {
+		l := w.loop
+		if w.closed || !l.shouldDraw() {
+			continue
+		}
+		if fw, ok := l.gfx.(hook.FrameWaiter); ok {
+			if err := fw.WaitFrame(); err != nil {
+				return fmt.Errorf("bunyip: window %q: %w", l.cfg.Title, err)
+			}
 		}
 	}
 	return nil

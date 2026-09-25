@@ -1,6 +1,7 @@
 package render
 
 import (
+	"context"
 	"log/slog"
 	"unsafe"
 
@@ -37,17 +38,29 @@ func onDebugMessage(severity vk.VkDebugUtilsMessageSeverityFlagsEXT, _ vk.VkDebu
 	if data == nil || debugLog == nil {
 		return vk.VK_FALSE
 	}
-	msg := cString(data.PMessage)
-	id := cString(data.PMessageIdName)
+	// Loader and driver chatter (INFO and VERBOSE) only shows at debug
+	// level, and so do loader warnings.
+	level := slog.LevelDebug
 	switch {
 	case severity&vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT != 0:
-		debugLog.Error("vulkan: "+msg, "id", id)
-	case severity&vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT != 0 && id != "Loader Message":
-		debugLog.Warn("vulkan: "+msg, "id", id)
-	default:
-		// Loader and driver chatter (INFO and VERBOSE) only shows at debug level.
-		debugLog.Debug("vulkan: "+msg, "id", id)
+		level = slog.LevelError
+	case severity&vk.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT != 0:
+		level = slog.LevelWarn
 	}
+	// A message the log would drop costs nothing: the layers report from
+	// whichever thread made the call, the submit goroutine included, and
+	// copying the strings out would allocate there every frame.
+	if !debugLog.Enabled(context.Background(), level) {
+		return vk.VK_FALSE
+	}
+	id := cString(data.PMessageIdName)
+	if level == slog.LevelWarn && id == "Loader Message" {
+		level = slog.LevelDebug
+		if !debugLog.Enabled(context.Background(), level) {
+			return vk.VK_FALSE
+		}
+	}
+	debugLog.Log(context.Background(), level, "vulkan: "+cString(data.PMessage), "id", id)
 	return vk.VK_FALSE
 }
 

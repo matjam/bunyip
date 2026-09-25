@@ -55,8 +55,8 @@ type Mesh struct {
 	IndexCount  uint32
 	Min, Max    lin.Vec3 // axis-aligned bounds in mesh space
 	vbuf, ibuf  *render.Buffer
-	verts       []Vertex // kept for picking
-	indices     []uint32
+	geom        meshGeometry // what is kept for picking and occlusion, see meshgeom.go
+	vertexCount int          // vertices uploaded, whatever geom keeps
 	skinned     bool
 	destroyed   bool // Destroy was called; the buffers live until the frame retires them
 	boundsFixed bool // Min and Max came from SetBounds, not from the vertices
@@ -67,46 +67,99 @@ type Mesh struct {
 	g                  *Graphics
 }
 
-// Vertices returns the mesh's vertices as uploaded, for picking and
-// physics; the slice is the mesh's own, so do not change it.
-func (m *Mesh) Vertices() []Vertex { return m.verts }
+// Vertices returns the mesh's vertices as the mesh keeps them. A mesh
+// from NewMesh returns the slice it was given, which is the mesh's own,
+// so do not change it. A mesh that keeps positions (see KeepPositions)
+// returns a new slice each call with each vertex's position and the
+// other fields zero; one that keeps nothing returns nil.
+func (m *Mesh) Vertices() []Vertex { return m.geom.vertices() }
 
-// Indices returns the mesh's triangle indices, three per triangle; the
-// slice is the mesh's own and must not be modified. Copy it to retain
-// a snapshot across Update.
-func (m *Mesh) Indices() []uint32 { return m.indices }
+// Indices returns the mesh's triangle indices, three per triangle, or nil
+// for a mesh that keeps no geometry. The slice may be the mesh's own, so
+// it must not be modified; copy it to retain a snapshot across Update.
+func (m *Mesh) Indices() []uint32 { return m.geom.indices() }
+
+// ReleaseGeometry drops the geometry the mesh keeps in main memory, as if
+// it had been made with KeepNone, for a mesh the game will not pick or
+// use as an occluder: a loaded model's parts, a large static scene.
+// Drawing is unaffected. Update keeps nothing afterwards either.
+func (m *Mesh) ReleaseGeometry() { m.geom.set(KeepNone, nil, nil) }
 
 // Update replaces the mesh's geometry: a voxel chunk after a block is
-// broken, terrain after an edit, a procedural mesh that grows. Draws
-// already queued this frame keep the old geometry, which is freed once
-// the frame is done, so Update is safe at any point of a frame. Skinned
+// broken, terrain after an edit, a procedural mesh that grows. Update is
+// safe at any point of a frame: the buffers it replaces are kept until
+// the frames that may read them are done, and an update of the same size
+// or smaller writes into buffers an earlier update replaced, so a mesh
+// updated every frame allocates none once it has a few. A draw records
+// with the geometry the mesh has when the frame is submitted. Skinned
 // meshes cannot be updated.
 func (m *Mesh) Update(verts []Vertex, indices []uint32) error {
 	if m.skinned {
 		return fmt.Errorf("gfx: a skinned mesh cannot be updated")
 	}
-	if m.vbuf == nil || m.destroyed {
-		return fmt.Errorf("gfx: update of a destroyed mesh")
-	}
 	if len(verts) == 0 {
 		return fmt.Errorf("gfx: mesh needs vertices")
 	}
-	packed := make([]gpuVertex, len(verts))
-	for i, v := range verts {
-		packed[i] = v.gpu()
+	return m.replace(verts, indices, nil, vertexSize)
+}
+
+// replace uploads new geometry into the mesh: vdata is the vertices
+// packed for the GPU, or nil to pack verts as plain vertices. The
+// replaced buffers go to the Graphics' geometry pool.
+func (m *Mesh) replace(verts []Vertex, indices []uint32, vdata []byte, stride int) error {
+	if m.vbuf == nil || m.destroyed {
+		return fmt.Errorf("gfx: update of a destroyed mesh")
 	}
-	fresh, err := m.g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
+	if err := checkGeometry(verts, indices); err != nil {
+		return err
+	}
+	g := m.g
+	if vdata == nil {
+		vdata = g.packVertices(verts)
+	}
+	vbuf, err := g.geometryBuffer(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
 	if err != nil {
 		return err
 	}
-	m.retire()
-	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
-	m.IndexCount, m.verts, m.indices = fresh.IndexCount, fresh.verts, fresh.indices
-	if !m.boundsFixed {
-		m.Min, m.Max = fresh.Min, fresh.Max
+	ibuf, err := g.geometryBuffer(unsafe.Slice((*byte)(unsafe.Pointer(&indices[0])), len(indices)*4), vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT)
+	if err != nil {
+		// The vertex buffer may have a copy recorded into it, so it waits
+		// out the frame like a replaced one.
+		g.recycleGeometry(vbuf, nil)
+		return err
 	}
-	m.g.trackMesh(m, vertexSize)
+	g.recycleGeometry(m.vbuf, m.ibuf)
+	m.vbuf, m.ibuf = vbuf, ibuf
+	m.IndexCount, m.vertexCount = uint32(len(indices)), len(verts)
+	m.geom.set(m.geom.keep, verts, indices)
+	if !m.boundsFixed {
+		m.Min, m.Max = vertexBounds(verts)
+	}
+	g.trackMesh(m, stride)
 	return nil
+}
+
+// checkGeometry reports why vertices and indices cannot make a mesh.
+func checkGeometry(verts []Vertex, indices []uint32) error {
+	if len(verts) == 0 || len(indices) == 0 || len(indices)%3 != 0 {
+		return fmt.Errorf("gfx: mesh needs vertices and a whole number of triangles (got %d vertices, %d indices)", len(verts), len(indices))
+	}
+	for _, i := range indices {
+		if int(i) >= len(verts) {
+			return fmt.Errorf("gfx: index %d out of range for %d vertices", i, len(verts))
+		}
+	}
+	return nil
+}
+
+// vertexBounds is the box around the vertices' positions.
+func vertexBounds(verts []Vertex) (lo, hi lin.Vec3) {
+	lo, hi = verts[0].Pos, verts[0].Pos
+	for _, v := range verts[1:] {
+		lo = lin.V3(min(lo.X, v.Pos.X), min(lo.Y, v.Pos.Y), min(lo.Z, v.Pos.Z))
+		hi = lin.V3(max(hi.X, v.Pos.X), max(hi.Y, v.Pos.Y), max(hi.Z, v.Pos.Z))
+	}
+	return lo, hi
 }
 
 // retire hands the mesh's current buffers to the frame slot's retire
@@ -137,16 +190,25 @@ func (m *Mesh) boundingSphere(model lin.Mat4) (centre lin.Vec3, radius float32) 
 	return centre, m.Max.Sub(m.Min).Len() * 0.5 * scale
 }
 
-// NewMesh uploads vertices and triangle indices.
+// NewMesh uploads vertices and triangle indices. The mesh keeps the two
+// slices for Vertices, Indices, Intersect and AddOccluder3D; NewMeshWith
+// keeps less.
 func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
+	return g.NewMeshWith(verts, indices, MeshOptions{})
+}
+
+// NewMeshWith is NewMesh with options. To keep only a compact copy of the
+// positions and indices for picking, pass MeshOptions{Keep:
+// KeepPositions}; to keep nothing for a mesh the game never picks,
+// KeepNone.
+func (g *Graphics) NewMeshWith(verts []Vertex, indices []uint32, opts MeshOptions) (*Mesh, error) {
 	if len(verts) == 0 {
 		return nil, fmt.Errorf("gfx: mesh needs vertices")
 	}
-	packed := make([]gpuVertex, len(verts))
-	for i, v := range verts {
-		packed[i] = v.gpu()
+	if err := checkGeometry(verts, indices); err != nil {
+		return nil, err
 	}
-	m, err := g.newMesh(verts, indices, unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize))
+	m, err := g.newMeshKeep(verts, indices, g.packVertices(verts), opts.Keep)
 	if err == nil {
 		g.trackMesh(m, vertexSize)
 	}
@@ -156,26 +218,24 @@ func (g *Graphics) NewMesh(verts []Vertex, indices []uint32) (*Mesh, error) {
 // trackMesh records a mesh in the live resource list, with the size one
 // of its vertices takes on the GPU.
 func (g *Graphics) trackMesh(m *Mesh, stride int) {
-	g.track(m, Resource{Kind: ResourceMesh, Vertices: len(m.verts), Indices: len(m.indices),
-		Bytes: len(m.verts)*stride + len(m.indices)*4})
+	g.track(m, Resource{Kind: ResourceMesh, Vertices: m.vertexCount, Indices: int(m.IndexCount),
+		Bytes: m.vertexCount*stride + int(m.IndexCount)*4})
 }
 
 // newMesh uploads the GPU vertex bytes (plain or skinned layout) and keeps
-// the plain vertices for picking and bounds.
+// the plain vertices' positions for picking, and their bounds.
 func (g *Graphics) newMesh(verts []Vertex, indices []uint32, vdata []byte) (*Mesh, error) {
-	if len(verts) == 0 || len(indices) == 0 || len(indices)%3 != 0 {
-		return nil, fmt.Errorf("gfx: mesh needs vertices and a whole number of triangles (got %d vertices, %d indices)", len(verts), len(indices))
+	return g.newMeshKeep(verts, indices, vdata, KeepPositions)
+}
+
+// newMeshKeep is newMesh keeping the geometry keep says.
+func (g *Graphics) newMeshKeep(verts []Vertex, indices []uint32, vdata []byte, keep KeepGeometry) (*Mesh, error) {
+	if err := checkGeometry(verts, indices); err != nil {
+		return nil, err
 	}
-	for _, i := range indices {
-		if int(i) >= len(verts) {
-			return nil, fmt.Errorf("gfx: index %d out of range for %d vertices", i, len(verts))
-		}
-	}
-	m := &Mesh{IndexCount: uint32(len(indices)), Min: verts[0].Pos, Max: verts[0].Pos, verts: verts, indices: indices, g: g}
-	for _, v := range verts[1:] {
-		m.Min = lin.V3(min(m.Min.X, v.Pos.X), min(m.Min.Y, v.Pos.Y), min(m.Min.Z, v.Pos.Z))
-		m.Max = lin.V3(max(m.Max.X, v.Pos.X), max(m.Max.Y, v.Pos.Y), max(m.Max.Z, v.Pos.Z))
-	}
+	m := &Mesh{IndexCount: uint32(len(indices)), vertexCount: len(verts), g: g}
+	m.Min, m.Max = vertexBounds(verts)
+	m.geom.set(keep, verts, indices)
 	var err error
 	if m.vbuf, err = g.uploadGeometry(vdata, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT); err != nil {
 		return nil, err
@@ -188,11 +248,11 @@ func (g *Graphics) newMesh(verts []Vertex, indices []uint32, vdata []byte) (*Mes
 	return m, nil
 }
 
-// uploadGeometry puts vertex or index bytes in device-local memory.
+// uploadGeometry puts vertex or index bytes in a new device-local buffer.
 // Inside a frame the copy is recorded into the frame's command buffer
 // from the staging arena, with a barrier so a draw later in the same
-// frame reads the new data; outside one it goes through a one-shot
-// submission that waits.
+// frame reads the new data; outside one it goes into the device's upload
+// batch, which is submitted ahead of the next frame without a wait.
 func (g *Graphics) uploadGeometry(data []byte, usage vk.VkBufferUsageFlags) (*render.Buffer, error) {
 	if g.frame == nil {
 		return g.r.Device.NewDeviceLocalBuffer(data, usage)

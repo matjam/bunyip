@@ -434,7 +434,7 @@ func (t *Terrain) buildChunk(g *Graphics, c *terrainChunk) error {
 	for l := range t.levels {
 		verts, idx := t.chunkGeometry(c, l, skirt)
 		if c.meshes[l] == nil {
-			m, err := g.NewMesh(verts, idx)
+			m, err := g.NewMeshWith(verts, idx, MeshOptions{Keep: KeepPositions})
 			if err != nil {
 				return err
 			}

@@ -90,6 +90,18 @@ size, for picking from `Update`: `g.cam.ScreenRay(x, y, ctx.Width,
 ctx.Height)`. For a scene backed by physics, `phys.Raycast3` casts
 against colliders instead, which is cheaper and gives you the entity.
 
+Picking reads the geometry a mesh keeps in main memory. A mesh from
+`NewMesh` keeps the slices it was given. The meshes of a `Model`, a
+skinned mesh and a terrain's chunks keep a compact copy instead: each
+vertex's position (12 bytes) and the indices (two bytes each up to 65536
+vertices), which is all picking and occlusion read, and which hits
+exactly what the full vertices do. To choose, create the mesh with
+`NewMeshWith(verts, indices, gfx.MeshOptions{Keep: gfx.KeepPositions})`,
+or `gfx.KeepNone` for a mesh the game never picks. To drop what a
+mesh keeps later, for example the parts of a large loaded model, call
+`Mesh.ReleaseGeometry`. A mesh that keeps nothing reports no hit from
+`Intersect` and is ignored by `AddOccluder3D`.
+
 ```go
 ray := gr.ScreenRay(ctx.Input.Mouse())
 for _, u := range g.units {
@@ -159,12 +171,15 @@ chunk.mesh, err = ctx.Gfx.NewMesh(verts, idx)
 ```
 
 `Mesh.Update(verts, indices)` replaces the geometry of a mesh already on
-the GPU, for a voxel chunk after a block is dug, a terrain edit, or a
-mesh that grows. Draws already queued this frame keep the old geometry
-until the frame ends, so an update is safe at any point in `Update` or
-`Draw`. Use it instead of destroying and recreating a mesh. `Mesh.Min`
+the GPU, for a voxel chunk after a block is dug, a terrain edit, a mesh
+that grows, or a cloth or soft body every frame. The buffers it replaces
+are kept until the frames in flight that read them have finished, so an
+update is safe at any point in `Update` or `Draw`, and a later update of
+the same size or smaller writes into them rather than allocating, so a
+mesh updated every frame stops allocating GPU memory after its first few
+frames. Use it instead of destroying and recreating a mesh. `Mesh.Min`
 and `Mesh.Max` are the bounds in mesh space, `Vertices` and `Indices`
-read the geometry back, and `Destroy` frees it.
+return what the mesh keeps (see picking above), and `Destroy` frees it.
 
 Draw with `DrawMesh(mesh, material, model)` where `model` is a
 `lin.Mat4`, or `DrawMeshAt(mesh, material, transform)` when a
@@ -968,7 +983,10 @@ gr.SetPost(p)
 
 Changing `Samples` rebuilds the scene targets and the pipelines that draw
 into them at the start of the next frame, so it belongs in a settings
-menu rather than in a per-frame update. Everything after the scene pass
+menu rather than in a per-frame update. The pipelines for the new count
+start building on worker goroutines as soon as a frame begins with it,
+side by side, so the first frame at that count waits for the slowest of
+them rather than for each in turn. Everything after the scene pass
 reads the resolved single-sample images, so ambient occlusion, decals,
 reflections and the transmission snapshot behave the same at every sample
 count; the depth they read is sample zero of each pixel, which is exact

@@ -219,10 +219,15 @@ func (g *Graphics) newShader(data []byte, mesh bool) (*Shader, error) {
 			return nil, fmt.Errorf("gfx: shader is not SPIR-V (compile it with bunyip-shader)")
 		}
 	}
-	// Build the common variants now so a bad module fails here, not mid-frame.
+	// Build the common variants now so a bad module fails here, not
+	// mid-frame. They build on workers side by side, and the wait is for
+	// the slower of them.
 	keys := []pipeKey{{}}
 	if mesh {
 		keys = []pipeKey{{blend: BlendReplace}, {shadow: true}}
+	}
+	for _, key := range keys {
+		s.start(key)
 	}
 	for _, key := range keys {
 		if _, err := s.pipeline(key); err != nil {
@@ -256,11 +261,41 @@ func (s *Shader) vert(st shaders.Stage) []byte {
 }
 
 // pipeline returns the shader's pipeline for a variant, building it on
-// first use.
+// first use, and waiting for it when a worker is still building it.
 func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
-	if p, ok := s.pipes[key]; ok {
-		return p, nil
+	p, ok := s.pipes[key]
+	if !ok {
+		var err error
+		if p, err = s.g.r.Device.NewPipeline(s.pipelineDesc(key)); err != nil {
+			return nil, fmt.Errorf("gfx: shader pipeline: %w", err)
+		}
+		s.pipes[key] = p
 	}
+	if err := p.Wait(); err != nil {
+		delete(s.pipes, key)
+		p.Destroy()
+		return nil, fmt.Errorf("gfx: shader pipeline: %w", err)
+	}
+	return p, nil
+}
+
+// start begins building the shader's pipeline for a variant on a worker
+// goroutine when it has none, so the draw that first needs it waits for
+// less or not at all. A failure to start is left for pipeline to report.
+func (s *Shader) start(key pipeKey) {
+	if s == nil || s.pipes == nil {
+		return
+	}
+	if _, ok := s.pipes[key]; ok {
+		return
+	}
+	if p, err := s.g.r.Device.StartPipeline(s.pipelineDesc(key)); err == nil {
+		s.pipes[key] = p
+	}
+}
+
+// pipelineDesc describes the shader's pipeline for a variant.
+func (s *Shader) pipelineDesc(key pipeKey) render.PipelineDesc {
 	g := s.g
 	var desc render.PipelineDesc
 	if s.mesh && key.shadow {
@@ -327,12 +362,7 @@ func (s *Shader) pipeline(key pipeKey) (*render.Pipeline, error) {
 			SetLayouts:       []vk.VkDescriptorSetLayout{g.descriptors.Layout, g.uniforms.Layout},
 		})
 	}
-	p, err := g.r.Device.NewPipeline(desc)
-	if err != nil {
-		return nil, fmt.Errorf("gfx: shader pipeline: %w", err)
-	}
-	s.pipes[key] = p
-	return p, nil
+	return desc
 }
 
 // SetUniforms packs a struct or non-nil pointer to one into a std140 block

@@ -70,7 +70,12 @@ type Hit struct {
 
 // Intersect tests the ray against a mesh under a model matrix, first by
 // bounding box and then triangle by triangle, returning the nearest hit.
+// It reads the geometry the mesh keeps in main memory, so a mesh made
+// with KeepNone, or after ReleaseGeometry, reports no hit.
 func (m *Mesh) Intersect(model lin.Mat4, r Ray) (Hit, bool) {
+	if m.geom.indexCount() == 0 {
+		return Hit{}, false
+	}
 	inv := model.Inverse()
 	o := inv.MulPoint(r.Origin)
 	// Direction transforms without translation; keep its scale so the
@@ -79,16 +84,7 @@ func (m *Mesh) Intersect(model lin.Mat4, r Ray) (Hit, bool) {
 	if !rayBox(o, d, m.Min, m.Max) {
 		return Hit{}, false
 	}
-	best := float32(math.MaxFloat32)
-	var bestN lin.Vec3
-	found := false
-	for i := 0; i+2 < len(m.indices); i += 3 {
-		a, b, c := m.verts[m.indices[i]].Pos, m.verts[m.indices[i+1]].Pos, m.verts[m.indices[i+2]].Pos
-		if t, ok := rayTriangle(o, d, a, b, c); ok && t < best && t > 0 {
-			best, found = t, true
-			bestN = b.Sub(a).Cross(c.Sub(a))
-		}
-	}
+	best, bestN, found := m.geom.intersect(o, d)
 	if !found {
 		return Hit{}, false
 	}

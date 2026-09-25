@@ -12,6 +12,9 @@ import (
 // material table, the shadow lists, the instance stream and the Vulkan
 // calls all reuse what earlier frames grew.
 func TestFrame3DAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's instrumentation allocates; counted in the ordinary run")
+	}
 	g := newHeadless(t, 64, 64)
 	cv, ci := CubeMesh()
 	cube, err := g.NewMesh(cv, ci)

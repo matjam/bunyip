@@ -1,7 +1,8 @@
 package render
 
 import (
-	"fmt"
+	"runtime"
+	"slices"
 	"unsafe"
 
 	"github.com/matjam/bunyip/internal/vk"
@@ -96,49 +97,191 @@ func StencilNotEqual(ref uint32) *StencilState {
 }
 
 // Pipeline is a graphics pipeline and its layout.
+//
+// A pipeline started with StartPipeline, or built while a PipelineBatch
+// is collecting, is compiled on a worker goroutine. Its Layout is valid at
+// once; its Handle is valid only after Wait has returned nil.
 type Pipeline struct {
 	Handle vk.VkPipeline
 	Layout vk.VkPipelineLayout
 	dev    *Device
+	mods   [2]*shaderModule // the vertex and fragment modules it was built from
+	done   chan struct{}    // closed when a pipeline built on a worker is finished; nil for one built in place
+	err    error            // why a worker could not build it, valid once done is closed
 }
 
-func (d *Device) newShaderModule(spirv []byte) (vk.VkShaderModule, error) {
-	if len(spirv) == 0 || len(spirv)%4 != 0 {
-		return 0, fmt.Errorf("render: SPIR-V of %d bytes is not a whole number of words", len(spirv))
+// Wait blocks until the pipeline is built and returns the error that
+// stopped it, if any. A pipeline built in place returns at once.
+func (p *Pipeline) Wait() error {
+	if p.done == nil {
+		return nil
 	}
-	info := vk.VkShaderModuleCreateInfo{
-		SType:    vk.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		CodeSize: uintptr(len(spirv)),
-		PCode:    (*uint32)(unsafe.Pointer(&spirv[0])),
-	}
-	var mod vk.VkShaderModule
-	err := vk.Check("vkCreateShaderModule", vk.VkCreateShaderModule(d.Handle, &info, nil, &mod))
-	return mod, err
+	<-p.done
+	return p.err
 }
 
-// NewPipeline builds a graphics pipeline from desc.
+// Ready reports whether Wait would return at once.
+func (p *Pipeline) Ready() bool {
+	if p.done == nil {
+		return true
+	}
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// PipelineBatch collects the pipelines a stretch of setup code builds, so
+// they compile on worker goroutines together instead of one after
+// another. Between Device.BeginPipelineBatch and EndPipelineBatch every
+// NewPipeline on the device returns at once with its Layout set and its
+// Handle still being built. The caller must call Wait before it records a
+// command with any of those handles.
+type PipelineBatch struct {
+	pipes []*Pipeline
+}
+
+// Wait blocks until every pipeline in the batch is built and returns the
+// first error among them.
+func (b *PipelineBatch) Wait() error {
+	if b == nil {
+		return nil
+	}
+	var first error
+	for _, p := range b.pipes {
+		if err := p.Wait(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// BeginPipelineBatch starts collecting: NewPipeline builds on workers and
+// adds to the batch until EndPipelineBatch. Batches do not nest.
+func (d *Device) BeginPipelineBatch() *PipelineBatch {
+	b := &PipelineBatch{}
+	d.batch = b
+	return b
+}
+
+// EndPipelineBatch stops collecting. The batch's pipelines go on
+// building; Wait on the batch, or on each pipeline, before using them.
+func (d *Device) EndPipelineBatch() { d.batch = nil }
+
+// NewPipeline builds a graphics pipeline from desc through the device's
+// pipeline cache. Inside a PipelineBatch it only starts the build, as
+// StartPipeline does.
 func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
-	vert, err := d.newShaderModule(desc.Vert)
+	if b := d.batch; b != nil {
+		p, err := d.StartPipeline(desc)
+		if err == nil {
+			b.pipes = append(b.pipes, p)
+		}
+		return p, err
+	}
+	p, err := d.newLayout(desc)
 	if err != nil {
 		return nil, err
 	}
-	defer vk.VkDestroyShaderModule(d.Handle, vert, nil)
-	frag, err := d.newShaderModule(desc.Frag)
-	if err != nil {
+	if err := p.build(desc); err != nil {
+		vk.VkDestroyPipelineLayout(d.Handle, p.Layout, nil)
 		return nil, err
 	}
-	defer vk.VkDestroyShaderModule(d.Handle, frag, nil)
-	if desc.FrontFace == 0 {
-		desc.FrontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE
-	}
+	return p, nil
+}
 
-	p := &Pipeline{dev: d}
-	entry, keep := vk.CString("main")
-	defer func() { _ = keep }()
-	stages := []vk.VkPipelineShaderStageCreateInfo{
-		{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, Stage: vk.VK_SHADER_STAGE_VERTEX_BIT, Module: vert, PName: entry},
-		{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, Stage: vk.VK_SHADER_STAGE_FRAGMENT_BIT, Module: frag, PName: entry},
+// StartPipeline creates the pipeline's layout and starts building the
+// pipeline itself on a worker goroutine, returning at once. Call Wait on
+// the result before recording a command with its Handle. Several started
+// together build in parallel, which is how a set of pipelines costs the
+// time of the slowest rather than the sum.
+func (d *Device) StartPipeline(desc PipelineDesc) (*Pipeline, error) {
+	p, err := d.newLayout(desc)
+	if err != nil {
+		return nil, err
 	}
+	desc = desc.clone()
+	p.done = make(chan struct{})
+	workers := d.pipelineWorkers()
+	go func() {
+		workers <- struct{}{}
+		defer func() { <-workers }()
+		p.err = p.build(desc)
+		close(p.done)
+	}()
+	return p, nil
+}
+
+// NewPipelines builds several pipelines in parallel and waits for them
+// all. On an error the ones that were built are destroyed.
+func (d *Device) NewPipelines(descs []PipelineDesc) ([]*Pipeline, error) {
+	out := make([]*Pipeline, 0, len(descs))
+	var first error
+	for _, desc := range descs {
+		p, err := d.StartPipeline(desc)
+		if err != nil {
+			first = err
+			break
+		}
+		out = append(out, p)
+	}
+	for _, p := range out {
+		if err := p.Wait(); err != nil && first == nil {
+			first = err
+		}
+	}
+	if first != nil {
+		for _, p := range out {
+			p.Destroy()
+		}
+		return nil, first
+	}
+	return out, nil
+}
+
+// pipelineWorkers returns the tokens that bound how many pipelines build
+// at once: one fewer than the processors, so the goroutine that asked
+// keeps one, and at least one.
+func (d *Device) pipelineWorkers() chan struct{} {
+	ps := &d.pipes
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if ps.workers == nil {
+		ps.workers = make(chan struct{}, max(runtime.NumCPU()-1, 1))
+	}
+	return ps.workers
+}
+
+// clone copies the slices a description refers to, so a build on a
+// worker does not share them with a caller that goes on to change them.
+func (desc PipelineDesc) clone() PipelineDesc {
+	desc.Bindings = slices.Clone(desc.Bindings)
+	desc.Attributes = slices.Clone(desc.Attributes)
+	desc.SetLayouts = slices.Clone(desc.SetLayouts)
+	desc.ExtraColor = slices.Clone(desc.ExtraColor)
+	for i, a := range desc.ExtraColor {
+		if a.Factors != nil {
+			f := *a.Factors
+			desc.ExtraColor[i].Factors = &f
+		}
+	}
+	if desc.Factors != nil {
+		f := *desc.Factors
+		desc.Factors = &f
+	}
+	if desc.Stencil != nil {
+		s := *desc.Stencil
+		desc.Stencil = &s
+	}
+	return desc
+}
+
+// newLayout creates a pipeline's layout, which is cheap and which the
+// caller may bind against before the pipeline is built.
+func (d *Device) newLayout(desc PipelineDesc) (*Pipeline, error) {
+	p := &Pipeline{dev: d}
 	var pushRange vk.VkPushConstantRange
 	layoutInfo := vk.VkPipelineLayoutCreateInfo{
 		SType:          vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -152,6 +295,37 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 	}
 	if err := vk.Check("vkCreatePipelineLayout", vk.VkCreatePipelineLayout(d.Handle, &layoutInfo, nil, &p.Layout)); err != nil {
 		return nil, err
+	}
+	return p, nil
+}
+
+// build compiles the pipeline into p.Handle through the device's cache,
+// with the shared modules for its programs. It is safe to run on several
+// goroutines at once for different pipelines.
+func (p *Pipeline) build(desc PipelineDesc) error {
+	d := p.dev
+	cache, err := d.pipelineCache()
+	if err != nil {
+		return err
+	}
+	vert, err := d.shaderModule(desc.Vert)
+	if err != nil {
+		return err
+	}
+	frag, err := d.shaderModule(desc.Frag)
+	if err != nil {
+		d.releaseModule(vert)
+		return err
+	}
+	p.mods = [2]*shaderModule{vert, frag}
+	if desc.FrontFace == 0 {
+		desc.FrontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE
+	}
+	entry, keep := vk.CString("main")
+	defer func() { _ = keep }()
+	stages := []vk.VkPipelineShaderStageCreateInfo{
+		{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, Stage: vk.VK_SHADER_STAGE_VERTEX_BIT, Module: vert.handle, PName: entry},
+		{SType: vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, Stage: vk.VK_SHADER_STAGE_FRAGMENT_BIT, Module: frag.handle, PName: entry},
 	}
 
 	vertexInput := vk.VkPipelineVertexInputStateCreateInfo{
@@ -261,11 +435,16 @@ func (d *Device) NewPipeline(desc PipelineDesc) (*Pipeline, error) {
 		PDynamicState:       &dynamic,
 		Layout:              p.Layout,
 	}
-	if err := vk.Check("vkCreateGraphicsPipelines", vk.VkCreateGraphicsPipelines(d.Handle, 0, 1, &info, nil, &p.Handle)); err != nil {
-		vk.VkDestroyPipelineLayout(d.Handle, p.Layout, nil)
-		return nil, err
+	var handle vk.VkPipeline
+	if err := vk.Check("vkCreateGraphicsPipelines", vk.VkCreateGraphicsPipelines(d.Handle, cache, 1, &info, nil, &handle)); err != nil {
+		d.releaseModule(vert)
+		d.releaseModule(frag)
+		p.mods = [2]*shaderModule{}
+		return err
 	}
-	return p, nil
+	p.Handle = handle
+	d.builtPipeline()
+	return nil
 }
 
 // blendState is one attachment's colour write mask and blend equation.
@@ -290,12 +469,23 @@ func blendState(enabled bool, factors *BlendFactors) vk.VkPipelineColorBlendAtta
 	return st
 }
 
+// Destroy frees the pipeline and its layout, first waiting for a build
+// still running on a worker. It must not be in use by a frame in flight.
 func (p *Pipeline) Destroy() {
+	if p == nil || p.Layout == 0 {
+		return
+	}
+	_ = p.Wait()
+	d := p.dev
 	if p.Handle != 0 {
-		vk.VkDestroyPipeline(p.dev.Handle, p.Handle, nil)
-		vk.VkDestroyPipelineLayout(p.dev.Handle, p.Layout, nil)
+		vk.VkDestroyPipeline(d.Handle, p.Handle, nil)
 		p.Handle = 0
 	}
+	vk.VkDestroyPipelineLayout(d.Handle, p.Layout, nil)
+	p.Layout = 0
+	d.releaseModule(p.mods[0])
+	d.releaseModule(p.mods[1])
+	p.mods = [2]*shaderModule{}
 }
 
 // The viewport and scissor commands take a pointer to their rectangle, and

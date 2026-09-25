@@ -115,7 +115,9 @@ func TestDenseSphereGeometryRendered(t *testing.T) {
 			enableGeometryReadback(t)
 			var meshes []*Mesh
 			for start := 0; start < len(tc.indices); start += tc.batch {
-				mesh, err := g.NewMesh(tc.verts, tc.indices[start:min(start+tc.batch, len(tc.indices))])
+				// The mesh keeps what it was given, which the buffers are
+				// compared against below.
+				mesh, err := g.NewMeshWith(tc.verts, tc.indices[start:min(start+tc.batch, len(tc.indices))], MeshOptions{Keep: KeepVertices})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -139,15 +141,15 @@ func TestDenseSphereGeometryRendered(t *testing.T) {
 				t.Errorf("covered %d pixels, centre %v, culled %d, draws %d; want visible sphere", covered, img.RGBAAt(48, 48), g.stats.Culled, g.stats.Draws3D)
 			}
 			for i, mesh := range meshes {
-				packed := make([]gpuVertex, len(mesh.verts))
-				for j, v := range mesh.verts {
+				packed := make([]gpuVertex, len(mesh.geom.full))
+				for j, v := range mesh.geom.full {
 					packed[j] = v.gpu()
 				}
 				want := unsafe.Slice((*byte)(unsafe.Pointer(&packed[0])), len(packed)*vertexSize)
 				if got := readGeometryBuffer(t, g, mesh.vbuf); !bytes.Equal(got, want) {
 					t.Errorf("mesh %d: vertex buffer differs from uploaded bytes", i)
 				}
-				want = unsafe.Slice((*byte)(unsafe.Pointer(&mesh.indices[0])), len(mesh.indices)*4)
+				want = unsafe.Slice((*byte)(unsafe.Pointer(&mesh.geom.idx32[0])), len(mesh.geom.idx32)*4)
 				if got := readGeometryBuffer(t, g, mesh.ibuf); !bytes.Equal(got, want) {
 					t.Errorf("mesh %d: index buffer differs from uploaded bytes", i)
 				}

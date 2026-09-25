@@ -54,7 +54,7 @@ type meshOccluder struct {
 // every triangle is rasterised on the CPU, and a mesh with more than
 // MaxOccluderTriangles triangles is ignored.
 func (g *Graphics) AddOccluder3D(m *Mesh, model lin.Mat4) {
-	if m == nil || len(m.verts) == 0 || m.IndexCount == 0 {
+	if m == nil || m.geom.indexCount() == 0 || m.IndexCount == 0 {
 		return
 	}
 	g.cur.meshOccluders = append(g.cur.meshOccluders, meshOccluder{mesh: m, model: model})
@@ -219,19 +219,20 @@ func (o *occlusionBuffer) triangle(v0, v1, v2 lin.Vec4) {
 // rasterise draws one occluder mesh under a matrix that already carries
 // its model transform.
 func (o *occlusionBuffer) rasterise(m *Mesh, mvp lin.Mat4) {
-	idx, verts := m.indices, m.verts
-	if len(idx)/3 > MaxOccluderTriangles {
+	geom := &m.geom
+	n, count := geom.indexCount(), geom.vertexCount()
+	if n/3 > MaxOccluderTriangles {
 		return
 	}
-	for i := 0; i+2 < len(idx); i += 3 {
-		a, b, c := idx[i], idx[i+1], idx[i+2]
-		if int(a) >= len(verts) || int(b) >= len(verts) || int(c) >= len(verts) {
+	for i := 0; i+2 < n; i += 3 {
+		a, b, c := geom.index(i), geom.index(i+1), geom.index(i+2)
+		if int(a) >= count || int(b) >= count || int(c) >= count {
 			continue
 		}
 		o.clip = append(o.clip[:0],
-			mvp.MulVec4(verts[a].Pos.Vec4(1)),
-			mvp.MulVec4(verts[b].Pos.Vec4(1)),
-			mvp.MulVec4(verts[c].Pos.Vec4(1)))
+			mvp.MulVec4(geom.position(a).Vec4(1)),
+			mvp.MulVec4(geom.position(b).Vec4(1)),
+			mvp.MulVec4(geom.position(c).Vec4(1)))
 		poly := o.clipPoly()
 		for k := 2; k < len(poly); k++ { // fan the clipped polygon
 			o.triangle(poly[0], poly[k-1], poly[k])

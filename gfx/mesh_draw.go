@@ -410,9 +410,7 @@ func (g *Graphics) initMeshPass() error {
 	}
 	mp.defaultShader = &Shader{g: g, frag: shaders.PBRFrag, oitFrag: shaders.PBROITFrag, mesh: true, pipes: map[pipeKey]*render.Pipeline{}}
 	for _, key := range []pipeKey{{blend: BlendReplace}, {blend: BlendAlpha}, {blend: BlendReplace, shadow: true}} {
-		if _, err := mp.defaultShader.pipeline(key); err != nil {
-			return err
-		}
+		mp.defaultShader.start(key) // built on workers; pipeline waits at first use
 	}
 	return nil
 }
@@ -1559,6 +1557,10 @@ func (g *Graphics) renderScene(fr *render.Frame, q *drawQueue, t *sceneTargets) 
 	// caster bounds, and the shadow pass culls against every light.
 	opaque, oit, blended, err := g.prepareDraws(q, fr.Slot, t.scene, aspect)
 	if err != nil {
+		return err
+	}
+	g.startSceneVariants(q)
+	if err := g.waitPipelines(); err != nil {
 		return err
 	}
 	if err := q.writeUniforms(fr.Slot, t.extent, g.time, g.reflectParams()); err != nil {
