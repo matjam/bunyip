@@ -70,6 +70,40 @@ func TestWatcherChangedDoesNotWaitForPoll(t *testing.T) {
 	}
 }
 
+// TestWatcherNamesAChangeOnce changes a file several times between two
+// calls to Changed, with a poll after each change, as an editor that
+// truncates, writes and then sets the time does. Changed names the file
+// once, and names it again after the next change.
+func TestWatcherNamesAChangeOnce(t *testing.T) {
+	dir := tree(t, map[string]string{"a.txt": "one", "b.txt": "one"})
+	fsys, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fsys.Close()
+	w := newWatcher(fsys, time.Hour, os.Stat)
+	defer w.Close()
+	w.Add("a.txt", "b.txt")
+	w.poll()
+	if got := w.Changed(); len(got) != 0 {
+		t.Fatalf("changed %v before any write", got)
+	}
+	write(t, filepath.Join(dir, "a.txt"), "two", time.Hour)
+	w.poll()
+	write(t, filepath.Join(dir, "b.txt"), "two", time.Hour)
+	w.poll()
+	write(t, filepath.Join(dir, "a.txt"), "three", 2*time.Hour)
+	w.poll()
+	if got, want := w.Changed(), []string{"a.txt", "b.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("changed %v, want %v", got, want)
+	}
+	write(t, filepath.Join(dir, "a.txt"), "four", 3*time.Hour)
+	w.poll()
+	if got, want := w.Changed(), []string{"a.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("after the next write, changed %v, want %v", got, want)
+	}
+}
+
 // TestWatcherOverlay checks a watched name follows the source it
 // resolves to: a copy that appears in an overlaying directory, in a
 // subdirectory that did not exist before, is reported, and so is the

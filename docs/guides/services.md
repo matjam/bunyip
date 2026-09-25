@@ -158,7 +158,9 @@ each name to its file once and then stats that file per poll, plus the
 directory in each overlaying source where a new copy would appear, so a
 thousand watched files cost about what a thousand `os.Stat` calls do.
 The poll runs outside the lock `Changed` takes, so the call a game makes
-every frame never waits for it.
+every frame never waits for it. `Changed` names a file once however many
+times it changed since the last call, so a save that truncates, writes
+and then sets the time reloads once.
 
 Models and environments are not reloaded. Swapping a glTF file's
 contents gives back different meshes, a different skeleton and different
@@ -629,7 +631,10 @@ that must arrive. Every packet acknowledges what came the other way,
 and `Stats` reports a link's round trip, loss and pending count. Peers
 exchange hello and keep-alive packets, so a `Peer` raises `Connected` and
 `Disconnected` for UDP addresses (after `SetTimeout` of silence, a
-goodbye, or a restart), and `Peers` lists who is there.
+goodbye, or a restart), and `Peers` lists who is there. After a
+goodbye in either direction, packets the other side sent before the
+goodbye are ignored, so the address stays disconnected until it starts
+a new session or this side sends to it again.
 
 ```go
 peer, err := network.ListenUDP(":7778", reg)

@@ -10,14 +10,30 @@ import (
 
 // write puts contents at a path and dates it later than the file that
 // was there, so the watcher notices however coarse the file system's
-// timestamps are.
+// timestamps are. The file is written and dated under a temporary name
+// and renamed into place, so a poll sees one change with the whole
+// contents: writing in place and then setting the time is two changes,
+// and a poll between them sees the first.
 func write(t *testing.T, path string, contents string, age time.Duration) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), ".write-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // gone after the rename; this cleans up a failure
+	_, err = f.WriteString(contents)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	when := time.Now().Add(age)
-	if err := os.Chtimes(path, when, when); err != nil {
+	if err := os.Chtimes(tmp, when, when); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		t.Fatal(err)
 	}
 }

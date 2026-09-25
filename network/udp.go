@@ -36,6 +36,7 @@ type Peer struct {
 	events   chan Event
 	mu       sync.Mutex // guards the fields below
 	links    map[linkKey]*link
+	gone     map[linkKey]farewell // sessions whose link closed with a goodbye
 	timeout  time.Duration
 	dropRate float64
 	activity func()
@@ -72,6 +73,33 @@ func keyOf(a *Addr) linkKey {
 // gives an IPv4 address its v4-in-v6 form, which is what keyOf stores.
 func keyOfPort(ap netip.AddrPort) linkKey {
 	return linkKey{ip: ap.Addr().As16(), port: ap.Port(), zone: ap.Addr().Zone()}
+}
+
+// farewell remembers a link closed with a goodbye, in either direction.
+// Packets the other side sent on that link before it read the goodbye,
+// such as the acknowledgement of our last packet, are dropped until the
+// entry expires, so they do not reopen the link.
+type farewell struct {
+	session uint32 // the other side's session, 0 when nothing had arrived from it
+	until   time.Time
+}
+
+// stale reports whether a packet with no link to take it was sent on
+// the closed link. With the session known, the session says so. Without
+// it, nothing had arrived from the other side, so its link was opened by
+// one of our packets and each of its packets acknowledges one of ours.
+// A link it opens after the goodbye has received nothing from us, and
+// acknowledges nothing, until we answer on a new link. A packet it sent
+// to open a link of its own before our goodbye also acknowledges
+// nothing, and opens a new link here, as a first contact does.
+func (f farewell) stale(session, ack uint32, now time.Time) bool {
+	if !now.Before(f.until) {
+		return false
+	}
+	if f.session != 0 {
+		return session == f.session
+	}
+	return ack != 0
 }
 
 // Stats describes one UDP link.
@@ -344,6 +372,7 @@ func (p *Peer) link(to *Addr, now time.Time) *link {
 	if l == nil {
 		l = newLink(to, now)
 		p.links[key] = l
+		delete(p.gone, key) // this side opened it again
 	}
 	return l
 }
@@ -359,15 +388,29 @@ func (p *Peer) Connect(to *Addr) error {
 
 // Disconnect says goodbye to an address and forgets it; the other side
 // sees Disconnected with no error. Unacknowledged reliable messages are
-// dropped.
+// dropped. Packets the other side sent before it read the goodbye are
+// ignored, so the address does not come back as Connected; a new
+// session from it, or a Send or Connect from this side, connects again.
 func (p *Peer) Disconnect(to *Addr) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	key := keyOf(to)
 	if l := p.links[key]; l != nil {
-		p.transmit(l, flagBye, 0, nil, time.Now())
-		delete(p.links, key)
+		now := time.Now()
+		p.transmit(l, flagBye, 0, nil, now)
+		p.closeLink(key, l, now)
 	}
+}
+
+// closeLink forgets a link closed with a goodbye and remembers it for
+// the timeout, which is as long as the other side can go on sending
+// before it times this side out. Call with mu held.
+func (p *Peer) closeLink(key linkKey, l *link, now time.Time) {
+	delete(p.links, key)
+	if p.gone == nil {
+		p.gone = map[linkKey]farewell{}
+	}
+	p.gone[key] = farewell{session: l.remote, until: now.Add(p.timeout)}
 }
 
 // Send fires one message at to; it may be lost.
@@ -514,6 +557,13 @@ func (p *Peer) receive(pkt []byte, from netip.AddrPort, now time.Time) {
 			p.mu.Unlock()
 			return
 		}
+		if f, ok := p.gone[key]; ok {
+			if f.stale(session, ack, now) {
+				p.mu.Unlock()
+				return // sent before the goodbye, arriving after it
+			}
+			delete(p.gone, key)
+		}
 		l = newLink(net.UDPAddrFromAddrPort(from), now)
 		p.links[key] = l
 	}
@@ -534,7 +584,7 @@ func (p *Peer) receive(pkt []byte, from netip.AddrPort, now time.Time) {
 		evs = append(evs, Event{Kind: Connected, From: l.addr})
 	}
 	if flags&flagBye != 0 {
-		delete(p.links, key)
+		p.closeLink(key, l, now)
 		evs = append(evs, Event{Kind: Disconnected, From: l.addr})
 	} else {
 		dup := l.noteReceived(seq)
@@ -614,6 +664,11 @@ func (p *Peer) maintain(now time.Time) {
 	defer p.emitMu.Unlock()
 	p.mu.Lock()
 	evs := p.evs[:0]
+	for key, f := range p.gone {
+		if !now.Before(f.until) {
+			delete(p.gone, key)
+		}
+	}
 	for key, l := range p.links {
 		since := l.lastRecv
 		if since.IsZero() {
@@ -694,6 +749,7 @@ func (p *Peer) Close() error {
 			p.transmit(l, flagBye, 0, nil, now)
 		}
 		p.links = map[linkKey]*link{}
+		p.gone = nil
 		p.mu.Unlock()
 		err = p.conn.Close()
 	})

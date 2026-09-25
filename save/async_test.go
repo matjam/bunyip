@@ -158,6 +158,24 @@ func TestFlushWaitsForEveryWrite(t *testing.T) {
 	assertNoTemp(t, s)
 }
 
+// TestFinishedWriteNotPending checks that a write is off the queue by the
+// time it reports its result, so a caller that has seen every result, or
+// a Flush that has returned, finds nothing pending.
+func TestFinishedWriteNotPending(t *testing.T) {
+	s, err := OpenAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		if err := <-s.WriteAsync("slot", counter{N: i}); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(s.pending("", true)); n != 0 {
+			t.Fatalf("write %d: %d writes pending after its result arrived", i, n)
+		}
+	}
+}
+
 // assertNoTemp checks that no temporary file is left behind.
 func assertNoTemp(t *testing.T, s *Store) {
 	t.Helper()
