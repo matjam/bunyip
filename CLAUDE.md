@@ -598,9 +598,13 @@ test's output.
   arithmetic; compare physics dumps there to prove a refactor keeps
   results bit for bit.
 - The last physics substep of an update ends with a relax pass over the
-  contacts that solves them again with the position-correction bias
-  dropped, and the sleep test follows it, counting the whole update's
-  time. The bias leaves the bodies separating at about the sleep
+  contacts (and in 3D the joints, through `jointSolver3.unbias`) that
+  solves them again with the position-correction bias dropped, and the
+  sleep test follows it, counting the whole update's time; in 3D it
+  measures turning by the speed of the collider's farthest point
+  (`extent3`). A capsule lying along a box face gets its two end
+  contacts from `capsuleBox` rather than the GJK path, whose third
+  contact wandered along the capsule and kept ragdolls rolling. The bias leaves the bodies separating at about the sleep
   threshold, so without the pass a stack never rests; running it once
   an update rather than every substep costs a quarter as much. Restitution is held in its own field
   (`solverContact.restBias`) and stays in the relax pass, so bounces

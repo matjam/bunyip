@@ -28,7 +28,8 @@
 // Shapes in 3D are Sphere, Box3, Capsule, ConvexHull, Compound3 (parts
 // placed on one body) and MeshShape (a static triangle mesh for terrain
 // and levels, with a triangle tree built by NewMeshShape). Sphere and
-// box pairs have exact tests; every other pair collides through support
+// box pairs have exact tests, as does a capsule lying along a box face;
+// every other pair collides through support
 // functions (GJK for distance, EPA for penetration) with face manifolds
 // clipped the same way as the box test's. Shapes in 2D are Circle, Box2,
 // Polygon2, Capsule2, and for terrain Edge2 and Chain2.

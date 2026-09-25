@@ -342,7 +342,33 @@ type jointSolver3 interface {
 	prepare(h float32)
 	solve()
 	sides() (ecs.Entity, ecs.Entity)
+	// unbias drops the position correction for the relax pass, after
+	// which solve only holds the relative motion the joint allows.
+	unbias()
 }
+
+func (s *distanceSolver3) unbias() { s.bias = 0 }
+
+func (s *hingeSolver3) unbias() {
+	s.point.bias, s.bias = lin.Vec3{}, [2]float32{}
+	s.lower.unbias()
+	s.upper.unbias()
+}
+
+func (s *ballSolver3) unbias() {
+	s.point.bias = lin.Vec3{}
+	s.cone.unbias()
+	s.twist.unbias()
+}
+
+func (s *prismaticSolver3) unbias() {
+	s.ang.bias, s.bias = lin.Vec3{}, [2]float32{}
+	s.lower.bias, s.upper.bias = 0, 0
+}
+
+func (s *springSolver3) unbias() {}
+
+func (s *fixedSolver3) unbias() { s.point.bias, s.ang.bias = lin.Vec3{}, lin.Vec3{} }
 
 // jointItem3 is one prepared joint waiting to be put in entity order.
 // kind and at name the solver slice and the row in it, because the
@@ -551,17 +577,41 @@ type angularLimit3 struct {
 	impulse float32
 	sign    float32
 	active  bool
+	past    bool // the angle is past the limit rather than short of it
 }
 
-// prepare sets the limit up with position error c (positive past an
-// upper limit, negative past a lower one).
+// limitMargin is how close, in radians, a joint angle comes to a limit
+// before the limit takes part in the solve. Inside the margin the limit
+// only stops the joint closing the gap faster than it can in one
+// substep, so a joint resting at its limit meets a constraint that is
+// there every substep instead of one that switches on and off.
+const limitMargin = 0.1
+
+// prepare sets the limit up with position error c: past an upper limit
+// it is positive and past a lower one negative, and short of the limit
+// it is the gap still left, which the joint may close but not cross in
+// this substep.
 func (l *angularLimit3) prepare(a, b *jointSide3, axis lin.Vec3, c, sign, h float32) {
 	k := axis.Dot(a.invI.add(b.invI).mulVec(axis))
 	l.active = k > 1e-12
 	if !l.active {
 		return
 	}
-	l.axis, l.mass, l.bias, l.sign, l.impulse = axis, 1/k, jointBaumgarte/h*c, sign, 0
+	l.axis, l.mass, l.sign, l.impulse = axis, 1/k, sign, 0
+	l.past = c*sign <= 0
+	if l.past {
+		l.bias = jointBaumgarte / h * c
+	} else {
+		l.bias = c / h
+	}
+}
+
+// unbias drops the correction of a limit that has been passed and keeps
+// the bound on how fast one not yet reached may be approached.
+func (l *angularLimit3) unbias() {
+	if l.past {
+		l.bias = 0
+	}
 }
 
 func (l *angularLimit3) solve(a, b *jointSide3) {
@@ -839,10 +889,10 @@ func (s *hingeSolver3) prepare(h float32) {
 	s.motor.prepare(&s.a, &s.b, wa, j.MotorSpeed, j.MaxMotorTorque*h)
 	s.lower.active, s.upper.active = false, false
 	if j.MinAngle != 0 || j.MaxAngle != 0 {
-		if angle <= j.MinAngle {
+		if angle <= j.MinAngle+limitMargin {
 			s.lower.prepare(&s.a, &s.b, wa, angle-j.MinAngle, 1, h)
 		}
-		if angle >= j.MaxAngle {
+		if angle >= j.MaxAngle-limitMargin {
 			s.upper.prepare(&s.a, &s.b, wa, angle-j.MaxAngle, -1, h)
 		}
 	}
@@ -882,7 +932,7 @@ func (s *ballSolver3) prepare(h float32) {
 	wa := s.a.rot.mulVec(j.AxisA).Norm()
 	wb := s.b.rot.mulVec(axisB).Norm()
 	s.cone.active, s.twist.active = false, false
-	if cone := coneAngle(wa, wb); j.ConeAngle > 0 && cone > j.ConeAngle {
+	if cone := coneAngle(wa, wb); j.ConeAngle > 0 && cone > j.ConeAngle-limitMargin {
 		// Turning B about wa × wb swings it further from the centre.
 		n := wa.Cross(wb).Norm()
 		if n == (lin.Vec3{}) {
@@ -891,10 +941,11 @@ func (s *ballSolver3) prepare(h float32) {
 		s.cone.prepare(&s.a, &s.b, n, cone-j.ConeAngle, -1, h)
 	}
 	if j.TwistAngle > 0 {
+		// The side the twist leans to holds the one twist limit.
 		switch twist := twistAngle(qa, qb, axisB, j.rel); {
-		case twist > j.TwistAngle:
+		case twist >= 0 && twist > j.TwistAngle-limitMargin:
 			s.twist.prepare(&s.a, &s.b, wb, twist-j.TwistAngle, -1, h)
-		case twist < -j.TwistAngle:
+		case twist < 0 && twist < -j.TwistAngle+limitMargin:
 			s.twist.prepare(&s.a, &s.b, wb, twist+j.TwistAngle, 1, h)
 		}
 	}

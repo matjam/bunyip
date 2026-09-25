@@ -18,8 +18,10 @@ type Settings3 struct {
 	// before they sleep and drop out of the simulation until touched;
 	// zero means bodies never sleep. Half a second suits most games.
 	SleepTime float32
-	// SleepThreshold is the speed (units and radians per second) below
-	// which a body counts as resting; zero means 0.05.
+	// SleepThreshold is the speed, in units per second, below which a
+	// body counts as resting: both its own speed and the speed its turning
+	// gives the point of its collider farthest from its centre must be
+	// slower. Zero means 0.05.
 	SleepThreshold float32
 }
 
@@ -475,7 +477,16 @@ func (s *state3) step(w *ecs.World, settings *Settings3, h float32, iterations i
 	if !last {
 		return
 	}
+	// Joints relax with the contacts: a joint's correction left in a limb
+	// lying on the floor would otherwise keep it moving just as a
+	// contact's would.
+	for _, j := range joints {
+		j.unbias()
+	}
 	for range relaxIterations {
+		for _, j := range joints {
+			j.solve()
+		}
 		for i := range s.arbiters {
 			s.arbiters[i].solve(false)
 		}
@@ -521,7 +532,15 @@ func (s *state3) sleep(settings *Settings3, h float32) {
 	for i, r := range s.dynamic {
 		b := r.b
 		if !b.asleep {
-			if b.Vel.Len() < thr && b.AngVel.Len() < thr {
+			// Turning is measured by the speed it gives the body's farthest
+			// point, so a thin limb rolling a few millimetres a second rests
+			// while a long plank turning as slowly does not.
+			spin := b.AngVel.Len()
+			if k, ok := s.cols.row(r.e); ok && s.cols.rows[k].shaped {
+				c := s.cols.rows[k].c
+				spin *= extent3(c.Shape) + c.Offset.Len()
+			}
+			if b.Vel.Len() < thr && spin < thr {
 				b.sleepTime += h
 			} else {
 				b.sleepTime = 0
@@ -541,6 +560,33 @@ func (s *state3) sleep(settings *Settings3, h float32) {
 			b.Vel, b.AngVel = lin.Vec3{}, lin.Vec3{}
 		}
 	}
+}
+
+// extent3 is the distance from a shape's origin to its farthest point.
+func extent3(s Shape3) float32 {
+	switch sh := s.(type) {
+	case Sphere:
+		return sh.Radius
+	case Box3:
+		return sh.Half.Len()
+	case Capsule:
+		return sh.HalfHeight + sh.Radius
+	case ConvexHull:
+		var e float32
+		for _, p := range sh.Points {
+			e = max(e, p.Len())
+		}
+		return e
+	case Compound3:
+		var e float32
+		for _, p := range sh.Parts {
+			if p.Shape != nil {
+				e = max(e, p.Offset.Len()+extent3(p.Shape))
+			}
+		}
+		return e
+	}
+	return 0
 }
 
 // sweepStatic sweeps a body's collider along delta against colliders

@@ -248,6 +248,112 @@ func TestRagdoll3D(t *testing.T) {
 	}
 }
 
+// TestRagdollsSleep drops fifty ragdolls on a floor at the default
+// settings with sleeping on: every part is asleep within eight seconds.
+// Their limbs used to roll on forever at a few millimetres a second,
+// driven by a capsule contact that wandered along the limb, so a pile of
+// ragdolls cost a full step every frame.
+func TestRagdollsSleep(t *testing.T) {
+	w := ecs.NewWorld()
+	w.SetResource(Settings3{Gravity: lin.V3(0, -10, 0), SleepTime: 0.5})
+	w.AddSystem("phys", System3)
+	w.SpawnWith(gfx.Transform{}, Collider3{Shape: Box3{Half: lin.V3(100, 0.5, 100)}})
+	for i := range 50 {
+		NewRagdoll3(w, RagdollSpec{Position: lin.V3(float32(i%10)*3-15, 1, float32(i/10)*3-7),
+			Rotation: lin.AxisAngle(lin.V3(1, 0, 0), 1.2)})
+	}
+	awake := 0
+	for range 8 * 60 {
+		w.Update(step)
+		awake = 0
+		w.Each(func(_ ecs.Entity, b *Body3) {
+			if !b.Asleep() {
+				awake++
+			}
+		})
+		if awake == 0 {
+			return
+		}
+	}
+	t.Errorf("%d of 550 ragdoll parts still awake after eight seconds", awake)
+}
+
+// TestCapsuleBoxMatchesSupportPath checks the flat capsule contact
+// against the general support-function path it replaces: where it
+// applies, the deepest contact has the same depth and normal.
+func TestCapsuleBoxMatchesSupportPath(t *testing.T) {
+	r := indexRand(11)
+	var sc scratch3
+	used, outliers := 0, 0
+	for range 4000 {
+		c := Capsule{Radius: r.in(0.03, 0.3), HalfHeight: r.in(0.05, 0.6)}
+		box := Box3{Half: lin.V3(r.in(0.5, 3), r.in(0.2, 1), r.in(0.5, 3))}
+		brot := r.quat()
+		if r.intn(2) == 0 {
+			brot = lin.Quat{}
+		}
+		bm := mat3FromQuat(brot)
+		// Lay the capsule roughly flat on the box's top face, tilted a
+		// little and sunk or lifted by a little.
+		up := bm.axis(1)
+		lie := lin.AxisAngle(lin.V3(0, 0, 1), math.Pi/2+r.in(-0.02, 0.02)).Mul(lin.AxisAngle(lin.V3(1, 0, 0), r.in(-3, 3)))
+		crot := brot.Mul(lie)
+		if brot == (lin.Quat{}) {
+			crot = lie
+		}
+		cpos := bm.mulVec(lin.V3(r.in(-0.4, 0.4), 0, r.in(-0.4, 0.4))).Add(up.Mul(box.Half.Y + c.Radius - r.in(-0.002, 0.02)))
+		cm := mat3FromQuat(crot)
+		flat, ok := capsuleBox(nil, c, cpos, cm, obb{lin.Vec3{}, bm, box.Half})
+		if !ok {
+			continue
+		}
+		used++
+		general := convexPair(&sc, nil, c, cpos, cm, box, lin.Vec3{}, bm)
+		if len(general) == 0 {
+			t.Fatalf("the support path finds no contact where the flat path finds %v", flat)
+		}
+		deepest := func(cs []contact3) contact3 {
+			d := cs[0]
+			for _, x := range cs[1:] {
+				if x.depth > d.depth {
+					d = x
+				}
+			}
+			return d
+		}
+		a, b := deepest(flat), deepest(general)
+		// The exact depth: the capsule's radius less the axis's distance
+		// from the box, found along the axis finely.
+		ca, cb := c.segment(cpos, cm)
+		exact := float32(math.Inf(-1))
+		for k := range 1001 {
+			p := ca.Add(cb.Sub(ca).Mul(float32(k) / 1000))
+			if d, _, ok := SignedDistance3(box, lin.Vec3{}, brot, p); ok {
+				exact = max(exact, c.Radius-d)
+			}
+		}
+		if !near(a.depth, exact, 1e-4) {
+			t.Fatalf("flat contact depth %v, exact %v", a.depth, exact)
+		}
+		// The support path stops refining to within about a hundredth of
+		// a radian, so its normal is compared that loosely, and a few of
+		// its answers are wrong outright, which the exact depth shows.
+		if !near(b.depth, exact, 1e-3) {
+			outliers++
+			continue
+		}
+		if !near(a.depth, b.depth, 1e-3) || a.normal.Sub(b.normal).Len() > 5e-2 {
+			t.Fatalf("flat contact depth %v normal %v, support path depth %v normal %v", a.depth, a.normal, b.depth, b.normal)
+		}
+	}
+	if used < 1000 {
+		t.Fatalf("the flat path applied in only %d of 4000 placements", used)
+	}
+	if outliers > used/100 {
+		t.Fatalf("the support path strayed from the exact depth in %d of %d placements", outliers, used)
+	}
+}
+
 // TestDynamicCCD fires two fast spheres at each other: with CCD they
 // meet, without it they pass through.
 func TestDynamicCCD(t *testing.T) {

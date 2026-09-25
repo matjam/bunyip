@@ -234,7 +234,11 @@ that angle. `MinAngle` and `MaxAngle` stop the joint at either end, so
 a door opens one way only; both zero means unlimited. `MotorSpeed` and
 `MaxMotorTorque` drive the joint towards a speed with bounded torque,
 for a wheel or a winch. A heavy load slows the motor and a limit stops
-it.
+it. In 3D a limit joins the solve a tenth of a radian before it is
+reached and from there only stops the joint closing the rest of the gap
+faster than one substep allows, so a joint resting at its limit meets
+the same constraint every substep rather than one that switches on and
+off.
 
 ```go
 w.SpawnWith(phys.HingeJoint3{A: axle, B: wheel, AxisA: lin.V3(1, 0, 0), AxisB: lin.V3(1, 0, 0),
@@ -335,9 +339,12 @@ go to sleep. A sleeping body is neither integrated nor paired with other
 sleeping bodies. A contact or an impulse wakes it. `Body.Asleep` reports
 the state and `Wake` ends it early. Sleeping is off by default. A body
 counts as at rest while it moves slower than `Settings.SleepThreshold`,
-in units and radians per second. A stack of boxes settles below the
+in units per second, and turns slowly enough that the point of its
+collider farthest from its centre does too; in 2D the angular speed is
+compared with the threshold directly. A stack of boxes settles below the
 threshold at the default solver quality, within a second or two of
-landing. A stack whose boxes are turned relative to each other keeps
+landing, and fifty ragdolls dropped on a floor are all asleep within
+eight seconds. A stack whose boxes are turned relative to each other keeps
 creeping into place for longer, and raising `Substeps` and `Iterations`
 settles it sooner.
 
@@ -396,7 +403,7 @@ impulse solver iterates over the contacts and joints, applying normal
 impulses with restitution, friction impulses clamped by the normal
 impulse, and a small positional correction. Positions then integrate.
 After the last substep of the update, a relax pass solves the contacts
-once more with the positional correction dropped, which takes the
+and joints once more with the positional correction dropped, which takes the
 separating speed that correction added back out of the velocities the
 update ends with, and bodies are then tested for sleep. Restitution is
 kept out of that correction, so bounces survive the relax pass.
