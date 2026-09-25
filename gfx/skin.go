@@ -46,31 +46,20 @@ func (g *Graphics) NewSkinnedMesh(verts []SkinVertex, indices []uint32) (*Mesh, 
 }
 
 // UpdateSkinned replaces a skinned mesh's geometry, as Update does for a
-// plain mesh: draws already queued this frame keep the old geometry. It
-// is what morph targets on a skinned model go through.
+// plain mesh, reusing replaced buffers the same way. It is what morph
+// targets on a skinned model go through.
 func (m *Mesh) UpdateSkinned(verts []SkinVertex, indices []uint32) error {
 	if !m.skinned {
 		return fmt.Errorf("gfx: UpdateSkinned on a mesh that is not skinned")
-	}
-	if m.vbuf == nil || m.destroyed {
-		return fmt.Errorf("gfx: update of a destroyed mesh")
 	}
 	if len(verts) == 0 {
 		return fmt.Errorf("gfx: mesh needs vertices")
 	}
 	plain, packed := packSkin(verts)
-	fresh, err := m.g.newMesh(plain, indices, packed)
-	if err != nil {
+	if err := m.replace(plain, indices, packed, skinVertexSize); err != nil {
 		return err
 	}
-	m.retire()
-	m.vbuf, m.ibuf = fresh.vbuf, fresh.ibuf
-	m.IndexCount, m.verts, m.indices = fresh.IndexCount, fresh.verts, fresh.indices
-	if !m.boundsFixed {
-		m.Min, m.Max = fresh.Min, fresh.Max
-	}
 	m.setJointBounds(verts)
-	m.g.trackMesh(m, skinVertexSize)
 	return nil
 }
 

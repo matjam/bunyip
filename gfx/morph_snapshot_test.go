@@ -248,9 +248,13 @@ func morphBufferDiagnostic(t *testing.T, label string, draw int, m *Mesh) {
 	if m.skinned {
 		stride = skinVertexSize
 	}
+	// The mesh keeps positions for picking, not normals, so the positions
+	// are what the buffer is compared against.
 	mismatches := 0
-	for i, v := range m.verts {
-		for component, want := range []float32{v.Pos.X, v.Pos.Y, v.Pos.Z, v.Normal.X, v.Normal.Y, v.Normal.Z} {
+	count := m.geom.vertexCount()
+	for i := range count {
+		p := m.geom.position(uint32(i))
+		for component, want := range []float32{p.X, p.Y, p.Z} {
 			offset := i*stride + component*4
 			got := math.Float32frombits(binary.LittleEndian.Uint32(data[offset : offset+4]))
 			if got != want {
@@ -261,10 +265,11 @@ func morphBufferDiagnostic(t *testing.T, label string, draw int, m *Mesh) {
 			}
 		}
 	}
-	t.Logf("%s draw %d GPU vertex position/normal mismatches: %d of %d", label, draw, mismatches, len(m.verts)*6)
+	t.Logf("%s draw %d GPU vertex position mismatches: %d of %d", label, draw, mismatches, count*3)
 	data = readGeometryBuffer(t, m.g, m.ibuf)
 	mismatches = 0
-	for i, want := range m.indices {
+	indices := m.Indices()
+	for i, want := range indices {
 		got := binary.LittleEndian.Uint32(data[i*4 : i*4+4])
 		if got != want {
 			if mismatches == 0 {
@@ -273,7 +278,7 @@ func morphBufferDiagnostic(t *testing.T, label string, draw int, m *Mesh) {
 			mismatches++
 		}
 	}
-	t.Logf("%s draw %d GPU index mismatches: %d of %d", label, draw, mismatches, len(m.indices))
+	t.Logf("%s draw %d GPU index mismatches: %d of %d", label, draw, mismatches, len(indices))
 }
 
 func TestMorphDrawSnapshotsAllocateNothingOnGPU(t *testing.T) {

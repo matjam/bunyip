@@ -93,6 +93,9 @@ type Graphics struct {
 	// prewarmed is the scene sample count whose pipeline variants
 	// startSampleVariants last began building.
 	prewarmed vk.VkSampleCountFlagBits
+	// geometry is the mesh buffers Update replaced, kept for the next
+	// update to write into; see geometry_pool.go.
+	geometry geometryPool
 }
 
 // SetViewport limits the main output to a pixel rectangle: the 2D view
@@ -398,6 +401,7 @@ func (g *Graphics) begin(clear Color) (ok bool, err error) {
 	// frame in this slot staged or retired is finished with.
 	g.staging.Begin(g.frame.Slot)
 	g.freeRetired(g.frame.Slot)
+	g.geometry.begin(g.frame.Slot, g.frameNo)
 	g.waitBase = g.r.Device.Waits()
 	// Resetting the slot's queries publishes the timings the frame that
 	// used this slot recorded, which have landed because BeginFrame
@@ -1071,6 +1075,7 @@ func (g *Graphics) destroy() {
 	g.particles.destroy()
 	g.post.destroy(g)
 	g.meshes.destroy(g)
+	g.geometry.destroy()
 	if g.white != nil {
 		g.white.Destroy()
 	}

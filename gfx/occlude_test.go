@@ -88,7 +88,9 @@ func TestOcclusionBuffer(t *testing.T) {
 	cam := Camera{Position: lin.V3(0, 0, 10), Target: lin.V3(0, 0, 0)}
 	viewProj := cam.ViewProj(16.0 / 9)
 	verts, idx := QuadMesh()
-	wall := &Mesh{verts: verts, indices: idx, IndexCount: uint32(len(idx))}
+	// KeepVertices refers to the slice, so the scaling below reaches it.
+	wall := &Mesh{IndexCount: uint32(len(idx)), vertexCount: len(verts)}
+	wall.geom.set(KeepVertices, verts, idx)
 	for i := range verts {
 		verts[i].Pos = verts[i].Pos.Mul(8)
 	}
@@ -132,7 +134,8 @@ func BenchmarkOcclusion(b *testing.B) {
 	cam := Camera{Position: lin.V3(0, 20, 90), Target: lin.V3(0, 0, 0)}
 	viewProj := cam.ViewProj(16.0 / 9)
 	cv, ci := CubeMesh()
-	box := &Mesh{verts: cv, indices: ci, IndexCount: uint32(len(ci))}
+	box := &Mesh{IndexCount: uint32(len(ci)), vertexCount: len(cv)}
+	box.geom.set(KeepPositions, cv, ci)
 	r := rand.New(rand.NewSource(1))
 	occluders := make([]lin.Mat4, 50)
 	for i := range occluders {
