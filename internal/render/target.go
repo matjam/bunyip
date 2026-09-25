@@ -139,6 +139,19 @@ type PassDesc struct {
 	// for a pass that shares another target's depth. Nil uses the
 	// target's, and LoadDepth applies to whichever is used.
 	Depth *Image
+	// DiscardMS marks the last pass that renders into a multisampled
+	// target's MSColor and MSDepth. They still resolve into Color and
+	// Depth as the pass ends, but their samples are not written back to
+	// memory, which is most of what multisampling costs in bandwidth. A
+	// later pass that loads them finds undefined contents. It has no
+	// effect on a single-sample target.
+	DiscardMS bool
+	// ReadOnlyDepth is for a pass that loads a depth attachment to test
+	// against and writes neither its depth nor its stencil. The
+	// attachment is not stored back (STORE_OP_NONE), so the image keeps
+	// what it held before the pass. A pass that does write depth or
+	// stencil with it set leaves the attachment undefined.
+	ReadOnlyDepth bool
 }
 
 // depthImage is the depth attachment the pass renders into.
@@ -233,6 +246,11 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 				colorAttachScratch[n].ResolveMode = vk.VK_RESOLVE_MODE_AVERAGE_BIT
 				colorAttachScratch[n].ResolveImageView = img.View
 				colorAttachScratch[n].ResolveImageLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				if p.DiscardMS {
+					// The resolve writes the single-sample image whatever
+					// the store op says; only the samples are dropped.
+					colorAttachScratch[n].StoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE
+				}
 			}
 			if p.LoadColor {
 				colorAttachScratch[n].LoadOp = vk.VK_ATTACHMENT_LOAD_OP_LOAD
@@ -302,6 +320,15 @@ func BeginTargetPass(cb vk.VkCommandBuffer, p PassDesc) {
 			depth.ResolveMode = vk.VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
 			depth.ResolveImageView = d.AttachView
 			depth.ResolveImageLayout = depthLayout(format)
+			if p.DiscardMS {
+				depth.StoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE
+			}
+		}
+		if p.ReadOnlyDepth {
+			// Vulkan 1.3, which the device requires, has this store op in
+			// core: the attachment is left as it was rather than written
+			// back unchanged.
+			depth.StoreOp = vk.VK_ATTACHMENT_STORE_OP_NONE
 		}
 		depthAttachScratch = depth
 		info.PDepthAttachment = &depthAttachScratch
