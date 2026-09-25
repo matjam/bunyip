@@ -561,7 +561,7 @@ func (g *Graphics) DrawTerrain(t *Terrain) {
 	if t == nil || len(t.chunks) == 0 {
 		return
 	}
-	if err := g.materialOwnerError(t.mat); err != nil {
+	if err := g.materialOwnerError(&t.mat); err != nil {
 		panic(err)
 	}
 	q := g.cur

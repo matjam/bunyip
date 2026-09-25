@@ -193,9 +193,10 @@ func BenchmarkStaticBatch(b *testing.B) {
 	}
 	items, cam := batchScene(cube)
 	frustum := cam.Frustum(16.0 / 9)
-	batch := &StaticBatch{}
+	batch := &StaticBatch{mats: []Material{items[0].Material}, mapped: make([]uint32, 1)}
 	for _, it := range items {
-		batch.items = append(batch.items, meshDraw{mesh: it.Mesh, mat: it.Material, model: it.Model})
+		c, r := it.Mesh.boundingSphere(it.Model)
+		batch.items = append(batch.items, batchItem{mesh: it.Mesh, model: it.Model, centre: c, radius: r})
 	}
 	los := make([]lin.Vec3, len(batch.items))
 	his := make([]lin.Vec3, len(batch.items))

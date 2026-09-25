@@ -15,15 +15,19 @@ import (
 //	blended    bits 61..30 the view depth, farthest first
 //	opaque     bit 61 clear for a draw that writes the stencil buffer, so
 //	           a mask is drawn before whatever tests it; bit 60 skinned,
-//	           then the shader, the shader's uniforms, the material set
-//	           and the mesh, each as a dense id
+//	           then the shader, the shader's uniforms, the mesh and the
+//	           material set, each as a dense id
 //	bits 19..0 the draw's place in the queue, so that draws which tie
 //	           keep the order the game queued them in
 //
 // The ids are handed out in the order the draws are walked, so the
 // groups come out in a different order than a comparison sort on the
 // pointers would give. Draws that share a state still land together,
-// which is what the instanced runs need.
+// which is what the instanced runs need. The mesh comes before the
+// material set so that the draws of one mesh are contiguous whatever
+// their materials: the lit pass records the same runs either way, and
+// the shadow pass, whose pipeline ignores most of the material, merges
+// them into one.
 //
 // A frame with more distinct shaders, uniform blocks, material sets or
 // meshes than a field holds, or with more than sortMaxDraws draws, is
@@ -38,10 +42,10 @@ const (
 	sortShaderBits   = 7
 	sortUniformShift = 46
 	sortUniformBits  = 7
-	sortSetShift     = 33
-	sortSetBits      = 13
-	sortMeshShift    = 20
+	sortMeshShift    = 33
 	sortMeshBits     = 13
+	sortSetShift     = 20
+	sortSetBits      = 13
 	sortIndexBits    = 20
 	sortIndexMask    = 1<<sortIndexBits - 1
 	sortMaxDraws     = 1 << sortIndexBits
@@ -84,7 +88,7 @@ func (q *drawQueue) buildKeys() bool {
 		} else {
 			// A draw that marks the stencil buffer comes first, so a draw
 			// that tests the mark sees it however the two were queued.
-			if !d.mat.marksStencil() {
+			if !q.mats[d.mat].stencil {
 				key |= 1 << sortStencilBit
 			}
 			if d.skinned {
@@ -114,14 +118,115 @@ func (q *drawQueue) sortDraws() drawList {
 		q.order = make([]int32, n)
 	}
 	q.order = q.order[:n]
+	q.sortedKeys = nil
 	if !q.buildKeys() {
 		return q.sortRecords()
 	}
-	slices.Sort(q.keys)
-	for i, key := range q.keys {
+	if cap(q.keyTmp) < n {
+		q.keyTmp = make([]uint64, n)
+	}
+	// The keys are built in draw order and carry the draw's index in their
+	// low bits, so they are already ordered by those bits.
+	q.sortedKeys = radixSort(q.keys, q.keyTmp[:n], sortIndexBits)
+	for i, key := range q.sortedKeys {
 		q.order[i] = int32(key & sortIndexMask)
 	}
 	return drawList{draws: q.draws, order: q.order}
+}
+
+// shadowOrder orders the first opaque draws of a sorted list for the
+// shadow pass and returns their indices in the queue's draws. It is the
+// lit order without what the depth-only pipeline ignores: what the camera
+// sees and what it does not are mixed, and so are the stencil classes,
+// and a draw's material set counts only when the pass reads it, for an
+// alpha cutout or a shader's vertex hook. A map's draws of one mesh then
+// sit together however many materials and how much of the view they
+// span. Ties keep the draws' queue order. A frame sorted by comparing
+// records keeps the lit order.
+func (q *drawQueue) shadowOrder(all drawList, opaque int) []int32 {
+	q.shadowIDs = q.shadowIDs[:0]
+	if q.sortedKeys == nil {
+		return append(q.shadowIDs, all.order[:opaque]...)
+	}
+	if cap(q.shadowKeys) < opaque {
+		q.shadowKeys = make([]uint64, opaque)
+	}
+	keys := q.shadowKeys[:opaque]
+	const setMask = (1<<sortSetBits - 1) << sortSetShift
+	for i, key := range q.sortedKeys[:opaque] {
+		key &^= 1<<sortCulledBit | 1<<sortStencilBit
+		d := &q.draws[key&sortIndexMask]
+		if !q.mats[d.mat].cutout && len(d.shader.stages) == 0 {
+			key &^= setMask
+		}
+		keys[i] = key
+	}
+	// Every sorted key has been read, so keyTmp, which may hold them, is
+	// free to sort with.
+	q.sortedKeys = nil
+	for _, key := range radixSort(keys, q.keyTmp[:opaque], 0) {
+		q.shadowIDs = append(q.shadowIDs, int32(key&sortIndexMask))
+	}
+	return q.shadowIDs
+}
+
+// radixSortMin is the length below which radixSort hands the keys to a
+// comparison sort, which is quicker than clearing the digit counts.
+const radixSortMin = 256
+
+// radixSort sorts keys in ascending order and returns the sorted slice,
+// which is either keys or tmp; tmp must be as long as keys. It is a
+// least-significant-digit radix sort on bytes. A byte every key shares
+// takes no pass. lowSorted says the input is already in ascending order
+// of its low lowSorted bits, so the bytes wholly below that bit take no
+// pass either: each pass is stable, so the input's order survives as the
+// order among keys whose higher bytes tie.
+func radixSort(keys, tmp []uint64, lowSorted uint) []uint64 {
+	n := len(keys)
+	if n < radixSortMin {
+		slices.Sort(keys)
+		return keys
+	}
+	and, or := ^uint64(0), uint64(0)
+	for _, k := range keys {
+		and &= k
+		or |= k
+	}
+	varies := and ^ or
+	var digits [8]uint
+	passes := 0
+	for d := lowSorted / 8; d < 8; d++ {
+		if (varies>>(8*d))&0xff != 0 {
+			digits[passes] = d
+			passes++
+		}
+	}
+	if passes == 0 {
+		return keys
+	}
+	var count [8][256]uint32
+	for _, k := range keys {
+		for p := range passes {
+			count[p][(k>>(8*digits[p]))&0xff]++
+		}
+	}
+	src, dst := keys, tmp[:n]
+	for p := range passes {
+		c := &count[p]
+		sum := uint32(0)
+		for i, v := range c {
+			c[i] = sum
+			sum += v
+		}
+		shift := 8 * digits[p]
+		for _, k := range src {
+			b := (k >> shift) & 0xff
+			dst[c[b]] = k
+			c[b]++
+		}
+		src, dst = dst, src
+	}
+	return src
 }
 
 // sortRecords is sortDraws by comparing the draw records themselves. It
@@ -131,9 +236,10 @@ func (q *drawQueue) sortRecords() drawList {
 	for i := range q.order {
 		q.order[i] = int32(i)
 	}
-	draws := q.draws
+	draws, mats := q.draws, q.mats
 	slices.SortStableFunc(q.order, func(x, y int32) int {
 		a, b := &draws[x], &draws[y]
+		aStencil, bStencil := mats[a.mat].stencil, mats[b.mat].stencil
 		switch {
 		case a.blended != b.blended:
 			if a.blended {
@@ -153,8 +259,8 @@ func (q *drawQueue) sortRecords() drawList {
 				return 1
 			}
 			return 0
-		case a.mat.marksStencil() != b.mat.marksStencil(): // a mask before what tests it
-			if a.mat.marksStencil() {
+		case aStencil != bStencil: // a mask before what tests it
+			if aStencil {
 				return -1
 			}
 			return 1
@@ -170,13 +276,13 @@ func (q *drawQueue) sortRecords() drawList {
 			return 1
 		case a.uniform != b.uniform:
 			return int(a.uniform - b.uniform)
-		case a.set != b.set:
-			if a.set < b.set {
+		case a.mesh != b.mesh:
+			if uintptr(unsafe.Pointer(a.mesh)) < uintptr(unsafe.Pointer(b.mesh)) {
 				return -1
 			}
 			return 1
-		case a.mesh != b.mesh:
-			if uintptr(unsafe.Pointer(a.mesh)) < uintptr(unsafe.Pointer(b.mesh)) {
+		case a.set != b.set:
+			if a.set < b.set {
 				return -1
 			}
 			return 1

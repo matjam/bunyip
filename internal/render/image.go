@@ -404,7 +404,8 @@ func generateMips(cb vk.VkCommandBuffer, img *Image) {
 		}
 		blit.SrcOffsets[1] = vk.VkOffset3D{X: w, Y: h, Z: 1}
 		blit.DstOffsets[1] = vk.VkOffset3D{X: nw, Y: nh, Z: 1}
-		vk.VkCmdBlitImage(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, vk.VK_FILTER_LINEAR)
+		blitScratch = blit
+		vk.CmdBlitImage(cb, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img.Handle, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blitScratch, vk.VK_FILTER_LINEAR)
 		imageBarrierLevels(cb, img.Handle, vk.VK_IMAGE_ASPECT_COLOR_BIT, level-1, 1,
 			vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			vk.VK_PIPELINE_STAGE_2_BLIT_BIT, vk.VK_ACCESS_2_TRANSFER_READ_BIT,

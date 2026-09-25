@@ -659,10 +659,14 @@ func (g *Graphics) DrawModelMoved(m *Model, world, prev lin.Mat4, override Mater
 	g.requireModelOwner(m, override == nil)
 	for i, p := range m.Parts {
 		at, was := world.Mul(p.World), prev.Mul(p.World)
-		d := meshDraw{mesh: p.Mesh, mat: override.apply(i, p), model: at, prev: was, moved: was != at,
-			morphSet: m.morphSet()}
-		m.morphOf[p.Mesh].snapshot(&d)
-		g.queueMesh(d)
+		mat := override.apply(i, p)
+		var morph morphDraw
+		mesh, morphed := m.morphOf[p.Mesh].snapshot(p.Mesh, &morph)
+		mp := &morph
+		if !morphed {
+			mp = nil
+		}
+		g.queueMesh(mesh, &mat, &at, &was, mp, meshDraw{morphSet: m.morphSet()})
 	}
 }
 

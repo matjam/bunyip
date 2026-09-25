@@ -120,7 +120,7 @@ func (t *Timestamps) Reset(cb vk.VkCommandBuffer, slot int) {
 	}
 	s.spans = s.spans[:0]
 	s.next = uint32(slot) * t.perSlot
-	vk.VkCmdResetQueryPool(cb, t.pool, uint32(slot)*t.perSlot, t.perSlot)
+	vk.CmdResetQueryPool(cb, t.pool, uint32(slot)*t.perSlot, t.perSlot)
 }
 
 // Begin starts timing a section named name. Pairs nest, so a pass may
@@ -147,7 +147,7 @@ func (t *Timestamps) Begin(cb vk.VkCommandBuffer, name string) {
 	s.spans = append(s.spans, pendingSpan{name: name, a: q, b: q + 1})
 	s.pending = true
 	t.open = append(t.open, len(s.spans)-1)
-	vk.VkCmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, q)
+	vk.CmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, q)
 }
 
 // End closes the innermost open section. Calling it without a matching
@@ -164,7 +164,7 @@ func (t *Timestamps) End(cb vk.VkCommandBuffer) {
 	s := &t.slots[t.cur]
 	sp := &s.spans[i]
 	sp.closed = true
-	vk.VkCmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, sp.b)
+	vk.CmdWriteTimestamp2(cb, vk.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, t.pool, sp.b)
 }
 
 // Spans is the newest frame's sections, in the order they were opened,
@@ -189,6 +189,10 @@ func (t *Timestamps) FrameMS() float64 {
 	return t.frameMS
 }
 
+// queryPoolResults reads query results without the allocating call
+// wrapper. It is a variable so a test can stand in for the device.
+var queryPoolResults = vk.GetQueryPoolResults
+
 // publish reads a slot's counters and turns them into spans. Results
 // that have not landed are skipped rather than waited for, so the
 // figures stand still rather than stalling the frame.
@@ -205,7 +209,7 @@ func (t *Timestamps) publish(slot int) {
 		t.results = make([]uint64, need)
 	}
 	t.results = t.results[:need]
-	res := vk.VkGetQueryPoolResults(t.dev.Handle, t.pool, base, n,
+	res := queryPoolResults(t.dev.Handle, t.pool, base, n,
 		uintptr(need*8), unsafe.Pointer(&t.results[0]), 16,
 		vk.VK_QUERY_RESULT_64_BIT|vk.VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
 	if res != vk.VK_SUCCESS && res != vk.VK_NOT_READY {

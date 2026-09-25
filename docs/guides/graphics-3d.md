@@ -839,8 +839,11 @@ queues only what survives. A subtree behind the camera or behind an
 occluder is rejected at one node, so the ten thousand cost a few dozen
 box tests, and `FrameStats.CullTests` counts them. The items that come
 through are ordinary draws, instanced, sorted, lit and shadowed like any
-others. Ten thousand cubes along a strip most of which is behind the
-camera fall from 220 microseconds of culling a frame to under two.
+others. A rejected subtree is walked again against the frame's shadow
+maps, so an item the camera cannot see still casts its shadow into the
+view, as a culled `DrawMesh` draw does. Ten thousand cubes along a strip
+most of which is behind the camera fall from 220 microseconds of culling
+a frame to under two.
 
 A batch is for geometry that never moves: the hierarchy is built from
 the models given and is not rebuilt, so anything that moves belongs in

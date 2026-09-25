@@ -107,43 +107,17 @@ func skinBounds(m *Mesh, model lin.Mat4, joints []lin.Mat4) (centre lin.Vec3, ra
 	return c, e.Len(), true
 }
 
-// shadowMask marks the draws that can reach one shadow map, so a caster
-// is recorded into the cascades, spot maps and cube faces its bounds
-// fall in rather than into every one. A cascade ignores its near plane,
-// since a caster in front of it still writes depth; a spot light and a
-// cube face use their whole frustum. Draws with a shader that may move a
-// vertex anywhere are always recorded. The result is the queue's own
-// slice, valid until the next call.
-func (q *drawQueue) shadowMask(draws drawList, index int, spots, points []lin.Mat4) []bool {
-	n := draws.len()
-	if cap(q.shadowVis) < n {
-		q.shadowVis = make([]bool, n)
-	}
-	vis := q.shadowVis[:n]
-	cascade := index < shadowCascades
-	var f Frustum
-	switch {
-	case cascade:
-		f = FrustumOf(q.cascadeMats[index])
-	case index < pointFaceBase:
-		f = FrustumOf(spots[index-shadowCascades])
-	default:
-		f = FrustumOf(points[index-pointFaceBase])
-	}
-	for i := range n {
-		d := draws.at(i)
-		vis[i] = !d.cullable || f.containsSphere(d.centre, d.radius, cascade)
-	}
-	return vis
-}
-
 // drawBounds is a draw's world bounding sphere for culling, and whether
 // it may be culled at all. A skinned draw uses the pose's joint boxes,
 // falling back to twice the bind pose's radius when the mesh has none. A
 // material shader with a vertex program grows the radius by its
 // VertexBounds, and a zero VertexBounds means the draw is never culled.
 func (q *drawQueue) drawBounds(d *meshDraw) (centre lin.Vec3, radius float32, cullable bool) {
-	centre, radius = d.mesh.boundingSphere(d.model)
+	if d.bounded {
+		centre, radius = d.centre, d.radius // a static batch item's, worked out once
+	} else {
+		centre, radius = d.mesh.boundingSphere(d.model)
+	}
 	if d.skinned && d.jointCount > 0 {
 		if c, r, ok := skinBounds(d.mesh, d.model, q.joints[d.jointBase:d.jointBase+d.jointCount]); ok {
 			centre, radius = c, r

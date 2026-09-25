@@ -89,12 +89,9 @@ func (c *clusterGrid) build(points []pointLight, spotSlots, pointSlots []int32, 
 	clear(c.counts)
 	c.used = 0
 
-	_, _, near, far := cam.defaults()
-	ratio := float32(math.Log2(float64(far / near)))
-	c.scale = clusterZ / ratio
-	c.bias = -clusterZ * float32(math.Log2(float64(near))) / ratio
+	_, _, near, far := c.setDepthMapping(cam)
 	view := cam.viewMatrix()
-	viewProj := cam.Projection(aspect).Mul(view)
+	proj := cam.Projection(aspect)
 
 	for i, p := range points {
 		rec := lightRecord{
@@ -114,10 +111,7 @@ func (c *clusterGrid) build(points []pointLight, spotSlots, pointSlots []int32, 
 			rec.info.Y = float32(pointSlots[i])
 		}
 		c.lights = append(c.lights, rec)
-		if r, ok := lightClusters(p, view, viewProj, near, far, c.scale, c.bias); ok {
-			r.light = int32(i)
-			c.ranges = append(c.ranges, r)
-		}
+		c.ranges = c.lightClusters(c.ranges, int32(i), p, view, proj, near, far)
 	}
 	// One pass to count what each cluster holds, then the offsets, then a
 	// pass to fill. Counting first keeps the index list packed, so a
@@ -158,47 +152,103 @@ func (c *clusterGrid) eachCluster(r clusterRange, f func(ci int)) {
 	}
 }
 
-// lightClusters is the block of clusters a light's sphere can reach. The
-// depth range comes from the sphere in view space and the screen
-// rectangle from the corners of its world box, which covers the sphere
-// and projects with eight points. A sphere that crosses the camera plane
-// spans the whole view, since its projection is no longer bounded by
-// those corners.
-func lightClusters(p pointLight, view, viewProj lin.Mat4, near, far, scale, bias float32) (clusterRange, bool) {
+// setDepthMapping works out the mapping from a view depth to a slice for
+// a camera and returns the camera's defaults. The frame block carries the
+// mapping, so it is set before the block is written, whether or not the
+// frame has lights to sort.
+func (c *clusterGrid) setDepthMapping(cam Camera) (up lin.Vec3, fov, near, far float32) {
+	up, fov, near, far = cam.defaults()
+	ratio := float32(math.Log2(float64(far / near)))
+	c.scale = clusterZ / ratio
+	c.bias = -clusterZ * float32(math.Log2(float64(near))) / ratio
+	return up, fov, near, far
+}
+
+// sliceMargin widens each slice's depths by this fraction when a light
+// is fitted to it, so a fragment the shader's rounding puts in the
+// neighbouring slice still finds the light.
+const sliceMargin = 1e-3
+
+// sliceStart is the view depth where a slice begins.
+func (c *clusterGrid) sliceStart(s int32) float32 {
+	return float32(math.Exp2(float64((float32(s) - c.bias) / c.scale)))
+}
+
+// lightClusters appends the blocks of clusters a light's sphere can
+// reach, one per depth slice. The slices come from the sphere's depth
+// range in view space. In each slice the sphere is cut down to the part
+// between the slice's near and far depths, whose widest cross-section is
+// the sphere's own radius when the centre lies within them and shrinks
+// towards the slice further from it, and the tiles are those the box
+// around that part projects to. A slice far from the centre therefore
+// lists the light in far fewer tiles than the one through it.
+func (c *clusterGrid) lightClusters(dst []clusterRange, light int32, p pointLight, view, proj lin.Mat4, near, far float32) []clusterRange {
 	r := max(p.rng, 1e-3)
-	depth := -view.MulPoint(p.pos).Z
+	centre := view.MulPoint(p.pos)
+	depth := -centre.Z
 	lo, hi := depth-r, depth+r
 	if hi < near || lo > far {
-		return clusterRange{}, false
+		return dst
 	}
-	out := clusterRange{
-		z0: clusterSlice(max(lo, near), scale, bias),
-		z1: clusterSlice(min(hi, far), scale, bias),
-		x1: clusterX - 1, y1: clusterY - 1,
+	z0 := clusterSlice(max(lo, near)*(1-sliceMargin), c.scale, c.bias)
+	z1 := clusterSlice(min(hi, far)*(1+sliceMargin), c.scale, c.bias)
+	for z := z0; z <= z1; z++ {
+		// The slice's depths: the first reaches back to the near plane and
+		// the last out to the far plane, as the shader clamps them.
+		d0, d1 := near, far
+		if z > 0 {
+			d0 = c.sliceStart(z)
+		}
+		if z < clusterZ-1 {
+			d1 = c.sliceStart(z + 1)
+		}
+		d0, d1 = max(d0*(1-sliceMargin), lo), min(d1*(1+sliceMargin), hi)
+		if d0 > d1 {
+			continue
+		}
+		// The widest circle of the sphere between d0 and d1.
+		cut := r
+		if gap := max(d0-depth, depth-d1, 0); gap > 0 {
+			cut = float32(math.Sqrt(float64(max(r*r-gap*gap, 0))))
+		}
+		cut = cut*(1+1e-5) + 1e-5
+		x0, x1, y0, y1, ok := projectSlab(proj, centre.X-cut, centre.X+cut, centre.Y-cut, centre.Y+cut, d0, d1)
+		if !ok {
+			continue
+		}
+		dst = append(dst, clusterRange{light: light, x0: x0, x1: x1, y0: y0, y1: y1, z0: z, z1: z})
 	}
+	return dst
+}
+
+// projectSlab returns the tiles a view-space box covers: x and y across,
+// view depths d0 to d1. The box's corners bound its projection, since
+// each clip coordinate over the depth is monotonic along every edge. It
+// reports false for a box wholly outside the view. A box reaching behind
+// the camera, which only a projection with the eye inside the slab can
+// give, covers every tile.
+func projectSlab(proj lin.Mat4, x0, x1, y0, y1, d0, d1 float32) (tx0, tx1, ty0, ty1 int32, ok bool) {
 	minX, minY := float32(math.Inf(1)), float32(math.Inf(1))
 	maxX, maxY := float32(math.Inf(-1)), float32(math.Inf(-1))
 	for k := range 8 {
-		corner := lin.V3(p.pos.X, p.pos.Y, p.pos.Z)
-		corner = corner.Add(lin.V3(pick(k&1 == 0, -r, r), pick(k&2 == 0, -r, r), pick(k&4 == 0, -r, r)))
-		clip := viewProj.MulVec4(corner.Vec4(1))
-		if clip.W <= 1e-4 {
-			return out, true // it wraps around the camera: every tile
+		x, y, z := pick(k&1 == 0, x0, x1), pick(k&2 == 0, y0, y1), -pick(k&4 == 0, d0, d1)
+		cx := proj[0]*x + proj[4]*y + proj[8]*z + proj[12]
+		cy := proj[1]*x + proj[5]*y + proj[9]*z + proj[13]
+		cw := proj[3]*x + proj[7]*y + proj[11]*z + proj[15]
+		if cw <= 1e-4 {
+			return 0, clusterX - 1, 0, clusterY - 1, true
 		}
-		x, y := clip.X/clip.W, clip.Y/clip.W
-		minX, maxX = min(minX, x), max(maxX, x)
-		minY, maxY = min(minY, y), max(maxY, y)
+		nx, ny := cx/cw, cy/cw
+		minX, maxX = min(minX, nx), max(maxX, nx)
+		minY, maxY = min(minY, ny), max(maxY, ny)
 	}
 	if minX > 1 || maxX < -1 || minY > 1 || maxY < -1 {
-		return clusterRange{}, false
+		return 0, 0, 0, 0, false
 	}
 	// Clip space runs -1..1 left to right and top to bottom, the way the
-	// viewport does, so the tiles count the same way as gl_FragCoord.
-	out.x0 = clusterTile(minX, clusterX)
-	out.x1 = clusterTile(maxX, clusterX)
-	out.y0 = clusterTile(minY, clusterY)
-	out.y1 = clusterTile(maxY, clusterY)
-	return out, true
+	// viewport does, so the tiles count the same way as the fragment
+	// position.
+	return clusterTile(minX, clusterX), clusterTile(maxX, clusterX), clusterTile(minY, clusterY), clusterTile(maxY, clusterY), true
 }
 
 // clusterTile is which tile of n a clip coordinate falls in, clamped to

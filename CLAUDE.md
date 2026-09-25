@@ -205,7 +205,12 @@ lights into the clusters they reach on the CPU, and writes the records,
 the per-cluster table and the index list into set 1. The fragment
 prelude finds its cluster from the fragment-position builtin and the view depth and
 loops over that cluster's lights. A cluster keeps 64 lights and a frame
-1024 (`MaxLights`).
+1024 (`MaxLights`). A light's tiles are fitted per depth slice to the
+part of its sphere between the slice's depths, and
+`TestClusterConservative` checks the fit never misses a cluster the
+sphere reaches. A frame with no lights leaves a slot's table alone when
+it already lists none; the depth mapping in the frame block is set
+every frame either way (`setDepthMapping`).
 
 **Shadow maps share one atlas** (`shadowRegion` in `gfx/mesh_draw.go`,
 mirrored by the fragment prelude): three cascades of 2048 in the square
@@ -438,7 +443,12 @@ render pass, so text tests draw one frame.
 - `DrawBatch` does not queue anything: it puts the `StaticBatch` on the
   queue, and `prepareDraws` walks its hierarchy (`gfx/batch.go`) into
   `q.draws` once the frustum and the occlusion buffer are known. That is
-  why `renderQueue`'s `has3D` counts queued batches as well as draws.
+  why `renderQueue`'s `has3D` counts queued batches as well as draws. A
+  subtree the camera rejects is walked again against the frame's shadow
+  volumes (`q.volumes`) and its items are queued `shadowOnly`, always
+  culled, so they still cast shadows. A queue prepared twice (a probe
+  bake's faces) drops the items the last preparation added first
+  (`q.expandedAt`).
 - A mesh shader has two fragment programs: the usual one and the one the
   order-independent transparency pass needs, which writes a second
   attachment (the accumulated colour and the revealage). `shaders.Compose`
@@ -479,14 +489,26 @@ render pass, so text tests draw one frame.
   code an image environment uses, over a cube sampler instead of an
   equirectangular one.
 - The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
-  class, then depth for blended draws or dense shader, uniform, material
-  set and mesh ids for opaque ones, and the draw's index in the low
-  twenty bits so ties keep submission order. A frame with more of any of
-  those than a field holds falls back to `sortRecords`, which compares
-  the draw records.
+  class, then depth for blended draws or dense shader, uniform, mesh
+  and material set ids for opaque ones, and the draw's index in the low
+  twenty bits so ties keep submission order. The keys are sorted with a
+  byte radix sort (`radixSort`). A frame with more of any of those than
+  a field holds falls back to `sortRecords`, which compares the draw
+  records.
+- A draw names its material by index in its queue's per-frame table
+  (`q.mats`, `gfx/matintern.go`), found by comparing the material's
+  bytes, so `meshDraw` stays small. Ownership and mesh-shader checks run
+  when a material enters the table, still from the draw call. Each
+  material's descriptor sets, instance template and pipeline keys are
+  resolved once per preparation.
 - `prepareDraws` runs before `writeUniforms`: the cascades need the
-  caster bounds it resolves, and the shadow pass culls each draw against
-  each cascade and spot light before recording it.
+  caster bounds it resolves. It also culls the shadow casters: the
+  opaque draws' spheres are packed in a shadow order (the lit order
+  without what the depth-only pipeline ignores, `shadowOrder`), each
+  spot and point light keeps the casters that reach its range sphere,
+  and every map gets a list of its casters (`gfx/shadowcasters.go`) and
+  its own run of instance records after the lit ones, so a map's draws
+  of one mesh are one instanced draw. A culled draw has no lit record.
 - `renderScene` calls `q.jitterFrame` before anything else, which fills
   `q.projJ`, `q.viewProjJ` and `q.invViewProjJ` with the sub-pixel
   offset temporal anti-aliasing needs (zero when it is off). It has to

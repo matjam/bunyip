@@ -110,28 +110,20 @@ func (g *Graphics) DrawSkinned(m *Mesh, mat Material, model lin.Mat4, joints []l
 // character walking across the screen reprojects correctly while an arm
 // swinging in place does not.
 func (g *Graphics) DrawSkinnedMoved(m *Mesh, mat Material, model, prev lin.Mat4, joints []lin.Mat4) {
-	g.drawSkinned(m, mat, model, prev, joints, meshDraw{})
+	g.drawSkinned(m, &mat, &model, &prev, joints, nil, meshDraw{})
 }
 
 // drawSkinned is DrawSkinnedMoved with the morph fields of a draw filled
 // in, which is the path an animated model takes.
-func (g *Graphics) drawSkinned(m *Mesh, mat Material, model, prev lin.Mat4, joints []lin.Mat4, d meshDraw) {
+func (g *Graphics) drawSkinned(m *Mesh, mat *Material, model, prev *lin.Mat4, joints []lin.Mat4, morph *morphDraw, d meshDraw) {
 	g.requireMeshOwner(m, mat)
 	if !m.skinned || len(joints) == 0 {
-		d.mesh, d.mat, d.model, d.prev, d.moved = m, mat, model, prev, prev != model
-		g.queueMesh(d)
+		g.queueMesh(m, mat, model, prev, morph, d)
 		return
-	}
-	if mat.BaseColor == (Color{}) {
-		mat.BaseColor = White
-	}
-	if mat.Roughness == 0 {
-		mat.Roughness = 0.6
 	}
 	q := g.cur
 	base := len(q.joints)
 	q.joints = append(q.joints, joints...)
-	d.mesh, d.mat, d.model, d.prev, d.moved = m, mat, model, prev, prev != model
-	d.jointBase, d.jointCount, d.skinned = base, len(joints), true
-	g.queueMesh(d)
+	d.jointBase, d.jointCount, d.skinned = int32(base), int32(len(joints)), true
+	g.queueMesh(m, mat, model, prev, morph, d)
 }

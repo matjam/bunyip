@@ -9,16 +9,39 @@ import (
 // drawQueue is everything queued for one output: the main frame or a
 // render texture. Graphics always draws into its current queue.
 type drawQueue struct {
-	stream      stream2D
-	draws       []meshDraw
-	order       []int32  // draws in draw order, as indices into draws
-	keys        []uint64 // each draw's packed sort key, the sort's working set
-	shaderIDs   idTable  // dense ids for the sort key
+	stream stream2D
+	draws  []meshDraw
+	// mats is the frame's distinct materials, which draws name by index;
+	// matSlots is the hash table over it, holding an index plus one, and
+	// lastMat the index plus one of the material found last.
+	mats     []frameMaterial
+	matSlots []int32
+	lastMat  int32
+	prepGen  uint32 // counts preparations, so a material's sets are resolved once per preparation
+	frame    uint64 // counts resets, so a static batch knows when its material indices are stale
+	// expandedAt is one more than how many draws the queue held before
+	// prepareDraws added the static batches' items, or zero before the
+	// frame's first preparation.
+	expandedAt  int
+	prevs       []lin.Mat4  // the previous transforms of draws that moved
+	morphs      []morphDraw // the morph blocks of draws with GPU morph targets
+	order       []int32     // draws in draw order, as indices into draws
+	keys        []uint64    // each draw's packed sort key, the sort's working set
+	keyTmp      []uint64    // the radix sort's second buffer
+	sortedKeys  []uint64    // the sorted keys, in keys or keyTmp, until shadowOrder reads them
+	shadowKeys  []uint64    // the opaque draws' keys for the shadow order
+	shadowIDs   []int32     // the opaque draws in the shadow order
+	shaderIDs   idTable     // dense ids for the sort key
 	uniformIDs  idTable
 	setIDs      idTable
 	meshIDs     idTable
-	shadowVis   []bool // draws that reach the shadow map being recorded
+	casters     shadowCasters // the opaque draws' spheres and each shadow map's draws
 	cascadeMats [shadowCascades]lin.Mat4
+	shadow      shadowLights // the frame's shadowed spot and point lights
+	// volumes is what each of the frame's shadow maps can take casters
+	// from, which static batches walk their hidden subtrees against.
+	volumes    []shadowVolume
+	volumesArr [shadowCascades + maxSpotShadows + maxPointShadows]shadowVolume
 	// jitter is this frame's sub-pixel projection offset in clip units,
 	// zero unless temporal anti-aliasing is on, and projJ, viewProjJ and
 	// invViewProjJ are the matrices the scene pass rasterises with once it
@@ -45,13 +68,16 @@ type drawQueue struct {
 	hasCam       bool
 	points       []pointLight
 	clusters     clusterGrid // this frame's lights, sorted into the view's clusters
-	spotSlots    []int32     // each light's spot shadow map, or -1
-	pointSlots   []int32     // each light's cube shadow map slot, or -1
-	uniforms     *render.UniformSets
-	inst         instanceStream
-	joints       []lin.Mat4 // joint matrices for skinned draws this frame
-	jointBuf     *render.StorageSets
-	clear        Color
+	// clustersEmpty says which slots' cluster tables were last written
+	// with no lights, so a frame without lights need not write them again.
+	clustersEmpty [render.FramesInFlight]bool
+	spotSlots     []int32 // each light's spot shadow map, or -1
+	pointSlots    []int32 // each light's cube shadow map slot, or -1
+	uniforms      *render.UniformSets
+	inst          instanceStream
+	joints        []lin.Mat4 // joint matrices for skinned draws this frame
+	jointBuf      *render.StorageSets
+	clear         Color
 	// out is the attachment set of the pass this queue's composite and 2D
 	// stream land in: the zero value for the screen, a render texture's
 	// own colour format, depth and sample count otherwise.
@@ -104,6 +130,11 @@ type drawQueue struct {
 func (q *drawQueue) reset() {
 	q.stream.reset()
 	q.draws = q.draws[:0]
+	q.resetMaterials()
+	q.frame++
+	q.expandedAt = 0
+	q.prevs = q.prevs[:0]
+	q.morphs = q.morphs[:0]
 	q.decals = q.decals[:0]
 	q.lines.reset()
 	q.parts.reset()

@@ -172,9 +172,12 @@ type morphDraw struct {
 // The original mesh owns the buffers and retires them after pending draws;
 // this cached view only keeps their values. Unchanged GPU geometry reuses
 // the view, so changing shader weights does not allocate per draw or frame.
-func (mm *morphMesh) snapshot(d *meshDraw) {
+// It returns the mesh to draw, which is mesh itself for a mesh without
+// morph targets, and whether it filled morph, which it does when the
+// shader blends the targets.
+func (mm *morphMesh) snapshot(mesh *Mesh, morph *morphDraw) (*Mesh, bool) {
 	if mm == nil {
-		return
+		return mesh, false
 	}
 	m := mm.mesh
 	if old := mm.drawn; old == nil || old.vbuf != m.vbuf || old.ibuf != m.ibuf ||
@@ -182,15 +185,15 @@ func (mm *morphMesh) snapshot(d *meshDraw) {
 		view := *m
 		mm.drawn = &view
 	}
-	d.mesh = mm.drawn
 	if len(mm.active) == 0 {
-		return
+		return mm.drawn, false
 	}
-	d.morph.info = [4]float32{float32(mm.gpuBase), float32(mm.vertices()), float32(len(mm.active)), 0}
+	*morph = morphDraw{info: [4]float32{float32(mm.gpuBase), float32(mm.vertices()), float32(len(mm.active)), 0}}
 	for k, a := range mm.active {
-		d.morph.weights[k] = a.weight
-		d.morph.indices[k/4] |= uint32(a.target) << (8 * (k % 4))
+		morph.weights[k] = a.weight
+		morph.indices[k/4] |= uint32(a.target) << (8 * (k % 4))
 	}
+	return mm.drawn, true
 }
 
 func (d morphDraw) instance(in *meshInstance) {

@@ -98,9 +98,11 @@ func BenchmarkStrokePath_50RoundRects(b *testing.B) {
 }
 
 // benchDraws builds n mesh draws with a spread of depths, materials,
-// shaders and meshes, the mixture prepareDraws has to order. Nothing is
-// dereferenced by the sort, so the pointers stand in for real objects.
-func benchDraws(n int) []meshDraw {
+// shaders and meshes, the mixture prepareDraws has to order, with their
+// materials in q's table. Nothing is dereferenced by the sort, so the
+// pointers stand in for real objects. texes, when given, spreads the
+// materials over those textures.
+func benchDraws(q *drawQueue, n int, texes ...*Texture) []meshDraw {
 	shaders := make([]*Shader, 4)
 	for i := range shaders {
 		shaders[i] = &Shader{}
@@ -119,11 +121,16 @@ func benchDraws(n int) []meshDraw {
 		d.depth = float32(math.Mod(float64(i)*37.5, 100))
 		d.culled = i%9 == 0
 		d.skinned = i%11 == 0
-		d.mat = Material{Roughness: 0.5}
+		mat := Material{Roughness: 0.5}
 		if i%4 == 0 {
-			d.mat.Blend = true // a quarter of the scene is transparent
+			mat.Blend = true // a quarter of the scene is transparent
 		}
-		d.blended = d.mat.blended() // prepareDraws resolves this before sorting
+		if len(texes) > 0 {
+			mat.Texture = texes[(i/16)%len(texes)]
+		}
+		d.mat = q.testMaterial(mat)
+		d.prev, d.morph = -1, -1
+		d.blended = mat.blended() // prepareDraws resolves this before sorting
 	}
 	return draws
 }
@@ -132,8 +139,8 @@ func benchDraws(n int) []meshDraw {
 // which is the whole cost of prepareDraws once the material sets are
 // cached. It needs no device.
 func BenchmarkMeshSort_8000(b *testing.B) {
-	src := benchDraws(8000)
 	var q drawQueue
+	src := benchDraws(&q, 8000)
 	q.draws = make([]meshDraw, len(src))
 	for b.Loop() {
 		copy(q.draws, src)
@@ -148,8 +155,8 @@ var sink drawList
 // per draw, with a dense id for each shader, uniform block, material set
 // and mesh.
 func BenchmarkMeshKeys_8000(b *testing.B) {
-	src := benchDraws(8000)
 	var q drawQueue
+	src := benchDraws(&q, 8000)
 	q.draws = make([]meshDraw, len(src))
 	copy(q.draws, src)
 	for b.Loop() {
@@ -161,8 +168,8 @@ func BenchmarkMeshKeys_8000(b *testing.B) {
 // draw records themselves, which a frame with more shaders, materials or
 // meshes than the packed key holds falls back to.
 func BenchmarkMeshSortRecords_8000(b *testing.B) {
-	src := benchDraws(8000)
 	var q drawQueue
+	src := benchDraws(&q, 8000)
 	q.draws = make([]meshDraw, len(src))
 	q.order = make([]int32, len(src))
 	for b.Loop() {
@@ -195,16 +202,15 @@ func BenchmarkPrepareDraws_5000(b *testing.B) {
 		b.Fatalf("mesh: %v", err)
 	}
 	defer cube.Destroy()
-	src := benchDraws(5000)
+	q := g.main
+	src := benchDraws(q, 5000, texes[:]...)
 	for i := range src {
 		d := &src[i]
 		d.mesh = cube
 		d.shader = g.meshes.defaultShader
 		d.skinned = false // the default shader's skinned pipeline needs joints
-		d.mat.Texture = texes[(i/16)%len(texes)]
 		d.model = lin.Translate(lin.V3(float32(i%50)-25, float32(i/50%50)-25, -float32(i%37)))
 	}
-	q := g.main
 	q.camera = Camera{Position: lin.V3(0, 0, 20), Target: lin.V3(0, 0, 0)}
 	q.hasCam = true
 	q.draws = make([]meshDraw, len(src))
