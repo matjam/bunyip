@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/matjam/bunyip/internal/render"
 	"github.com/matjam/bunyip/internal/vk"
@@ -52,20 +55,116 @@ func envLevels(size int) int {
 
 // NewEnvironment builds an environment from an equirectangular panorama:
 // longitude across, latitude down, sRGB colour, any size. It prefilters
-// the image for every roughness (a second or so for a large panorama).
+// the image for every roughness on every core, which takes a fraction of
+// a second for a large panorama.
 func (g *Graphics) NewEnvironment(panorama image.Image, opts EnvironmentOptions) (*Environment, error) {
 	b := panorama.Bounds()
 	if b.Dx() <= 0 || b.Dy() <= 0 {
 		return nil, fmt.Errorf("gfx: environment image has empty bounds")
 	}
+	return g.newEnvironment(panoramaRadiance(panorama), opts)
+}
+
+// panoramaRadiance converts an sRGB panorama to linear radiance. The
+// image types Go's decoders produce are read from their pixel slices on
+// every core; any other image goes through At on this goroutine. Either
+// way a texel is the top byte of what At(x, y).RGBA() returns, decoded
+// from sRGB.
+func panoramaRadiance(panorama image.Image) *radianceMap {
+	b := panorama.Bounds()
 	src := newRadianceMap(b.Dx(), b.Dy())
-	for y := range src.h {
-		for x := range src.w {
-			r, gg, bb, _ := panorama.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			src.set(x, y, srgbToLinear(uint8(r>>8)), srgbToLinear(uint8(gg>>8)), srgbToLinear(uint8(bb>>8)))
-		}
+	put := func(y, x int, r, g, bb uint32) {
+		i := (y*src.w + x) * 3
+		src.pix[i], src.pix[i+1], src.pix[i+2] = srgbToLinear(uint8(r>>8)), srgbToLinear(uint8(g>>8)), srgbToLinear(uint8(bb>>8))
 	}
-	return g.newEnvironment(src, opts)
+	var row func(y int)
+	switch p := panorama.(type) {
+	case *image.RGBA:
+		row = func(y int) {
+			line := p.Pix[p.PixOffset(b.Min.X, b.Min.Y+y):]
+			for x := range src.w {
+				c := line[x*4 : x*4+3]
+				put(y, x, uint32(c[0])<<8, uint32(c[1])<<8, uint32(c[2])<<8)
+			}
+		}
+	case *image.NRGBA:
+		row = func(y int) {
+			line := p.Pix[p.PixOffset(b.Min.X, b.Min.Y+y):]
+			for x := range src.w {
+				c := line[x*4 : x*4+4]
+				// color.NRGBA.RGBA: widen to 16 bits, then scale by alpha.
+				a := uint32(c[3])
+				r, g, bb := uint32(c[0])*0x101*a/0xff, uint32(c[1])*0x101*a/0xff, uint32(c[2])*0x101*a/0xff
+				put(y, x, r, g, bb)
+			}
+		}
+	case *image.RGBA64:
+		row = func(y int) {
+			line := p.Pix[p.PixOffset(b.Min.X, b.Min.Y+y):]
+			for x := range src.w {
+				c := line[x*8 : x*8+6]
+				put(y, x, uint32(c[0])<<8|uint32(c[1]), uint32(c[2])<<8|uint32(c[3]), uint32(c[4])<<8|uint32(c[5]))
+			}
+		}
+	case *image.Gray:
+		row = func(y int) {
+			line := p.Pix[p.PixOffset(b.Min.X, b.Min.Y+y):]
+			for x := range src.w {
+				v := uint32(line[x]) << 8
+				put(y, x, v, v, v)
+			}
+		}
+	case *image.YCbCr:
+		row = func(y int) {
+			for x := range src.w {
+				r, g, bb, _ := p.YCbCrAt(b.Min.X+x, b.Min.Y+y).RGBA()
+				put(y, x, r, g, bb)
+			}
+		}
+	case *image.Paletted:
+		row = func(y int) {
+			for x := range src.w {
+				r, g, bb, _ := p.Palette[p.ColorIndexAt(b.Min.X+x, b.Min.Y+y)].RGBA()
+				put(y, x, r, g, bb)
+			}
+		}
+	default:
+		for y := range src.h {
+			for x := range src.w {
+				r, g, bb, _ := panorama.At(b.Min.X+x, b.Min.Y+y).RGBA()
+				put(y, x, r, g, bb)
+			}
+		}
+		return src
+	}
+	parallelRows(src.h, row)
+	return src
+}
+
+// parallelRows runs row for every index below n on up to GOMAXPROCS
+// goroutines, handing out indices in order.
+func parallelRows(n int, row func(i int)) {
+	workers := min(runtime.GOMAXPROCS(0), n)
+	if workers <= 1 {
+		for i := range n {
+			row(i)
+		}
+		return
+	}
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= n {
+					return
+				}
+				row(i)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func lerpColor(a, b Color, t float32) Color {
@@ -150,35 +249,7 @@ func (g *Graphics) newEnvironmentFrom(sample radianceSampler, opts EnvironmentOp
 	if env.scale == 0 {
 		env.scale = 1
 	}
-	// Prefilter one level per roughness step: level 0 is the panorama
-	// itself, later levels blur it with the GGX lobe of their roughness.
-	faces := make([][6][]byte, mips)
-	for level := range mips {
-		side := max(size>>level, 1)
-		roughness := float32(level) / float32(max(mips-1, 1))
-		for face := range 6 {
-			pix := make([]byte, side*side*8)
-			for y := range side {
-				for x := range side {
-					u := 2*(float32(x)+0.5)/float32(side) - 1
-					v := 2*(float32(y)+0.5)/float32(side) - 1
-					n := cubeDir(face, u, v).Norm()
-					var r, gg, b float32
-					if level == 0 {
-						r, gg, b = sample(n)
-					} else {
-						r, gg, b = prefilter(sample, n, roughness)
-					}
-					i := (y*side + x) * 8
-					putF16(pix[i:], r)
-					putF16(pix[i+2:], gg)
-					putF16(pix[i+4:], b)
-					putF16(pix[i+6:], 1)
-				}
-			}
-			faces[level][face] = pix
-		}
-	}
+	faces := prefilterCube(sample, size, mips)
 	var err error
 	if env.cube, err = g.uploadCubemap(uint32(size), vk.VK_FORMAT_R16G16B16A16_SFLOAT, 8, faces); err != nil {
 		return nil, err
@@ -205,8 +276,8 @@ func (g *Graphics) newEnvironmentFrom(sample radianceSampler, opts EnvironmentOp
 
 // uploadCubemap creates a cube map and fills it. Inside a frame the copy
 // is recorded into the frame's command buffer from the staging arena,
-// before any pass; outside one it goes through a one-shot submission
-// that waits.
+// before any pass; outside one it goes into the device's upload batch,
+// which is submitted ahead of the next frame and costs no wait.
 func (g *Graphics) uploadCubemap(size uint32, format vk.VkFormat, texelBytes int, faces [][6][]byte) (*render.Image, error) {
 	if g.frame == nil {
 		return g.r.Device.NewCubemapImage(size, format, texelBytes, faces)
@@ -238,11 +309,86 @@ func (g *Graphics) cubeBindings(cube *render.Image) []render.SamplerBinding {
 	return bindings
 }
 
+// prefilterCube fills a cube map with one level per roughness step:
+// level 0 is the radiance itself, later levels blur it with the GGX lobe
+// of their roughness. Rows of every face and level are shared out over
+// GOMAXPROCS goroutines, so sample must be safe to call concurrently;
+// every texel is computed exactly as it would be alone.
+func prefilterCube(sample radianceSampler, size, mips int) [][6][]byte {
+	faces := make([][6][]byte, mips)
+	sets := make([][prefilterSamples]ggxSample, mips)
+	type rowTask struct{ level, face, y int }
+	var tasks []rowTask
+	// The rough levels cost 64 samples a texel and the sharp one 1, so
+	// the rough ones go first and the cheap rows fill in at the end.
+	for level := mips - 1; level >= 0; level-- {
+		side := max(size>>level, 1)
+		sets[level] = ggxSamples(float32(level) / float32(max(mips-1, 1)))
+		for face := range 6 {
+			faces[level][face] = make([]byte, side*side*8)
+			for y := range side {
+				tasks = append(tasks, rowTask{level, face, y})
+			}
+		}
+	}
+	parallelRows(len(tasks), func(i int) {
+		t := tasks[i]
+		side := max(size>>t.level, 1)
+		pix := faces[t.level][t.face]
+		for x := range side {
+			u := 2*(float32(x)+0.5)/float32(side) - 1
+			v := 2*(float32(t.y)+0.5)/float32(side) - 1
+			n := cubeDir(t.face, u, v).Norm()
+			var r, gg, b float32
+			if t.level == 0 {
+				r, gg, b = sample(n)
+			} else {
+				r, gg, b = prefilterWith(sample, n, &sets[t.level])
+			}
+			j := (t.y*side + x) * 8
+			putF16(pix[j:], r)
+			putF16(pix[j+2:], gg)
+			putF16(pix[j+4:], b)
+			putF16(pix[j+6:], 1)
+		}
+	})
+	return faces
+}
+
+// prefilterSamples is how many GGX samples the prefilter takes a texel.
+const prefilterSamples = 64
+
+// ggxSample is one GGX half vector of a lobe in the tangent frame of its
+// normal: x and y along the tangents, z along the normal.
+type ggxSample struct{ x, y, z float32 }
+
+// ggxSamples maps the prefilter's Hammersley points to half vectors of
+// the GGX lobe of a roughness. They depend on the roughness alone, so a
+// level computes them once rather than once a texel.
+func ggxSamples(roughness float32) [prefilterSamples]ggxSample {
+	var out [prefilterSamples]ggxSample
+	a := roughness * roughness
+	for i := range out {
+		// Hammersley point, mapped to a GGX half vector.
+		e1 := (float32(i) + 0.5) / prefilterSamples
+		e2 := radicalInverse(uint32(i))
+		phi := 2 * math.Pi * e1
+		cosTheta := float32(math.Sqrt(float64((1 - e2) / (1 + (a*a-1)*e2))))
+		sinTheta := float32(math.Sqrt(float64(1 - cosTheta*cosTheta)))
+		out[i] = ggxSample{sinTheta * cos32(phi), sinTheta * sin32(phi), cosTheta}
+	}
+	return out
+}
+
 // prefilter convolves the radiance with the GGX lobe around n for a
 // roughness, by importance sampling.
 func prefilter(sample radianceSampler, n lin.Vec3, roughness float32) (r, g, b float32) {
-	const samples = 64
-	a := roughness * roughness
+	set := ggxSamples(roughness)
+	return prefilterWith(sample, n, &set)
+}
+
+// prefilterWith is prefilter with the lobe's samples already mapped.
+func prefilterWith(sample radianceSampler, n lin.Vec3, set *[prefilterSamples]ggxSample) (r, g, b float32) {
 	up := lin.V3(0, 0, 1)
 	if abs32(n.Z) > 0.999 {
 		up = lin.V3(1, 0, 0)
@@ -250,14 +396,8 @@ func prefilter(sample radianceSampler, n lin.Vec3, roughness float32) (r, g, b f
 	tx := up.Cross(n).Norm()
 	ty := n.Cross(tx)
 	var weight float32
-	for i := range samples {
-		// Hammersley point, mapped to a GGX half vector.
-		e1 := (float32(i) + 0.5) / samples
-		e2 := radicalInverse(uint32(i))
-		phi := 2 * math.Pi * e1
-		cosTheta := float32(math.Sqrt(float64((1 - e2) / (1 + (a*a-1)*e2))))
-		sinTheta := float32(math.Sqrt(float64(1 - cosTheta*cosTheta)))
-		h := tx.Mul(sinTheta * cos32(phi)).Add(ty.Mul(sinTheta * sin32(phi))).Add(n.Mul(cosTheta))
+	for _, s := range set {
+		h := tx.Mul(s.x).Add(ty.Mul(s.y)).Add(n.Mul(s.z))
 		l := h.Mul(2 * n.Dot(h)).Sub(n) // reflect n about h (view = normal)
 		nl := n.Dot(l)
 		if nl <= 0 {

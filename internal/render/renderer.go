@@ -327,9 +327,15 @@ func (r *Renderer) EndFrame(fr *Frame, capture bool) (*image.RGBA, error) {
 		sc.submit.SignalSemaphoreInfoCount = 1
 		sc.submit.PSignalSemaphoreInfos = &sc.signal
 	}
+	// Uploads recorded outside the frame go to the queue first, so the
+	// frame's draws read them.
+	if err := d.FlushUploads(); err != nil {
+		return nil, deviceLostOr(err)
+	}
 	if err := vk.Check("vkQueueSubmit2", vk.QueueSubmit2(d.Queue, 1, &sc.submit, f.fence)); err != nil {
 		return nil, deviceLostOr(err)
 	}
+	d.submitted()
 	if !headless {
 		sc.present = vk.VkPresentInfoKHR{
 			SType:              vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,

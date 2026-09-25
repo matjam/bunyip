@@ -539,7 +539,9 @@ channels, uncompressed or compressed with RLE, ZIPS or ZIP, and refuses
 tiled, deep, multi-part and PIZ, PXR24, B44 or DWA files with an error
 that names what the file is.
 `EnvironmentOptions.Intensity` scales it and `Size` sets the cube map's
-side in texels (default 128). Set it as `Light.Environment` and it
+side in texels (default 128). The prefilter for every roughness runs on
+all cores, and the image types Go's decoders return are read straight
+from their pixels. Set it as `Light.Environment` and it
 replaces the ambient and the sky. Metals reflect it, rough surfaces take
 its tint from every direction, and `Light.Background` draws it behind the
 scene. Environments hold GPU memory; `Destroy` releases it early.
@@ -570,8 +572,10 @@ covers (or `Radius` for a sphere probe), `Resolution` the cube face size
 in texels (default 64) and `Intensity` a multiplier. `BakeProbe(probe,
 scene)` renders six faces from that point and prefilters them for every
 roughness; the `scene` function queues the draws and the light the bake
-sees, exactly as `Draw` would. Baking submits its own command buffers and
-waits for them, so call it from `Init` or `Update`, never from `Draw`,
+sees, exactly as `Draw` would. It runs once for each face, so it must
+queue the same scene every time. Baking submits its own command buffer
+and waits for it once for all six faces, so call it from `Init` or
+`Update`, never from `Draw`,
 and call it again when the room it holds has changed. `AddProbe` adds a
 baked probe to a frame the way `AddPointLight` adds a light.
 
@@ -592,7 +596,8 @@ it early. Graphics releases its remaining GPU resources at shutdown.
 `Origin` every `Spacing` units, each holding the light arriving at it as
 nine spherical harmonics. `BakeLightProbes(grid, scene)` renders a small
 cube at every cell (`Resolution`, default 16, is enough because harmonics
-keep only the low frequencies) and projects what it saw. `SetLightProbes`
+keep only the low frequencies) and projects what it saw, four cells to a
+submission and one wait. `SetLightProbes`
 gives a frame a baked grid, which replaces the single ambient term where
 it reaches, interpolated between the eight cells around each fragment and
 faded back to the environment over the outer half cell. A grid holds its
@@ -1258,4 +1263,7 @@ calling `Destroy` again is harmless. Uploads
 inside a frame are the same shape: `NewMesh`, `Mesh.Update`,
 `NewTexture`, `Texture.Write` and `NewEnvironment` copy through a
 staging arena into the frame's own command buffer, and what a frame
-uploads is what that frame draws.
+uploads is what that frame draws. Outside a frame, in `Init` or between
+frames, the same calls go into one batch that the renderer submits ahead
+of the next frame, so loading a thousand meshes and textures waits for
+the GPU no more than loading one.

@@ -111,8 +111,9 @@ func (d *Device) NewCubemapImageEmpty(size uint32, format vk.VkFormat, mips uint
 // NewCubemapImage uploads a cube map with mip levels: faces[level][face]
 // holds a square of side size>>level texels in format's layout, faces in
 // Vulkan order (+X, -X, +Y, -Y, +Z, -Z). The image ends in shader-read-only
-// layout with a cube view over every level. It waits for the queue, so it
-// is for setup; inside a frame use NewCubemapImageEmpty, CubemapData and
+// layout with a cube view over every level. It is for uploads outside a
+// frame: the copy goes into the device's upload batch and costs no wait.
+// Inside a frame use NewCubemapImageEmpty, CubemapData and
 // RecordCubemapUpload.
 func (d *Device) NewCubemapImage(size uint32, format vk.VkFormat, texelBytes int, faces [][6][]byte) (*Image, error) {
 	img, err := d.NewCubemapImageEmpty(size, format, uint32(len(faces)))
@@ -124,21 +125,19 @@ func (d *Device) NewCubemapImage(size uint32, format vk.VkFormat, texelBytes int
 		img.Destroy()
 		return nil, err
 	}
-	staging, err := d.NewBuffer(vk.VkDeviceSize(len(data)), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	staging, offset, dst, err := d.StageUpload(vk.VkDeviceSize(len(data)))
 	if err != nil {
 		img.Destroy()
 		return nil, err
 	}
-	defer staging.Destroy()
-	if err := staging.Write(0, data); err != nil {
+	copy(dst, data)
+	cb, err := d.UploadCommands()
+	if err != nil {
 		img.Destroy()
 		return nil, err
 	}
-	if err := d.OneShot(func(cb vk.VkCommandBuffer) { RecordCubemapUpload(cb, img, texelBytes, staging, 0) }); err != nil {
-		img.Destroy()
-		return nil, err
-	}
+	RecordCubemapUpload(cb, img, texelBytes, staging, offset)
+	img.NoteUpload()
 	return img, nil
 }
 

@@ -53,8 +53,13 @@ type AllocStats struct {
 	Reserved, Used          vk.VkDeviceSize
 }
 
-// Stats returns the current allocator statistics.
-func (d *Device) Stats() AllocStats { return d.alloc.stats }
+// Stats returns the current allocator statistics. Pending uploads are
+// finished first, so the staging they hold for a moment is not counted;
+// that can wait for the GPU when an upload batch is still running.
+func (d *Device) Stats() AllocStats {
+	d.settleUploads()
+	return d.alloc.stats
+}
 
 // allocateBuffer keeps MoltenVK index buffers at offset zero. MoltenVK
 // 1.4.2 on the Apple Paravirtual device can drop indexed draws with pooled

@@ -30,6 +30,11 @@ type Device struct {
 	waits            uint64 // times the device or its queue was waited on
 	frameNo          uint64 // frames begun, for the retire ring
 	retired          []deferred
+	up               uploader // uploads recorded outside a frame, see upload.go
+	// busy is whether anything has been submitted to the queue since the
+	// device was last waited idle. WaitIdle on a device that is already
+	// idle returns at once and counts no wait.
+	busy bool
 }
 
 // NewDevice picks a GPU able to present to surface and creates the logical
@@ -121,14 +126,30 @@ func NewDevice(inst *Instance, surface vk.VkSurfaceKHR) (*Device, error) {
 	return d, nil
 }
 
-// WaitIdle blocks until the device has finished all submitted work. It
-// stalls the GPU, so it belongs in setup and teardown rather than in a
-// frame; Waits counts every such stall. Prefer Retire for an object a
+// WaitIdle submits the open upload batch and blocks until the device has
+// finished all submitted work. It stalls the GPU, so it belongs in setup
+// and teardown rather than in a frame; Waits counts every such stall.
+// When nothing has been submitted since the device was last waited idle
+// it returns at once and counts nothing. Prefer Retire for an object a
 // recorded frame may still reference.
 func (d *Device) WaitIdle() error {
+	flushErr := d.FlushUploads()
+	if !d.busy {
+		return flushErr
+	}
 	d.waits++
-	return vk.Check("vkDeviceWaitIdle", vk.VkDeviceWaitIdle(d.Handle))
+	if err := vk.Check("vkDeviceWaitIdle", vk.VkDeviceWaitIdle(d.Handle)); err != nil {
+		return err
+	}
+	d.busy = false
+	d.reclaimUploads()
+	return flushErr
 }
+
+// submitted records that work has gone to the queue, so the next
+// WaitIdle has something to wait for. Everything in this package that
+// submits calls it.
+func (d *Device) submitted() { d.busy = true }
 
 // Waits is how many times the device or its queue has been waited on
 // since it was created. A frame that uploads and destroys through the
@@ -143,6 +164,7 @@ func (d *Device) Destroy() {
 	}
 	_ = d.WaitIdle()
 	d.flushRetired()
+	d.destroyUploads()
 	d.alloc.destroy()
 	vk.VkDestroyCommandPool(d.Handle, d.pool, nil)
 	vk.VkDestroyDevice(d.Handle, nil)
@@ -207,7 +229,12 @@ func (d *Device) allocateCommandBuffers(n uint32) ([]vk.VkCommandBuffer, error) 
 }
 
 // OneShot records commands into a fresh buffer, submits them and waits.
-// It is for setup-time uploads and readback, not per-frame work.
+// It is for readbacks and other setup work whose result the caller needs
+// at once, not per-frame work; an upload that only has to be on the GPU
+// before the next frame goes through StageUpload and UploadCommands and
+// costs no wait. The open upload batch is submitted just ahead of the
+// commands, so they see everything uploaded before them or while they
+// were being recorded.
 func (d *Device) OneShot(record func(cb vk.VkCommandBuffer)) error {
 	bufs, err := d.allocateCommandBuffers(1)
 	if err != nil {
@@ -223,11 +250,20 @@ func (d *Device) OneShot(record func(cb vk.VkCommandBuffer)) error {
 	if err := vk.Check("vkEndCommandBuffer", vk.VkEndCommandBuffer(cb)); err != nil {
 		return err
 	}
+	if err := d.FlushUploads(); err != nil {
+		return err
+	}
 	cbInfo := vk.VkCommandBufferSubmitInfo{SType: vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, CommandBuffer: cb}
 	submit := vk.VkSubmitInfo2{SType: vk.VK_STRUCTURE_TYPE_SUBMIT_INFO_2, CommandBufferInfoCount: 1, PCommandBufferInfos: &cbInfo}
 	if err := vk.Check("vkQueueSubmit2", vk.VkQueueSubmit2(d.Queue, 1, &submit, 0)); err != nil {
 		return err
 	}
+	d.submitted()
 	d.waits++
-	return vk.Check("vkQueueWaitIdle", vk.VkQueueWaitIdle(d.Queue))
+	if err := vk.Check("vkQueueWaitIdle", vk.VkQueueWaitIdle(d.Queue)); err != nil {
+		return err
+	}
+	d.busy = false // the device's one queue is idle
+	d.reclaimUploads()
+	return nil
 }

@@ -231,24 +231,31 @@ func (f *FS) Path(name string) string {
 }
 
 func (f *FS) locate(name string) (string, error) {
+	p, _, err := f.locateIndex(name)
+	return p, err
+}
+
+// locateIndex is locate that also reports which source holds the name,
+// or len(f.sources) when none does.
+func (f *FS) locateIndex(name string) (string, int, error) {
 	file, err := f.Open(name)
 	if err != nil {
-		return "", err
+		return "", len(f.sources), err
 	}
 	info, err := file.Stat()
 	file.Close()
 	if err != nil {
-		return "", err
+		return "", len(f.sources), err
 	}
 	if info.IsDir() {
-		return "", ErrNotFound
+		return "", len(f.sources), ErrNotFound
 	}
-	for _, s := range f.sources {
+	for i, s := range f.sources {
 		if p, ok := s.stat(name); ok {
-			return p, nil
+			return p, i, nil
 		}
 	}
-	return "", ErrNotFound
+	return "", len(f.sources), ErrNotFound
 }
 
 // List returns visible file names under prefix, sorted and without

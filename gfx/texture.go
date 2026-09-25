@@ -235,7 +235,8 @@ func (t *Texture) swapImage(img *render.Image, w, h, bytes int) error {
 // uploadTexture creates a sampled image and fills it. Inside a frame the
 // copy is recorded into the frame's command buffer from the staging
 // arena, before any pass, so a draw later in the same frame sees the
-// pixels; outside one it goes through a one-shot submission that waits.
+// pixels; outside one it goes into the device's upload batch, which is
+// submitted ahead of the next frame and costs no wait.
 func (g *Graphics) uploadTexture(extent vk.VkExtent2D, format vk.VkFormat, pix []byte, mips bool) (*render.Image, error) {
 	if g.frame == nil {
 		return g.r.Device.NewTextureImage(extent, format, pix, mips)
@@ -287,7 +288,8 @@ func (g *Graphics) NewBlankTexture(width, height int, opts TextureOptions) (*Tex
 // texture, and rebuilds the mip chain. Inside a frame (between the
 // engine's Begin and End, which is where Update and Draw run) the copy
 // is recorded into the frame and costs no wait, so video and painting
-// can write every frame; outside one it waits for the GPU first. Nil sources
+// can write every frame; outside one it joins the batch of uploads the
+// next frame submits first, and also costs no wait. Nil sources
 // and coordinate overflow return errors. Render-texture views reject Write;
 // use Graphics.DrawTo to change their pixels.
 func (t *Texture) Write(x, y int, src image.Image) error {
@@ -325,9 +327,9 @@ func (t *Texture) Write(x, y int, src image.Image) error {
 		render.RecordImageWrite(fr.CB, t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), staging, offset)
 		return nil
 	}
-	if err := g.r.Device.WaitIdle(); err != nil {
-		return err
-	}
+	// Outside a frame the write joins the device's upload batch, whose
+	// barriers order it after every frame already submitted, so it needs
+	// no wait.
 	return g.r.Device.WriteImage(t.img, r.Min.X, r.Min.Y, r.Dx(), r.Dy(), rgba.Pix)
 }
 

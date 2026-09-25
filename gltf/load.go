@@ -12,7 +12,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/matjam/bunyip/lin"
 )
@@ -360,8 +363,18 @@ func (l *loader) bufferView(i int) ([]byte, int, error) {
 	return buf[v.ByteOffset : v.ByteOffset+v.ByteLength], v.ByteStride, nil
 }
 
+// loadImages fetches every image's bytes in order on the calling
+// goroutine, since a Resolver need not be safe to call concurrently, and
+// decodes them on up to GOMAXPROCS goroutines. The result is in image
+// order, and an error is the one a decode in order would have met first:
+// fetching stops at the first image it cannot fetch, and that error is
+// returned only when no earlier image fails to decode.
 func (l *loader) loadImages() ([]image.Image, error) {
-	var images []image.Image
+	if len(l.j.Images) == 0 {
+		return nil, nil
+	}
+	sources := make([][]byte, 0, len(l.j.Images))
+	var fetchErr error
 	for i, im := range l.j.Images {
 		var data []byte
 		var err error
@@ -374,13 +387,39 @@ func (l *loader) loadImages() ([]image.Image, error) {
 			err = fmt.Errorf("no source")
 		}
 		if err != nil {
-			return nil, fmt.Errorf("image %d: %w", i, err)
+			fetchErr = fmt.Errorf("image %d: %w", i, err)
+			break
 		}
-		img, _, err := image.Decode(bytes.NewReader(data))
+		sources = append(sources, data)
+	}
+	images := make([]image.Image, len(sources))
+	errs := make([]error, len(sources))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(sources)) {
+		wg.Go(func() {
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(sources) {
+					return
+				}
+				img, _, err := image.Decode(bytes.NewReader(sources[i]))
+				if err != nil {
+					errs[i] = fmt.Errorf("image %d: %w", i, err)
+					continue
+				}
+				images[i] = img
+			}
+		})
+	}
+	wg.Wait()
+	for _, err := range errs {
 		if err != nil {
-			return nil, fmt.Errorf("image %d: %w", i, err)
+			return nil, err
 		}
-		images = append(images, img)
+	}
+	if fetchErr != nil {
+		return nil, fetchErr
 	}
 	return images, nil
 }

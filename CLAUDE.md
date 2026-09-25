@@ -387,7 +387,17 @@ render pass, so text tests draw one frame.
   per-slot staging arena (`render.Staging`, taken with
   `Graphics.stage`) into the frame's command buffer before any pass,
   with the barriers that let a draw recorded later in the frame read
-  the data. Outside a frame they keep the `OneShot` path. Everything
+  the data. Outside a frame they go into the device's upload batch
+  (`internal/render/upload.go`): `Device.StageUpload` takes staging,
+  `UploadCommands` returns the batch's command buffer, and
+  `FlushUploads` submits it with a fence and no wait. `EndFrame` flushes
+  before it submits the frame, and `WaitIdle` and `OneShot` flush before
+  they wait, so the single queue runs every upload ahead of whatever
+  reads it; the batch ends in a barrier to all later commands, and its
+  staging is freed once its fence signals. `Image.Destroy` and
+  `Buffer.Destroy` settle a batch that still writes the object, so
+  destroying straight after an upload is safe. `OneShot` stays the
+  synchronous path for readbacks and bakes. Everything
   destroyed or replaced inside a frame goes on that slot's retire list
   through `Graphics.deferDestroy` and is freed at the slot's next
   `begin`, when its fence has been waited on; outside a frame
@@ -483,9 +493,12 @@ render pass, so text tests draw one frame.
   depth attachment so it can sample the depth image.
 - `BakeProbe` and `BakeLightProbes` render the scene through
   `renderScene` on their own one-shot command buffers, so they refuse to
-  run inside `Draw`. They build a `baker`, which queues the game's scene
-  once and re-renders it per face, and read the HDR image back with
-  `Device.ReadImageRaw`; the prefilter and the harmonics are the same CPU
+  run inside `Draw`. They build a `baker`, which holds a queue for each
+  face it renders in one submission (six for a probe, 24 for four grid
+  cells), each filled by running the game's scene once, because every
+  face needs host-side frame data of its own. All those faces and the
+  `render.RecordImageReadback` copies of the HDR image go into one
+  command buffer with one wait; the prefilter and the harmonics are the same CPU
   code an image environment uses, over a cube sampler instead of an
   equirectangular one.
 - The 3D draw order is a packed 64-bit key per draw (`gfx/sortkey.go`):
